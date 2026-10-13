@@ -42,6 +42,7 @@ from yoetz.ports.change_capture import ChangeMetadataEntry, CheckChangeCapture, 
 __all__ = [
     "PreExistingTestEdits",
     "check_change_header_entries",
+    "check_change_sections",
     "preexisting_test_edits",
 ]
 
@@ -326,6 +327,41 @@ def _diff_path_pairs(capture: CheckChangeCapture) -> tuple[tuple[str | None, str
             source = _diff_source_from_body(body)
         pairs.append((source, destination))
     return tuple(pairs)
+
+
+def check_change_sections(
+    capture: CheckChangeCapture,
+) -> tuple[tuple[int, int, frozenset[str]], ...]:
+    """``(start, end, paths)`` of each ``diff --git`` section of the stored change, in order.
+
+    ``paths`` are the section's repository-relative source and destination (one path for an
+    edit, the destination for an addition, the source for a deletion; empty when neither can be
+    decoded safely). The section bounds are the ones ``check_time_change_shown_files`` uses. In
+    process only (tb4n5: a follow-up serves the current section of a path a requested edit
+    changed from the frozen change, never from a new read).
+    """
+
+    text = capture.text
+    starts = [match.start() for match in _DIFF_HEADER.finditer(text)]
+    sections: list[tuple[int, int, frozenset[str]]] = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(text)
+        header_end = text.find(b"\n", start, end)
+        if header_end < 0:
+            sections.append((start, end, frozenset()))
+            continue
+        rest = text[start + len(b"diff --git ") : header_end]
+        body = text[header_end + 1 : end]
+        destination = _diff_destination_from_body(body)
+        source, header_destination = _diff_header_paths(rest, destination)
+        if destination is None:
+            destination = header_destination
+        if source is None:
+            source = _diff_source_from_body(body)
+        sections.append(
+            (start, end, frozenset(path for path in (source, destination) if path is not None))
+        )
+    return tuple(sections)
 
 
 def _diff_paths_with_skip_markers(capture: CheckChangeCapture) -> frozenset[str]:

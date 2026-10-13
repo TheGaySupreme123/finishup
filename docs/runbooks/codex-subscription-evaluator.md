@@ -593,7 +593,7 @@ job with its own attempt budget and its own `timeout_seconds` deadline, under th
 budget profile frozen with the check's first review job; it is never sent when it would add nothing
 new. Count them when planning subscription usage. `status view=operation` reports the live round's
 progress, and each round leaves one `semantic_review_follow_up` diagnostic record (round, items,
-refs added) under the check's request ID.
+refs added, parts added) under the check's request ID.
 
 A host tool wait may finish before the review. Keep the same check request and request ID: while
 the service-owned check runs, replay reports pending; after completion it recovers the recorded

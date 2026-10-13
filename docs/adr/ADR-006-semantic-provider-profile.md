@@ -1736,3 +1736,46 @@ packet only lacked room for.
   Structural progress (`status view=operation`, and the terminal interface that renders it)
   follows the live round, else the latest round by the round its case object names, never by
   attempt count or random job id.
+
+**Amendment (2026-10-13, tb4n5 react-lead-form; #1047 follow-up).** Three follow-up rounds fired
+and none converted: each request named a stale hook-captured edit whose first part the first packet
+had carried, so the per-reference rule called it shown, and the file's current content existed only
+in the check-time change, which follow-ups could not draw from.
+
+- **Per part, never per source.** Every excerpt part is placed in its source text as a byte
+  interval (`excerpt_span_key`: `<ref>#<start>-<end>/<total>`, in process only, never recorded or
+  logged; the source of a check-time change part is `check-time-change`). The evaluation reports
+  the parts the exact sent packet carried (`case_excerpt_parts`, read from the provider-bound
+  manifest like `case_excerpt_refs`), and `case_excerpt_refs` now names only sources a sent packet
+  carried whole: every part the source has was sent. A source the first packet showed in part
+  therefore still has parts to add. `ReviewFollowUp` carries `shown_parts` (the first packet's) and
+  `added_parts` (parts later packets carried that no earlier one had). Intervals, not part numbers,
+  are compared, so a narrowed case that splits a source differently never counts old bytes as new.
+- **What ranks first.** Within the same share, a requested source's parts that the first packet
+  carried keep their ordinary rank; parts an earlier round added rank first again (they keep their
+  place); the next parts no packet carried follow while they fit. A source larger than the share
+  has its next parts ranked first rather than none of it; its other parts keep their ordinary rank.
+- **The current section of a stale edit.** A `current_diff_for_path` item naming a hook-captured
+  edit is also answered with the current section of each path that edit changed, cut from the
+  check's frozen check-time change (the same authenticated, capture-time redacted object; nothing
+  is read again) when the recipe carries that change. Each section travels as
+  `change-section-NNN` (`NNN` its position in the change; `-part-MM` past one part)
+  `repository_excerpt` items beginning `[Yoetz check-time change, the current state of a file a
+  requested edit changed, section part i of n]`, linked to the requested edit, under the same
+  privacy admission as the change's own parts, and ranks first within the share. A section the
+  first packet's change parts already carried is not served again. Any requested edit qualifies,
+  not only one a newer capture superseded: the change is the state when the check ran, so it is
+  never older than a capture. Reviewer-chosen line ranges are not supported (that needs a typed
+  request field). The shown-file record (ADR-031 item 9) still counts only the change's leading
+  run of parts, so a section served this way never claims a file was shown: a conservative
+  under-count.
+- **When a round runs.** A round is sent only when its composed packet carries a requested part
+  that no sent packet of the check carried (`follow_up_new_parts`), counting a served section for
+  the edit it answers even when the first packet showed that edit whole, and never counting an
+  item of a category the channel withholds. The planner also stops before rebuilding a case for a
+  request whose targets name no action, result or evidence row and record none (an obligation, the
+  event that carried the task statement): that request is the agent's to answer, as before. A
+  privacy-withheld source is still never re-sent. The three-round bound and the per-check share
+  are unchanged, so a request whose remaining parts do not fit stays unanswered and is returned to
+  the agent with its availability class. Each round's `semantic_review_follow_up` diagnostic also
+  counts `semantic_follow_up_parts_added`.

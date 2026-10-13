@@ -65,6 +65,7 @@ from yoetz.protocol.models import (
 )
 
 __all__ = [
+    "CHECK_TIME_CHANGE_SOURCE_REF",
     "FOLLOW_UP_KINDS",
     "YOETZ_LIMIT_PACKET_ROOM",
     "YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE",
@@ -74,6 +75,9 @@ __all__ = [
     "check_change_binary_paths",
     "check_change_text_paths",
     "command_run_key",
+    "excerpt_span_covered",
+    "excerpt_span_key",
+    "excerpt_span_whole",
     "observed_image_evidence",
     "plan_review_follow_up",
     "review_missing_for_assessment",
@@ -352,23 +356,84 @@ class ReviewFollowUpItem:
             raise ValueError("review_follow_up_invalid")
 
 
+# The source ref of the service's own check-time change excerpts (ADR-031); never a ledger ref.
+CHECK_TIME_CHANGE_SOURCE_REF: Final = "check-time-change"
+# One excerpt part's place in its source (tb4n5, #1047 follow-up): ``<ref>#<start>-<end>/<total>``,
+# the byte interval of the source's excerpt text the part holds and that text's length. The
+# source is the candidate's own ref (a captured group's lead, ``check-time-change`` for the
+# service's change). Comparing intervals, never part numbers, keeps the record exact when a
+# narrowed case splits a source into different parts. In process only; never recorded or logged.
+_SPAN_KEY: Final = re.compile(r"^(.+)#([0-9]{1,12})-([0-9]{1,12})/([0-9]{1,12})$")
+
+
+def excerpt_span_key(ref: str, start: int, end: int, total: int) -> str:
+    """The key of the excerpt part holding ``[start, end)`` of a ``total``-byte source text."""
+
+    if not 0 <= start < end <= total:
+        raise ValueError("excerpt_span_invalid")
+    return f"{ref}#{start}-{end}/{total}"
+
+
+def _span(key: str) -> tuple[str, int, int, int] | None:
+    match = _SPAN_KEY.match(key)
+    if match is None:
+        return None
+    return match.group(1), int(match.group(2)), int(match.group(3)), int(match.group(4))
+
+
+def _covered(source: tuple[str, int], start: int, end: int, keys: Iterable[str]) -> bool:
+    """Whether the union of ``keys``' intervals of ``source`` covers ``[start, end)``."""
+
+    intervals = sorted(
+        (span[1], span[2])
+        for key in keys
+        if (span := _span(key)) is not None and (span[0], span[3]) == source
+    )
+    reached = start
+    for low, high in intervals:
+        if low > reached:
+            break
+        reached = max(reached, high)
+        if reached >= end:
+            return True
+    return reached >= end
+
+
+def excerpt_span_covered(key: str, keys: Iterable[str]) -> bool:
+    """Whether the bytes of the part ``key`` names all lie in parts ``keys`` name."""
+
+    span = _span(key)
+    return span is not None and _covered((span[0], span[3]), span[1], span[2], keys)
+
+
+def excerpt_span_whole(key: str, keys: Iterable[str]) -> bool:
+    """Whether ``keys`` cover the whole source text the part ``key`` belongs to."""
+
+    span = _span(key)
+    return span is not None and _covered((span[0], span[3]), 0, span[3], keys)
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewFollowUp:
     """One in-check follow-up round: the reviewer asked, Yoetz adds what it holds (#1047).
 
     ``items`` accumulate in request order across the check's rounds, so what an earlier round
     added keeps its place in every later packet. ``shown_refs`` are the refs whose content the
-    excerpts of the check's own first sent packet held; anything a follow-up packet carries
-    beyond them for an item is what Yoetz added. ``added_refs`` is what earlier sent packets
-    already added, plus what egress withheld from a sent packet under a privacy rule (that rule
-    withholds it from every packet): a round that would add nothing else is never sent. In
-    process only; never recorded or logged.
+    excerpts of the check's own first sent packet held whole; ``shown_parts`` the excerpt parts
+    (``excerpt_span_key``) that packet carried, so a source it showed only in part still has
+    parts to add (tb4n5). ``added_refs`` is what earlier sent packets completed, plus what egress
+    withheld from a sent packet under a privacy rule (that rule withholds it from every packet);
+    ``added_parts`` the parts earlier follow-up packets carried that no packet before them had. A
+    round whose packet would carry no requested part beyond those is never sent. In process only;
+    never recorded or logged.
     """
 
     round: int
     items: tuple[ReviewFollowUpItem, ...]
     shown_refs: frozenset[str]
     added_refs: frozenset[str] = frozenset()
+    shown_parts: frozenset[str] = frozenset()
+    added_parts: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if type(self.round) is not int or not 1 <= self.round <= MAX_REVIEW_FOLLOW_UP_ROUNDS:
@@ -379,17 +444,32 @@ class ReviewFollowUp:
             or any(type(item) is not ReviewFollowUpItem for item in self.items)
         ):
             raise ValueError("review_follow_up_invalid")
-        if type(self.shown_refs) is not frozenset or type(self.added_refs) is not frozenset:
+        if any(
+            type(value) is not frozenset or any(type(ref) is not str for ref in value)
+            for value in (self.shown_refs, self.added_refs, self.shown_parts, self.added_parts)
+        ):
             raise ValueError("review_follow_up_invalid")
 
     @property
     def source_refs(self) -> frozenset[str]:
         return frozenset(ref for item in self.items for ref in item.source_refs)
 
+    @property
+    def seen_parts(self) -> frozenset[str]:
+        """Every excerpt part a sent packet of this check carried."""
+
+        return self.shown_parts | self.added_parts
+
     def added_by(self, carried_excerpt_refs: Iterable[str]) -> frozenset[str]:
         """The requested source refs a packet carrying these excerpts shows beyond the first."""
 
         return (frozenset(carried_excerpt_refs) & self.source_refs) - self.shown_refs
+
+    def unseen(self, parts: Iterable[str]) -> frozenset[str]:
+        """The excerpt parts no sent packet of this check carried all of."""
+
+        seen = self.seen_parts
+        return frozenset(part for part in parts if not excerpt_span_covered(part, seen))
 
 
 def plan_review_follow_up(
@@ -400,6 +480,7 @@ def plan_review_follow_up(
     previous: ReviewFollowUp | None,
     shown_refs: frozenset[str] | None,
     privacy_withheld_refs: frozenset[str] = frozenset(),
+    shown_parts: frozenset[str] | None = None,
 ) -> ReviewFollowUp | None:
     """The next in-check follow-up round, or ``None`` when Yoetz has nothing it may add (#1047).
 
@@ -408,11 +489,14 @@ def plan_review_follow_up(
     the packet had no room for, naming targets Yoetz holds rows for, is answered here; every
     other item stays the agent's (or Yoetz's disclosed) business exactly as before. A round runs
     only while the reviewer still names such an item, fewer than ``MAX_REVIEW_FOLLOW_UP_ROUNDS``
-    rounds ran, and some requested source is neither in the first packet nor added already.
-    ``shown_refs`` (what the first sent packet's excerpts held) is ``None`` when it is unknown:
-    then nothing can be called added, so no round runs. ``privacy_withheld_refs`` are the refs
-    the latest sent packet withheld under a privacy rule; they join ``added_refs``, since
-    sending them again would only spend a round.
+    rounds ran, and some requested source is neither shown whole by the first packet nor
+    completed already: a source the first packet showed only in part still has parts to add
+    (tb4n5). ``shown_refs`` (what the first sent packet's excerpts held whole) is ``None`` when it
+    is unknown: then nothing can be called added, so no round runs. ``shown_parts`` are the
+    excerpt parts that packet carried (``None``: none known). ``privacy_withheld_refs`` are the
+    refs the latest sent packet withheld under a privacy rule; they join ``added_refs``, since
+    sending them again would only spend a round. Whether a round's packet really adds a part is
+    decided once it is composed (``semantic_case.follow_up_new_parts``).
     """
 
     if previous is not None and previous.round >= MAX_REVIEW_FOLLOW_UP_ROUNDS:
@@ -444,17 +528,51 @@ def plan_review_follow_up(
     added: frozenset[str] = frozenset() if previous is None else previous.added_refs
     added |= privacy_withheld_refs & frozenset(ref for item in items for ref in item.source_refs)
     follow_up = ReviewFollowUp(
-        1 if previous is None else previous.round + 1, tuple(items), shown, added
+        1 if previous is None else previous.round + 1,
+        tuple(items),
+        shown,
+        added,
+        shown_parts=(
+            previous.shown_parts if previous is not None else (shown_parts or frozenset())
+        ),
+        added_parts=frozenset() if previous is None else previous.added_parts,
     )
-    if not follow_up.source_refs - shown - added:
+    if not follow_up.source_refs - shown - added and not _current_section_pending(follow_up):
         return None
     return follow_up
+
+
+def _current_section_pending(follow_up: ReviewFollowUp) -> bool:
+    """Whether a ``current_diff_for_path`` item may still be answered from the change (tb4n5).
+
+    The current section of a path an edit changed comes from the check-time change, not from the
+    edit's own rows, so it can be owed even when the first packet showed the edit whole. It can
+    be owed only while some packet of the check carried part of the change but not all of it;
+    whether a composed round really adds a section is decided by ``follow_up_new_parts``.
+    """
+
+    if not any(
+        item.kind == "current_diff_for_path"
+        and any(ref.startswith("evd_") for ref in item.source_refs)
+        for item in follow_up.items
+    ):
+        return False
+    change = [
+        key for key in follow_up.seen_parts if key.startswith(CHECK_TIME_CHANGE_SOURCE_REF + "#")
+    ]
+    return bool(change) and not excerpt_span_whole(change[0], change)
 
 
 def _recorded_sources(
     projection: ProjectionState, targets: Iterable[str], allowed: frozenset[str]
 ) -> frozenset[str]:
-    """The recorded rows whose excerpts carry what ``targets`` name (see ``ReviewFollowUpItem``)."""
+    """The recorded rows whose excerpts carry what ``targets`` name (see ``ReviewFollowUpItem``).
+
+    Only action, result and evidence rows can carry an excerpt. A target that names none of them
+    and records none (an obligation, or the event that carried the task statement) is no source:
+    a request naming only such targets is the agent's to answer, and planning a round for it only
+    rebuilt the case to send nothing (tb4n5 react-lead-form, 19:35:05).
+    """
 
     refs = set(targets)
     for family in (projection.actions, projection.results, projection.evidence):
@@ -470,7 +588,12 @@ def _recorded_sources(
             refs.update(
                 (str(key), str(payload.action_id), *(str(ref) for ref in payload.evidence_refs))
             )
-    return frozenset(refs & allowed) - _redacted_refs(projection)
+    rows = {
+        str(key)
+        for family in (projection.actions, projection.results, projection.evidence)
+        for key in family
+    }
+    return frozenset(refs & allowed & rows) - _redacted_refs(projection)
 
 
 def unsuppliable_missing_kinds(

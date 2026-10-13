@@ -183,6 +183,7 @@ def _plan(case: DeterministicCase, first: FinalSemanticEvaluation) -> ReviewFoll
         ),
         previous=None,
         shown_refs=first.case_excerpt_refs,
+        shown_parts=first.case_excerpt_parts,
     )
     assert follow_up is not None
     return follow_up
@@ -265,8 +266,12 @@ async def test_a_follow_up_round_is_its_own_durable_job_and_replays_without_disp
     assert first is not None and first.status is SemanticStatus.SUCCEEDED
     assert first.judgment is not None and first.judgment.conclusion == "insufficient_packet"
     assert first.case_excerpt_refs is not None and str(evd(1)) not in first.case_excerpt_refs
+    # tb4n5: what the sent packet carried, part by part, read from the same provider manifest.
+    assert first.case_excerpt_parts is not None
+    assert not any(key.startswith(f"{evd(1)}#") for key in first.case_excerpt_parts)
     assert first.operation_lease is not None
     follow_up = _plan(case, first)
+    assert follow_up.shown_parts == first.case_excerpt_parts
 
     second = await evaluator(
         FrozenCase(case, first.operation_lease), (), runtime, follow_up=follow_up
@@ -283,6 +288,9 @@ async def test_a_follow_up_round_is_its_own_durable_job_and_replays_without_disp
     assert _REQUESTED not in first_items and _REQUESTED in second_items
     assert first_digest != second_digest
     assert str(evd(1)) in follow_up.added_by(second.case_excerpt_refs or ())
+    assert any(
+        key.startswith(f"{evd(1)}#") for key in follow_up.unseen(second.case_excerpt_parts or ())
+    )
     manifest = second.review_input_manifest
     assert manifest is not None and manifest.follow_up_round == 1
     assert [row.status for row in manifest.missing_inputs] == ["supplied"]

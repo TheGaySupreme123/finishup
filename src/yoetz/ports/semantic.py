@@ -1402,11 +1402,26 @@ class SemanticCase:
     # Local composition fact, not wire or digest material: how many selected excerpts the builder
     # dropped to fit MAX_SEMANTIC_CASE_BYTES (issue #907 Phase 1b). Diagnostics report it.
     excerpts_cut_for_case_bound: int = field(default=0, compare=False)
+    # Local composition fact, not wire or digest material (tb4n5, issue #1047 follow-up): each
+    # excerpt item's place in its source text as ``(item_id, span_key)``, so an in-check
+    # follow-up can tell which parts of a partly shown source a sent packet carried.
+    excerpt_parts: tuple[tuple[str, str], ...] = field(default=(), compare=False)
 
     def __post_init__(self) -> None:
         if (
             type(self.omitted_reference_count) is not int
             or not 0 <= self.omitted_reference_count <= _MAX_SAFE_INTEGER
+        ):
+            raise _invalid_case()
+        if (
+            type(self.excerpt_parts) is not tuple
+            or len(self.excerpt_parts) > _MAX_CASE_ITEMS
+            or any(
+                type(pair) is not tuple
+                or len(pair) != 2
+                or any(type(value) is not str for value in pair)
+                for pair in self.excerpt_parts
+            )
         ):
             raise _invalid_case()
         if (

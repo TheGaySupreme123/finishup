@@ -31,17 +31,21 @@ from yoetz.application.missing_for_assessment import (
     review_missing_for_assessment,
 )
 from yoetz.application.semantic_case import (
+    CHECK_TIME_SECTION_ITEM_PREFIX,
     CapturedContentScope,
     CapturedSemanticContent,
+    CheckTimeChange,
     assemble_filtered_review_packet,
     bounded_case_envelope,
     build_semantic_case,
     excerpt_content_refs,
     follow_up_byte_budget,
+    follow_up_new_parts,
     review_input_manifest_to_json,
     review_packet_disclosure_result,
     semantic_case_packet_view,
     sent_excerpt_content_refs,
+    sent_excerpt_parts,
     withheld_excerpt_content_refs,
 )
 from yoetz.domain.events import (
@@ -55,6 +59,7 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
+from yoetz.domain.observation import ObservationContentKind
 from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from yoetz.domain.review_input_render import (
     render_review_input_manifest_compact,
@@ -66,7 +71,7 @@ from yoetz.kernel.projections import EvidenceProjectionRecord
 from yoetz.ports.semantic import MissingForAssessment, SemanticCase, SemanticJudgment
 from yoetz.protocol.canonical import JsonValue, strict_json_parse
 from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
+from yoetz.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS, DataCategory
 
 _WHEN = timestamp_from_string("2026-10-12T00:00:00.000Z")
 
@@ -173,6 +178,7 @@ def _build(
     selection: ReviewSelectionPolicy | None = None,
     captured_content: Sequence[CapturedSemanticContent] = (),
     captured_content_scope: CapturedContentScope | None = None,
+    check_time_change: CheckTimeChange | None = None,
 ) -> SemanticCase:
     return build_semantic_case(
         case_id="cas_10000000-0000-4000-8000-000000000001",
@@ -186,6 +192,7 @@ def _build(
         follow_up=follow_up,
         captured_content=captured_content,
         captured_content_scope=captured_content_scope,
+        check_time_change=check_time_change,
     )
 
 
@@ -411,6 +418,11 @@ def test_without_a_follow_up_the_packet_is_built_exactly_as_before() -> None:
 
 
 def test_requested_excerpts_rank_first_only_within_half_the_excerpt_budget() -> None:
+    """The share bounds each requested part. This output is one part (head and tail of a
+    recorded description, never split), so a share smaller than it ranks none of it first; a
+    source split into parts has its next parts ranked first instead (tb4n5, see
+    ``test_a_partly_shown_capture_adds_its_next_parts_never_the_one_shown``)."""
+
     case, _refs = _verification_case(20)
     first = _build(case)
     follow_up = _follow_up(case, _excerpt_refs(first))
@@ -653,9 +665,15 @@ def test_every_part_of_a_group_is_linked_even_when_citing_claims_fill_the_bound(
             sorted((str(evd(20)), str(evd(21)), *citing[:14]), key=str.encode)
         )
     assert excerpt_content_refs((group,)) == {str(evd(20)), str(evd(21))}
-    shown = sent_excerpt_content_refs(semantic, _provider_manifest(_send(semantic)))
+    sent = _provider_manifest(_send(semantic))
+    shown = sent_excerpt_content_refs(semantic, sent)
     assert shown is not None and str(evd(21)) in shown
-    # Shown already: a request naming the second part sends no round.
+    # Shown whole: the group's one excerpt part was sent, so nothing of it is left to add and a
+    # request naming the second part sends no round (tb4n5: judged per part, not per ref).
+    shown_parts = sent_excerpt_parts(semantic, sent)
+    assert shown_parts is not None
+    ((group_part,),) = [[key for key in shown_parts if key.startswith(f"{evd(20)}#")]]
+    assert group_part.startswith(f"{evd(20)}#0-")
     assert (
         plan_review_follow_up(
             case.projection,
@@ -663,6 +681,7 @@ def test_every_part_of_a_group_is_linked_even_when_citing_claims_fill_the_bound(
             (_requested("verification_output", str(evd(21))),),
             previous=None,
             shown_refs=shown,
+            shown_parts=shown_parts,
         )
         is None
     )
@@ -829,3 +848,393 @@ def test_the_recorded_check_event_admits_only_a_bounded_round() -> None:
     for invalid in (0, MAX_REVIEW_FOLLOW_UP_ROUNDS + 1, "1"):
         with pytest.raises(ValueError):
             decode(freeze_json({**body, "follow_up_round": invalid}))
+
+
+# --- tb4n5: per part, the current section of a stale edit, and requests with no rows ----------
+
+_PART = 4_096
+
+
+def _split_capture_case() -> tuple[
+    DeterministicCase, tuple[CapturedSemanticContent, ...], CapturedContentScope
+]:
+    """One captured edit (``evd(1)``) of about 18 KB: five 4 KiB parts under ``_small_parts``."""
+
+    from unit.application.test_semantic_case import (
+        _captured_case_values,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    content = b"*** Begin Patch\n*** Add File: src/lib/store.ts\n" + b"".join(
+        b"+export const s%05d = %05d;\n" % (row, row) for row in range(600)
+    )
+    case, captured, scope = _captured_case_values(content)
+    captured = replace(
+        captured,
+        manifest=replace(captured.manifest, content_kind=ObservationContentKind.WORKSPACE_DIFF),
+    )
+    return case, (captured,), scope
+
+
+def _small_parts() -> ReviewSelectionPolicy:
+    """4 KiB excerpts within 16 KiB: the follow-up share (half) holds two parts."""
+
+    return replace(_selection(), max_excerpt_bytes=_PART, max_total_excerpt_bytes=4 * _PART)
+
+
+def _send_except(semantic: SemanticCase, room_cut: frozenset[str]) -> dict[str, JsonValue]:
+    """The provider-bound manifest of a packet whose envelope bounding cut ``room_cut``."""
+
+    envelope = strict_json_parse(bounded_case_envelope(semantic))
+    assert isinstance(envelope, dict)
+    catalog = envelope["item_catalog"]
+    assert isinstance(catalog, list)
+    envelope["item_catalog"] = [
+        row for row in catalog if not (isinstance(row, dict) and row.get("item_id") in room_cut)
+    ]
+    content = {
+        item.item_id: item.content for item in semantic.items if item.item_id not in room_cut
+    }
+    return _provider_manifest(
+        assemble_filtered_review_packet(
+            envelope, content_by_id=content, included_item_ids=frozenset(content)
+        )
+    )
+
+
+def _part_id(number: int) -> str:
+    return f"excerpt-{evd(1)}-part-{number:02d}"
+
+
+def test_a_partly_shown_capture_adds_its_next_parts_never_the_one_shown() -> None:
+    """tb4n5 react-lead-form: the first packet carried part 1 of the requested edit, so the
+    per-ref rule called it shown and no round could ever add its other parts."""
+
+    case, captured, scope = _split_capture_case()
+    selection = _small_parts()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    first = _build(
+        case, selection=selection, captured_content=captured, captured_content_scope=scope
+    )
+    parts = dict(first.excerpt_parts)
+    assert [item_id for item_id in parts if item_id.startswith(f"excerpt-{evd(1)}-part-")] == [
+        _part_id(number) for number in (1, 2, 3, 4)
+    ]
+    # Room left the provider only the first part.
+    sent = _send_except(first, frozenset({_part_id(2), _part_id(3), _part_id(4)}))
+    shown = sent_excerpt_content_refs(first, sent)
+    shown_parts = sent_excerpt_parts(first, sent)
+    assert shown is not None and shown_parts is not None
+    assert str(evd(1)) not in shown  # shown only in part
+    assert parts[_part_id(1)] in shown_parts and parts[_part_id(2)] not in shown_parts
+    request = (_requested("current_diff_for_path", str(evd(1))),)
+
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        request,
+        previous=None,
+        shown_refs=shown,
+        shown_parts=shown_parts,
+    )
+
+    assert follow_up is not None and follow_up.shown_parts == shown_parts
+    again = _build(
+        case,
+        follow_up=follow_up,
+        selection=selection,
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+    order = [ref.excerpt_item_id for ref in again.packet.targeted_excerpts]
+    # The next two parts fill the share (8 KiB), ahead of the part the first packet showed.
+    assert order[:2] == [_part_id(2), _part_id(3)]
+    again_parts = dict(again.excerpt_parts)
+    new = follow_up_new_parts(again, follow_up)
+    assert {again_parts[_part_id(2)], again_parts[_part_id(3)]} <= new
+    assert again_parts[_part_id(1)] not in new
+    manifest = again.packet.input_manifest
+    assert manifest is not None
+    (row,) = manifest.missing_inputs
+    assert (row.status, row.supplied_refs) == ("supplied", (str(evd(1)),))
+
+    # Round 2: what round 1 sent keeps its place; nothing new fits the share, so the same parts
+    # are never sent again and the request stays unanswered (the fifth part never fits).
+    round_one = sent_excerpt_parts(again, _provider_manifest(_send(again)))
+    assert round_one is not None
+    after = replace(follow_up, added_parts=follow_up.unseen(round_one))
+    assert after.added_parts == {again_parts[_part_id(number)] for number in (2, 3, 4)}
+    second = plan_review_follow_up(
+        case.projection, allowed, request, previous=after, shown_refs=None
+    )
+    assert second is not None and second.round == 2
+    repeat = _build(
+        case,
+        follow_up=second,
+        selection=selection,
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+    assert [ref.excerpt_item_id for ref in repeat.packet.targeted_excerpts][:2] == [
+        _part_id(2),
+        _part_id(3),
+    ]
+    assert follow_up_new_parts(repeat, second) == frozenset()
+
+
+def test_a_privacy_withheld_part_is_never_served_again() -> None:
+    case, captured, scope = _split_capture_case()
+    selection = _small_parts()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    first = _build(
+        case, selection=selection, captured_content=captured, captured_content_scope=scope
+    )
+    sent = _send_except(first, frozenset({_part_id(2), _part_id(3), _part_id(4)}))
+    request = (_requested("current_diff_for_path", str(evd(1))),)
+    # A privacy rule withheld the capture from a sent packet: that rule holds for every packet.
+    assert (
+        plan_review_follow_up(
+            case.projection,
+            allowed,
+            request,
+            previous=None,
+            shown_refs=sent_excerpt_content_refs(first, sent),
+            shown_parts=sent_excerpt_parts(first, sent),
+            privacy_withheld_refs=frozenset({str(evd(1))}),
+        )
+        is None
+    )
+    # A round that would carry only a category the channel withholds is never sent either.
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        request,
+        previous=None,
+        shown_refs=sent_excerpt_content_refs(first, sent),
+        shown_parts=sent_excerpt_parts(first, sent),
+    )
+    assert follow_up is not None
+    again = _build(
+        case,
+        follow_up=follow_up,
+        selection=selection,
+        captured_content=captured,
+        captured_content_scope=scope,
+    )
+    assert follow_up_new_parts(again, follow_up)
+    assert not follow_up_new_parts(
+        again, follow_up, withheld_categories=(DataCategory.EVIDENCE_EXCERPT.value,)
+    )
+
+
+_LEAD = "src/lib/leadStore.ts"
+
+
+def _change_section(path: str, rows: int, marker: str) -> bytes:
+    lines = "".join(f"+export const v{row:04d} = {row};\n" for row in range(rows))
+    return (
+        f"diff --git a/{path} b/{path}\nnew file mode 100644\n--- /dev/null\n+++ b/{path}\n"
+        f"@@ -0,0 +1,{rows + 1} @@\n+// {marker}\n{lines}"
+    ).encode()
+
+
+def _stale_edit_case(
+    *, lead_first: bool = False
+) -> tuple[
+    DeterministicCase, tuple[CapturedSemanticContent, ...], CapturedContentScope, CheckTimeChange
+]:
+    """A hook-captured edit that first added ``leadStore.ts`` (edited again since), and a
+    check-time change of about 157 KB whose current ``leadStore.ts`` section lies past what one
+    packet carries, unless ``lead_first``."""
+
+    from unit.application.test_semantic_case import (
+        _captured_case_values,  # pyright: ignore[reportPrivateUsage]
+    )
+    from unit.application.test_semantic_case_packet_completeness import (
+        _change,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    content = (
+        f"*** Begin Patch\n*** Add File: {_LEAD}\n+// STALE_LEAD_STORE_MARKER\n*** End Patch\n"
+    ).encode()
+    case, captured, scope = _captured_case_values(content)
+    captured = replace(
+        captured,
+        manifest=replace(captured.manifest, content_kind=ObservationContentKind.WORKSPACE_DIFF),
+    )
+    fillers = [
+        _change_section(f"src/f{index:02d}.ts", 500, f"FILLER_{index}") for index in range(10)
+    ]
+    lead = _change_section(_LEAD, 200, "CURRENT_LEAD_STORE_MARKER")
+    body = b"".join([lead, *fillers] if lead_first else [*fillers, lead])
+    header = (
+        b"Yoetz check-time change: captured by the Yoetz service when this check ran; the "
+        b"agent did not supply it.\nEnd of header. The unified diff follows.\n"
+    )
+    return case, (captured,), scope, _change(header + body)
+
+
+def test_a_stale_edit_request_is_answered_with_the_current_section_from_the_change() -> None:
+    """tb4n5 react-lead-form: ``current_diff_for_path`` named the stale apply_patch that first
+    added ``leadStore.ts``; only the frozen change held the current file."""
+
+    case, captured, scope, change = _stale_edit_case()
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    first = _build(
+        case, captured_content=captured, captured_content_scope=scope, check_time_change=change
+    )
+    first_sent = _provider_manifest(_send(first))
+    shown = sent_excerpt_content_refs(first, first_sent)
+    shown_parts = sent_excerpt_parts(first, first_sent)
+    assert shown is not None and shown_parts is not None
+    assert str(evd(1)) in shown  # the stale edit itself was shown whole
+    assert b"CURRENT_LEAD_STORE_MARKER" not in _send(first)
+    request = (_requested("current_diff_for_path", str(evd(1))),)
+
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        request,
+        previous=None,
+        shown_refs=shown,
+        shown_parts=shown_parts,
+    )
+
+    assert follow_up is not None
+    again = _build(
+        case,
+        follow_up=follow_up,
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    (section,) = (
+        item for item in again.items if item.item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX)
+    )
+    assert section.item_id == f"{CHECK_TIME_SECTION_ITEM_PREFIX}011"
+    assert section.category is DataCategory.REPOSITORY_EXCERPT
+    assert section.linked_subject_refs == (str(evd(1)),)
+    marker, body = section.content.split(b"\n", 1)
+    assert marker.startswith(b"[Yoetz check-time change, the current state of a file a requested")
+    # Cut from the frozen change: exactly that section's bytes, placed in the change text.
+    text = change.capture.text
+    start = text.index(f"diff --git a/{_LEAD}".encode())
+    assert body == text[start:] and b"CURRENT_LEAD_STORE_MARKER" in body
+    assert follow_up_new_parts(again, follow_up) == {
+        f"check-time-change#{start}-{len(text)}/{len(text)}"
+    }
+    assert b"CURRENT_LEAD_STORE_MARKER" in _send(again)
+    manifest = again.packet.input_manifest
+    assert manifest is not None
+    (row,) = manifest.missing_inputs
+    assert (row.status, row.supplied_refs) == ("supplied", (str(evd(1)),))
+    # The change's own leading parts still come first.
+    assert again.packet.targeted_excerpts[0].excerpt_item_id == "change-check-time-001"
+
+    # Served once: a later round keeps it in place but never counts it as new again.
+    round_one = sent_excerpt_parts(again, _provider_manifest(_send(again)))
+    assert round_one is not None
+    after = replace(follow_up, added_parts=follow_up.unseen(round_one))
+    second = plan_review_follow_up(
+        case.projection, allowed, request, previous=after, shown_refs=None
+    )
+    assert second is not None
+    repeat = _build(
+        case,
+        follow_up=second,
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+    assert any(item.item_id == section.item_id for item in repeat.items)
+    assert follow_up_new_parts(repeat, second) == frozenset()
+
+
+def test_a_current_section_the_first_packet_carried_is_not_served_again() -> None:
+    case, captured, scope, change = _stale_edit_case(lead_first=True)
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    first = _build(
+        case, captured_content=captured, captured_content_scope=scope, check_time_change=change
+    )
+    first_sent = _provider_manifest(_send(first))
+    assert b"CURRENT_LEAD_STORE_MARKER" in _send(first)
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        (_requested("current_diff_for_path", str(evd(1))),),
+        previous=None,
+        shown_refs=sent_excerpt_content_refs(first, first_sent),
+        shown_parts=sent_excerpt_parts(first, first_sent),
+    )
+    assert follow_up is not None
+    again = _build(
+        case,
+        follow_up=follow_up,
+        captured_content=captured,
+        captured_content_scope=scope,
+        check_time_change=change,
+    )
+
+    assert not any(item.item_id.startswith(CHECK_TIME_SECTION_ITEM_PREFIX) for item in again.items)
+    assert follow_up_new_parts(again, follow_up) == frozenset()
+
+
+def test_a_request_naming_only_rows_yoetz_does_not_hold_plans_no_round() -> None:
+    """tb4n5 react-lead-form 19:35:05: a request naming an obligation and the event that carried
+    the task statement (no action, result or evidence row) rebuilt the case to send nothing."""
+
+    case, _refs = _verification_case(20)
+    targets = (str(evt(500)), "obl_00000000-0000-4000-8000-000000000099")
+    allowed = frozenset(str(ref) for ref in case.allowed_ids) | frozenset(targets)
+
+    assert (
+        plan_review_follow_up(
+            case.projection,
+            allowed,
+            (_requested("verification_output", *targets, availability="agent_suppliable"),),
+            previous=None,
+            shown_refs=frozenset(),
+        )
+        is None
+    )
+    # A target that names a recorded run still resolves to the run's rows only.
+    follow_up = plan_review_follow_up(
+        case.projection,
+        allowed,
+        (_requested("verification_output", *sorted((str(res(1)), *targets))),),
+        previous=None,
+        shown_refs=frozenset(),
+    )
+    assert follow_up is not None
+    assert follow_up.items[0].source_refs == {str(res(1)), str(act(1)), str(evd(1))}
+
+
+def test_parts_compare_by_byte_interval_so_a_different_split_never_counts_twice() -> None:
+    """A narrowed case may split one source differently; the bytes, not part numbers, decide."""
+
+    from yoetz.application.missing_for_assessment import (
+        excerpt_span_covered,
+        excerpt_span_key,
+        excerpt_span_whole,
+    )
+
+    ref = str(evd(1))
+    sent = [excerpt_span_key(ref, 0, 4_096, 12_000), excerpt_span_key(ref, 4_096, 8_192, 12_000)]
+    assert excerpt_span_covered(excerpt_span_key(ref, 1_000, 8_000, 12_000), sent)
+    assert not excerpt_span_covered(excerpt_span_key(ref, 6_000, 9_000, 12_000), sent)
+    assert not excerpt_span_whole(sent[0], sent)
+    assert excerpt_span_whole(sent[0], [*sent, excerpt_span_key(ref, 8_000, 12_000, 12_000)])
+    # Another source, or the same ref over a different text length, is never the same bytes.
+    assert not excerpt_span_covered(excerpt_span_key(str(evd(2)), 0, 10, 12_000), sent)
+    assert not excerpt_span_covered(excerpt_span_key(ref, 0, 10, 13_000), sent)
+    with pytest.raises(ValueError):
+        excerpt_span_key(ref, 5, 5, 10)
+    follow_up = ReviewFollowUp(
+        1,
+        (ReviewFollowUpItem("current_diff_for_path", (ref,), frozenset({ref})),),
+        frozenset(),
+        shown_parts=frozenset(sent[:1]),
+        added_parts=frozenset(sent[1:]),
+    )
+    assert follow_up.unseen([*sent, excerpt_span_key(ref, 8_192, 12_000, 12_000)]) == {
+        excerpt_span_key(ref, 8_192, 12_000, 12_000)
+    }

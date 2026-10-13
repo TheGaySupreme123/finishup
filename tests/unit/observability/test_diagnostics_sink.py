@@ -418,6 +418,7 @@ def test_review_outcome_counters_survive_stderr_and_the_durable_ring(
         "semantic_follow_up_round": 3,
         "semantic_follow_up_items": 8,
         "semantic_follow_up_refs_added": 5,
+        "semantic_follow_up_parts_added": 4,
     }
     emitted = {
         record_bounded_counts_without_raising(

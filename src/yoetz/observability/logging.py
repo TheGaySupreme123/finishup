@@ -77,6 +77,7 @@ _FIELD_ORDER: Final = (
     "semantic_follow_up_round",
     "semantic_follow_up_items",
     "semantic_follow_up_refs_added",
+    "semantic_follow_up_parts_added",
     "semantic_capture_parts_resolved",
     "semantic_diff_parts_resolved",
     "semantic_excerpts_selected",

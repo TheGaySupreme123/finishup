@@ -173,10 +173,11 @@ from yoetz.application.semantic_case import (
     captured_edit_paths,
     carries_task_inputs,
     check_time_change_bytes_carried,
-    excerpt_content_refs,
+    follow_up_new_parts,
     semantic_case_packet_view,
     semantic_case_to_candidate_context,
     sent_excerpt_content_refs,
+    sent_excerpt_parts,
     sent_ledger_refs,
     withheld_excerpt_content_refs,
 )
@@ -5177,10 +5178,9 @@ def _privacy_gated_semantic_evaluator(
             packet_prior_refs = packet_view.prior_finding_refs
             packet_settled_refs = packet_view.settled_finding_refs
             packet_citable_refs = packet_view.citable_refs
-            # Issue #1047: what this case's excerpts hold (a captured group's parts included), so
-            # a follow-up round is sent only when it composes something new. What the round then
-            # showed is read from the sent packet (``sent_excerpt_content_refs``). In process only.
-            composed_excerpt_refs = excerpt_content_refs(semantic_case.items)
+            # Issue #1047: a follow-up round is sent only when this case composes a requested part
+            # no sent packet carried (``follow_up_new_parts`` below). What the round then showed
+            # is read from the sent packet (``sent_excerpt_content_refs``, ``sent_excerpt_parts``).
             # Issue #907: which paths each captured edit records, compared in process only so a
             # repeated request for a captured edit can converge on a fresh diff of that path.
             packet_edit_paths = captured_edit_paths(
@@ -5238,8 +5238,9 @@ def _privacy_gated_semantic_evaluator(
             follow_up_base: tuple[str, int] | None = None
             if follow_up is not None:
                 # Issue #1047: a round is sent only when its packet carries a requested excerpt
-                # no earlier packet of this check carried.
-                if not follow_up.added_by(composed_excerpt_refs) - follow_up.added_refs:
+                # part no earlier packet of this check carried (tb4n5: per part, so a later part
+                # of a partly shown source counts and a repeated one never does).
+                if not follow_up_new_parts(semantic_case, follow_up, withheld_categories=withheld):
                     return None
                 if runtime is not None and job is not None:
                     assert recovered_case_digest is not None
@@ -5335,6 +5336,9 @@ def _privacy_gated_semantic_evaluator(
                     check_change_files=check_change_files,
                     review_input_manifest=input_manifest,
                     case_excerpt_refs=sent_excerpt_content_refs(
+                        semantic_case, mapped.provider_input_manifest
+                    ),
+                    case_excerpt_parts=sent_excerpt_parts(
                         semantic_case, mapped.provider_input_manifest
                     ),
                     case_privacy_withheld_refs=withheld_excerpt_content_refs(
@@ -5724,6 +5728,7 @@ def _privacy_gated_semantic_evaluator(
                     review_input_manifest=input_manifest,
                     # Recovery reads the same provider-bound manifest from the durable response.
                     case_excerpt_refs=sent_excerpt_content_refs(semantic_case, provider_manifest),
+                    case_excerpt_parts=sent_excerpt_parts(semantic_case, provider_manifest),
                     provider_input_manifest=provider_manifest,
                     provider_input_manifest_failure=provider_manifest_failure,
                     provider_input_text_by_ref=provider_input_text_by_ref,

@@ -2110,8 +2110,12 @@ class FinalSemanticEvaluation:
     # Issue #1047: the refs whose content the exact sent packet's excerpts held (a captured
     # group's parts included), read from its provider-bound manifest, so an in-check follow-up
     # can tell what was shown and what a later packet adds. In process only; ``None`` when what
-    # was sent is unknown.
+    # was sent is unknown. A source split into parts counts only once every part was sent.
     case_excerpt_refs: frozenset[str] | None = None
+    # tb4n5: the excerpt parts (``excerpt_span_key``) the same sent packet carried, so a follow-up
+    # tells a later part of a partly shown source from a repeat. In process only; ``None`` when
+    # what was sent is unknown.
+    case_excerpt_parts: frozenset[str] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -2125,11 +2129,11 @@ class FinalSemanticEvaluation:
             or any(type(ref) is not str for ref in self.case_included_refs)
         ):
             raise _invalid("semantic_judgment_invalid")
-        if self.case_excerpt_refs is not None and (
-            type(self.case_excerpt_refs) is not frozenset
-            or any(type(ref) is not str for ref in self.case_excerpt_refs)
-        ):
-            raise _invalid("semantic_judgment_invalid")
+        for refs in (self.case_excerpt_refs, self.case_excerpt_parts):
+            if refs is not None and (
+                type(refs) is not frozenset or any(type(ref) is not str for ref in refs)
+            ):
+                raise _invalid("semantic_judgment_invalid")
         if (
             type(self.semantic_withheld_item_ids) is not tuple
             or self.semantic_withheld_item_ids
@@ -5173,6 +5177,7 @@ async def _review_follow_up(
             previous=previous,
             shown_refs=result.case_excerpt_refs,
             privacy_withheld_refs=result.case_privacy_withheld_refs,
+            shown_parts=result.case_excerpt_parts,
         )
         if follow_up is None:
             break
@@ -5209,6 +5214,9 @@ async def _review_follow_up(
         if following is None:
             break
         added = follow_up.added_by(following.case_excerpt_refs or ())
+        # tb4n5: the parts this round's sent packet carried that no earlier packet had, so a
+        # later round adds only parts no packet carried and never repeats one.
+        new_parts = follow_up.unseen(following.case_excerpt_parts or ())
         record_bounded_counts_without_raising(
             component="check",
             operation="semantic_review_follow_up",
@@ -5218,9 +5226,14 @@ async def _review_follow_up(
                 "semantic_follow_up_round": follow_up.round,
                 "semantic_follow_up_items": len(follow_up.items),
                 "semantic_follow_up_refs_added": len(added),
+                "semantic_follow_up_parts_added": len(new_parts),
             },
         )
-        previous = replace(follow_up, added_refs=follow_up.added_refs | added)
+        previous = replace(
+            follow_up,
+            added_refs=follow_up.added_refs | added,
+            added_parts=follow_up.added_parts | new_parts,
+        )
         result = following
     return result
 

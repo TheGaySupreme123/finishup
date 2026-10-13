@@ -432,8 +432,13 @@ output of a recorded run, its exact command, or a captured edit the packet had n
 answers inside the same check: it sends the packet again with that content first and asks again, up
 to three times. Each follow-up packet follows the same policy, limits and never-send rules as the
 first and is its own disclosure with its own privacy receipt, and the content added this way takes
-at most half of the packet's excerpt room. The check records the last answer; the check result and
-the receipt say which follow-up round it answered and what Yoetz added. A follow-up that fails ends
+at most half of the packet's excerpt room. Yoetz tracks what each packet carried part by part, so
+the parts of a long capture the first packet had no room for can still be added, and a part already
+sent is never sent again as if it were new. When the reviewer asks for the current diff of a file
+an earlier captured edit changed, Yoetz also sends that file's current section from the change it
+read for this check, never a fresh read of your repository. The check records the last answer; the
+check result and the receipt say which follow-up round it answered and what Yoetz added. A
+follow-up that fails ends
 the check the way a failed review does. Anything else the reviewer names (the task statement, plan
 or claim text, or material only the agent can record) still comes back to the agent as before.
 

@@ -24,10 +24,14 @@ from yoetz.application.check import (
     run_deterministic_policies,
 )
 from yoetz.application.missing_for_assessment import (
+    CHECK_TIME_CHANGE_SOURCE_REF,
     ReviewFollowUp,
     check_change_binary_paths,
     check_change_text_paths,
     command_run_key,
+    excerpt_span_covered,
+    excerpt_span_key,
+    excerpt_span_whole,
     observed_image_evidence,
     supplied_since,
     unsupported_data_type,
@@ -143,7 +147,7 @@ from yoetz.kernel.task_facts import (
     effective_obligations,
     open_effective_obligations,
 )
-from yoetz.kernel.test_edit_visibility import check_change_header_entries
+from yoetz.kernel.test_edit_visibility import check_change_header_entries, check_change_sections
 from yoetz.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
 from yoetz.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
@@ -203,6 +207,7 @@ __all__ = [
     "MAX_TASK_STATEMENT_ITEM_BYTES",
     "TASK_STATEMENT_ITEM_ID",
     "CHECK_TIME_CHANGE_ITEM_PREFIX",
+    "CHECK_TIME_SECTION_ITEM_PREFIX",
     "DECLARED_DELIVERABLES_ITEM_ID",
     "TASK_INPUT_ITEM_PREFIX",
     "CheckTimeChangeShownFile",
@@ -225,6 +230,7 @@ __all__ = [
     "build_semantic_case",
     "carries_task_inputs",
     "follow_up_byte_budget",
+    "follow_up_new_parts",
     "recorded_blockers",
     "acknowledged_obligation_rows",
     "BLOCKER_REVIEW_INSTRUCTION",
@@ -245,6 +251,7 @@ __all__ = [
     "review_packet_disclosure",
     "review_packet_disclosure_result",
     "sent_excerpt_content_refs",
+    "sent_excerpt_parts",
     "sent_ledger_refs",
     "withheld_excerpt_content_refs",
     "semantic_case_to_candidate_context",
@@ -738,7 +745,7 @@ class CheckTimeChange:
 
 # Item ids sort ahead of every other case item, so the provider document lists the change first.
 CHECK_TIME_CHANGE_ITEM_PREFIX: Final = "change-check-time-"
-_CHECK_TIME_CHANGE_SOURCE_REF: Final = "check-time-change"
+_CHECK_TIME_CHANGE_SOURCE_REF: Final = CHECK_TIME_CHANGE_SOURCE_REF
 # Read-only task input files the same service read carried (issue #1045): one excerpt each, ranked
 # with the change's leftover parts ahead of older edits and general output, within at most a
 # quarter of the recipe's excerpt bytes on that first offer.
@@ -827,7 +834,12 @@ def _check_time_change_chunks(text: bytes, part_limit: int) -> tuple[bytes, ...]
     """The raw byte slices of ``text`` each part carries, in order; they concatenate to ``text``."""
 
     marker_room = len(_CHECK_TIME_CHANGE_MARKER.format(index=999, count=999).encode("ascii"))
-    chunk_limit = part_limit - marker_room
+    return _line_chunks(text, part_limit - marker_room)
+
+
+def _line_chunks(text: bytes, chunk_limit: int) -> tuple[bytes, ...]:
+    """``text`` in slices of at most ``chunk_limit`` bytes, cut on line ends where possible."""
+
     if chunk_limit < _CHECK_TIME_CHANGE_MIN_CHUNK:
         return ()
     chunks: list[bytes] = []
@@ -840,6 +852,91 @@ def _check_time_change_chunks(text: bytes, part_limit: int) -> tuple[bytes, ...]
         chunks.append(rest[:cut])
         rest = rest[cut:]
     return tuple(chunks)
+
+
+# tb4n5 (#1047 follow-up): the current section of a file a requested edit changed, served from
+# the frozen change for an in-check ``current_diff_for_path`` request. Its own item ids, never
+# the ``change-check-time-NNN`` run the shown-file record counts.
+CHECK_TIME_SECTION_ITEM_PREFIX: Final = "change-section-"
+_CHECK_TIME_SECTION_MARKER: Final = (
+    "[Yoetz check-time change, the current state of a file a requested edit changed, "
+    "section part {index} of {count}]\n"
+)
+
+
+def _check_time_change_sections(
+    capture: CheckChangeCapture | None,
+) -> dict[str, list[tuple[int, int, int]]]:
+    """Each changed path's ``(start, end, ordinal)`` sections in the stored change (tb4n5)."""
+
+    if capture is None:
+        return {}
+    by_path: dict[str, list[tuple[int, int, int]]] = {}
+    for ordinal, (start, end, paths) in enumerate(check_change_sections(capture), start=1):
+        for path in sorted(paths):
+            by_path.setdefault(path, []).append((start, end, ordinal))
+    return by_path
+
+
+def _relative_edit_paths(paths: tuple[str, ...] | None, workspace_root: str | None) -> list[str]:
+    """A captured edit's paths as the change names them (repository-relative), in order."""
+
+    relative: list[str] = []
+    root = None if workspace_root is None else workspace_root.rstrip("/") + "/"
+    for path in paths or ():
+        if root is not None and path.startswith(root):
+            path = path[len(root) :]
+        while path.startswith("./"):
+            path = path[2:]
+        if path and not path.startswith("/") and path not in relative:
+            relative.append(path)
+    return relative
+
+
+def _current_section_candidate(
+    text: bytes,
+    start: int,
+    end: int,
+    ordinal: int,
+    linked: tuple[str, ...],
+    part_limit: int,
+) -> _ExcerptCandidate:
+    """One stored-change section as an excerpt candidate answering a follow-up (tb4n5).
+
+    Cut from the frozen, capture-time redacted change; no workspace is read. Its parts take the
+    recipe's per-excerpt bound like the change's own parts, each placed in the change text so a
+    section an earlier packet carried is never counted as added again.
+    """
+
+    marker_room = len(_CHECK_TIME_SECTION_MARKER.format(index=999, count=999).encode("ascii"))
+    chunks = _line_chunks(text[start:end], part_limit - marker_room)
+    parts: list[str] = []
+    keys: list[str] = []
+    offset = start
+    for index, chunk in enumerate(chunks):
+        parts.append(
+            _CHECK_TIME_SECTION_MARKER.format(index=index + 1, count=len(chunks))
+            + chunk.decode("utf-8", errors="replace")
+        )
+        keys.append(
+            excerpt_span_key(_CHECK_TIME_CHANGE_SOURCE_REF, offset, offset + len(chunk), len(text))
+        )
+        offset += len(chunk)
+    return _ExcerptCandidate(
+        source_ref=_CHECK_TIME_CHANGE_SOURCE_REF,
+        item_base=f"{CHECK_TIME_SECTION_ITEM_PREFIX}{ordinal:03d}",
+        source_kind="diff",
+        # The service read this from the repository itself, like the change's own parts.
+        category=DataCategory.REPOSITORY_EXCERPT,
+        parts=tuple(parts),
+        clipped=False,
+        linked=linked,
+        occurred_order=0,
+        content_visibility="available",
+        digest_provenance=None,
+        identity_refs=frozenset(linked),
+        part_keys=tuple(keys),
+    )
 
 
 def _check_time_change_cut(rest: bytes, chunk_limit: int) -> int:
@@ -2329,6 +2426,10 @@ class _ExcerptCandidate:
     binary_notice: bool = False
     # The output path an ``artifact`` evidence row records (issue #1045); newest per path wins.
     artifact_path: str | None = None
+    # Each part's place in its source text (``excerpt_span_key``), in part order: what a sent
+    # packet carried of this source, so an in-check follow-up adds only parts no packet carried
+    # (tb4n5, #1047 follow-up). Empty when parts cannot be placed.
+    part_keys: tuple[str, ...] = ()
 
 
 # Offered (free slots, free bytes); returns the items and refs it admitted in that room.
@@ -2348,6 +2449,8 @@ class _ExcerptSelection:
     # selection bound is distinct from a case-item bound: both must remain visible in the
     # section manifest after provider admission.
     truncated_item_ids: frozenset[str]
+    # ``(item_id, excerpt_span_key)`` of each admitted part that can be placed in its source.
+    part_keys: tuple[tuple[str, str], ...] = ()
 
 
 def _captured_edit_paths(content: bytes) -> tuple[bool, tuple[str, ...]]:
@@ -2801,6 +2904,7 @@ def _evidence_candidates(
             # items. Later hunks compete for the explicit count/total caps as parts of this one
             # capture; each part is one excerpt slot and no part joins two captures.
             parts: list[str] = []
+            spans: list[tuple[int, int]] = []
             remaining = encoded
             while remaining and len(parts) <= selection.max_excerpts:
                 # A part that would begin mid-line like a Yoetz label is marked as well.
@@ -2813,12 +2917,19 @@ def _evidence_candidates(
                 if not part:
                     break
                 parts.append(prefix + part)
+                start = len(encoded) - len(remaining)
                 remaining = remaining[len(part.encode("utf-8")) :]
+                spans.append((start, len(encoded) - len(remaining)))
             clipped = bool(remaining)
+            # The source is what its parts can hold: a capture longer than every part the
+            # selection allows is whole once those parts are shown.
+            served = spans[-1][1] if spans else 0
+            part_keys = tuple(excerpt_span_key(ref, low, high, served) for low, high in spans)
         else:
             # Long output keeps its head and its tail with the cut marked (issue #907).
             clipped = len(encoded) > excerpt_limit
             parts = [_head_tail(encoded, excerpt_limit) if clipped else text]
+            part_keys = (excerpt_span_key(ref, 0, len(encoded), len(encoded)),)
         group_refs = captured_group.evidence_refs if captured_group is not None else ()
         subjects = {
             ref,
@@ -2891,6 +3002,7 @@ def _evidence_candidates(
                 ),
                 binary_notice=binary is not None and binary[1],
                 artifact_path=None if captured_group is not None else _artifact_path(payload),
+                part_keys=part_keys,
             )
         )
     return candidates
@@ -2913,6 +3025,7 @@ def _select_targeted_excerpts(
     text_paths: frozenset[str] = frozenset(),
     workspace_root: str | None = None,
     follow_up: ReviewFollowUp | None = None,
+    check_time_change: CheckChangeCapture | None = None,
 ) -> _ExcerptSelection:
     """Choose the excerpts that fill the approved count and byte budget, most valuable first.
 
@@ -2934,7 +3047,14 @@ def _select_targeted_excerpts(
     ``follow_up`` (issue #1047) is the reviewer's own in-check request: the excerpts of its
     requested rows rank ahead of every other recorded excerpt, item by item in request order and
     newest first within an item, while their bytes fit ``follow_up_byte_budget``; the rest keep
-    their ordinary rank. Without it nothing changes.
+    their ordinary rank. Without it nothing changes. It works per part, never per source (tb4n5):
+    a part the check's first packet carried keeps its ordinary rank, a part an earlier round added
+    is ranked first again so it keeps its place, and a source larger than the share has its next
+    parts ranked first rather than none of it. A ``current_diff_for_path`` request naming a
+    captured edit is answered first with the current section of each path that edit changed, cut
+    from ``check_time_change`` (the frozen, already redacted service capture; nothing is read
+    again), unless an earlier packet carried that section: the capture may be stale, the change
+    is the state when this check ran.
     """
 
     repair_refs = repair_evidence_refs(projection, allowed)
@@ -3020,6 +3140,7 @@ def _select_targeted_excerpts(
                     content_visibility="available",
                     digest_provenance=None,
                     identity_refs=frozenset({ref, str(record.source_event_id)}),
+                    part_keys=(excerpt_span_key(ref, 0, len(encoded), len(encoded)),),
                 )
             )
 
@@ -3076,6 +3197,7 @@ def _select_targeted_excerpts(
                     verification_outcome=None if verification is None else verification[1],
                     verification_action=None if verification is None else verification[2],
                     verification_run=None if verification is None else verification[3],
+                    part_keys=(excerpt_span_key(ref, 0, len(encoded), len(encoded)),),
                 )
             )
 
@@ -3194,11 +3316,44 @@ def _select_targeted_excerpts(
     )
 
     # Issue #1047: what the reviewer asked for in this check, in request order, within its share.
+    # tb4n5: chosen per part (see the docstring), so a partly shown source can still progress.
     requested: dict[int, int] = {}
+    promoted: dict[int, tuple[int, ...]] = {}
     if follow_up is not None:
         room = follow_up_byte_budget(selection)
+        sections = _check_time_change_sections(check_time_change)
+
+        def promote(index: int) -> bool:
+            nonlocal room
+            candidate = candidates[index]
+            chosen: list[int] = []
+            for part_index, part in enumerate(candidate.parts):
+                key = (
+                    candidate.part_keys[part_index]
+                    if part_index < len(candidate.part_keys)
+                    else None
+                )
+                if (
+                    key is not None
+                    and excerpt_span_covered(key, follow_up.shown_parts)
+                    and not excerpt_span_covered(key, follow_up.added_parts)
+                ):
+                    # The check's first packet carried it: it keeps its ordinary rank.
+                    continue
+                size = len(part.encode("utf-8"))
+                if size > room:
+                    break
+                chosen.append(part_index)
+                room -= size
+            if not chosen:
+                return False
+            requested[index] = len(requested)
+            promoted[index] = tuple(chosen)
+            return True
+
+        served: set[int] = set()
         for follow_up_item in follow_up.items:
-            for index in sorted(
+            matching = sorted(
                 (
                     index
                     for index, candidate in enumerate(candidates)
@@ -3207,24 +3362,51 @@ def _select_targeted_excerpts(
                 ),
                 key=recency,
                 reverse=True,
-            ):
-                size = sum(len(part.encode("utf-8")) for part in candidates[index].parts)
-                if size <= room:
-                    requested[index] = len(requested)
-                    room -= size
+            )
+            if follow_up_item.kind == "current_diff_for_path" and sections:
+                for index in matching:
+                    linked = tuple(
+                        sorted(
+                            candidates[index].identity_refs & follow_up_item.source_refs & allowed,
+                            key=str.encode,
+                        )
+                    )[:MAX_SEMANTIC_ITEM_SUBJECT_REFS]
+                    for path in _relative_edit_paths(candidates[index].edit_paths, workspace_root):
+                        for start, end, ordinal in sections.get(path, ()):
+                            if ordinal in served or not linked:
+                                continue
+                            served.add(ordinal)
+                            assert check_time_change is not None
+                            candidates.append(
+                                _current_section_candidate(
+                                    check_time_change.text,
+                                    start,
+                                    end,
+                                    ordinal,
+                                    linked,
+                                    _check_time_change_part_limit(selection),
+                                )
+                            )
+                            if not promote(len(candidates) - 1):
+                                # Only ever carried as the answer to this request.
+                                candidates.pop()
+            for index in matching:
+                promote(index)
+
+    def requested_rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
+        candidate = candidates[index]
+        # Ahead of every other recorded excerpt, in the request's own order.
+        return (
+            _RANK_CURRENT_DIFF,
+            -1,
+            requested[index],
+            0,
+            candidate.source_ref.encode("ascii"),
+            candidate.item_base.encode("ascii"),
+        )
 
     def rank(index: int) -> tuple[int, int, int, int, bytes, bytes]:
         candidate = candidates[index]
-        if index in requested:
-            # Ahead of every other recorded excerpt, in the request's own order.
-            return (
-                _RANK_CURRENT_DIFF,
-                -1,
-                requested[index],
-                0,
-                candidate.source_ref.encode("ascii"),
-                candidate.item_base.encode("ascii"),
-            )
         linked = bool(candidate.identity_refs & linked_subjects)
         declared = [
             declared_position[ref] for ref in candidate.identity_refs if ref in declared_position
@@ -3289,14 +3471,33 @@ def _select_targeted_excerpts(
         targeted.extend(admitted_refs)
         excerpt_bytes_used += sum(ref.content_bytes for ref in admitted_refs)
 
-    for index in sorted(range(len(candidates)), key=rank):
+    # One admission entry per candidate, at its rank; a candidate with promoted parts has those
+    # at the request's rank and its other parts at its ordinary rank (a served current section
+    # has no ordinary rank). Without a follow-up this is every candidate's parts in rank order.
+    entries: list[tuple[tuple[int, int, int, int, bytes, bytes], int, tuple[int, ...]]] = []
+    for index, candidate in enumerate(candidates):
+        every = tuple(range(len(candidate.parts)))
+        chosen = promoted.get(index)
+        if chosen is None:
+            entries.append((rank(index), index, every))
+            continue
+        entries.append((requested_rank(index), index, chosen))
+        rest = tuple(part_index for part_index in every if part_index not in chosen)
+        if rest and not candidate.item_base.startswith(CHECK_TIME_SECTION_ITEM_PREFIX):
+            entries.append((rank(index), index, rest))
+    entries.sort(key=lambda entry: entry[0])
+    admitted_by_index: dict[int, list[str]] = {}
+    omitted_indexes: set[int] = set()
+    part_keys: list[tuple[str, str]] = []
+    for entry_rank, index, part_indexes in entries:
         candidate = candidates[index]
-        if not lower_ranks_offered and rank(index)[0] >= _RANK_OLDER_EDIT:
+        if not lower_ranks_offered and entry_rank[0] >= _RANK_OLDER_EDIT:
             offer_lower_rank_room()
         admitted_before = len(targeted)
         truncated = candidate.clipped
         admitted_item_ids: list[str] = []
-        for part_index, part in enumerate(candidate.parts):
+        for part_index in part_indexes:
+            part = candidate.parts[part_index]
             part_bytes = len(part.encode("utf-8"))
             if (
                 len(targeted) >= excerpt_count_limit
@@ -3307,14 +3508,16 @@ def _select_targeted_excerpts(
                 # evidence as well as captured content. The omission row below may be capped away
                 # with the omission list; the coverage gap is then the only trace.
                 gaps.add("content_unselected")
-                omissions.append(
-                    _omit(
-                        candidate.source_ref,
-                        candidate.category,
-                        candidate.source_kind,
-                        "not_selected",
+                if index not in omitted_indexes:
+                    omitted_indexes.add(index)
+                    omissions.append(
+                        _omit(
+                            candidate.source_ref,
+                            candidate.category,
+                            candidate.source_kind,
+                            "not_selected",
+                        )
                     )
-                )
                 break
             item_id = (
                 candidate.item_base
@@ -3350,11 +3553,21 @@ def _select_targeted_excerpts(
                 )
             )
             excerpt_bytes_used += item.content_bytes
+            if part_index < len(candidate.part_keys):
+                part_keys.append((item_id, candidate.part_keys[part_index]))
         if truncated and len(targeted) > admitted_before:
             gaps.add("truncated_payload")
             truncated_item_ids.update(admitted_item_ids)
+        admitted_by_index.setdefault(index, []).extend(admitted_item_ids)
     if not lower_ranks_offered:
         offer_lower_rank_room()
+    for index in promoted:
+        # A source whose parts were split between the request's rank and its own is a partial
+        # view whenever not every part it has reached the packet.
+        admitted_ids = admitted_by_index.get(index, [])
+        if admitted_ids and len(admitted_ids) < len(candidates[index].parts):
+            gaps.add("truncated_payload")
+            truncated_item_ids.update(admitted_ids)
     return _ExcerptSelection(
         items=tuple(items),
         targeted=tuple(targeted),
@@ -3362,6 +3575,7 @@ def _select_targeted_excerpts(
         gaps=frozenset(gaps),
         over_limit=frozenset(over_limit),
         truncated_item_ids=frozenset(truncated_item_ids),
+        part_keys=tuple(part_keys),
     )
 
 
@@ -4761,6 +4975,10 @@ def _build_semantic_case_once(
         else min(selection.max_total_excerpt_bytes, excerpt_byte_budget)
     )
     check_change_parts: tuple[str, ...] = ()
+    # Where each part's change bytes start in the stored change text (tb4n5, #1047 follow-up).
+    check_change_offsets: tuple[int, ...] = ()
+    # ``(item_id, excerpt_span_key)`` of every excerpt placed in its source text.
+    excerpt_part_keys: list[tuple[str, str]] = []
     check_change_links: tuple[str, ...] = ()
     check_change_admitted = 0
     check_change_cut = False
@@ -4784,6 +5002,14 @@ def _build_semantic_case_once(
             check_change_parts = _check_time_change_parts(
                 change.text, _check_time_change_part_limit(selection)
             )
+            offsets: list[int] = []
+            cursor = 0
+            for chunk in _check_time_change_chunks(
+                change.text, _check_time_change_part_limit(selection)
+            ):
+                offsets.append(cursor)
+                cursor += len(chunk)
+            check_change_offsets = tuple(offsets)
     # Read-only task input files (issue #1045), linked to the statement that names them.
     task_inputs: tuple[tuple[str, bool], ...] = ()
     task_input_links: tuple[str, ...] = ()
@@ -4931,6 +5157,21 @@ def _build_semantic_case_once(
                 )
             )
             bytes_used += item.content_bytes
+            assert check_time_change is not None
+            chunk_bytes = _check_time_change_part_chunk_bytes(item.content)
+            if chunk_bytes and check_change_admitted < len(check_change_offsets):
+                part_start = check_change_offsets[check_change_admitted]
+                excerpt_part_keys.append(
+                    (
+                        item.item_id,
+                        excerpt_span_key(
+                            _CHECK_TIME_CHANGE_SOURCE_REF,
+                            part_start,
+                            part_start + chunk_bytes,
+                            len(check_time_change.capture.text),
+                        ),
+                    )
+                )
             check_change_admitted += 1
         return tuple(admitted_items), tuple(admitted_refs)
 
@@ -4980,8 +5221,15 @@ def _build_semantic_case_once(
             ),
             workspace_root=workspace_root,
             follow_up=follow_up,
+            # A follow-up may answer from the frozen change, only when this recipe carries it.
+            check_time_change=(
+                check_time_change.capture
+                if check_time_change is not None and check_change_parts
+                else None
+            ),
         )
         items.extend(excerpts.items)
+        excerpt_part_keys.extend(excerpts.part_keys)
         targeted.extend(excerpts.targeted)
         omissions.extend(excerpts.omissions)
         capture_gap_set.update(excerpts.gaps)
@@ -5341,6 +5589,14 @@ def _build_semantic_case_once(
                 )
             ),
         )
+    # The excerpts the case still carries, each placed in its source (in process only).
+    carried_item_ids = {item.item_id for item in items}
+    excerpt_parts = tuple(
+        sorted(
+            (pair for pair in excerpt_part_keys if pair[0] in carried_item_ids),
+            key=lambda pair: pair[0].encode("ascii"),
+        )
+    )
     input_manifest = review_input_manifest(
         frozen_case=frozen_case,
         review_selection=selection,
@@ -5358,6 +5614,7 @@ def _build_semantic_case_once(
         check_time_change_unavailable=check_time_change_unavailable,
         review_phase=review_phase,
         follow_up=follow_up,
+        excerpt_parts=dict(excerpt_parts),
         truncated_item_ids=tuple(
             sorted(
                 (set(over_limit) | truncated_item_ids) & {item.item_id for item in items},
@@ -5578,6 +5835,7 @@ def _build_semantic_case_once(
         case_digest=case_digest,
         omitted_reference_count=omitted_reference_count,
         excerpts_cut_for_case_bound=excerpts_cut_for_case_bound,
+        excerpt_parts=excerpt_parts,
     )
 
 
@@ -5849,6 +6107,7 @@ def review_input_manifest(
     truncated_item_ids: Sequence[str] = (),
     review_phase: SemanticBudgetProfile | None = None,
     follow_up: ReviewFollowUp | None = None,
+    excerpt_parts: Mapping[str, str] | None = None,
 ) -> ReviewInputManifest:
     """Build the bounded per-check input manifest from frozen case material.
 
@@ -5861,6 +6120,8 @@ def review_input_manifest(
     A follow-up packet (issue #1047) names its ``follow_up_round``, and its ``missing_inputs``
     list the reviewer's in-check request instead of an earlier check's: ``supplied`` with the
     excerpt sources Yoetz added for the item beyond the check's first packet, else ``pending``.
+    A source counts as added when the packet carries a part of it (``excerpt_parts`` places each
+    excerpt in its source) that the first packet did not carry (tb4n5).
     """
 
     typed_statement = recorded_statement
@@ -6103,12 +6364,29 @@ def review_input_manifest(
 
     missing_rows: list[ReviewInputMissing] = []
     if follow_up is not None:
-        carried = excerpt_content_refs(excerpt_items)
+        placed: Mapping[str, str] = {} if excerpt_parts is None else excerpt_parts
         for follow_up_item in follow_up.items[:8]:
-            added = sorted(
-                (carried & follow_up_item.source_refs) - follow_up.shown_refs,
-                key=str.encode,
-            )[:4]
+            carried_refs: set[str] = set()
+            for item in excerpt_items:
+                refs = (
+                    frozenset(
+                        _excerpt_row_content_refs(
+                            item.section,
+                            item.category.value,
+                            item.source_ref,
+                            item.linked_subject_refs,
+                        )
+                    )
+                    & follow_up_item.source_refs
+                )
+                if item.source_ref != _CHECK_TIME_CHANGE_SOURCE_REF:
+                    # A served current section answers its edit even when the first packet
+                    # showed that edit whole; any other excerpt adds only what it did not.
+                    refs -= follow_up.shown_refs
+                key = placed.get(item.item_id)
+                if refs and (key is None or not excerpt_span_covered(key, follow_up.shown_parts)):
+                    carried_refs.update(refs)
+            added = sorted(carried_refs, key=str.encode)[:4]
             missing_rows.append(
                 ReviewInputMissing(
                     kind=cast(MissingForAssessmentKind, follow_up_item.kind),
@@ -6595,6 +6873,17 @@ def _excerpt_row_content_refs(
 
     if section != "excerpt" or type(source_ref) is not str:
         return ()
+    if source_ref == _CHECK_TIME_CHANGE_SOURCE_REF and type(linked) in {list, tuple}:
+        # A current file section a follow-up served links the requested edit it answers (tb4n5);
+        # the change's own parts link claims, obligations or the plan, never an ``evd_``.
+        return (
+            source_ref,
+            *(
+                ref
+                for ref in cast(list[object] | tuple[object, ...], linked)
+                if type(ref) is str and ref.startswith("evd_")
+            ),
+        )
     if (
         category != DataCategory.EVIDENCE_EXCERPT.value
         or not source_ref.startswith("evd_")
@@ -6626,23 +6915,17 @@ def excerpt_content_refs(items: Iterable[SemanticCaseItem]) -> frozenset[str]:
     )
 
 
-def sent_excerpt_content_refs(
+def _sent_excerpt_item_ids(
     case: SemanticCase, provider_manifest: Mapping[str, object] | None
 ) -> frozenset[str] | None:
-    """The ``excerpt_content_refs`` of the excerpts the exact sent packet carried (issue #1047).
-
-    Read from the packet's provider-bound input manifest, whose sections name the rows that
-    crossed the provider boundary after envelope bounding, privacy admission and minimization;
-    an excerpt the case composed and the sent packet lost is not among them. ``None`` when that
-    manifest is unknown (not retained, or unreadable), so nothing is claimed shown.
-    """
+    """The excerpt item ids the exact sent packet carried, from its provider-bound manifest."""
 
     if type(case) is not SemanticCase:
         raise TypeError("semantic_case_invalid")
     manifest = _decode_review_input_manifest(provider_manifest, expected_phase="provider_bound")
     if manifest is None:
         return None
-    sent = {
+    return frozenset(
         item_id
         for section in (
             manifest.current_diff,
@@ -6650,8 +6933,93 @@ def sent_excerpt_content_refs(
             manifest.latest_verification,
         )
         for item_id in section.selected_item_ids
-    }
-    return excerpt_content_refs(item for item in case.items if item.item_id in sent)
+    )
+
+
+def sent_excerpt_content_refs(
+    case: SemanticCase, provider_manifest: Mapping[str, object] | None
+) -> frozenset[str] | None:
+    """The ``excerpt_content_refs`` the exact sent packet's excerpts held whole (issue #1047).
+
+    Read from the packet's provider-bound input manifest, whose sections name the rows that
+    crossed the provider boundary after envelope bounding, privacy admission and minimization;
+    an excerpt the case composed and the sent packet lost is not among them. A source split into
+    parts counts only when every part it has was sent (tb4n5): a capture whose first part alone
+    reached the reviewer still has parts an in-check follow-up may add. ``None`` when that
+    manifest is unknown (not retained, or unreadable), so nothing is claimed shown.
+    """
+
+    sent = _sent_excerpt_item_ids(case, provider_manifest)
+    if sent is None:
+        return None
+    placed = dict(case.excerpt_parts)
+    sent_keys = [placed[item_id] for item_id in sent if item_id in placed]
+    return excerpt_content_refs(
+        item
+        for item in case.items
+        if item.item_id in sent
+        and (item.item_id not in placed or excerpt_span_whole(placed[item.item_id], sent_keys))
+    )
+
+
+def sent_excerpt_parts(
+    case: SemanticCase, provider_manifest: Mapping[str, object] | None
+) -> frozenset[str] | None:
+    """The excerpt parts (``excerpt_span_key``) the exact sent packet carried (tb4n5).
+
+    What an in-check follow-up compares, per part and never per source, so a later part of a
+    partly shown source counts as progress and a repeated one does not. ``None`` when the
+    provider-bound manifest is unknown.
+    """
+
+    sent = _sent_excerpt_item_ids(case, provider_manifest)
+    if sent is None:
+        return None
+    return frozenset(key for item_id, key in case.excerpt_parts if item_id in sent)
+
+
+def follow_up_new_parts(
+    case: SemanticCase,
+    follow_up: ReviewFollowUp,
+    *,
+    withheld_categories: Iterable[str] = (),
+) -> frozenset[str]:
+    """The requested excerpt parts this follow-up case carries that no sent packet carried.
+
+    A follow-up round is sent only when this is not empty (issue #1047, tb4n5): an excerpt
+    holding a source the round asks for (``excerpt_content_refs``, a served current section
+    included) that the first packet did not show whole and no round completed, whose part no
+    sent packet of the check carried. An item of a category the channel withholds never counts:
+    it would not travel. An excerpt that cannot be placed in its source counts by its id, as
+    the source-level rule always did.
+    """
+
+    if type(case) is not SemanticCase or type(follow_up) is not ReviewFollowUp:
+        raise TypeError("semantic_case_invalid")
+    withheld = frozenset(withheld_categories)
+    wanted = follow_up.source_refs - follow_up.shown_refs - follow_up.added_refs
+    placed = dict(case.excerpt_parts)
+    new: set[str] = set()
+    for item in case.items:
+        if item.section != "excerpt" or item.category.value in withheld:
+            continue
+        refs = frozenset(
+            _excerpt_row_content_refs(
+                item.section, item.category.value, item.source_ref, item.linked_subject_refs
+            )
+        )
+        if not refs & (
+            # A served current section answers the edit it links whatever was shown of the
+            # edit itself; whether its bytes are new is the part test below.
+            follow_up.source_refs if item.source_ref == _CHECK_TIME_CHANGE_SOURCE_REF else wanted
+        ):
+            continue
+        key = placed.get(item.item_id)
+        if key is None:
+            new.add(item.item_id)
+        elif follow_up.unseen((key,)):
+            new.add(key)
+    return frozenset(new)
 
 
 def withheld_excerpt_content_refs(case: SemanticCase, withheld: frozenset[str]) -> frozenset[str]:
