@@ -215,10 +215,10 @@ the current frontier").
 - **A missing frontier has its own continuation.** `expected_frontier_required` now maps to
   `frontier_held_required` (ADR-030 registry): send the held frontier and retry under the same
   `request_id`. `frontier_changed` keeps `frontier_refresh_required`, which reads `status`.
-- **Inspection is named where the work is listed.** A status text at `action_required` ends with
-  the optional "What is left and why, in one read: check with mode inspect (records nothing)." and
-  the card's inspection sentence leads with the question it answers. Status stays the read for
-  exact ids and meaning fields; nothing forces the inspection.
+- **Inspection is named by the question it answers.** The card's inspection sentence now reads
+  "What is left and why: `check` `mode: inspect` (records nothing)." Status stays the read for
+  exact ids and meaning fields; nothing forces the inspection. (A status-text continuation was
+  left out: it would change every frozen status summary vector for an optional sentence.)
 - **#1049 follow-ups in the same text surfaces.** The card asks for answers to each open AI-powered
   finding (a `verified_resolved` or final finding, `next_actions: none`, takes no response), as do
   the `respond` description, `workflow.md` and the respond template, which now also cites the
@@ -241,6 +241,6 @@ error, directive and nudge for status-as-frontier-source wording and checks the 
 `tests/integration/application/test_held_frontier_sequence.py` drives start, hook observations,
 the first plan with the start frontier and a later write with the returned one, with no status
 read, and keeps a cooperative write in between a conflict; `tests/unit/mcp/test_summaries_text_fallback.py`
-holds the start, publish and status texts; `tests/unit/mcp/test_guidance_family_inventory.py`,
+holds the start and publish texts; `tests/unit/mcp/test_guidance_family_inventory.py`,
 `tests/unit/mcp/test_tb4n4_call_traps.py` and `tests/unit/mcp/test_tb4n5_digest_subject_hint.py`
 hold the counts, aliases and subject hint (the five recorded tb4n5 subject shapes).

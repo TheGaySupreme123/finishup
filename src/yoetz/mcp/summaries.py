@@ -155,10 +155,6 @@ _P_BOILERPLATE: Final = _P_ACTION + 3
 _P_COUNTS_SENTENCE: Final = _P_ACTION + 4
 # The once-per-frontier re-reads a Stop will ask, in their short form (tb4n3 RC-8).
 _RECHECK_SHORT: Final = "At Stop you will be asked once to re-read what you recorded."
-# tb4n5 (#1048): the read that answers "what is left and why" in one call.
-_INSPECT_CONTINUATION: Final = (
-    "What is left and why, in one read: check with mode inspect (records nothing)."
-)
 # One id or token list never takes more than this of the bounded text, so a 100-finding check
 # still leaves room for the instruction, the checklist and the disclosures beside it; the exact
 # remainder is stated as "+N more" and the structured result carries every row.
@@ -2140,10 +2136,6 @@ def _closure_parts(source: Mapping[str, JsonValue]) -> list[Part]:
             parts.append(
                 Part(listed("Agent-actionable: ", actionable), required=True, priority=_P_ACTION)
             )
-        # tb4n5 (#1048): inspection answered "what is left and why" in 2 of 18 attempts; the
-        # status text that names the work now names the one read that explains it. Optional and
-        # the first sentence dropped: status stays the read for exact ids and meaning fields.
-        parts.append(Part((_INSPECT_CONTINUATION,), priority=_P_DETAIL))
         return [*parts, *verdict_parts]
     if state == "ready_with_limitations":
         # Core: the state and the stop instruction. The counts sentence of the full directive is

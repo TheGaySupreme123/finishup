@@ -224,9 +224,13 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   `closure_readiness.check_cause` names the record behind `check_not_applicable` (for example an
   observed edit made after the check) or behind the standing `check_current_as_of_earlier_frontier`.
 - `ready_with_limitations`: nothing further to do. (`closure_readiness.rechecks` lists what a Stop
-  will still ask you once: the acceptance criteria of your resolved obligations, an obligation you
-  acknowledged as not done, a recorded blocker, a premise dispute. A Stop asks nothing that list
-  does not name.) Every remaining condition is a
+  will still ask you once: the acceptance criteria of the resolved obligations Yoetz flags (a
+  requested item never attempted, evidence not linked to a declared item, or only self-asserted
+  evidence), an obligation you acknowledged as not done, a recorded blocker, a premise dispute. A
+  Stop asks nothing that list does not name. Once you have read a flagged obligation's
+  `acceptance_criteria` against your output and it is met, a line
+  `yoetz-acceptance:<obligation id>:met` in your final answer answers its re-read; if it is not met,
+  republish it `acknowledged_not_done` instead.) Every remaining condition is a
   `standing_limitations` code this host, profile or privacy policy always has (or a disclosure
   you recorded, such as `assumption_disclosed`), or an item in `acknowledged_not_done` (a finding
   or an obligation you recorded as not done). Request

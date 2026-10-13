@@ -838,3 +838,73 @@ requested, so the code is no longer recorded for it at all:
    the recorded coverage, so none lists the code for such a check. The check's own result still
    states `semantic_status: not_requested` and the receipt conclusion names deterministic coverage
    only (`no_unresolved_deterministic_findings`). Same on every host.
+
+## Amendment (2026-10-13, tb4n5, issue #1050): the acceptance re-read asks only what the ledger flags
+
+Owner decision of 2026-10-13 (recorded in the tb4n5 follow-ups): re-read only the resolved
+obligations the ledger flags as risky, and delete the word-coverage check. It supersedes item 2's
+rule of the tb4n4 amendment above; the downgrade, verification-limit and once-only confirmation
+paths are kept.
+
+tb4n5 measured the tb4n4 rule: the re-read fired in 18 of 18 attempts and
+`closure_gate_acceptance_covered` was never recorded. Replaying `uncovered_acceptance` on the real
+pre-gate final messages covered 1 of 110 resolved obligations: real final messages (345-742
+characters) summarize results in other words and never cite an obligation id, and real criteria
+are long (a median of 14 terms), so a message reached 0-45% of a criterion's terms against the 2/3
+threshold. No lexical threshold works: at one third of the terms no attempt is fully covered. The
+rule's fixtures were short criteria and near-verbatim restatements.
+
+1. **The service flags; the gate names.** `kernel.acceptance_risk` derives, per request from the
+   projection and its record prefix, which resolved obligations (closure basis `resolved`) the
+   ledger flags, with three closed reasons: `requested_item_never_attempted` (a non-input requested
+   item with no attempt in any spelling and, for a command, no matching hook-observed run: the
+   work-integrity attempt test), `evidence_not_linked_to_declared_items` (it declares deliverables
+   or commands and no cited resolution evidence traces through a recorded link to an action naming
+   one: the inspection's `evidence_off_declared_items` or `evidence_unattributed`, now computed by
+   the shared `kernel.evidence_alignment`), and `evidence_self_asserted_only` (no cited reference
+   is a hook-observed run or its result, observation-captured evidence, an approved check or an
+   import report, and no requested command item has a matching observed attempt).
+   `ClosureReadinessFacts.acceptance_risk_obligation_ids` carries the set; the `acceptance` recheck
+   names only it (rule `resolved_obligations_acceptance_risk`, key `accept:<h8>` over that set, so
+   a changed flagged set asks again) and is absent when nothing is flagged. An unreadable resolved
+   obligation is flagged with every reason (fail closed). A fact set without the list (hand-built,
+   older) keeps every resolved obligation under the old rule token.
+2. **The word-coverage check is deleted.** `uncovered_acceptance`, its token and stopword rules and
+   the bounded `status view=obligations` read at Stop are removed: the gate reads compact status
+   once.
+3. **An explicit per-obligation attestation answers it.** A final message line
+   `yoetz-acceptance:<obligation id>:met` (also inline or in a bullet; `:not_met` or any other
+   outcome is not one) for an announced obligation answers the re-read for it. The attestation is
+   bound to the set this Stop's status read announces: an id outside it is ignored, and it counts
+   only when the announced subjects hash to the announced key (at most eight; a longer or older
+   list is asked in full). The gate names only the unattested obligations; a message attesting all
+   of them is not asked and records `closure_gate_acceptance_covered`. The re-read text, and the
+   status directive's re-check note, name the line. An attestation is the agent's statement: it
+   records nothing, never changes a closure class, a finding, a receipt conclusion or coverage, and
+   never suppresses an independent finding or another gate item; a not-met outcome is answered by
+   the downgrade path (republish `acknowledged_not_done`) or the verification-limit decision,
+   unchanged.
+4. **Unchanged.** Keys, memory and once-per-session asking; the exclusions (never beside open
+   obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared
+   dependency); the once-only confirmation sentence where the re-read rides alone; the
+   acknowledgement-after-invite rule. Hosts: the service side is host-independent; Codex and Claude
+   Code pass the final message (attestations read), Cursor's `stop` carries none (every announced
+   obligation asked; issue #1050 owns the `afterAgentResponse` follow-up). Each runbook records it.
+
+Measured on tb4n5 (an approximate replay of the agent-published records before each first gate,
+with observed results and observation-captured evidence from the exports; the kernel's keyed
+command matcher was approximated by the exported command-attempt relation): 12 of 18 attempts and
+40 of 111 resolved obligations would still be asked (21 flagged `evidence_self_asserted_only`, 21
+`evidence_not_linked_to_declared_items`), against 18 of 18 and 110 of 110. Live-database S (every
+resolution self-asserted) is still asked. **Known gap:** formal-crypto S's honest downgrade
+followed a re-read of an obligation whose resolution cited an observed run of the requested
+command with the requested output attempted; the ledger flags nothing there (the shortfall was in
+the output, not in the record), so under this rule that downgrade relies on the closing review and
+the agent's own final answer, not on the gate.
+
+Verification: `tests/unit/kernel/test_tb4n5_acceptance_risk.py` (a clean resolution and one per
+flag in one ledger: the clean one no longer triggers, each flagged one does, the key names exactly
+the flagged set, a clean-only ledger announces none); `tests/unit/cli/test_closure_gate.py`
+(realistic tb4n5 summaries, attestation parsing, partial and stale attestations, a `:not_met`
+answer, the tb4n2 false-completion message, an incomplete list, an older service, absent host
+message per host, no second status read).

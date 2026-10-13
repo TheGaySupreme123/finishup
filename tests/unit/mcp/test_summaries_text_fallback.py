@@ -240,23 +240,3 @@ def test_accepted_publish_text_says_the_next_write_sends_this_frontier() -> None
         }
     )
     assert "expected_frontier" not in preview
-
-
-def test_action_required_status_text_names_the_inspection_read() -> None:
-    summary = render_safe_compact_summary(
-        {
-            "ok": True,
-            "view": "compact",
-            "head_frontier": {"sequence": "12", "head_digest": _HEAD},
-            "closure_readiness": {
-                "state": "action_required",
-                "agent_actionable": ["obligations_open"],
-                "standing_limitations": [],
-                "acknowledged_not_done_count": "0",
-            },
-        }
-    )
-    assert "Agent-actionable: obligations_open." in summary
-    assert "What is left and why, in one read: check with mode inspect (records nothing)." in (
-        summary
-    )

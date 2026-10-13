@@ -7148,8 +7148,19 @@ the basis could not be read):
   `awaiting_ruling_findings [{finding_id, since_frontier}]` (<= 8, by id; exactly the findings
   counted in `finding_counts.awaiting_ruling`, up to the bound); `rechecks [{kind
   (acceptance|acknowledgement|blocker|premise), key (accept:<h8>|ack:<obl>|blocker:<obl>:<kind>|premise:<n>),
-  subjects[<=8], rule, since_frontier}]`. `receipt_blocking_finding_count` keeps its wire name and
-  means `finding_counts.to_do + finding_counts.unmet`.
+  subjects[<=8], rule, since_frontier}]`. Since tb4n5 (#1050, ADR-033 amendment of 2026-10-13)
+  the `acceptance` entry names only the resolved obligations the ledger flags (rule
+  `resolved_obligations_acceptance_risk`, key over that set; no entry when none is flagged):
+  `yoetz.kernel.acceptance_risk.acceptance_risk(projection, records, resolved) -> ((obligation,
+  reasons), ...)` with the closed reasons `requested_item_never_attempted`,
+  `evidence_not_linked_to_declared_items` and `evidence_self_asserted_only`, carried per request as
+  `ClosureReadinessFacts.acceptance_risk_obligation_ids` (`None` on a hand-built fact set keeps
+  every resolved obligation and the rule `resolved_obligations_acceptance_reread`). The alignment it
+  reads is `yoetz.kernel.evidence_alignment` (`declared_items`, `source_actions`,
+  `evidence_sources`, `alignment_of`), shared with the inspection's `evidence_alignment`. The status
+  directive's re-check note names the flagged set and the `yoetz-acceptance:<obligation id>:met`
+  line that answers it. `receipt_blocking_finding_count` keeps its wire name and means
+  `finding_counts.to_do + finding_counts.unmet`.
 - `status view=findings` rows: `closure_class`, `closure_basis`, `next_actions`;
   `view=obligations` rows: `closure_class`, `closure_basis`.
 - `check` `finding_checklist.counts`: `to_do`, `awaiting_ruling`, `unmet`, `disclosed`,
@@ -9641,11 +9652,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   not clear it, and names the files from `closure_readiness.undeclared_references`: the one
   exception to closed tokens, counts and ids in the gate text; a path is never remembered).
   `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
-  observation_pending=, reasked_blockers=, active_stop=, acceptance_uncovered=) ->
+  observation_pending=, reasked_blockers=, active_stop=, final_message=) ->
   ClosureGate(identity, text, items, blocker_keys) | None` asks the **re-checks
   `closure_readiness.rechecks` announces** (tb4n3 RC-8,
   ADR-033 amendment): `Recheck {kind: acceptance | acknowledgement | blocker | premise, key,
-  subjects, rule, since_frontier}` with the keys `accept:<h8 of sorted resolved obligation ids>`,
+  subjects, rule, since_frontier}` with the keys `accept:<h8 of the sorted announced (flagged)
+  resolved obligation ids>`,
   `ack:<obligation id>`, `blocker:<obligation id>:<kind>`, `premise:<acknowledged count>`. Status,
   `closure_prepare`, the CLI and the TUI show the same list; the gate never asks one status did
   not announce, and a readiness without the list (a service older than the gate) announces none.
@@ -9663,19 +9675,22 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `predicted_receipt` supplies the lowest-priority tail sentence (`predicted_receipt_variants`).
   When the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the text
   carries one informational note; that code alone never fires the gate.
-  `acceptance_uncovered` (#1050, ADR-033 amendment) is `None` when the host gave no final message
-  (today's re-read for every resolved obligation), else the resolved obligations the final message
-  does not address: they are named, and `()` means the re-read is not asked.
-  `uncovered_acceptance(final_message, rows) -> tuple[obligation id, ...]` is the deterministic
-  rule over `(obligation id, acceptance_criteria or description or None)` rows: covered by the
-  obligation id in the first 65,536 characters, or by at least two thirds of the acceptance text's
-  terms (lowercase ASCII alphanumeric tokens of three or more characters, or two with a digit, minus
-  79 closed function words, first 64 distinct) among the message's tokens. Where the re-read rides
+  `closure_gate_from_readiness(..., final_message=)` (tb4n5 #1050, ADR-033 amendment of
+  2026-10-13; it replaced `acceptance_uncovered=`): the acceptance re-read names the obligations
+  readiness announced (the ledger-flagged resolved set when the recheck's `rule` is
+  `resolved_obligations_acceptance_risk`, with the flag sentence), except those the final message
+  attests; `attested_acceptance(final_message) -> frozenset[obligation id]` reads every exact
+  `yoetz-acceptance:<obligation id>:met` (any other outcome, `:not_met` included, is no
+  attestation) in the first 65,536 characters, and `unattested_acceptance(recheck, final_message) ->
+  tuple[obligation id, ...] | None` is `None` (every announced obligation is asked) without a
+  message or when the announced subjects do not hash to the recheck's `accept:<h8>` key (more than
+  eight, or an older list), else the announced obligations not attested; `()` means the re-read is
+  not asked. The tb4n4 word-coverage rule (`uncovered_acceptance`) is removed. Where the re-read rides
   alone it ends with the sentence that a pure confirmation needs no new record, check or receipt.
-  `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status and raises
-  `ClosureGateUnavailable` when it cannot; when the gate would ask the acceptance re-read and a final
-  message is present it reads one `obligations` page (`status: resolved`, limit 100, 750 ms) and
-  trusts it only when its `resolved` rows hash to the announced `accept:<h8>` key. The Codex Stop
+  `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status (one read;
+  the tb4n4 `obligations` page read is gone) and raises `ClosureGateUnavailable` when it cannot,
+  and calls `on_acceptance_covered` when the message attests every announced obligation of an
+  unasked acceptance re-read. The Codex Stop
   body's and the Claude Code Stop payload's `last_assistant_message` reach it in process only
   (`handle_observe(..., _stop_final_message=)` for Claude Code); Cursor's `stop` carries none.
   `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the
@@ -9691,8 +9706,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `BLOCKER_UNCONFIRMED_TOKEN` (`obligation_blocker_unconfirmed`) is a gate item. Hook diagnostic
   reasons: `closure_gate_continued`, `closure_gate_blocker_rechecked`,
   `closure_gate_acceptance_rechecked` (the extra Stop turn the acceptance re-read costs),
-  `closure_gate_acceptance_covered` (the final message addressed every resolved obligation's
-  acceptance, so the re-read was not asked; #1050),
+  `closure_gate_acceptance_covered` (the final message attested every announced obligation, so
+  the re-read was not asked; #1050),
   `closure_gate_active_stop_rechecked`, `closure_gate_not_required`,
   `closure_gate_repeat_suppressed`, `closure_gate_turn_end_after_continue` (an already-continued
   Stop that emitted nothing: the normal end of a continued turn; this is the former

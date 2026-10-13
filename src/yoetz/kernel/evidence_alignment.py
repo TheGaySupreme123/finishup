@@ -1,0 +1,180 @@
+"""Where an obligation's resolution evidence came from, beside what it declared (ADR-047, ADR-033).
+
+The inspection check (``application.check_inspection``, item 3) and the Stop gate's acceptance risk
+(``kernel.acceptance_risk``, tb4n5 #1050) read one classification: for each cited result or
+evidence item, the action behind it (hook-observed or agent-asserted) by recorded link only, and
+which declared deliverables or requested commands that action names (its ``attempted_items`` and,
+for a requested command, the shared run matcher of ADR-045). Yoetz reads no working directory,
+environment or service configuration, so this compares only what the record links.
+
+Pure and replay-derived; every value is an id, an index or a closed token.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Final, Literal
+
+from yoetz.domain.events import (
+    ActionRecordedPayload,
+    LedgerRecord,
+    ObligationPublishedPayload,
+    RequestedItemKind,
+    RequestedItemRole,
+)
+from yoetz.domain.values import ActionId, EventId, EvidenceId, ResultId
+from yoetz.kernel.command_attempts import value_in_attempted
+from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.task_facts import (
+    observed_run_from_command,
+    planned_match,
+    requested_planned_command,
+)
+
+__all__ = [
+    "MAX_ALIGNMENT_ROWS",
+    "Alignment",
+    "EvidenceSource",
+    "SourceOrigin",
+    "alignment_of",
+    "declared_items",
+    "evidence_sources",
+    "source_actions",
+]
+
+MAX_ALIGNMENT_ROWS: Final = 64
+_DECLARED_PATH_KINDS: Final = frozenset({RequestedItemKind.FILE, RequestedItemKind.DIRECTORY})
+
+type SourceOrigin = Literal["observed", "asserted", "unattributed"]
+type Alignment = Literal[
+    "no_declared_items",
+    "evidence_names_declared_item",
+    "evidence_off_declared_items",
+    "evidence_unattributed",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceSource:
+    """One cited resolution reference and the recorded actions behind it."""
+
+    ref: str
+    origin: SourceOrigin
+    named: frozenset[int]
+    actions: tuple[tuple[ActionRecordedPayload, EventId], ...]
+
+
+def declared_items(payload: ObligationPublishedPayload) -> list[tuple[int, str]]:
+    """``(index, item kind)`` of each requested command and each non-input file or directory."""
+
+    declared: list[tuple[int, str]] = []
+    for index, item in enumerate(payload.requested_items):
+        if item.item_kind is RequestedItemKind.COMMAND or (
+            item.item_kind in _DECLARED_PATH_KINDS and item.role is not RequestedItemRole.INPUT
+        ):
+            declared.append((index, item.item_kind.value))
+    return declared[:MAX_ALIGNMENT_ROWS]
+
+
+def _named_indexes(
+    payload: ObligationPublishedPayload,
+    declared: list[tuple[int, str]],
+    action: ActionRecordedPayload,
+    *,
+    observed: bool,
+) -> set[int]:
+    """Declared items the action behind a piece of evidence names, through recorded links only."""
+
+    named: set[int] = set()
+    for index, _kind in declared:
+        item = payload.requested_items[index]
+        if value_in_attempted(item.value, action.attempted_items):
+            named.add(index)
+            continue
+        if item.item_kind is not RequestedItemKind.COMMAND or action.command is None:
+            continue
+        if observed:
+            run = observed_run_from_command(action.command)
+            planned = requested_planned_command(item.value)
+            if run is not None and planned is not None and planned_match(run, planned) is not None:
+                named.add(index)
+        elif action.command == item.value:
+            named.add(index)
+    return named
+
+
+def source_actions(
+    projection: ProjectionState,
+    records_by_event: Mapping[EventId, LedgerRecord],
+    ref: str,
+) -> tuple[tuple[ActionRecordedPayload, EventId], ...]:
+    """The actions a cited result or evidence item came from, by recorded link."""
+
+    actions: list[tuple[ActionRecordedPayload, EventId]] = []
+
+    def add(action_id: ActionId) -> None:
+        record = projection.actions.get(action_id)
+        if record is not None and record.payload is not None:
+            pair = (record.payload, record.source_event_id)
+            if pair not in actions:
+                actions.append(pair)
+
+    if ref.startswith("res_"):
+        result = projection.results.get(ResultId(ref))
+        if result is not None and result.payload is not None:
+            add(result.payload.action_id)
+        return tuple(actions)
+    for result_id in sorted(projection.results, key=lambda value: str(value).encode()):
+        result = projection.results[result_id]
+        if result.payload is not None and ref in result.payload.evidence_refs:
+            add(result.payload.action_id)
+    evidence = projection.evidence.get(EvidenceId(ref))
+    if evidence is not None:
+        source = records_by_event.get(evidence.source_event_id)
+        for parent in () if source is None else source.causal_parents:
+            parent_record = records_by_event.get(parent)
+            if (
+                parent_record is not None
+                and parent_record.schema.name == "action_recorded"
+                and type(parent_record.payload) is ActionRecordedPayload
+            ):
+                add(parent_record.payload.action_id)
+    return tuple(actions)
+
+
+def evidence_sources(
+    projection: ProjectionState,
+    records_by_event: Mapping[EventId, LedgerRecord],
+    observed_events: frozenset[EventId],
+    payload: ObligationPublishedPayload,
+) -> tuple[EvidenceSource, ...]:
+    """Each cited resolution reference (at most 64), its origin and the declared items it names."""
+
+    declared = declared_items(payload)
+    sources: list[EvidenceSource] = []
+    for ref in tuple(payload.resolution_evidence_refs)[:MAX_ALIGNMENT_ROWS]:
+        actions = source_actions(projection, records_by_event, str(ref))
+        named: set[int] = set()
+        origin: SourceOrigin = "unattributed"
+        for action, source_event in actions:
+            observed = source_event in observed_events
+            named |= _named_indexes(payload, declared, action, observed=observed)
+            if observed:
+                origin = "observed"
+            elif origin == "unattributed":
+                origin = "asserted"
+        sources.append(EvidenceSource(str(ref), origin, frozenset(named), actions))
+    return tuple(sources)
+
+
+def alignment_of(declared: list[tuple[int, str]], sources: tuple[EvidenceSource, ...]) -> Alignment:
+    """The obligation's alignment token from its declared items and its cited sources."""
+
+    if not declared:
+        return "no_declared_items"
+    if any(source.named for source in sources):
+        return "evidence_names_declared_item"
+    if any(source.actions for source in sources):
+        return "evidence_off_declared_items"
+    return "evidence_unattributed"

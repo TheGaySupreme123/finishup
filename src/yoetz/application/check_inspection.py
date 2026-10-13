@@ -39,13 +39,10 @@ from yoetz.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     LedgerRecord,
-    ObligationPublishedPayload,
     ObligationStatus,
-    RequestedItemKind,
-    RequestedItemRole,
     is_observation_authored,
 )
-from yoetz.domain.values import ActionId, EventId, EvidenceId, Frontier, ResultId
+from yoetz.domain.values import Frontier, ResultId
 from yoetz.kernel.closure_class import (
     FindingClosure,
     FindingClosureClass,
@@ -57,6 +54,7 @@ from yoetz.kernel.command_attempts import (
     command_attempts,
     value_in_attempted,
 )
+from yoetz.kernel.evidence_alignment import alignment_of, declared_items, evidence_sources
 from yoetz.kernel.later_material import (
     LaterMaterialClass,
     classify_later_material,
@@ -72,10 +70,7 @@ from yoetz.kernel.observed_failures import (
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.task_facts import (
     effective_obligations,
-    observed_run_from_command,
-    planned_match,
     requested_command_identity,
-    requested_planned_command,
 )
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.ledger import CheckObservationsAwaited
@@ -122,7 +117,6 @@ _FINDING_ORDER: Final = {
     FindingClosureClass.SETTLED_UNMET: 2,
     FindingClosureClass.SETTLED_DISCLOSED: 3,
 }
-_DECLARED_PATH_KINDS: Final = frozenset({RequestedItemKind.FILE, RequestedItemKind.DIRECTORY})
 
 
 class Application(StatusApplication, Protocol):
@@ -350,82 +344,6 @@ def inspection_observed_since(
     return observed
 
 
-def _declared_items(payload: ObligationPublishedPayload) -> list[tuple[int, str]]:
-    declared: list[tuple[int, str]] = []
-    for index, item in enumerate(payload.requested_items):
-        if item.item_kind is RequestedItemKind.COMMAND or (
-            item.item_kind in _DECLARED_PATH_KINDS and item.role is not RequestedItemRole.INPUT
-        ):
-            declared.append((index, item.item_kind.value))
-    return declared[:MAX_INSPECTION_ROWS]
-
-
-def _named_indexes(
-    payload: ObligationPublishedPayload,
-    declared: list[tuple[int, str]],
-    action: ActionRecordedPayload,
-    *,
-    observed: bool,
-) -> set[int]:
-    """Declared items the action behind a piece of evidence names, through recorded links only."""
-
-    named: set[int] = set()
-    for index, _kind in declared:
-        item = payload.requested_items[index]
-        if value_in_attempted(item.value, action.attempted_items):
-            named.add(index)
-            continue
-        if item.item_kind is not RequestedItemKind.COMMAND or action.command is None:
-            continue
-        if observed:
-            run = observed_run_from_command(action.command)
-            planned = requested_planned_command(item.value)
-            if run is not None and planned is not None and planned_match(run, planned) is not None:
-                named.add(index)
-        elif action.command == item.value:
-            named.add(index)
-    return named
-
-
-def _source_actions(
-    projection: ProjectionState,
-    records_by_event: Mapping[EventId, LedgerRecord],
-    ref: str,
-) -> tuple[tuple[ActionRecordedPayload, EventId], ...]:
-    """The actions a cited result or evidence item came from, by recorded link."""
-
-    actions: list[tuple[ActionRecordedPayload, EventId]] = []
-
-    def add(action_id: ActionId) -> None:
-        record = projection.actions.get(action_id)
-        if record is not None and record.payload is not None:
-            pair = (record.payload, record.source_event_id)
-            if pair not in actions:
-                actions.append(pair)
-
-    if ref.startswith("res_"):
-        result = projection.results.get(ResultId(ref))
-        if result is not None and result.payload is not None:
-            add(result.payload.action_id)
-        return tuple(actions)
-    for result_id in sorted(projection.results, key=lambda value: str(value).encode()):
-        result = projection.results[result_id]
-        if result.payload is not None and ref in result.payload.evidence_refs:
-            add(result.payload.action_id)
-    evidence = projection.evidence.get(EvidenceId(ref))
-    if evidence is not None:
-        source = records_by_event.get(evidence.source_event_id)
-        for parent in () if source is None else source.causal_parents:
-            parent_record = records_by_event.get(parent)
-            if (
-                parent_record is not None
-                and parent_record.schema.name == "action_recorded"
-                and type(parent_record.payload) is ActionRecordedPayload
-            ):
-                add(parent_record.payload.action_id)
-    return tuple(actions)
-
-
 def _evidence_outcome(projection: ProjectionState, ref: str) -> str | None:
     if not ref.startswith("res_"):
         return None
@@ -457,49 +375,30 @@ def inspection_alignment(
         payload = projection.obligations[obligation].payload
         if payload is None or not payload.resolution_evidence_refs:
             continue
-        declared = _declared_items(payload)
+        declared = declared_items(payload)
+        cited = evidence_sources(projection, records_by_event, observed_events, payload)
         sources: list[JsonValue] = []
-        attributed = False
-        named_any = False
-        for ref in tuple(payload.resolution_evidence_refs)[:MAX_INSPECTION_ROWS]:
-            actions = _source_actions(projection, records_by_event, str(ref))
-            named: set[int] = set()
+        for item in cited:
             commitment: str | None = None
-            origin = "unattributed"
-            for action, source_event in actions:
-                observed = source_event in observed_events
-                named |= _named_indexes(payload, declared, action, observed=observed)
-                if observed:
-                    origin = "observed"
-                elif origin == "unattributed":
-                    origin = "asserted"
+            for action, source_event in item.actions:
                 if commitment is None and action.command is not None:
                     commitment = (
                         command_identity(action.command)
-                        if observed
+                        if source_event in observed_events
                         else requested_command_identity(action.command)
                     )
             source: dict[str, JsonValue] = {
-                "ref": str(ref),
-                "origin": origin,
-                "named_item_indexes": [str(index) for index in sorted(named)],
+                "ref": item.ref,
+                "origin": item.origin,
+                "named_item_indexes": [str(index) for index in sorted(item.named)],
             }
             if commitment is not None:
                 source["command_commitment"] = commitment
-            outcome = _evidence_outcome(projection, str(ref))
+            outcome = _evidence_outcome(projection, item.ref)
             if outcome is not None:
                 source["outcome"] = outcome
             sources.append(source)
-            attributed = attributed or bool(actions)
-            named_any = named_any or bool(named)
-        if not declared:
-            alignment = "no_declared_items"
-        elif named_any:
-            alignment = "evidence_names_declared_item"
-        elif attributed:
-            alignment = "evidence_off_declared_items"
-        else:
-            alignment = "evidence_unattributed"
+        alignment = alignment_of(declared, cited)
         rows.append(
             {
                 "obligation_id": str(obligation),

@@ -217,8 +217,9 @@ _REASONS: Final = frozenset(
         # The delivered continuation also asked the acceptance re-read (A-12) readiness announced
         # (tb4n3 RC-8): the count of extra Stop turns that re-read costs.
         "closure_gate_acceptance_rechecked",
-        # The host's final message addressed every resolved obligation's acceptance, so the
-        # acceptance re-read was not asked at this Stop (#1050). No text, ids or counts recorded.
+        # The host's final message attested (``yoetz-acceptance:<obligation id>:met``) every
+        # obligation the acceptance re-read announced, so it was not asked at this Stop (#1050).
+        # No text, ids or counts recorded.
         "closure_gate_acceptance_covered",
         # The Stop pass drained this task's hook rows to the current frontier before the
         # closure gate read status, or the bounded Stop drain left some pending (tb4n1 B4/C6).

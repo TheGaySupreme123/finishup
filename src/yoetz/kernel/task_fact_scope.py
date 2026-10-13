@@ -98,11 +98,31 @@ class CommandMismatch:
     observed_event_ids: tuple[str, ...]
 
 
+# One entry: the last (projection, prefix) asked and its rows. Status scopes every current finding
+# against the same immutable projection and record tuple, so the rows are derived once per read;
+# holding the objects keeps their identities from being reused while the entry stands.
+_MISMATCH_MEMO: list[
+    tuple[ProjectionState, tuple[LedgerRecord, ...], tuple[CommandMismatch, ...]]
+] = []
+
+
 def command_mismatches(
     state: ProjectionState, records: tuple[LedgerRecord, ...]
 ) -> tuple[CommandMismatch, ...]:
     """Every effective obligation's mismatched requested command items, in obligation order."""
 
+    if _MISMATCH_MEMO:
+        memo_state, memo_records, memo_rows = _MISMATCH_MEMO[0]
+        if memo_state is state and memo_records is records:
+            return memo_rows
+    rows = _command_mismatch_rows(state, records)
+    _MISMATCH_MEMO[:] = [(state, records, rows)]
+    return rows
+
+
+def _command_mismatch_rows(
+    state: ProjectionState, records: tuple[LedgerRecord, ...]
+) -> tuple[CommandMismatch, ...]:
     rows: list[CommandMismatch] = []
     for obligation in sorted(effective_obligations(state), key=lambda value: str(value).encode()):
         record = state.obligations.get(obligation)
