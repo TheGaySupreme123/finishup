@@ -203,56 +203,125 @@ def test_the_three_tb4n5_shapes_mint_no_ai_bookkeeping_finding() -> None:
         assert review.rejected_by_reason == ((SEMANTIC_REJECTED_LOCAL_RULE_OWNED, 1),), name
         # Disclosed, never bounding: the review saw everything it needed.
         assert _fence_gaps(review) == frozenset({SEMANTIC_PROCESS_STATE_FILTERED_GAP}), name
-    # A result-without-action copy is the local rule's too.
-    orphan = replace(shapes["live-db"], finding_kind=FindingKind.RESULT_WITHOUT_ACTION)
-    assert _review(case, orphan).candidates == ()
+    # The same label on a record that is not an orphan result is not the rule's relation.
+    mislabelled = replace(shapes["live-db"], finding_kind=FindingKind.RESULT_WITHOUT_ACTION)
+    assert [c.kind for c in _review(case, mislabelled).candidates] == [
+        FindingKind.RESULT_WITHOUT_ACTION
+    ]
 
 
-def test_failed_or_unrun_verification_and_false_completion_claims_stay_reviewable() -> None:
+def test_a_result_without_action_copy_of_an_orphan_result_is_the_local_rules() -> None:
     ledger, _events = _ledger()
-    failed = ledger.append(
+    orphan = ledger.append(
         EventSchema("result_recorded", "1.0.0"),
         ResultRecordedPayload(
-            result_id("res_00000000-0000-4000-8000-000000000512"),
-            action_id("act_00000000-0000-4000-8000-000000000512"),
-            ResultOutcome.FAILURE,
-            summary="The reseed failed",
+            result_id("res_00000000-0000-4000-8000-000000000599"),
+            action_id("act_00000000-0000-4000-8000-000000000599"),
+            ResultOutcome.SUCCESS,
+            summary="Reseed done",
         ),
         observed=False,
         operation=_LATER,
     )
-    claim = ledger.append(
+    case = _case(ledger)
+    challenge = replace(
+        _awr(str(orphan), summary="A result names no recorded action"),
+        finding_kind=FindingKind.RESULT_WITHOUT_ACTION,
+    )
+    review = _review(case, challenge)
+    assert review.candidates == ()
+    assert review.rejected_by_reason == ((SEMANTIC_REJECTED_LOCAL_RULE_OWNED, 1),)
+
+
+def _paired_and_claimed() -> tuple[DeterministicCase, dict[str, EventId]]:
+    """Codex check of fix/n5-findings: every action has its result, and a completion claim says
+    all tests passed while the command's result says it only inspected documentation."""
+
+    ledger, events = _ledger()
+    for number, outcome, summary in (
+        (511, ResultOutcome.SUCCESS, "The engine edit is in place"),
+        (
+            512,
+            ResultOutcome.SUCCESS,
+            "Inspected the documentation only; the required verification was not executed",
+        ),
+        (514, ResultOutcome.SUCCESS, "Read the notes"),
+    ):
+        events[f"result-{number}"] = ledger.append(
+            EventSchema("result_recorded", "1.0.0"),
+            ResultRecordedPayload(
+                result_id(f"res_00000000-0000-4000-8000-000000000{number}"),
+                action_id(f"act_00000000-0000-4000-8000-000000000{number}"),
+                outcome,
+                summary=summary,
+            ),
+            observed=False,
+            operation=_LATER,
+        )
+    events["claim"] = ledger.append(
         EventSchema("claim_recorded", "1.0.0"),
         ClaimRecordedPayload(
-            claim_id("clm_00000000-0000-4000-8000-000000000515"),
+            claim_id("clm_00000000-0000-4000-8000-000000000516"),
             ClaimKind.COMPLETION,
-            "The engine is done and verified",
+            "All tests passed",
             (),
             obligation_refs=(_ENGINE, _SEED, _OTHER),
         ),
         observed=False,
         operation=_LATER,
     )
-    case = _case(ledger)
-    kept = (
-        tb4n4._challenge(  # pyright: ignore[reportPrivateUsage]
-            FindingKind.FAILED_WORK_OMITTED, str(failed), summary="The failed reseed is undisclosed"
+    return _case(ledger), events
+
+
+def test_a_substantive_concern_filed_under_the_pairing_label_is_kept() -> None:
+    """Codex check P2: the label is never proof. An ``action_without_result`` challenge that
+    cites a paired action, a completion claim or an obligation carries a false-completion or
+    unrun-verification concern, and is minted as the reviewer gave it."""
+
+    case, events = _paired_and_claimed()
+    assert _local_action_findings(case) == []
+    for refs in (
+        (str(events["command"]), str(events["claim"])),  # the reproduced scenario
+        (str(events["command"]),),  # a paired action: the concern is not the missing link
+        (str(events["claim"]),),
+        (str(events["command"]), str(events["result-512"])),
+    ):
+        review = _review(
+            case, _awr(*refs, summary="The reported inspection does not verify the claim")
+        )
+        assert [c.kind for c in review.candidates] == [FindingKind.ACTION_WITHOUT_RESULT], refs
+        assert review.rejected_by_reason == (), refs
+
+
+def test_an_unpaired_action_cited_with_a_requirement_or_a_failure_is_kept() -> None:
+    ledger, events = _ledger()
+    failed = ledger.append(
+        EventSchema("result_recorded", "1.0.0"),
+        ResultRecordedPayload(
+            result_id("res_00000000-0000-4000-8000-000000000598"),
+            action_id("act_00000000-0000-4000-8000-000000000514"),
+            ResultOutcome.FAILURE,
+            summary="The verification run failed",
         ),
-        tb4n4._challenge(  # pyright: ignore[reportPrivateUsage]
-            FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
-            str(claim),
-            summary="The completion claim cites no verification",
-        ),
-        tb4n4._challenge(  # pyright: ignore[reportPrivateUsage]
-            FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS,
-            str(claim),
-            str(_SEED),
-            summary="Done is claimed while the reseed failed",
-        ),
-        # "action without result" naming no action or result says nothing the rule decides.
-        _awr(str(_ENGINE), summary="The engine obligation's action has no outcome"),
+        observed=False,
+        operation=_LATER,
     )
-    for challenge in kept:
-        review = _review(case, challenge)
-        assert [candidate.kind for candidate in review.candidates] == [challenge.finding_kind]
-        assert review.rejected_by_reason == ()
+    ledger.append(
+        EventSchema("claim_recorded", "1.0.0"),
+        ClaimRecordedPayload(
+            claim_id("clm_00000000-0000-4000-8000-000000000517"),
+            ClaimKind.MATERIAL,
+            "The engine passes its scoring table",
+            (evidence_id("evd_00000000-0000-4000-8000-000000000513"),),
+        ),
+        observed=False,
+        operation=_LATER,
+    )
+    case = _case(ledger)
+    for refs in (
+        (str(events["edit"]), str(_ENGINE)),  # a requirement or planned-verification concern
+        (str(events["edit"]), str(events["evidence"])),  # output a claim stands on
+        (str(events["edit"]), str(failed)),  # a run that did not succeed
+    ):
+        review = _review(case, _awr(*refs, summary="The engine edit has no linked result"))
+        assert [c.kind for c in review.candidates] == [FindingKind.ACTION_WITHOUT_RESULT], refs

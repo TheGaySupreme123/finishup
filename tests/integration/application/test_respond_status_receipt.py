@@ -4348,12 +4348,7 @@ async def test_publish_reuses_validated_projection_and_falls_back_for_stale_meta
 async def test_command_gap_partition_preserves_receipt_coverage(
     ledger_backend: Literal["memory", "sqlite"], overlap: bool, scope_mismatch: bool
 ) -> None:
-    """682: real append, repair, recheck and receipts keep the command gap on every receipt.
-
-    tb4n5 follow-up (owner decision 2026-10-13): the linked result decides the action finding even
-    when the action names the command obligation (``overlap``), which #682 kept open. The command
-    gap stays disclosed on every receipt either way; only a completion-scope gap still blocks.
-    """
+    """682: real append, repair, recheck and receipts keep independent proof separate."""
     app, runtime, _ = _build_app(ledger_backend=ledger_backend)
     started = await app.start(start_request(62000, title="Command gap resolution"))
     a, b = protocol_id("obl_", 62001), protocol_id("obl_", 62002)
@@ -4486,7 +4481,7 @@ async def test_command_gap_partition_preserves_receipt_coverage(
                 )
             ]
         )
-    should_resolve = not scope_mismatch
+    should_resolve = not overlap and not scope_mismatch
     second = await check()
     if scope_mismatch:
         assert "completion_plan_not_claimed" in second.coverage.known_gaps
@@ -4500,6 +4495,8 @@ async def test_command_gap_partition_preserves_receipt_coverage(
     assert isinstance(status.page, StatusFindingsPageModel)
     current = next(row for row in status.page.items if row.finding_id == target.finding_id)
     assert current.resolved is should_resolve, current.detail
+    if overlap:
+        assert "command_relation_overlaps_obligation:" + a in str(current.detail)
     ledger, _ = next(iter(runtime.resources.values()))
     records = tuple([row async for row in ledger.load_events(started.session_id)])
     from yoetz.kernel.finding_resolution import finding_is_resolved

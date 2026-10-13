@@ -1143,6 +1143,8 @@ def _action_notices(
     ``action_without_result`` finding. ``projection`` already includes the batch (the accepted
     frontier, or a dry run's provisional fold), so a result in the same batch, or an earlier one
     naming the id, answers it. Closed code and fixed text, so a replay returns the same body.
+    Every unpaired action gets its row: a batch admits at most ``MAX_EVENTS_PER_BATCH`` drafts and
+    the field admits as many rows, so nothing is cut.
     """
 
     recorded = tuple(
@@ -1165,7 +1167,7 @@ def _action_notices(
         )
         for action in recorded
         if action not in linked
-    )[:64]
+    )
 
 
 def _blocker_notices(

@@ -8209,7 +8209,8 @@ def _add_publish_action_notices(document: dict[str, JsonValue]) -> None:
         )
         properties["action_notices"] = {
             "items": {"$ref": "#/$defs/action_notice"},
-            "maxItems": 64,
+            # One row per unpaired action: the batch bound (MAX_EVENTS_PER_BATCH), never a cut.
+            "maxItems": 100,
             "minItems": 1,
             "type": "array",
         }

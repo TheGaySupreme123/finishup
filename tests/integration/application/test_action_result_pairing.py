@@ -350,3 +350,37 @@ async def test_a_completed_action_published_with_its_result_draws_no_notice_or_f
     assert "action_notices" not in later
     checked = await run.check(seed + 30)
     assert _action_findings(checked) == []
+
+
+async def test_a_full_batch_of_unpaired_actions_gets_every_notice() -> None:
+    """Codex check P2: a 100-action batch got only 64 notices and no omission count. The field
+    now admits the batch bound, so every unpaired action of a full batch is named, success and
+    dry run alike, and the MCP text names the count it does not list."""
+
+    from yoetz.protocol.models import MAX_EVENTS_PER_BATCH
+
+    seed = 10700
+    run = await _begin(seed)
+    drafts = [
+        _draft(
+            protocol_id("evt_", seed + 100 + number),
+            "action_recorded",
+            {
+                "action_id": protocol_id("act_", seed + 300 + number),
+                "action_kind": "research",
+                "description": f"Read source {number}.",
+            },
+        )
+        for number in range(MAX_EVENTS_PER_BATCH)
+    ]
+    expected = [protocol_id("act_", seed + 300 + number) for number in range(MAX_EVENTS_PER_BATCH)]
+    preview = await run.app.publish_work(
+        PublishWorkRequest.model_validate({**run.body(seed + 1, drafts), "dry_run": True})
+    )
+    dumped = cast(Any, preview).model_dump(mode="json", exclude_none=True)
+    assert [action for action, _notice in _notices(dumped)] == expected
+    published = await run.publish(seed + 2, drafts)
+    assert len(published["accepted_events"]) == MAX_EVENTS_PER_BATCH
+    assert [action for action, _notice in _notices(published)] == expected
+    rendered = render_publish_action_notices(published)
+    assert f"(+{MAX_EVENTS_PER_BATCH - 8} more)" in rendered

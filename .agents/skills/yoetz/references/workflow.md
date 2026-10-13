@@ -687,7 +687,9 @@ example `pdftotext` output or a CAD property dump) as evidence whose `reference`
 the reviewer sees it labelled as your rendering, and the file itself is never sent. After two
 `insufficient_packet` reviews in a row with no edit since, or four since the task's last assessed
 review, checks skip the AI-powered review (`semantic_review_skipped_insufficient_packet`); a real
-repair re-arms it until that cap. Never edit only to get another review.
+repair re-arms it until that cap. The same holds when the reviewer rules one finding you answered
+`unassessable` that often in a row: it stays open and unresolved (respond `self_verified` if you
+repaired it and verified it yourself). Never edit only to get another review.
 
 While work is in progress (a routine review: no completion claim and not `final_review`) the
 reviewer judges incomplete work only: an obligation you marked resolved or left unfinished,

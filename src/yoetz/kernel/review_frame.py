@@ -18,11 +18,12 @@ so the challenge is kept as the reviewer gave it.
   for ``action_without_result``, a hook-observed action: pairing a hook observation with its result
   is Yoetz's capture, never the agent's account.
 * ``local_rule_owned`` (tb4n5 follow-up): an ``action_without_result`` or ``result_without_action``
-  challenge about readable ledger actions or results. The local work-integrity rule decides that
-  relation over the whole ledger; the reviewer sees a bounded packet, so its copy can only
-  duplicate the local finding (vigenere S, live-db S) or misplace it (medical S cited the sibling
-  command for "the engine edit has no linked result"), and the copy latched
-  ``disputed_after_rebuttal`` while the local twin resolved.
+  challenge whose cited records show only the pairing gap the local work-integrity rule decides
+  over the whole ledger (an unpaired action, an orphan result, and their own plain output). Its
+  copy duplicated the local finding (vigenere S, live-db S) or misplaced it (medical S cited the
+  sibling command for "the engine edit has no linked result") and latched
+  ``disputed_after_rebuttal`` while the local twin resolved. A challenge under that label that
+  cites a claim, an obligation, a paired action or a failed run keeps its concern.
 * ``agent_probe_only``: a ``task_requirement_unmet`` challenge whose only cited work is hook-observed
   command runs that are not the task's own declared verification (neither matching a requested
   command nor linked to one by the agent), while that declared verification is on record and
@@ -41,9 +42,14 @@ from collections.abc import Iterable, Mapping
 from typing import Final
 
 from yoetz.domain.command_segments import requested_command_shape
-from yoetz.domain.events import ActionKind, ActionRecordedPayload, RequestedItemKind
+from yoetz.domain.events import (
+    ActionKind,
+    ActionRecordedPayload,
+    RequestedItemKind,
+    ResultOutcome,
+)
 from yoetz.domain.findings import FindingKind
-from yoetz.domain.values import ClaimId, EventId, EvidenceId, ObligationId
+from yoetz.domain.values import EventId, EvidenceId, ObligationId
 from yoetz.domain.yoetz_tools import yoetz_tool_spelling
 from yoetz.kernel.observed_failures import observed_action_tool
 from yoetz.kernel.projections import ProjectionState
@@ -171,60 +177,67 @@ LOCAL_RULE_OWNED_KINDS: Final = frozenset(
 def local_rule_owned(
     projection: ProjectionState, kind: FindingKind, subject_refs: Iterable[str]
 ) -> bool:
-    """Whether a challenge restates an action/result relation the local rule owns (tb4n5).
+    """Whether a challenge only restates a pairing gap the local rule owns (tb4n5).
 
-    True exactly when the challenge is ``action_without_result`` or ``result_without_action``, it
-    cites at least one event that recorded a readable action or result (the relation the local
-    rule reads over the whole ledger, published or observed), and every other subject is a
-    readable recorded row: an event behind a readable action, result, evidence, claim, obligation
-    or decision, or a readable obligation or claim. The reviewer sees a bounded packet and cannot
-    know a result outside it exists; the local rule reads the full record and is exact, so its
-    finding is the only one. Anything unreadable or unknown answers ``False`` and keeps the
-    challenge, as does every other kind about the same action (a failed or unrun verification, a
-    false completion claim, an omitted failure).
+    The label is never proof: a reviewer can file a false completion or an unrun verification
+    under ``action_without_result``. So this answers ``True`` only when the cited records
+    themselves show nothing but the pairing gap the local rule decides over the whole ledger:
+
+    * ``action_without_result``: at least one cited event recorded a readable action that no
+      readable result names (an unpaired action), and every cited event is such an action;
+    * ``result_without_action``: at least one cited event recorded a readable, successful result
+      whose action is absent, and every cited event is such a result;
+    * either kind may also cite events of readable evidence that no claim and no result that did
+      not succeed cites (the vigenere S shape: the run's own output beside it).
+
+    Anything else keeps the challenge as the reviewer gave it: an action that already has a result
+    (the concern is not the missing link), a claim or an obligation (a completion, requirement or
+    planned-verification concern), a result or evidence of a run that did not succeed (a failure
+    concern), a decision, or anything unreadable or unknown. The three tb4n5 shapes (vigenere,
+    live-db, medical) cite only unpaired actions and their own output.
     """
 
     if kind not in LOCAL_RULE_OWNED_KINDS:
         return False
     refs = tuple(subject_refs)
-    if not refs:
+    if not refs or any(not ref.startswith("evt_") for ref in refs):
         return False
-    relation = {
-        row.source_event_id
-        for rows in (projection.actions, projection.results)
-        for row in rows.values()
+    named = {
+        row.payload.action_id
+        for row in projection.results.values()
         if row.payload is not None and not row.redacted
     }
-    readable: set[EventId] = set(relation)
-    for collection in (
-        projection.evidence,
-        projection.claims,
-        projection.obligations,
-        projection.decisions,
-    ):
-        readable.update(
-            row.source_event_id
-            for row in collection.values()
-            if row.payload is not None and not row.redacted
+    unpaired_actions = {
+        row.source_event_id
+        for action, row in projection.actions.items()
+        if row.payload is not None and not row.redacted and action not in named
+    }
+    orphan_results = {
+        row.source_event_id
+        for row in projection.results.values()
+        if row.payload is not None
+        and not row.redacted
+        and row.payload.outcome is ResultOutcome.SUCCESS
+        and (
+            (action := projection.actions.get(row.payload.action_id)) is None
+            or action.payload is None
         )
-    owned = False
-    for ref in refs:
-        if ref.startswith("evt_"):
-            event = EventId(ref)
-            if event not in readable:
-                return False
-            owned = owned or event in relation
-        elif ref.startswith("obl_"):
-            obligation = projection.obligations.get(ObligationId(ref))
-            if obligation is None or obligation.payload is None:
-                return False
-        elif ref.startswith("clm_"):
-            claim = projection.claims.get(ClaimId(ref))
-            if claim is None or claim.payload is None:
-                return False
-        else:
-            return False
-    return owned
+    }
+    concerned: set[str] = set()
+    for row in projection.results.values():
+        if row.payload is not None and row.payload.outcome is not ResultOutcome.SUCCESS:
+            concerned.update(str(item) for item in row.payload.evidence_refs)
+    for claim in projection.claims.values():
+        if claim.payload is not None:
+            concerned.update(str(item) for item in claim.payload.supporting_refs)
+    plain_evidence = {
+        row.source_event_id
+        for key, row in projection.evidence.items()
+        if row.payload is not None and not row.redacted and str(key) not in concerned
+    }
+    relation = unpaired_actions if kind is FindingKind.ACTION_WITHOUT_RESULT else orphan_results
+    events = {EventId(ref) for ref in refs}
+    return bool(events & relation) and events <= relation | plain_evidence
 
 
 def agent_probe_only(

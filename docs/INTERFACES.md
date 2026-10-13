@@ -7972,32 +7972,40 @@ are compared to the current plan until explicitly superseded. A later plan revis
 previously claimed obligation changes the current plan but does not rewrite that claim, so the
 outside-plan code remains expected until the claim is superseded. See ADR-019 for repair semantics.
 
-### Command-gap independence for repaired action findings (issue #682; amended by the tb4n5 follow-up)
+### Command-gap independence for repaired action findings (issue #682)
 
-Maintainer acknowledgement: [issue #682](https://github.com/TheGaySupreme123/yoetz/issues/682#issuecomment-5761527250);
-the 2026-10-13 amendment is the owner decision on the tb4n5 follow-ups (ADR-040, amendment of
-2026-10-13). `finding_resolution` admits one exception for a deterministic `action_without_result`
-finding (a recorded work-integrity version, one exact action-event subject): when the tested state
-holds the readable subject action and a readable `result_recorded` whose `action_id` names it, both
-recorded no later than the checked frontier (`_action_result_link_proven`), the codes
-`command_attempt_uncorroborated`, `command_attempt_mismatch`, `truncated_payload` and
-`content_capture_unavailable` (`_ACTION_LINK_TOLERATED_GAPS`) no longer veto that finding's absence
-proof. The rule reads only the action and result rows, so the link decides the issue whatever
-obligations the action names; the codes remain on the check and receipt, and the link never claims
-a command ran. #682's obligation partition (`_command_gap_partition`, which kept an action sharing a
-command obligation, an unbound action or an unknown plan open with
-`command_relation_overlaps_obligation:<ids>`) is retired: every case it proved independent is a
-proven link, and the tb4n5 formal S and react S findings stayed open after the agent linked the
-result. Any other kind with a command gap still reads `command_relation_independence_unproven`.
+Maintainer acknowledgement: [issue #682](https://github.com/TheGaySupreme123/yoetz/issues/682#issuecomment-5761527250).
+`finding_resolution` admits a narrow exception for a deterministic `action_without_result`
+finding with readable original proof, one exact action-event subject, explicit readable obligation
+links, and an accepted linked result present at the checked frontier. It bounds the possible
+owners of `command_attempt_uncorroborated` and `command_attempt_mismatch` using all selected,
+plan-declared obligations that request commands. The relation includes both an action's direct
+`obligation_refs` and a selected obligation's `resolution_evidence_refs → result → action` link.
+Only a proven disjoint action relation may ignore those codes for that finding's absence proof. The
+codes remain on the check and receipt.
 
-An unreadable action or result, a result newer than the tested frontier, redacted events,
-unavailable payloads and missing refs still block. A later material projection row cannot establish
-proof for an earlier checked frontier. Explanations reconstruct the projection immediately before
-the candidate check when the check carries one of those codes. Once the link removes them, the
-existing closed host-observation exception may also admit a `redacted_gap` check when all remaining
-gaps are tolerated host/evidence limits; projection redactions and unknown relations still block.
-All ordinary scope, policy, suppression, refiring, freshness and semantic requirements continue to
-apply.
+This is deliberately conservative: the partition includes selected command obligations even when
+a command was observed matching. An action sharing such an obligation still requires the command
+coverage to be repaired; an absent, ambiguous, redacted, or unbound relation never qualifies.
+A later material projection row cannot establish proof for an earlier checked frontier. The
+check's own finding suffix is immaterial to action/result/plan inputs. Explanations reconstruct
+the projection immediately before the candidate check when needed; the same per-row frontier
+guards identify overlapping obligation IDs (bounded to 16) or that independence remains unproven.
+Once independence is proven, the command codes are removed
+before freshness is evaluated, so the existing closed host-observation exception may also admit a
+`redacted_gap` check when all remaining gaps are tolerated host/evidence limits; projection
+redactions and unknown relations still block. All ordinary scope, policy, suppression, refiring,
+freshness and semantic requirements continue to apply.
+
+**Content-capture gaps (tb4n5 follow-up, owner decision 2026-10-13: "under capture gaps").** For
+the same finding, `_action_result_link_proven` (the tested state holds the readable subject action
+and a readable `result_recorded` whose `action_id` names it, both no later than the checked
+frontier) makes `truncated_payload` and `content_capture_unavailable` (`_ACTION_LINK_TOLERATED_GAPS`)
+stop vetoing the absence proof, whatever obligations the action names; the codes remain on the check
+and receipt. The command codes keep the partition above (the owner may widen this later), so tb4n5
+formal S, an unbound action under `command_attempt_mismatch`, still reads
+`command_relation_independence_unproven`. Explanations also replay the pre-check projection when the
+check carries one of the two capture codes.
 
 **Same-batch siblings (tb4n5 follow-up).** The rule's "subsequent unrelated work" never includes a
 sibling action the same cooperative `publish_work` batch recorded: 8 of 15 tb4n5 findings fired only
@@ -8622,6 +8630,10 @@ tb4n5 amendment (ADR-040, 2026-10-13) an `unassessable` ruling, and an unsupport
 `withdrawn` demoted to it, stay `unassessable` (an open round), and a `fixed` ruling's `evt_`
 citation resolves to the evidence or result that event recorded before the after-the-finding test
 (`_ruling_material`); an acknowledgement with a reason still counts as the standing position (#1030).
+The open `unassessable` round is bounded: `review_round.unassessable_review_exhausted` stops the
+review round (`semantic_review_skipped_insufficient_packet`) after two completed reviews in a row
+ruled one finding `unassessable` with no edit since, or four in a row; the finding stays open and
+unresolved; a `semantic_required` check still runs its review.
 The resolution explanation of a latched row names it whatever the latest disposition, with no repair
 instruction; `respond` on it, or on a `verified_resolved` row, returns `finding_terminal` with a
 message that says nothing is owed. A
@@ -8650,9 +8662,12 @@ rejection reason `routine_completeness`; the closing review keeps it even withou
 (`kernel.review_frame.yoetz_process_state_only`: the hook observation of a call to one of Yoetz's own
 tools or its result, or, for `action_without_result`, any hook-observed action) is dropped and
 counted under `yoetz_process_state`. An `action_without_result` or `result_without_action`
-challenge citing a readable action or result event and nothing unreadable
-(`kernel.review_frame.local_rule_owned`, tb4n5 follow-up of #1042: the local rule owns that relation
-over the whole ledger) is dropped and counted under `local_rule_owned`. Those three reasons add the
+challenge whose cited records show only the pairing gap the local rule decides over the whole
+ledger (`kernel.review_frame.local_rule_owned`, tb4n5 follow-up of #1042: every cited event is an
+unpaired readable action, or a successful orphan result, at least one, plus at most evidence no
+claim and no unsuccessful result cites) is dropped and counted under `local_rule_owned`; one citing
+a paired action, a claim, an obligation, a failed run or anything unreadable is kept. Those three
+reasons add the
 standing disclosure
 `semantic_process_state_filtered` (gap table rule G5d: disclosed on both routes, tolerated by both
 absence proofs) instead of `semantic_challenges_rejected`, which keeps bounding for every other
@@ -9421,14 +9436,17 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   renders the rows on the MCP text channel; structural pointers admit the four leaves.
 - **Publish-time action notices (tb4n5 follow-up).** `publish_work` success and dry-run results
   (publish-work-result 1.1.0, unreleased, changed in place) carry optional `action_notices`
-  (1..64 rows: `action_id`, `notice` `result_not_linked`, and `text`, the fixed
+  (1..100 rows, the batch bound, so a full batch is never cut: `action_id`, `notice`
+  `result_not_linked`, and `text`, the fixed
   `PUBLISH_ACTION_NOTICE_TEXTS[notice]`), one per action the batch recorded that no
   `result_recorded` names at the batch's own frontier (`publish_work._action_notices`), absent
   otherwise. It records nothing and changes no finding: it states the pairing rule (a result whose
   `action_id` names the action, normally in the same batch; evidence, decisions and causal parents
   link nothing) before a later batch's unrelated work raises `action_without_result`.
   `mcp.summaries.render_publish_action_notices` renders the rows on the MCP text channel;
-  structural pointers admit the three leaves (result leaf registry 1614).
+  structural pointers admit the three leaves (result leaf registry 1614). Golden vectors: fixture
+  `CAN-018` (`fixtures/canonical/publish-action-notices-1.1.0.case.json`, owned by
+  `scripts/generate_publish_action_notices_fixture.py` through the resource ripple).
 - **Closing review of blockers (#976, #978).** `semantic_case.recorded_blockers(projection)`
   returns `(decision event id, kind, open obligation ids)` per blocker decision on open
   obligations, claimed or confirmed, and `review_question_set(phase, blockers)` adds one

@@ -921,14 +921,8 @@ def test_command_gap_only_allows_proven_independent_action_result(gap: str) -> N
     assert not qualifying_check_resolves(finding, 4, check, frozenset())
 
 
-def test_a_linked_result_resolves_even_when_a_command_obligation_cites_it() -> None:
-    """tb4n5 follow-up (owner decision 2026-10-13): the ledger link decides the issue.
-
-    The command obligation cites this very action's result, so the uncorroborated command
-    attempt may be about this action. That fact is about the command, not about whether the
-    action has a result: it stays a receipt disclosure and no longer vetoes the proof (#682 kept
-    it blocking as ``command_relation_overlaps_obligation``).
-    """
+def test_command_gap_relation_through_resolution_result_blocks_independence() -> None:
+    """A command obligation's result link is an explicit relation to the action too."""
     from builders.policy_cases import obligation_record, res
     from yoetz.kernel.finding_resolution import resolution_blockers
 
@@ -947,7 +941,8 @@ def test_a_linked_result_resolves_even_when_a_command_obligation_cites_it() -> N
     )
     finding = _finding(kind=FindingKind.ACTION_WITHOUT_RESULT, subject_refs=(evt(10),))
     check = _check(tested=100, coverage=_coverage(gaps=("command_attempt_uncorroborated",)))
-    assert resolution_blockers(finding, 4, check, frozenset(), proof_state=state) == ()
+    reasons = resolution_blockers(finding, 4, check, frozenset(), proof_state=state)
+    assert "command_relation_overlaps_obligation:" + obl(2) in reasons
 
 
 def test_explanation_cache_is_scoped_to_the_candidate_check() -> None:
@@ -996,21 +991,22 @@ def test_explanation_cache_is_scoped_to_the_candidate_check() -> None:
     (
         "missing_result",
         "late_result",
+        "unbound_action",
         "unreadable_result",
-        "unreadable_action",
-        "foreign_result",
+        "unknown_plan",
+        "missing_obligation",
+        "overlap",
+        "original_gap",
         "semantic",
         "other_kind",
         "refired",
         "suppressed",
         "stale",
         "scoped_away",
-        "redacted_event",
     ),
 )
-def test_the_action_link_never_upgrades_weak_proof(weakness: str) -> None:
+def test_command_partition_never_upgrades_weak_or_overlapping_proof(weakness: str) -> None:
     from builders.policy_cases import act, record, res
-    from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
     from yoetz.kernel.finding_resolution import resolution_blockers
 
     state = _command_proof_state()
@@ -1021,22 +1017,31 @@ def test_the_action_link_never_upgrades_weak_proof(weakness: str) -> None:
         state = replace(state, results={})
     elif weakness == "late_result":
         check = _check(tested=15, coverage=check.coverage)
+    elif weakness in {"unbound_action", "overlap"}:
+        action = state.actions[act(1)]
+        assert action.payload is not None
+        state = replace(
+            state,
+            actions={
+                act(1): record(
+                    replace(
+                        action.payload,
+                        obligation_refs=() if weakness == "unbound_action" else (obl(2),),
+                    ),
+                    10,
+                )
+            },
+        )
     elif weakness == "unreadable_result":
         state = replace(
             state, results={res(1): replace(state.results[res(1)], payload=None, redacted=True)}
         )
-    elif weakness == "unreadable_action":
-        state = replace(
-            state, actions={act(1): replace(state.actions[act(1)], payload=None, redacted=True)}
-        )
-    elif weakness == "foreign_result":
-        # A result naming another action is not this action's outcome.
-        state = replace(
-            state,
-            results={
-                res(1): record(ResultRecordedPayload(res(1), act(9), ResultOutcome.SUCCESS), 20)
-            },
-        )
+    elif weakness == "unknown_plan":
+        state = replace(state, plans={})
+    elif weakness == "missing_obligation":
+        state = replace(state, obligations={obl(2): state.obligations[obl(2)]})
+    elif weakness == "original_gap":
+        finding = replace(finding, coverage=_coverage(gaps=("missing_ref",)))
     elif weakness == "semantic":
         finding = _finding(
             kind=FindingKind.ACTION_WITHOUT_RESULT,
@@ -1059,41 +1064,31 @@ def test_the_action_link_never_upgrades_weak_proof(weakness: str) -> None:
         )
     elif weakness == "scoped_away":
         check = replace(check, scope=CheckScopeModel(claim_ids=(clm(99),), obligation_ids=()))
-    elif weakness == "redacted_event":
-        # An unreadable ledger row is the rule's own input: the link tolerates capture limits,
-        # never a redacted or unavailable event.
-        check = _check(
-            tested=100,
-            coverage=_coverage(gaps=("command_attempt_uncorroborated", "redacted_event")),
-        )
     reasons = resolution_blockers(finding, 4, check, keys, proof_state=state)
     assert reasons
+    if weakness == "overlap":
+        assert "command_relation_overlaps_obligation:" + obl(2) in reasons
 
 
-@pytest.mark.parametrize(
-    "shape",
-    ("unbound_action", "unknown_plan", "missing_obligation", "overlap", "no_command_obligation"),
+_CAPTURE_GAP_SETS = (
+    ("truncated_payload",),
+    ("content_capture_unavailable",),
+    ("content_capture_unavailable", "truncated_payload"),
 )
-@pytest.mark.parametrize(
-    "gaps",
-    (
-        ("command_attempt_mismatch",),
-        ("truncated_payload",),
-        ("content_capture_unavailable", "truncated_payload"),
-        ("command_attempt_mismatch", "content_capture_unavailable", "truncated_payload"),
-    ),
-)
-def test_a_linked_result_resolves_action_without_result_under_command_and_capture_gaps(
+
+
+@pytest.mark.parametrize("shape", ("unbound_action", "unknown_plan", "overlap", "bound"))
+@pytest.mark.parametrize("gaps", _CAPTURE_GAP_SETS)
+def test_a_linked_result_resolves_action_without_result_under_capture_gaps(
     shape: str, gaps: tuple[str, ...]
 ) -> None:
-    """tb4n5 formal S (``fnd_478fd885``) and react S (``fnd_da264f65``), owner decision 2026-10-13.
+    """tb4n5 react S (``fnd_da264f65``), owner decision 2026-10-13 ("under capture gaps").
 
-    The agent linked the result, yet ``command_relation_independence_unproven`` with
-    ``command_attempt_mismatch`` (formal S) and ``truncated_payload`` with
-    ``content_capture_unavailable`` (react S) kept the finding open, so both agents had to answer
-    ``self_verified`` and both receipts read "Yoetz could not prove". The rule reads only the
-    action and result rows, so a readable link proves the issue absent whatever the plan, the
-    obligations or the command relation look like; the gaps stay on the check and its receipt.
+    The agent linked the result, yet ``truncated_payload`` and ``content_capture_unavailable``
+    kept the finding open, so the agent had to answer ``self_verified`` and the receipt read
+    "Yoetz could not prove". The rule reads only the action and result rows, so a readable link
+    proves the issue absent whatever obligations the action names; the gaps stay on the check and
+    its receipt.
     """
     from builders.policy_cases import act, record
     from yoetz.kernel.finding_resolution import resolution_blockers
@@ -1117,10 +1112,6 @@ def test_a_linked_result_resolves_action_without_result_under_command_and_captur
         )
     elif shape == "unknown_plan":
         state = replace(state, plans={})
-    elif shape == "missing_obligation":
-        state = replace(state, obligations={obl(2): state.obligations[obl(2)]})
-    elif shape == "no_command_obligation":
-        state = replace(state, obligations={obl(1): state.obligations[obl(1)]})
     finding = _finding(kind=FindingKind.ACTION_WITHOUT_RESULT, subject_refs=(evt(10),))
     check = _check(tested=100, coverage=_coverage(gaps=gaps))
     assert resolution_blockers(finding, 4, check, frozenset(), proof_state=state) == ()
@@ -1130,6 +1121,75 @@ def test_a_linked_result_resolves_action_without_result_under_command_and_captur
     # Only the local action/result rule gets this: any other kind keeps the gaps as vetoes.
     other = _finding(kind=FindingKind.FAILED_WORK_OMITTED, subject_refs=(evt(10),))
     assert resolution_blockers(other, 4, check, frozenset(), proof_state=state)
+
+
+@pytest.mark.parametrize(
+    "weakness",
+    ("missing_result", "late_result", "unreadable_result", "unreadable_action", "foreign_result"),
+)
+def test_a_capture_gap_needs_an_exact_readable_link(weakness: str) -> None:
+    from builders.policy_cases import act, record, res
+    from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    state = _command_proof_state()
+    check = _check(tested=100, coverage=_coverage(gaps=("truncated_payload",)))
+    if weakness == "missing_result":
+        state = replace(state, results={})
+    elif weakness == "late_result":
+        check = _check(tested=15, coverage=check.coverage)
+    elif weakness == "unreadable_result":
+        state = replace(
+            state, results={res(1): replace(state.results[res(1)], payload=None, redacted=True)}
+        )
+    elif weakness == "unreadable_action":
+        state = replace(
+            state, actions={act(1): replace(state.actions[act(1)], payload=None, redacted=True)}
+        )
+    elif weakness == "foreign_result":
+        state = replace(
+            state,
+            results={
+                res(1): record(ResultRecordedPayload(res(1), act(9), ResultOutcome.SUCCESS), 20)
+            },
+        )
+    finding = _finding(kind=FindingKind.ACTION_WITHOUT_RESULT, subject_refs=(evt(10),))
+    assert "coverage:truncated_payload" in resolution_blockers(
+        finding, 4, check, frozenset(), proof_state=state
+    )
+
+
+@pytest.mark.parametrize("gap", ("command_attempt_uncorroborated", "command_attempt_mismatch"))
+def test_a_linked_result_does_not_widen_the_command_gap_partition(gap: str) -> None:
+    """Owner decision line 12 names capture gaps only: command gaps keep #682's partition.
+
+    tb4n5 formal S (``fnd_478fd885``: an action with no obligation refs, ``command_attempt_mismatch``)
+    stays open with ``command_relation_independence_unproven`` even with the result linked, and
+    a command gap beside a capture gap still blocks unless the partition proves independence.
+    """
+    from builders.policy_cases import act, record
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    state = _command_proof_state()
+    action = state.actions[act(1)]
+    assert action.payload is not None
+    unbound = replace(
+        state,
+        actions={
+            act(1): record(
+                replace(action.payload, obligation_refs=(), attempted_items=("solve.sage",)), 10
+            )
+        },
+    )
+    finding = _finding(kind=FindingKind.ACTION_WITHOUT_RESULT, subject_refs=(evt(10),))
+    for gaps in ((gap,), (gap, "truncated_payload")):
+        check = _check(tested=100, coverage=_coverage(gaps=gaps))
+        reasons = resolution_blockers(finding, 4, check, frozenset(), proof_state=unbound)
+        assert "command_relation_independence_unproven" in reasons, gaps
+        assert "coverage:truncated_payload" not in reasons, gaps
+    # A proven independent partition and a proven link together resolve it.
+    both = _check(tested=100, coverage=_coverage(gaps=(gap, "truncated_payload")))
+    assert resolution_blockers(finding, 4, both, frozenset(), proof_state=state) == ()
 
 
 def test_independent_command_gap_can_coexist_with_tolerated_host_gaps() -> None:

@@ -281,7 +281,9 @@ SEMANTIC_MISSING_ITEMS_REJECTED_GAP: Final = "semantic_missing_items_rejected"
 SEMANTIC_MISSING_NON_CONVERGENT_GAP: Final = "semantic_missing_non_convergent"
 # tb4n1 D3: the reviewer twice in a row (the request and its one retry, no edit since), or four
 # times since the last assessed review, could not assess the packet, so the check runs without the
-# AI-powered review instead of looping on a packet that cannot show the work
+# AI-powered review instead of looping on a packet that cannot show the work. tb4n5 follow-up of
+# #1046: the same holds for one AI-powered finding ruled ``unassessable`` that often in a row
+# (``review_round.unassessable_review_exhausted``); it stays open and unresolved
 # (``kernel/review_round.py``). A Yoetz limit, never agent work; the receipt discloses it.
 SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
     "semantic_review_skipped_insufficient_packet"

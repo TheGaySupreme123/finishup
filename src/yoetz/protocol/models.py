@@ -3042,11 +3042,12 @@ def _validate_blocker_notices(notices: tuple[PublishWorkBlockerNoticeModel, ...]
 
 
 def _validate_action_notices(notices: tuple[PublishWorkActionNoticeModel, ...] | None) -> None:
+    # One row per unpaired action, so the bound is the batch bound: a full batch is never cut.
     if notices is None:
         return
-    if not 1 <= len(notices) <= 64:
+    if not 1 <= len(notices) <= MAX_EVENTS_PER_BATCH:
         raise ValueError("publish_action_notice_count_invalid")
-    _require_unique(tuple(item.action_id for item in notices), limit=64)
+    _require_unique(tuple(item.action_id for item in notices), limit=MAX_EVENTS_PER_BATCH)
 
 
 def _publish_work_result_kind(value: object) -> str:

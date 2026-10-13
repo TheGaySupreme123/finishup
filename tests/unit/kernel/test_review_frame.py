@@ -175,10 +175,12 @@ def test_agent_published_actions_claims_and_obligations_are_never_process_state(
     assert not yoetz_process_state_only(state, kind, (event,), observed)
     assert not yoetz_process_state_only(state, kind, (str(_OBLIGATION),), observed)
     assert not yoetz_process_state_only(state, kind, (), observed)
-    # The action/result relation is the local rule's, for agent-published actions too.
+    # The pairing gap of an unpaired action is the local rule's, for agent-published actions too.
     assert local_rule_owned(state, kind, (event,))
-    assert local_rule_owned(state, kind, (event, str(_OBLIGATION)))
-    assert local_rule_owned(state, FindingKind.RESULT_WITHOUT_ACTION, (event,))
+    # An obligation beside it carries a requirement or planned-verification concern: kept.
+    assert not local_rule_owned(state, kind, (event, str(_OBLIGATION)))
+    # The cited action is not an orphan result, so the other label proves nothing either.
+    assert not local_rule_owned(state, FindingKind.RESULT_WITHOUT_ACTION, (event,))
     # An obligation or nothing names no action or result: the challenge is kept.
     assert not local_rule_owned(state, kind, (str(_OBLIGATION),))
     assert not local_rule_owned(state, kind, ())
@@ -190,6 +192,54 @@ def test_agent_published_actions_claims_and_obligations_are_never_process_state(
         FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED,
     ):
         assert not local_rule_owned(state, other, (event,))
+
+
+def test_output_a_failed_run_cites_is_a_failure_concern_not_a_pairing_gap() -> None:
+    from builders.policy_cases import record
+    from yoetz.domain.events import (
+        EvidenceKind,
+        EvidenceRecordedPayload,
+        ResultOutcome,
+        ResultRecordedPayload,
+    )
+    from yoetz.domain.values import evidence_id, result_id, timestamp_from_string
+    from yoetz.protocol.coverage import EvidenceImmutability
+
+    ledger = ObservedLedger()
+    unpaired = action_id("act_00000000-0000-4000-8000-000000000106")
+    ledger.append(
+        EventSchema("action_recorded", "1.0.0"),
+        ActionRecordedPayload(unpaired, ActionKind.EDIT, "Rewrote the engine"),
+        observed=False,
+    )
+    output = evidence_id("evd_00000000-0000-4000-8000-000000000107")
+    ledger.append(
+        EventSchema("evidence_recorded", "1.0.0"),
+        EvidenceRecordedPayload(
+            evidence_id=output,
+            evidence_kind=EvidenceKind.COMMAND_OUTPUT,
+            strength=EvidenceImmutability.METADATA_ONLY,
+            observed_at=timestamp_from_string("2026-10-12T21:40:00.000Z"),
+            description="Run output",
+        ),
+        observed=False,
+    )
+    state, _observed = _state(ledger)
+    refs = (
+        str(state.actions[unpaired].source_event_id),
+        str(state.evidence[output].source_event_id),
+    )
+    kind = FindingKind.ACTION_WITHOUT_RESULT
+    assert local_rule_owned(state, kind, refs)
+    other = action_id("act_00000000-0000-4000-8000-000000000108")
+    failed = ResultRecordedPayload(
+        result_id("res_00000000-0000-4000-8000-000000000108"),
+        other,
+        ResultOutcome.FAILURE,
+        evidence_refs=(output,),
+    )
+    with_failure = replace(state, results={failed.result_id: record(failed, state.frontier)})
+    assert not local_rule_owned(with_failure, kind, refs)
 
 
 def test_an_unreadable_or_unknown_subject_keeps_a_pairing_challenge() -> None:
