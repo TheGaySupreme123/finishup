@@ -348,7 +348,12 @@ safe. A resolution or acknowledgement republish follows the same rule: keep `1.1
 obligation has a role or a `directory` item. Mark every file or directory the task
 must deliver `role: output` and every one it only reads `role: input`. Yoetz checks a declared
 output at each `check` — absent, unchanged, outside the workspace, or ignored by Git — and never
-reports those facts for an input; an output directory that holds no file counts as absent.
+reports those facts for an input; an output directory that holds no file counts as absent. A
+file the request asks for only under a condition (written only for an incomplete record or a
+malformed input) is not a `file` output: name the condition and the path in a `change` item and
+declare the source files that implement it `role: output`. Never write an empty or placeholder
+file to satisfy a `file` declaration; correct the plan instead (`workflow.md`, Findings and
+recheck).
 Without a `role`, a `file` item is reported unchanged or outside only after an `edit` action
 names it. The requested outcome lives in `description` and `acceptance_criteria`;
 `outcome` is not an admitted `item_kind`. When you later attempt an item, copy that exact `value`

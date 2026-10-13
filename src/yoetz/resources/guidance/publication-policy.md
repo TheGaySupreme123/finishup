@@ -479,6 +479,18 @@ Publish the question, source identities, bounded supported and contradicted clai
 
 Publish the original obligation, the material new fact, and one plan revision explaining which outcome or dependency changed. Restate the current empty-scope reason or omit it to clear the declaration; omission never inherits the prior reason. Routine schedule adjustment needs no event.
 
+### Conditional output
+
+A file the request asks for only under a condition (a quarantine log written only for a malformed
+input) is runtime behavior: declare a `change` item that names the condition and the path, plus the
+source files that implement it as `role: output` `file` items. If you already declared it as a
+`file` and the final state does not meet the condition, `requested_output_absent` names it:
+publish the corrected obligation, supersede the old one with `plan_revised` (`change: superseded`,
+`reason`, `replacement_obligation_ids`), record the work with the new item values in
+`attempted_items`, resolve the new obligation, and replace the completion claim with one naming it.
+Never write an empty or placeholder file, or change when the deliverable writes the file, to
+satisfy the declaration. A file the request asks for unconditionally is never re-modelled this way.
+
 ### Large generated inventory
 
 For 100 files, group them into independently reviewable packages, record partial package status when useful, attach one bounded member manifest per completed package, and publish one final package transition. One obligation or routine event per file is invalid.

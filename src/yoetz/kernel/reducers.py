@@ -780,6 +780,31 @@ def _claim_scope(
     return frozenset(payload.obligation_refs)
 
 
+def _replacement_obligations(
+    scope: frozenset[ObligationId],
+    obligations: Mapping[ObligationId, ObligationProjectionRecord] | None,
+) -> frozenset[ObligationId]:
+    """Every obligation a plan revision recorded as replacing one in *scope*, transitively.
+
+    Read from the projection's ``superseded_by_obligation_ids`` (the replay-derived plan
+    relation), so only a published ``plan_revised`` supersession counts, never a claim's word.
+    """
+
+    if obligations is None:
+        return frozenset()
+    found: set[ObligationId] = set()
+    pending = list(scope)
+    while pending:
+        record = obligations.get(pending.pop())
+        if record is None:
+            continue
+        for replacement in record.superseded_by_obligation_ids:
+            if replacement not in found and replacement not in scope:
+                found.add(replacement)
+                pending.append(replacement)
+    return frozenset(found)
+
+
 def _result_is_relevant_to_claim(
     payload: ClaimRecordedPayload | ClaimRecordedPayloadV1_1,
     result_record: ProjectionRecord[ResultRecordedPayload],
@@ -957,10 +982,15 @@ def _apply_claim(
                     and row.payload.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE
                     for ref in prior_scope
                 )
+                # tb4n5 react-lead-form (ADR-033 amendment): a plan revision that superseded the
+                # claimed obligations with replacements (a conditional output re-modelled as a
+                # ``change`` item) carries the claim's scope to them, so the honest replacement
+                # claim may name only the replacements.
+                carried_scope = prior_scope | _replacement_obligations(prior_scope, obligations)
                 if (
                     prior_scope
                     and not withdrawn
-                    and (not current_scope or prior_scope.isdisjoint(current_scope))
+                    and (not current_scope or carried_scope.isdisjoint(current_scope))
                 ):
                     raise ClaimRevisionMismatch(
                         "obligation_refs",

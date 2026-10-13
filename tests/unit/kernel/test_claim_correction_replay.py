@@ -101,6 +101,10 @@ def _logical_key(schema: EventSchema, payload: EventPayload) -> str | None:
         return str(payload.result_id)  # type: ignore[attr-defined]
     if schema.name == "claim_recorded":
         return str(payload.claim_id)  # type: ignore[attr-defined]
+    if schema.name == "obligation_published":
+        return str(payload.obligation_id)  # type: ignore[attr-defined]
+    if schema.name in {"plan_published", "plan_revised"}:
+        return str(payload.plan_version)  # type: ignore[attr-defined]
     return None
 
 
@@ -535,3 +539,76 @@ def test_empty_scope_repair_preserves_limitation_and_noop_checks() -> None:
         replay(_extend(prefix, (_CLAIM_V1_1_SCHEMA, replace(corrected, obligation_refs=()))))
 
     assert noop.value.invariant == "replacement_must_change_effective_claim"
+
+
+def test_a_plan_supersession_carries_the_claim_scope_to_its_replacement() -> None:
+    """tb4n5 react-lead-form (ADR-033 amendment): a conditional output declared as a ``file`` is
+    corrected by superseding its obligation with one that models it as a ``change`` item. When the
+    claim named only the superseded obligation, its honest replacement names only the replacement,
+    which shares no id with it; the recorded plan supersession is the overlap. Without that
+    supersession a disjoint replacement is still refused."""
+
+    from yoetz.domain.events import (
+        ObligationChange,
+        ObligationChangeKind,
+        ObligationPublishedPayload,
+        ObligationStatus,
+        PlanPublishedPayload,
+        PlanRevisedPayload,
+    )
+
+    replacement = obligation_id("obl_00000000-0000-4000-8000-000000000002")
+    obligation_schema = EventSchema("obligation_published", "1.0.0")
+
+    def published(obligation: ObligationId) -> ObligationPublishedPayload:
+        return ObligationPublishedPayload(
+            obligation_id=obligation,
+            description="Quarantine malformed ledgers.",
+            evidence_expectation="The regression suite.",
+            status=ObligationStatus.OPEN,
+        )
+
+    prefix = _chain(
+        (obligation_schema, published(_OBLIGATION)),
+        (EventSchema("plan_published", "1.0.0"), PlanPublishedPayload(1, "Plan", (_OBLIGATION,))),
+        (_CLAIM_V1_1_SCHEMA, _completion(0)),
+        (obligation_schema, published(replacement)),
+    )
+    correction = replace(
+        _completion(1, supersedes=(_clm(0),), statement="Conditional output re-modelled."),
+        obligation_refs=(replacement,),
+    )
+    with pytest.raises(ClaimRevisionMismatch) as disjoint:
+        replay(_extend(prefix, (_CLAIM_V1_1_SCHEMA, correction)))
+    assert disjoint.value.invariant == "scope_overlap_required"
+
+    revised = _extend(
+        prefix,
+        (
+            EventSchema("plan_revised", "1.0.0"),
+            PlanRevisedPayload(
+                plan_version=2,
+                supersedes_plan_version=1,
+                reason="The quarantine log is conditional runtime output.",
+                summary="Model it as a change item.",
+                obligation_changes=(
+                    ObligationChange(
+                        _OBLIGATION,
+                        ObligationChangeKind.SUPERSEDED,
+                        "Conditional runtime output.",
+                        (replacement,),
+                    ),
+                ),
+            ),
+        ),
+    )
+    state = replay(_extend(revised, (_CLAIM_V1_1_SCHEMA, correction)))
+    assert effective_claim_ids(state) == frozenset({_clm(1)})
+    assert state.claims[_clm(0)].superseded_by_claim_id == _clm(1)
+    # The supersession carries the scope to the replacement only, never to an unrelated id.
+    unrelated = replace(
+        correction, obligation_refs=(obligation_id("obl_00000000-0000-4000-8000-000000000003"),)
+    )
+    with pytest.raises(ClaimRevisionMismatch) as still_disjoint:
+        replay(_extend(revised, (_CLAIM_V1_1_SCHEMA, unrelated)))
+    assert still_disjoint.value.invariant == "scope_overlap_required"

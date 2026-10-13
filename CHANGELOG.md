@@ -228,6 +228,16 @@ reverse-chronological released versions.
   counts them and names none. Disclosing the dependency no longer resolves it. An untracked file the
   task started with is not counted (#1044).
 
+- A requested output the task writes only under a condition (an incomplete-records ledger, a
+  quarantine log for a malformed input) that you declared as a file and that is absent because the
+  condition did not occur now has one documented exit: correct the plan. The finding, the workflow,
+  publication and request-template guidance and the operating card say to model it as a `change`
+  item naming the condition, plus the source files that implement it, supersede the old
+  obligation, and replace the completion claim; the next check resolves the absence finding.
+  Writing an empty or placeholder file, or changing when your code writes the file, to satisfy the
+  declaration is named as wrong. A replacement completion claim may now name only the replacement
+  obligations a plan revision recorded. A file the task asks for unconditionally stays required.
+
 - At Stop, the acceptance re-read now asks only about resolved obligations whose acceptance
   criteria the final answer neither names nor addresses, and names them, on Codex and Claude Code
   (which pass the final answer to the Stop hook); Cursor asks as before. A plain "criteria

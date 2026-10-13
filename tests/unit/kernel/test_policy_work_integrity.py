@@ -407,7 +407,13 @@ def test_absent_requested_output_is_reported_even_when_an_action_names_it() -> N
     assert found[0].basis.required_but_missing_facts == ()
     detail = found[0].candidate.detail
     assert "best-effort artifact" in detail
-    assert "revise" not in found[0].candidate.detail.lower()
+    # Writing the file is the default repair; revising the obligation is never offered as one
+    # (ADR-033 decision 3). The one plan correction is narrow and named (tb4n5 amendment): a file
+    # the request asks for only under a condition the final state does not meet.
+    assert "revise its obligation" not in detail.lower()
+    assert detail.index("Write each requested file") < detail.index("only under a condition")
+    assert "Never write an empty or placeholder file" in detail
+    assert "A file the request asks for unconditionally stays required." in detail
 
 
 def test_pre_work_check_reports_no_absent_requested_output() -> None:
