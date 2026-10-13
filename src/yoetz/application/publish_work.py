@@ -547,12 +547,16 @@ def _event_invalid(
     item_index: int | None = None,
 ) -> PublicOperationError:
     # Only a stale frontier is fixed by rereading status; every other reason needs the event
-    # payload corrected first, and retrying it unchanged would fail the same way.
+    # payload corrected first, and retrying it unchanged would fail the same way. A missing
+    # frontier is fixed with the one the caller already holds (tb4n5, #1048): every write returns
+    # it, and the first plan uses the frontier start returned.
     if reason_code == "expected_frontier_required":
         message = (
             "The event batch is invalid. State-sensitive event families require "
-            "expected_frontier. Call status to read the current frontier, then retry "
-            "idempotently with the same request_id and expected_frontier set."
+            "expected_frontier (not null). Send the frontier you already hold: the frontier "
+            "start returned for your first plan, otherwise the result_frontier of your last "
+            "accepted write; read status only if you hold none. Retry idempotently with the "
+            "same request_id and expected_frontier set."
         )
     elif reason_code == "frontier_changed":
         message = (

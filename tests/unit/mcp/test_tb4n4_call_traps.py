@@ -192,6 +192,14 @@ def test_the_obligations_view_states_the_resolution_recipe() -> None:
             f"{_TEMPLATES}#publish-work-plan-plus-obligation",
         ),
         (f"{_POLICY}#resolution", f"{_POLICY}#obligation-resolution"),
+        # tb4n5 (#1049): the guesses agents made, now explicit stable aliases. The bare family
+        # prefix reads the overview that lists every publish_work template's exact URI, and the
+        # resource description's phrase reads the same overview.
+        (f"{_TEMPLATES}#publish-work", f"{_TEMPLATES}#publication-templates"),
+        (f"{_TEMPLATES}#publish_work", f"{_TEMPLATES}#publication-templates"),
+        (f"{_TEMPLATES}#ordinary-publication", f"{_TEMPLATES}#publication-templates"),
+        (f"{_TEMPLATES}#plan-and-obligations", f"{_TEMPLATES}#publish-work-plan-plus-obligation"),
+        (f"{_POLICY}#plan-and-obligations", f"{_POLICY}#obligations-evidence-and-claims"),
     ],
 )
 async def test_a_guessed_anchor_that_names_one_topic_reads_it(
@@ -215,7 +223,7 @@ async def test_a_guessed_anchor_that_names_one_topic_reads_it(
     "guessed",
     [
         # Ambiguous: several catalogued anchors contain every word.
-        f"{_TEMPLATES}#publish-work",
+        f"{_TEMPLATES}#publish-work-coordination",
         f"{_TEMPLATES}#claim",
         # No catalogued anchor contains every word.
         f"{_TEMPLATES}#publish_work-plan-revision",

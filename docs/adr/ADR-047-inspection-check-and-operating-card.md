@@ -190,3 +190,64 @@ Golden vectors CAN-017
 `tests/conformance/surfaces/test_operating_card.py`
 measures the card and holds the guidance changes. The real-data replay of the tb4n4 exports
 remains for the maintainer.
+
+## Amendment (2026-10-13, tb4n5, issues #1048 and #1049): where the next frontier comes from
+
+tb4n5 kept the requirement and half of decision 2. Dry runs fell from 123 to 10, but status reads
+before a write doubled (75 to 139 adjacent writes): 85 of 87 state-sensitive publishes read status
+first only to copy its head as `expected_frontier`, and six first-plan batches sent
+`expected_frontier: null` and were refused `expected_frontier_required`. The card called a status
+read optional while three surfaces still named status as the frontier source: the publication
+policy ("Read it from `status`"), the field description every write tool advertises ("returned by
+status") and the `expected_frontier_required` message and its continuation ("Call status to read
+the current frontier").
+
+- **The requirement stays.** `expected_frontier` remains ADR-022's optimistic-concurrency guard; a
+  server-side default would authorize a transition against unseen cooperative state.
+- **The held frontier is the source.** Every write already returns one, and an observation-only
+  suffix since is tolerated (ADR-022). The first plan sends the `frontier` `start` returned (its
+  `next_request_template` already carries it); every later write sends the `result_frontier` of
+  the last accepted `publish_work`, `check` or `respond`. A status read is for a caller holding no
+  frontier, or after a genuine `frontier_changed` conflict. The publication policy, the
+  `publication.md` topic, the request templates (the first-plan template and the replacement
+  rules), `workflow.md`, the card and the advertised field description say so; the `start` and
+  accepted `publish_work` text summaries say which write sends the returned frontier next.
+- **A missing frontier has its own continuation.** `expected_frontier_required` now maps to
+  `frontier_held_required` (ADR-030 registry): send the held frontier and retry under the same
+  `request_id`. `frontier_changed` keeps `frontier_refresh_required`, which reads `status`.
+- **Inspection is named by the question it answers.** The card's inspection sentence now reads
+  "What is left and why: `check` `mode: inspect` (records nothing)." Status stays the read for
+  exact ids and meaning fields; nothing forces the inspection. (A status-text continuation was
+  left out: it would change every frozen status summary vector for an optional sentence.)
+- **#1049 follow-ups in the same text surfaces.** The card asks for answers to each open AI-powered
+  finding (a `verified_resolved` or final finding, `next_actions: none`, takes no response), as do
+  the `respond` description, `workflow.md` and the respond template, which now also cites the
+  post-finding `evd_`/`res_` an acknowledgement needs. `request-templates.md#publish-work` and
+  `#ordinary-publication` are explicit aliases of `#publication-templates`, and both documents
+  alias `#plan-and-obligations`. The request-templates resource description counts the eighteen
+  families `publish_work` admits (nine ordinary, seven lifecycle, two coordination) instead of
+  "nine ordinary publication families"; the policy's sixteen are the core families and it says
+  so. A digest subject refused by its `evidence_kind` branch is hinted with that branch's subset
+  (INTERFACES, MCP error hints).
+
+The card stays inside the 8 KiB mandatory budget: the Codex surface sat 9 bytes under it, so the
+additions replaced the inspection sentence's list of what it returns (the `check` description
+keeps it); the optional `read_guidance` `page_size` reminder did not fit and stays in the
+`read_guidance` description.
+
+Verification: `tests/conformance/surfaces/test_frontier_source_consistency.py` scans the shipped
+guidance, skills, usage docs, every advertised tool and schema description and the missing-frontier
+error, directive and nudge for status-as-frontier-source wording and checks the stated rule;
+`tests/integration/application/test_held_frontier_sequence.py` drives start, hook observations,
+the first plan with the start frontier and a later write with the returned one, with no status
+read, and keeps a cooperative write in between a conflict; `tests/unit/mcp/test_summaries_text_fallback.py`
+holds the start and publish texts; `tests/unit/mcp/test_guidance_family_inventory.py`,
+`tests/unit/mcp/test_tb4n4_call_traps.py` and `tests/unit/mcp/test_tb4n5_digest_subject_hint.py`
+hold the counts, aliases and subject hint (the five recorded tb4n5 subject shapes).
+
+Check follow-up (2026-10-13, Codex check D4/D5): the two "Repair then finish" recipes
+(`publication-policy.md`, `coverage-and-receipts.md`) began with "Read current `status` and retain
+its frontier"; they now keep the held frontier and read `status` (or a filtered evidence view) only
+when IDs are needed, no frontier is held, or `frontier_changed` occurred. The focused review topic
+now answers each open AI-powered finding only; a `verified_resolved` or final finding takes no
+response. The consistency scan covers both spellings and the review topic.

@@ -2566,14 +2566,45 @@ def summary_for_closure_prepare(envelope: object) -> str:
     )
 
 
+# tb4n5 (#1048): six first-plan batches sent ``expected_frontier: null`` right after a status read,
+# and 85 of 87 later state-sensitive publishes read status first only to copy its frontier. The
+# start and accepted-publish texts say which frontier the next write sends; neither is required
+# text, so the identity and frontier are never displaced by them.
+_START_FRONTIER_NEXT: Final = (
+    "Send this frontier as expected_frontier on your first plan publish_work"
+    " (next_request_template carries it); no status read is needed for it."
+)
+_START_FRONTIER_NEXT_SHORT: Final = "Send this frontier as your first plan's expected_frontier."
+_WRITE_FRONTIER_NEXT: Final = (
+    "Send this frontier as the next write's expected_frontier; no status read is needed for it."
+)
+_WRITE_FRONTIER_NEXT_SHORT: Final = "Send it as the next expected_frontier."
+
+
+def _frontier_next_part(source: Mapping[str, JsonValue]) -> Part | None:
+    """Which write sends the returned frontier next, for a start or an accepted publish."""
+
+    if _frontier_clause(source) == "frontier: unavailable":
+        return None
+    if isinstance(source.get("next_request_template"), Mapping):
+        return _opt(_START_FRONTIER_NEXT, _START_FRONTIER_NEXT_SHORT, priority=_P_ACTION)
+    if source.get("accepted_events") is not None and source.get("outcome") in {
+        "accepted",
+        "replayed",
+    }:
+        return _opt(_WRITE_FRONTIER_NEXT, _WRITE_FRONTIER_NEXT_SHORT, priority=_P_ACTION)
+    return None
+
+
 def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
     outcome = _safe_token(source.get("outcome"), fallback="recorded")
     identity = _identity_clause(source)
     accepted = source.get("accepted_events")
-    parts: list[Part] = [_req(f"Operation outcome: {outcome};")]
+    parts: list[Part | None] = [_req(f"Operation outcome: {outcome};")]
     if accepted is not None:
         parts.append(_req(f"accepted events: {_item_count(accepted)};"))
     parts.append(_req(f"{identity}{_frontier_clause(source)}."))
+    parts.append(_frontier_next_part(source))
     return _compose(parts)
 
 

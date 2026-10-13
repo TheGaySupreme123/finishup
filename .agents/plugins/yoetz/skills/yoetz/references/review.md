@@ -47,9 +47,11 @@ does not narrow it.
 Before the receipt, run the closing review: `check` with `final_review: true`. It judges each stated
 requirement and requested output against the task, with or without a completion claim; closure
 readiness lists `closing_review_required` until one is current after the last material change.
-Answer every AI-powered finding with `respond` and a reason; `acknowledged` on a reviewer finding
-requires one. A finding whose `requested_next_step` is `answer_question` is a question: answer it
-in the reason (`rejected` when your answer shows the concern does not apply, `acknowledged` when it
+Answer each open AI-powered finding with `respond` and a reason; `acknowledged` on a reviewer
+finding requires one, plus an `evd_` or `res_` you recorded after it in `evidence_refs` (not for a
+question or a limitation request). A finding a check resolved (`verified_resolved`) or whose
+answer is final (`next_actions: ["none"]`) takes no response. A finding whose
+`requested_next_step` is `answer_question` is a question: answer it in the reason (`rejected` when your answer shows the concern does not apply, `acknowledged` when it
 does, then act). The next check shows the reviewer your answer, and it rules on it. Limitations
 outside your control (authority, credentials, unavailable external resources) stay acceptable when
 disclosed; a limitation you could reduce is work, not support.

@@ -28,7 +28,7 @@ Never publish hidden reasoning or chain-of-thought, full prompts, transcripts, c
 
 Select `semantic_required` when the user, effective policy, or named acceptance criterion requires independent review; `semantic_if_configured` only if optional; `deterministic_only` only for local or no-egress work.
 
-Writes return frontier, ids and errors; a prior `status` read or `dry_run` is optional. Cite IDs you published; find native captures with `view=evidence` filter `strength=immutable_snapshot`, reusing only IDs a structural link ties to the claim. Omitted descriptions are a privacy setting, not missing evidence. For the picture, `check` `mode: inspect` (records nothing): what is left, whose move, what hooks saw, whether evidence links to declared items.
+Writes return frontier, ids, errors; a prior `status` read or `dry_run` is optional: send each returned frontier as the next `expected_frontier` (first plan: `start`'s). Cite IDs you published; find native captures with `view=evidence` filter `strength=immutable_snapshot`, reusing only IDs a structural link ties to the claim. Omitted descriptions are a privacy setting, not missing evidence. What is left and why: `check` `mode: inspect` (records nothing).
 
 `check` after the plan and each milestone; cite observed runs (`status view=results`). Publish claim/evidence before the final check; answer findings, check, and inspect resolved state. On a finding, change the work or record what it names; an unchanged recheck returns it. Recheck only after repair/material record. After `insufficient_packet`, go to the receipt; never use `deterministic_only` merely to shorten closure.
 
@@ -36,7 +36,7 @@ Final prose and receipts are scope-first: lead with evidence/checks covered, wha
 
 # Review dialogue
 
-Before the receipt run the closing review: `check` with `final_review: true`. Answer every AI-powered finding with `respond` and a reason (`acknowledged` requires one); for `requested_next_step: answer_question`, answer in the reason.
+Before the receipt run the closing review: `check` with `final_review: true`. Answer each open AI-powered finding with `respond` and a reason (`acknowledged` requires one); for `requested_next_step: answer_question`, answer in the reason.
 
 # Multi-agent work
 

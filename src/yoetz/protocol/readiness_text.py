@@ -303,6 +303,13 @@ _RECHECK_PHRASES: Final[Mapping[str, str]] = {
     "blocker": "a blocker you recorded",
     "premise": "findings you acknowledged that the review says the task requires",
 }
+# tb4n5 (#1050): an acceptance re-read limited to the resolved obligations the ledger flags, and
+# the per-obligation line that answers it before the Stop.
+_ACCEPTANCE_RISK_RULE: Final = "resolved_obligations_acceptance_risk"
+_ACCEPTANCE_RISK_PHRASE: Final = (
+    "the acceptance criteria of the resolved obligations Yoetz flags (rechecks lists them; a line"
+    " `yoetz-acceptance:<obligation id>:met` per obligation in your final answer answers it)"
+)
 _MAX_NAMED_RULING_FINDINGS: Final = 3
 
 
@@ -319,13 +326,20 @@ def recheck_note(readiness: object) -> str | None:
     if not isinstance(raw, (tuple, list)):
         return None
     kinds: list[str] = []
+    flagged = False
     for entry in tuple(cast("tuple[object, ...] | list[object]", raw)):
         kind = _field(entry, "kind")
         if type(kind) is str and kind in _RECHECK_PHRASES and kind not in kinds:
             kinds.append(kind)
+            flagged = flagged or (
+                kind == "acceptance" and _field(entry, "rule") == _ACCEPTANCE_RISK_RULE
+            )
     if not kinds:
         return None
-    named = "; ".join(_RECHECK_PHRASES[kind] for kind in kinds)
+    named = "; ".join(
+        _ACCEPTANCE_RISK_PHRASE if kind == "acceptance" and flagged else _RECHECK_PHRASES[kind]
+        for kind in kinds
+    )
     return (
         "At Stop you will be asked once to re-read: "
         f"{named}. closure_readiness.rechecks lists each with its key."

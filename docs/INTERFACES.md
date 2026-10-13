@@ -187,6 +187,15 @@ implies (which id kind a reference list names, `status` `limit`, `at_frontier`, 
 `obligation_published` `resolution_evidence_refs` sentence also answers a rejection located at the
 list itself, so a resolution that omits the list or sends it empty is told what it holds: one or
 more evidence (`evd_`) or result (`res_`) ids, with every other field repeated (tb4n4, #1049).
+A payload value a sibling's `const` narrows in a top-level `allOf` rule of its family (tb4n5,
+#1049: `evidence_recorded` `digest_binding.subject` by `evidence_kind`) is hinted from that rule,
+not from the property's union: the schema validator names the frozen `(field, const)` of the branch
+the draft selected (`SchemaInstanceInvalid.condition_field` / `condition_value`, read from the
+schema and admitted only when the draft's value byte-equals it), and the hint leads with that
+branch's subset (`subject for evidence_kind test_result admits approved_check_receipt,
+static_analysis_report, test_report, test_stdout`), then every other branch's, then each value a
+peer const constrains (`approved_check_receipt needs provenance approved_check`). Without a
+selected branch it names every branch. Only `field` and `reason` reach the wire.
 
 Two request shapes are read instead of refused (tb4n4, #1049). Both are normalized by the protocol
 request model before the schema check, so every surface that validates a request (MCP bridge, CLI,
@@ -452,7 +461,12 @@ The anchor names a topic when it is the topic's anchor once case, `_` and punctu
 slug way (`publish_work-decision`), an explicit `<a id>` target the document writes under that
 topic's heading (`publication-policy.md#attempt-accounting`), or words that all appear in that
 topic's anchor and in no other anchor of the document (`request-templates.md#decision`). Two or more
-candidates never resolve; `resources/read` keeps exact URIs. Any other anchor outside the catalog
+candidates never resolve; `resources/read` keeps exact URIs. The guesses tb4n5 agents made are
+explicit `<a id>` aliases (#1049): `request-templates.md#publish-work` and
+`#ordinary-publication` read `#publication-templates` (the list of every `publish_work` template's
+exact URI), `request-templates.md#plan-and-obligations` reads
+`#publish-work-plan-plus-obligation`, and `publication-policy.md#plan-and-obligations` reads
+`#obligations-evidence-and-claims`. Any other anchor outside the catalog
 on a registered document is
 rejected as `INVALID_REQUEST` with `safe_details.field = "/uri"` and a message listing that
 document's registered anchors plus the whole-document retry; an unregistered document lists the
@@ -462,10 +476,16 @@ decode a fractional number in that result (see the Codex integration runbook).
 
 Protocol reason
 `expected_frontier_required` marks a state-sensitive `publish_work` batch that omitted
-`expected_frontier`. It names that field and is retryable because validation wrote no durable
-operation; the caller may reuse the same `request_id` with a corrected body. Here `retryable`
-describes whether safe recovery exists for the durable state reached, not whether the request bytes
-must remain unchanged. A stale supplied frontier remains `frontier_changed`.
+`expected_frontier` (or sent `null`). It names that field and is retryable because validation wrote
+no durable operation; the caller may reuse the same `request_id` with a corrected body. Here
+`retryable` describes whether safe recovery exists for the durable state reached, not whether the
+request bytes must remain unchanged. Its continuation is `frontier_held_required` (tb4n5, #1048):
+send the frontier the caller already holds (the `frontier` `start` returned for the first plan,
+otherwise the `result_frontier` of its last accepted write), never a status read. A stale supplied
+frontier remains `frontier_changed`, whose continuation `frontier_refresh_required` reads `status`.
+The `expected_frontier` field description every write tool advertises, the publication policy, the
+request templates and the operating card name the same source; the `start` and accepted
+`publish_work` text summaries say which write sends the returned frontier next.
 
 For an accepted state-sensitive batch, `expected_frontier` is task-scoped. Under ADR-022, a held
 frontier may trail the current head only when every intervening record is observation-authored under
@@ -579,8 +599,10 @@ not use list as a discovery step. A list failure is not a missing server.
 capability is not advertised — that pairing is conformant and is asserted, not "fixed". Guidance
 must not present MCP resource-template discovery as a recovery path. The static
 `yoetz://guidance/request-templates.md` resource is an ordinary guidance resource: it carries
-complete, schema-valid fallback request bodies for the six operations and all nine ordinary
-publication families. It does not weaken catalog admission or add an MCP resource template.
+complete, schema-valid fallback request bodies for the six operations and all eighteen families
+`publish_work` admits (`ORDINARY_MCP_PUBLISH_EVENT_FAMILIES`: the nine ordinary families, seven
+delegation and work lifecycle families and two coordination families). It does not weaken catalog
+admission or add an MCP resource template.
 Internal-only value error: `ProtocolValueError(reason_code: str)` — bounded reason codes, never
 free text from input. CLI exit classes (0/2/10/11/20/30/40/70/130) map from codes in
 `cli/exits.py` only.
@@ -7215,8 +7237,22 @@ the basis could not be read):
   `awaiting_ruling_findings [{finding_id, since_frontier}]` (<= 8, by id; exactly the findings
   counted in `finding_counts.awaiting_ruling`, up to the bound); `rechecks [{kind
   (acceptance|acknowledgement|blocker|premise), key (accept:<h8>|ack:<obl>|blocker:<obl>:<kind>|premise:<n>),
-  subjects[<=8], rule, since_frontier}]`. `receipt_blocking_finding_count` keeps its wire name and
-  means `finding_counts.to_do + finding_counts.unmet`.
+  subjects[<=8], rule, since_frontier}]`. Since tb4n5 (#1050, ADR-033 amendment of 2026-10-13)
+  the `acceptance` entry names only the resolved obligations the ledger flags (rule
+  `resolved_obligations_acceptance_risk`, key over that set; no entry when none is flagged):
+  `yoetz.kernel.acceptance_risk.acceptance_risk(projection, records, resolved) -> ((obligation,
+  reasons), ...)` with the closed reasons `requested_item_never_attempted`,
+  `evidence_not_linked_to_declared_items` and `evidence_self_asserted_only`, carried per request as
+  `ClosureReadinessFacts.acceptance_risk_obligation_ids` (`None` on a hand-built fact set keeps
+  every resolved obligation and the rule `resolved_obligations_acceptance_reread`). The alignment it
+  reads is `yoetz.kernel.evidence_alignment` (`declared_items`, `results_by_evidence`,
+  `source_actions`, `evidence_sources`, `alignment_of`), shared with the inspection's
+  `evidence_alignment`; the inventories are indexed once per call, each cited reference's
+  source actions are resolved once per call (`source_cache`) and deduplicated by action id, and an
+  identical call is answered from a one-entry memo (Stop's status deadline is 4,000 ms). The status
+  directive's re-check note names the flagged set and the `yoetz-acceptance:<obligation id>:met`
+  line that answers it. `receipt_blocking_finding_count` keeps its wire name and means
+  `finding_counts.to_do + finding_counts.unmet`.
 - `status view=findings` rows: `closure_class`, `closure_basis`, `next_actions`;
   `view=obligations` rows: `closure_class`, `closure_basis`.
 - `check` `finding_checklist.counts`: `to_do`, `awaiting_ruling`, `unmet`, `disclosed`,
@@ -9614,8 +9650,19 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `finding_obligation_scope(state, finding_id) -> frozenset[ObligationId]`,
   `task_fact_bears_on_finding(code, *, state, finding_id, markers) -> bool` and
   `scoped_resolution_reasons(reasons, *, state, finding_id, records) -> tuple[str, ...]` (drops the
-  `coverage:<task fact>` reasons that do not bear on the finding; never empties the list).
-  `self_verification_refusal` applies it; readiness, the Stop gate and resolution stay task-wide.
+  `coverage:<task fact>` reasons that do not bear on the finding, and since tb4n5 (#1049) a
+  `coverage:command_attempt_mismatch` that no mismatched item bears on; never empties the list).
+  `command_mismatches(state, records) -> tuple[CommandMismatch, ...]` lists the effective
+  obligations' `asserted_observed_mismatch` items (`CommandMismatch(obligation_id, item_index,
+  asserted_action_ids, observed_event_ids)`; memoized for the last projection, prefix and
+  `task_facts.command_identity_key_generation()`), `command_mismatches_for_finding` the ones about
+  one finding (all of them when a subject is missing, redacted or cannot be placed; a result or
+  event subject resolves through its recorded action, so the linked observed run's result event
+  relates) and `command_mismatch_bears_on_finding` whether any is (true when none is located). An
+  obligation-scoped task fact also bears when a claim or obligation subject is missing or
+  redacted, or an event subject no projection row records (or records unreadably). `self_verification_refusal` applies it; the
+  `finding_not_proof_limited` refusal names those rows by id and index; readiness, the Stop gate and
+  resolution stay task-wide.
 - **Fact lineage and canonical commands (ADR-045, issue #1028).**
   `kernel/fact_lineage.FactLineage(code, rule, state, obligation_id, item_index, check_event_id,
   frontier, prior_event_id, prior_frontier, prior_size_bytes, prior_lines, now_size_bytes,
@@ -9717,11 +9764,12 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   not clear it, and names the files from `closure_readiness.undeclared_references`: the one
   exception to closed tokens, counts and ids in the gate text; a path is never remembered).
   `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
-  observation_pending=, reasked_blockers=, active_stop=, acceptance_uncovered=) ->
+  observation_pending=, reasked_blockers=, active_stop=, final_message=) ->
   ClosureGate(identity, text, items, blocker_keys) | None` asks the **re-checks
   `closure_readiness.rechecks` announces** (tb4n3 RC-8,
   ADR-033 amendment): `Recheck {kind: acceptance | acknowledgement | blocker | premise, key,
-  subjects, rule, since_frontier}` with the keys `accept:<h8 of sorted resolved obligation ids>`,
+  subjects, rule, since_frontier}` with the keys `accept:<h8 of the sorted announced (flagged)
+  resolved obligation ids>`,
   `ack:<obligation id>`, `blocker:<obligation id>:<kind>`, `premise:<acknowledged count>`. Status,
   `closure_prepare`, the CLI and the TUI show the same list; the gate never asks one status did
   not announce, and a readiness without the list (a service older than the gate) announces none.
@@ -9739,19 +9787,22 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `predicted_receipt` supplies the lowest-priority tail sentence (`predicted_receipt_variants`).
   When the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the text
   carries one informational note; that code alone never fires the gate.
-  `acceptance_uncovered` (#1050, ADR-033 amendment) is `None` when the host gave no final message
-  (today's re-read for every resolved obligation), else the resolved obligations the final message
-  does not address: they are named, and `()` means the re-read is not asked.
-  `uncovered_acceptance(final_message, rows) -> tuple[obligation id, ...]` is the deterministic
-  rule over `(obligation id, acceptance_criteria or description or None)` rows: covered by the
-  obligation id in the first 65,536 characters, or by at least two thirds of the acceptance text's
-  terms (lowercase ASCII alphanumeric tokens of three or more characters, or two with a digit, minus
-  79 closed function words, first 64 distinct) among the message's tokens. Where the re-read rides
+  `closure_gate_from_readiness(..., final_message=)` (tb4n5 #1050, ADR-033 amendment of
+  2026-10-13; it replaced `acceptance_uncovered=`): the acceptance re-read names the obligations
+  readiness announced (the ledger-flagged resolved set when the recheck's `rule` is
+  `resolved_obligations_acceptance_risk`, with the flag sentence), except those the final message
+  attests; `attested_acceptance(final_message) -> frozenset[obligation id]` reads every exact
+  `yoetz-acceptance:<obligation id>:met` (any other outcome, `:not_met` included, is no
+  attestation) in the first 65,536 characters, and `unattested_acceptance(recheck, final_message) ->
+  tuple[obligation id, ...] | None` is `None` (every announced obligation is asked) without a
+  message or when the announced subjects do not hash to the recheck's `accept:<h8>` key (more than
+  eight, or an older list), else the announced obligations not attested; `()` means the re-read is
+  not asked. The tb4n4 word-coverage rule (`uncovered_acceptance`) is removed. Where the re-read rides
   alone it ends with the sentence that a pure confirmation needs no new record, check or receipt.
-  `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status and raises
-  `ClosureGateUnavailable` when it cannot; when the gate would ask the acceptance re-read and a final
-  message is present it reads one `obligations` page (`status: resolved`, limit 100, 750 ms) and
-  trusts it only when its `resolved` rows hash to the announced `accept:<h8>` key. The Codex Stop
+  `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status (one read;
+  the tb4n4 `obligations` page read is gone) and raises `ClosureGateUnavailable` when it cannot,
+  and calls `on_acceptance_covered` when the message attests every announced obligation of an
+  unasked acceptance re-read. The Codex Stop
   body's and the Claude Code Stop payload's `last_assistant_message` reach it in process only
   (`handle_observe(..., _stop_final_message=)` for Claude Code); Cursor's `stop` carries none.
   `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the
@@ -9767,8 +9818,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `BLOCKER_UNCONFIRMED_TOKEN` (`obligation_blocker_unconfirmed`) is a gate item. Hook diagnostic
   reasons: `closure_gate_continued`, `closure_gate_blocker_rechecked`,
   `closure_gate_acceptance_rechecked` (the extra Stop turn the acceptance re-read costs),
-  `closure_gate_acceptance_covered` (the final message addressed every resolved obligation's
-  acceptance, so the re-read was not asked; #1050),
+  `closure_gate_acceptance_covered` (the final message attested every announced obligation, so
+  the re-read was not asked; #1050),
   `closure_gate_active_stop_rechecked`, `closure_gate_not_required`,
   `closure_gate_repeat_suppressed`, `closure_gate_turn_end_after_continue` (an already-continued
   Stop that emitted nothing: the normal end of a continued turn; this is the former

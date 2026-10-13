@@ -42,6 +42,7 @@ from yoetz.domain.receipts import (
 )
 from yoetz.domain.values import EventId, FindingId, ObligationId
 from yoetz.kernel import finding_todo as _finding_todo_module
+from yoetz.kernel.acceptance_risk import acceptance_risk
 from yoetz.kernel.check_standing import CheckCause, CheckStanding, check_standing
 from yoetz.kernel.claim_limitations import required_limitation_ids_for_projection
 from yoetz.kernel.claims import completion_claim_present
@@ -369,6 +370,12 @@ class ClosureReadinessFacts:
     # tb4n4 (#1044): the undeclared files the applicable check found delivered files naming,
     # ``(obligation id, item index, paths, total)`` (``delivered_set.undeclared_reference_rows``).
     undeclared_references: tuple[tuple[str, int | None, tuple[str, ...], int], ...] = ()
+    # tb4n5 (#1050, ADR-033): the resolved obligations the ledger flags as risky to call met
+    # (``kernel.acceptance_risk``: a requested item never attempted, evidence not linked to a
+    # declared item, or only self-asserted evidence), sorted. The Stop gate's acceptance re-read
+    # asks only for these. ``None`` marks a hand-built fact set that predates the rule: the
+    # re-read then names every resolved obligation, exactly as before.
+    acceptance_risk_obligation_ids: tuple[ObligationId, ...] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -429,6 +436,11 @@ class ClosureReadinessFacts:
         if type(self.disclosed_obligations) is not tuple or any(
             type(item) is not tuple or len(item) != 3 or item[1] not in _DISCLOSURE_CODES
             for item in self.disclosed_obligations
+        ):
+            raise ValueError("closure_readiness_facts_invalid")
+        risky = self.acceptance_risk_obligation_ids
+        if risky is not None and (
+            type(risky) is not tuple or risky != tuple(sorted(set(risky), key=str.encode))
         ):
             raise ValueError("closure_readiness_facts_invalid")
 
@@ -786,6 +798,18 @@ def closure_readiness_facts(
         ),
         fact_lineage=current_fact_lineage(state, records, applicability),
         undeclared_references=current_undeclared_references(state, records, applicability),
+        acceptance_risk_obligation_ids=tuple(
+            obligation
+            for obligation, _reasons in acceptance_risk(
+                state,
+                records,
+                (
+                    item.obligation_id
+                    for item in obligation_classes.values()
+                    if item.basis == "resolved"
+                ),
+            )
+        ),
     )
 
 

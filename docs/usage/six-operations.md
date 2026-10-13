@@ -300,8 +300,11 @@ findings you recorded as not done). Request the receipt; another check of unchan
 nothing. The receipt still lists every limitation, and its conclusion follows the prediction: a
 local-only check with limitations is still `insufficient_coverage`, and an acknowledged
 requirement keeps the conclusion at `unresolved_findings_remain`. `rechecks` lists the questions
-a Stop will ask you once to re-read (the acceptance criteria of resolved obligations, obligations
-you recorded as not done, a blocker you recorded); the status text announces them. `ready` means
+a Stop will ask you once to re-read (the acceptance criteria of the resolved obligations Yoetz
+flags because a requested item was never attempted or their evidence is unlinked or only your own
+assertion, obligations you recorded as not done, a blocker you recorded); the status text announces
+them. When a flagged obligation's criteria are met, the line `yoetz-acceptance:<obligation id>:met`
+in your final answer answers its re-read. `ready` means
 nothing remains at all, and `unknown` means read status again once it is readable.
 
 Local checks also report facts about the task's own work: a planned verification command (an

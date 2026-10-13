@@ -55,6 +55,12 @@ from yoetz.kernel.self_verification import (
     self_verification_blocking_reasons,
     self_verification_refusal,
 )
+from yoetz.kernel.task_fact_scope import (
+    COMMAND_ATTEMPT_MISMATCH_GAP,
+    CommandMismatch,
+    command_mismatches,
+    command_mismatches_for_finding,
+)
 from yoetz.ports.clock import ClockPort
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.ids import IdPort
@@ -450,9 +456,20 @@ def _admit_self_verification(
         blocking = self_verification_blocking_reasons(
             projection, finding_id(request.finding_id), records
         )
+        # tb4n5 (#1049): a mismatch refusal names the obligation, the requested item and the run
+        # it is linked to, so the link the continuation asks for can be published without a hunt.
+        mismatches = (
+            command_mismatches_for_finding(
+                projection,
+                finding_id(request.finding_id),
+                command_mismatches(projection, records),
+            )
+            if _MISMATCH_BLOCKING_REASON in blocking
+            else ()
+        )
         raise _error(
             PublicErrorCode.INVALID_REQUEST,
-            self_verification_refusal_message(blocking),
+            self_verification_refusal_message(blocking, command_mismatches=mismatches),
             reason_code=refusal,
             field="/finding_id",
             blocking_reasons=blocking[:_MAX_NAMED_BLOCKING_REASONS],
@@ -529,8 +546,46 @@ _BLOCKING_HINTS: Final[tuple[tuple[frozenset[str], str], ...]] = (
 )
 
 
-def self_verification_refusal_message(blocking: tuple[str, ...]) -> str:
-    """The ``finding_not_proof_limited`` message: the disqualifying tokens and the exits."""
+_MISMATCH_BLOCKING_REASON: Final = "coverage:" + COMMAND_ATTEMPT_MISMATCH_GAP
+_MAX_NAMED_MISMATCHES: Final = 3
+_MAX_NAMED_MISMATCH_IDS: Final = 2
+
+
+def _mismatch_sentence(mismatches: tuple[CommandMismatch, ...]) -> str:
+    """Which requested command item is mismatched, and the ids the repair link needs.
+
+    Only ledger ids and item indexes are named, never the command text (which is the agent's).
+    """
+
+    if not mismatches:
+        return ""
+    rows: list[str] = []
+    for row in mismatches[:_MAX_NAMED_MISMATCHES]:
+        runs = ", ".join(row.observed_event_ids[:_MAX_NAMED_MISMATCH_IDS]) or "none"
+        asserted = ", ".join(row.asserted_action_ids[:_MAX_NAMED_MISMATCH_IDS]) or "none"
+        rows.append(
+            f"{row.obligation_id} requested item {row.item_index} (asserted by {asserted};"
+            f" linked observed run event {runs})"
+        )
+    hidden = len(mismatches) - _MAX_NAMED_MISMATCHES
+    more = f" and {hidden} more (status view=obligations command_attempts)" if hidden > 0 else ""
+    return (
+        f" Mismatched: {'; '.join(rows)}{more}. The link needs three things: an action_recorded"
+        " with action_kind command, attempted_items holding that item's exact value, and"
+        " causal_parents naming the observed run event of the command that ran; or cite the"
+        " result of an observed run of exactly that command in the obligation's"
+        " resolution_evidence_refs."
+    )
+
+
+def self_verification_refusal_message(
+    blocking: tuple[str, ...], *, command_mismatches: tuple[CommandMismatch, ...] = ()
+) -> str:
+    """The ``finding_not_proof_limited`` message: the disqualifying tokens and the exits.
+
+    ``command_mismatches`` are the mismatched requested command items the finding bears on (only
+    when ``coverage:command_attempt_mismatch`` refused it); they are named by id and index.
+    """
 
     named = ", ".join(blocking[:_MAX_MESSAGE_REASONS])
     if len(blocking) > _MAX_MESSAGE_REASONS:
@@ -548,9 +603,13 @@ def self_verification_refusal_message(blocking: tuple[str, ...]) -> str:
         else "Not a Yoetz limit: the newest check of this finding names no Yoetz limit"
     )
     hint_text = f" Next: {'; '.join(hints)}." if hints else ""
+    mismatch_text = (
+        _mismatch_sentence(command_mismatches) if _MISMATCH_BLOCKING_REASON in blocking else ""
+    )
     return (
-        f"{reasons_text}.{hint_text} If the finding asks for something you inherently cannot"
-        " run (a hidden verifier, a private reference), that is not a Yoetz limit either: finish"
+        f"{reasons_text}.{hint_text}{mismatch_text} If the finding asks for something you"
+        " inherently cannot run (a hidden verifier, a private reference), that is not a Yoetz"
+        " limit either: finish"
         " the work and disclose it with a decision line yoetz-verification-limit:<obligation id>."
         " When the reviewer's finding asks you to state that limit (a limitation request), that"
         " decision or one acknowledged response with a reason settles it as a verification limit"
