@@ -93,7 +93,9 @@ async def test_recorded_cells_pair_on_call_id_and_hooked_cells_stay_local(replay
 
     On 98f62af this slice delivered every one of its 28 cell outputs as an
     ``Unpaired observed tool result`` with no tool identity, which the later-material rule counts
-    as ``other``. Now only the cells that ran no nested tool at all keep a wrapper record.
+    as ``other``. After #1038 only the cells that ran no nested tool at all kept a wrapper record;
+    since the tb4n5 owner decision (ADR-029 amendment of 2026-10-13) a cell with no observable tool
+    call, in a session whose rollout records tool items, is no workspace activity and keeps none.
     """
 
     records = _records()
@@ -108,4 +110,5 @@ async def test_recorded_cells_pair_on_call_id_and_hooked_cells_stay_local(replay
     descriptions = [str(getattr(row.payload, "description", "")) for row in observed]
     assert not [text for text in descriptions if text.startswith("Unpaired observed tool result")]
     wrappers = [text for text in descriptions if "(tool exec)" in text]
-    assert len(wrappers) == _itemless_cells(records) == 3
+    assert _itemless_cells(records) == 3
+    assert wrappers == []
