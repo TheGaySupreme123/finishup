@@ -8,7 +8,7 @@ import os
 import stat
 import subprocess
 import time
-from collections.abc import Buffer, Generator
+from collections.abc import Buffer, Generator, Mapping
 from contextlib import contextmanager
 from inspect import signature
 from pathlib import Path
@@ -1353,12 +1353,19 @@ def test_only_an_answered_manifest_mismatch_maps_to_service_incompatible() -> No
     assert mismatch.reason == "protocol_mismatch"
 
 
-def _holder(digest: str | None, version: str | None) -> object:
+def _holder(digest: str | None, version: str | None, *, legacy: bool = False) -> object:
     from yoetz.service.lifecycle import SingletonHolder
 
     return SingletonHolder(
-        pid=626, instance_id="svc_test", schema_manifest_digest=digest, service_version=version
+        pid=626,
+        instance_id="svc_test",
+        schema_manifest_digest=digest,
+        service_version=version,
+        identity_fields_absent=legacy,
     )
+
+
+_FOREIGN_DIGEST = "sha256:" + "0" * 64
 
 
 @pytest.mark.parametrize(
@@ -1371,10 +1378,19 @@ def _holder(digest: str | None, version: str | None) -> object:
         ("same", False, True, ("service_unavailable", "handshake", False)),
         # An unreadable stamp demonstrates nothing either way.
         ("none", True, False, ("service_unavailable", "handshake", False)),
-        # Only a stamp naming another identity is an incompatibility.
+        # Partly unreadable identity (a key absent, or present but invalid, beside matching or
+        # unreadable fields) is missing information, never another installation.
+        ("digest_unreadable", True, False, ("service_unavailable", "handshake", False)),
+        ("version_absent", True, False, ("service_unavailable", "handshake", False)),
+        ("version_invalid", True, False, ("service_unavailable", "handshake", False)),
+        ("both_unreadable", True, False, ("service_unavailable", "handshake", False)),
+        # A present, validated field that differs is a demonstrated mismatch.
         ("other_digest", True, True, ("service_incompatible", None, True)),
         ("other_version", True, False, ("service_incompatible", None, True)),
-        ("predates_stamp_fields", True, False, ("service_incompatible", None, True)),
+        ("other_version_digest_unreadable", True, False, ("service_incompatible", None, True)),
+        ("other_digest_version_invalid", True, False, ("service_incompatible", None, True)),
+        # Explicit legacy policy: a stamp with no identity keys at all (Yoetz 0.1.x).
+        ("legacy_stamp", True, False, ("service_incompatible", None, True)),
     ],
 )
 def test_an_unanswered_hello_is_incompatible_only_when_the_stamp_names_another_installation(
@@ -1393,9 +1409,16 @@ def test_an_unanswered_hello_is_incompatible_only_when_the_stamp_names_another_i
     holders: dict[str, object | None] = {
         "same": _holder(own, __version__),
         "none": None,
-        "other_digest": _holder("sha256:" + "0" * 64, __version__),
+        # ``probe_singleton_holder_identity`` reads an invalid digest as None.
+        "digest_unreadable": _holder(None, __version__),
+        "version_absent": _holder(own, None),
+        "version_invalid": _holder(own, "not a version"),
+        "both_unreadable": _holder(None, None),
+        "other_digest": _holder(_FOREIGN_DIGEST, __version__),
         "other_version": _holder(own, "0.0.1"),
-        "predates_stamp_fields": _holder(None, None),
+        "other_version_digest_unreadable": _holder(None, "0.0.1"),
+        "other_digest_version_invalid": _holder(_FOREIGN_DIGEST, "not a version"),
+        "legacy_stamp": _holder(None, None, legacy=True),
     }
     recorded: list[dict[str, object]] = []
 
@@ -1585,12 +1608,35 @@ async def test_supersede_signals_only_a_live_foreign_identity_holder(
     # to the liveness probe instead of lingering as a zombie that ``kill(pid, 0)`` still sees.
     reaper = threading.Thread(target=holder.wait, daemon=True)
     reaper.start()
+    own = schema_manifest_digest()
+
+    def stamp_raw(pid: int, identity: Mapping[str, object]) -> None:
+        lock.write_bytes(
+            canonical_encode({"instance_id": "svc_test", "pid": pid, **identity})  # type: ignore[arg-type]
+            + b"\n"
+        )
+        lock.chmod(0o600)
+
     try:
-        stamp(holder.pid, schema_manifest_digest(), __version__)
+        stamp(holder.pid, own, __version__)
         assert await client_module.supersede_incompatible_service(deadline=deadline) is False
         assert holder.poll() is None
         assert recorded == []
-        # A legacy stamp (no identity) from a live process is a supersede candidate.
+        # Partly unreadable identity proves no other installation: never signalled (#1040).
+        for identity in (
+            {"schema_manifest_digest": "not-a-digest", "service_version": __version__},
+            {"service_version": __version__},
+            {"schema_manifest_digest": own},
+            {"schema_manifest_digest": own, "service_version": "not a version"},
+            {"schema_manifest_digest": own, "service_version": 7},
+            {"schema_manifest_digest": None, "service_version": None},
+        ):
+            stamp_raw(holder.pid, identity)
+            assert await client_module.supersede_incompatible_service(deadline=deadline) is False
+            assert holder.poll() is None
+        assert recorded == []
+        # A legacy stamp (no identity keys at all, as Yoetz 0.1.x wrote it) from a live process
+        # is a supersede candidate by explicit upgrade policy.
         stamp(holder.pid, None, None)
         assert await client_module.supersede_incompatible_service(deadline=deadline) is True
         reaper.join(timeout=5)
@@ -1600,6 +1646,30 @@ async def test_supersede_signals_only_a_live_foreign_identity_holder(
         if holder.poll() is None:
             holder.kill()
             holder.wait(timeout=5)
+
+    # A present, validated digest that differs is a demonstrated mismatch, signalled even when
+    # the version field is unreadable.
+    foreign = subprocess.Popen(  # noqa: S603 - fixed interpreter
+        (sys.executable, "-c", "import time; time.sleep(30)"),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    foreign_reaper = threading.Thread(target=foreign.wait, daemon=True)
+    foreign_reaper.start()
+    try:
+        stamp_raw(
+            foreign.pid,
+            {"schema_manifest_digest": "sha256:" + "0" * 64, "service_version": "not a version"},
+        )
+        assert await client_module.supersede_incompatible_service(deadline=deadline) is True
+        foreign_reaper.join(timeout=5)
+        assert foreign.returncode is not None and foreign.returncode != 0
+        assert recorded == ["service_supersede", "service_supersede"]
+    finally:
+        if foreign.poll() is None:
+            foreign.kill()
+            foreign.wait(timeout=5)
 
 
 def test_holder_version_order_orders_packages_and_never_guesses(

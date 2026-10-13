@@ -535,6 +535,52 @@ def _protocol_error(error: ControlProtocolError) -> ControlError:
     return ControlError("service_unavailable", retryable=True)
 
 
+type _StampIdentity = Literal["same", "other", "legacy", "unknown"]
+
+
+def _validated_version(value: str | None) -> str | None:
+    """A stamped package version that parses as one, else None (never evidence either way)."""
+
+    if value is None:
+        return None
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        Version(value)
+    except InvalidVersion:
+        return None
+    return value
+
+
+def _stamp_identity(holder: SingletonHolder) -> _StampIdentity:
+    """How a stamped holder's identity compares with this installation's, on evidence only.
+
+    ``other`` needs a present, validated field that differs: a schema-manifest digest or a
+    package version that is not this installation's. ``legacy`` is a stamp with neither identity
+    key at all, as installations that predate the fields wrote it (Yoetz 0.1.x); treating such a
+    holder as an older installation to replace is an explicit upgrade policy, not a demonstrated
+    mismatch. ``same`` needs both fields readable and equal. Anything else, a field absent or
+    unreadable beside fields that match, is ``unknown``: missing information is never read as
+    another installation, so it never makes a holder incompatible or a supersede candidate.
+    """
+
+    if holder.identity_fields_absent:
+        return "legacy"
+    digest = holder.schema_manifest_digest
+    version = _validated_version(holder.service_version)
+    if (digest is not None and digest != _manifest_digest_for_client()) or (
+        version is not None and version != __version__
+    ):
+        return "other"
+    if digest is not None and version is not None:
+        return "same"
+    return "unknown"
+
+
+# Stamp classes that may be reported as ``service_incompatible`` and replaced through the stamp.
+_REPLACEABLE_STAMPS: Final[frozenset[_StampIdentity]] = frozenset({"other", "legacy"})
+
+
 def _system_git_below_minimum() -> bool:
     """True when the system Git (the one the service resolves workspaces with) is too old."""
 
@@ -551,19 +597,18 @@ def _unanswered_hello(workspace_locator: WorkspaceLocator | None) -> ControlErro
     decode; one of this very installation closes when its own side of the handshake fails, such
     as resolving the caller's repository with a Git it cannot use (it records why). Only the
     owner-only singleton stamp tells them apart, so ``service_incompatible``, whose remedy is
-    replacing the service, is reported only when the stamp names another identity. A holder
-    stamped with this installation's identity, or one whose stamp cannot be read, is a failed
-    handshake that restarting would not change: non-retryable ``service_unavailable`` with
-    ``phase`` ``handshake``, or ``handshake_git_version`` when this hello named a workspace and the
-    system Git is older than the documented minimum. The correlation id resolves the client-side
-    record; the service's own record names the cause.
+    replacing the service, is reported only when the stamp shows another identity: a validated
+    field that differs, or the legacy stamp without identity fields (``_stamp_identity``). A
+    holder stamped with this installation's identity, one whose stamp cannot be read, and one
+    whose identity fields are only partly readable is a failed handshake that restarting would
+    not change: non-retryable ``service_unavailable`` with ``phase`` ``handshake``, or
+    ``handshake_git_version`` when this hello named a workspace and the system Git is older than
+    the documented minimum. The correlation id resolves the client-side record; the service's
+    own record names the cause.
     """
 
     holder = service_holder_identity()
-    if holder is not None and (
-        holder.schema_manifest_digest != _manifest_digest_for_client()
-        or holder.service_version != __version__
-    ):
+    if holder is not None and _stamp_identity(holder) in _REPLACEABLE_STAMPS:
         return ControlError("service_incompatible", retryable=True)
     from yoetz.observability.logging import record_public_error_without_raising
 
@@ -1666,8 +1711,9 @@ async def supersede_incompatible_service(*, deadline: float, replace_newer: bool
     singleton stamp (never guessed from process listings), receives the daemon's ordinary
     bounded-shutdown signal, and is polled until it releases the lock. Returns ``True`` once the
     endpoint is free, ``False`` when no supersede candidate can be identified (no live stamped
-    holder, an identical-identity holder that rejected us anyway, a holder stamped by a newer
-    package than this one, or a platform without POSIX signals), and raises
+    holder, an identical-identity holder that rejected us anyway, a holder whose identity fields
+    are only partly readable, a holder stamped by a newer package than this one, or a platform
+    without POSIX signals), and raises
     ``service_incompatible`` when the holder outlives the deadline. Only an explicit human
     ``yoetz service restart`` passes ``replace_newer``: an upgrade moves forward, so a process
     left over from before an in-place package upgrade never replaces its successor. A durable
@@ -1682,12 +1728,11 @@ async def supersede_incompatible_service(*, deadline: float, replace_newer: bool
     holder = probe_singleton_holder_identity(_singleton_lock_path())
     if holder is None:
         return False
-    if (
-        holder.schema_manifest_digest == _manifest_digest_for_client()
-        and holder.service_version == __version__
-    ):
+    if _stamp_identity(holder) not in _REPLACEABLE_STAMPS:
         # Same installation identity yet it rejected the hello: this is not an upgrade, and
-        # stopping it would not change the outcome. Report instead of restarting.
+        # stopping it would not change the outcome. A stamp whose identity is only partly
+        # readable proves no other installation either, so it is never signalled. Report
+        # instead of restarting.
         return False
     if not replace_newer and holder_version_order(holder.service_version) == "newer":
         # This process predates an in-place upgrade (an open session's bridge, typically). The
@@ -1823,10 +1868,10 @@ async def connect_service_on_demand(
         # let the fixed launcher make a normal flock-protected attempt; it cannot supersede a live
         # holder and it gives a stale stamp a path back to startup.
         holder = None
-    elif holder is not None and (
-        holder.schema_manifest_digest != _manifest_digest_for_client()
-        or holder.service_version != __version__
-    ):
+    elif holder is not None and _stamp_identity(holder) in _REPLACEABLE_STAMPS:
+        # Only a stamp that shows another installation is reported as one. A holder of this
+        # installation, or one whose identity is only partly readable, holds the lock: it is
+        # waited for below (never spawned beside), and its handshake has the last word.
         raise ControlError("service_incompatible", retryable=True)
     spawned: _SpawnedService | None = None
     if holder is None:

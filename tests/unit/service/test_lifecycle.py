@@ -458,6 +458,8 @@ def test_holder_identity_probe_tolerates_legacy_and_malformed_identity_fields(
     assert (holder.pid, holder.instance_id) == (os.getpid(), "svc_legacy")
     assert holder.schema_manifest_digest is None
     assert holder.service_version is None
+    # Neither key at all: how installations before the identity fields stamped (#1040).
+    assert holder.identity_fields_absent is True
 
     path.write_bytes(
         canonical_encode(
@@ -474,3 +476,12 @@ def test_holder_identity_probe_tolerates_legacy_and_malformed_identity_fields(
     assert holder is not None
     assert holder.schema_manifest_digest is None
     assert holder.service_version is None
+    # Present but unreadable is missing information, not a legacy stamp.
+    assert holder.identity_fields_absent is False
+    path.write_bytes(
+        canonical_encode({"instance_id": "svc_half", "pid": os.getpid(), "service_version": "1"})
+        + b"\n"
+    )
+    holder = probe_singleton_holder_identity(path)
+    assert holder is not None
+    assert holder.identity_fields_absent is False

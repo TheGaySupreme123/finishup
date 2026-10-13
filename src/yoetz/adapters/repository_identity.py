@@ -74,8 +74,37 @@ def _git_environment() -> dict[str, str]:
     }
 
 
+_HEAD_PROBE_BYTES: Final = 256
+_HEX: Final = frozenset(b"0123456789abcdef")
+
+
+def _is_git_directory(candidate: Path) -> bool:
+    """Whether ``candidate`` is itself a Git directory, as Git's own discovery decides.
+
+    A bare repository (and a ``.git`` directory entered directly) has no ``.git`` child: Git
+    recognises it by ``objects/`` and ``refs/`` directories beside a ``HEAD`` that is a symbolic
+    ref (``ref: refs/...``) or an object id.
+    """
+
+    try:
+        if not ((candidate / "objects").is_dir() and (candidate / "refs").is_dir()):
+            return False
+        with (candidate / "HEAD").open("rb") as handle:
+            head = handle.read(_HEAD_PROBE_BYTES).rstrip(b"\n")
+    except OSError:
+        return False
+    if head.startswith(b"ref: refs/"):
+        return True
+    return len(head) in {40, 64} and set(head) <= _HEX
+
+
 def _has_git_marker(directory: Path) -> bool:
-    return any((candidate / ".git").exists() for candidate in (directory, *directory.parents))
+    """Whether Git would find a repository at ``directory`` or any directory above it."""
+
+    return any(
+        (candidate / ".git").exists() or _is_git_directory(candidate)
+        for candidate in (directory, *directory.parents)
+    )
 
 
 async def _bounded_git_common_directory(directory: Path) -> Path | None:
@@ -87,8 +116,9 @@ async def _bounded_git_common_directory(directory: Path) -> Path | None:
     if not git_version_supported(await git_version_async(executable)):
         # Below the minimum the identity is not vouched for (Git before 2.13, for one, printed
         # ``--git-common-dir`` relative to the top level rather than to the directory it ran in,
-        # which would commit a different repository). A directory with no Git marker keeps its
-        # plain directory identity, exactly as on a machine without Git.
+        # which would commit a different repository). A directory with no Git marker (no
+        # ``.git`` at or above it, and not inside a bare repository or other Git directory)
+        # keeps its plain directory identity, exactly as on a machine without Git.
         if _has_git_marker(directory):
             raise RepositoryIdentityError(GIT_VERSION_UNSUPPORTED)
         return None

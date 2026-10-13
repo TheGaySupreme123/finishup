@@ -279,6 +279,7 @@ def _layouts(tmp_path: Path) -> dict[str, tuple[Path, str]]:
         "linked_worktree_subdirectory": (linked_nested, "git_common_root"),
         "symlinked_subdirectory": (alias, "git_common_root"),
         "bare": (bare, "git_common_root"),
+        "bare_subdirectory": (bare / "refs" / "heads", "git_common_root"),
         "not_git": (plain, "directory"),
     }
 
@@ -316,11 +317,13 @@ async def test_repository_identity_is_the_same_on_every_git(
         assert old[name].identity_kind == current[name].identity_kind == kind, name
         # The commitment must not depend on the Git version, or a grant would stop matching.
         assert old[name].commitment == current[name].commitment, name
-        if kind == "git_common_root" and name != "bare":
+        if kind == "git_common_root" and not name.startswith("bare"):
             assert old[name].commitment == old["root"].commitment, name
         expected = _path_format_commitment(path) if kind == "git_common_root" else None
         if expected is not None:
             assert current[name].commitment == expected, name
+    # A directory inside a bare repository commits the bare repository itself.
+    assert old["bare_subdirectory"].commitment == old["bare"].commitment
 
 
 @pytest.mark.anyio
@@ -468,16 +471,30 @@ async def test_git_below_the_minimum_is_named_everywhere_git_is_needed(
     repository = _repository(tmp_path)
     plain = tmp_path / "plain"
     plain.mkdir()
+    # Names a bare repository has, around a HEAD that is not one: still a plain directory.
+    lookalike = tmp_path / "lookalike"
+    (lookalike / "objects").mkdir(parents=True)
+    (lookalike / "refs").mkdir()
+    (lookalike / "HEAD").write_text("not a ref\n", encoding="utf-8")
+    bare = (tmp_path / "bare.git").resolve()
+    _git(tmp_path, "init", "--quiet", "--bare", os.fspath(bare))
     install_git("2.24.4")
 
-    with pytest.raises(RepositoryIdentityError) as identity:
-        await resolve_repository_privacy_context(WorkspaceLocator(os.fspath(repository)), _MacKey())
-    assert identity.value.reason == GIT_VERSION_UNSUPPORTED
+    # A worktree, a bare repository's root and a directory inside one are all repositories Git
+    # would find: each is refused, never silently committed as a plain directory (whose
+    # commitment would differ from the one a supported Git gives the same locator).
+    for located in (repository, repository / ".git", bare, bare / "refs" / "heads"):
+        with pytest.raises(RepositoryIdentityError) as identity:
+            await resolve_repository_privacy_context(
+                WorkspaceLocator(os.fspath(located)), _MacKey()
+            )
+        assert identity.value.reason == GIT_VERSION_UNSUPPORTED, located
     # A directory with no Git marker keeps its directory identity, as on a machine without Git.
-    directory = await resolve_repository_privacy_context(
-        WorkspaceLocator(os.fspath(plain)), _MacKey()
-    )
-    assert directory.identity_kind == "directory"
+    for unmarked in (plain, lookalike):
+        directory = await resolve_repository_privacy_context(
+            WorkspaceLocator(os.fspath(unmarked)), _MacKey()
+        )
+        assert directory.identity_kind == "directory", unmarked
 
     for read in (
         lambda: GitChangeCaptureAdapter().read_task_base(os.fspath(repository)),
