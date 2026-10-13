@@ -398,9 +398,12 @@ def _header_entries(capture: CheckChangeCapture) -> tuple[tuple[str, str | None]
         else:
             count = re.search(r" \(\+[0-9-]", remainder)
             path = remainder if count is None else remainder[: count.start()]
-            # The first fixed note ends the path (``x untracked; not shown: ...``).
+            # The first fixed note ends the path (``x untracked; not shown: ...``, and the tb4n5
+            # note on a file ranked last as generated output).
             markers = [
-                marker for note in (" not shown:", " untracked") if (marker := path.find(note)) >= 0
+                marker
+                for note in (" not shown:", " untracked", " generated, build or minified output")
+                if (marker := path.find(note)) >= 0
             ]
             if markers:
                 path = path[: min(markers)]

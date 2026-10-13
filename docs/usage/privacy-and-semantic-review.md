@@ -275,8 +275,10 @@ tracked files, plus untracked files Git does not ignore — from the repository 
 connection named (only when that directory is the repository's own working tree: a repository whose
 Git settings point its working tree elsewhere is not read), and shows it to the reviewer first, with
 a header naming every changed file. Files you declared as outputs come first, then small files,
-then the rest, so when the change is cut for room your deliverables are kept and scratch files go
-first. It covers edits made by scripts and commits that no hook captured. A declared output that
+then the rest from smallest to largest, then generated files (build output such as `dist/`,
+lockfiles, minified bundles and source maps, unless you declared them as outputs), so when the
+change is cut for room your deliverables and source are kept and scratch and build output go
+first. A generated file is still listed in the header, marked as placed after the other files. It covers edits made by scripts and commits that no hook captured. A declared output that
 lives outside the repository (for example `/output/result.json`) is never read by Yoetz itself; when
 the case already holds a capture of it (output a hook recorded, or evidence the agent published
 that names it), that capture is carried with the same priority as the change, under the same

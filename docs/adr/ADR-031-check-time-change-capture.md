@@ -174,14 +174,29 @@ content-returning read needed its own decision. This is that decision, for exact
    Inside the change, files are ordered by what the task delivers, not by path (tb4n2 R7, issue
    #1016): files at or under a requested `role: output` item come first (then requested files with
    no role, an `obligation_published` 1.0.0 deliverable), then files whose rendered section is at
-   most 4 KiB, then the rest, each group in path order. The same order decides which untracked
+   most 4 KiB in path order, then the rest by size (smallest first, path order breaking ties), then
+   generated, build or minified output by size. The same order decides which untracked
    files the untracked-file limit reads (sized by a metadata-only stat of up to 4096 paths) and
    which tracked files the object-verification budget covers first. Before a tracked file's diff
    is read (the per-file fallback when the whole diff is too large), "small" means at most 64
-   changed lines by Git's numstat, since its byte size is not yet known. A cut change or a
-   narrowed packet therefore keeps the deliverables and drops scratch first. Declared outputs
-   outrank role-less requested files. The declared paths only order the change; they never widen
-   what is read.
+   changed lines by Git's numstat, and size means that line count, since its byte size is not yet
+   known. A cut change or a narrowed packet therefore keeps the deliverables and drops scratch
+   first. Declared outputs outrank role-less requested files. The declared paths only order the
+   change; they never widen what is read.
+   Amendment (tb4n5 react-lead-form, issue #1045 follow-up): a 145 KB minified `dist/` bundle
+   from `npm run build` sorted path-first ahead of `src/lib/leadStore.ts`, so no packet carried
+   the central implementation. A file that is not a declared deliverable now ranks after every
+   other file when a path component is a known build-output or cache directory (`dist`, `build`,
+   `out`, `target`, `coverage`, `node_modules`, `__pycache__`, `.next`, `.nuxt`, `.output`,
+   `.svelte-kit`, `.vite`, `.turbo`, `.parcel-cache`), when its name is a lockfile
+   (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `poetry.lock`, `uv.lock`
+   and the like) or ends in `.min.js`, `.min.css` or `.map`, or, once its section is rendered,
+   when that section is at least 8 KiB with lines averaging over 1000 bytes (minified). Names are
+   matched exactly and nothing is opened to decide. Such a file is never left out for being
+   generated: it stays in the change, keeps its header line with the fixed note `generated, build
+   or minified output, placed after the other files`, and is cut only by the bounds that cut any
+   file, disclosed as `check_time_change_truncated`. A declared deliverable under `dist/` keeps
+   its first place.
 7. **Frozen with the job.** The object's pointer, or the fact that it was unavailable, is frozen
    into the job's semantic-case object. A recovered or resumed job reloads exactly that object and
    never re-reads a working tree that has since moved, so the case digest is unchanged. The object

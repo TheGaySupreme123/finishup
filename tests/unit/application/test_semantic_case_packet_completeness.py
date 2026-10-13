@@ -9,10 +9,15 @@ these are pure case-builder cases.
 
 from __future__ import annotations
 
+import os
+import subprocess
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import cast
 
+import yoetz.application.check_change as check_change_module
 from builders.policy_cases import (
     act,
     clm,
@@ -29,6 +34,7 @@ from builders.policy_cases import (
 from unit.application.test_semantic_case import (
     _captured_case_values,  # pyright: ignore[reportPrivateUsage]
 )
+from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
 from yoetz.application.semantic_case import (
     TASK_INPUT_ITEM_PREFIX,
     CheckTimeChange,
@@ -416,3 +422,150 @@ def test_no_declared_deliverable_means_no_row_set() -> None:
     semantic = _build(make_case(extra_refs=()), change=_change(), workspace_root=None)
 
     assert "declared-deliverables" not in {item.item_id for item in semantic.items}
+
+
+# --- tb4n5 react-lead-form: generated build output never starves the source ------------------
+
+
+def _git(repository: Path, *arguments: str) -> None:
+    subprocess.run(
+        ("git", *arguments),
+        cwd=repository,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=True,
+        env={
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": os.fspath(repository),
+            "LANG": "C",
+            "LC_ALL": "C",
+            "PATH": os.defpath,
+        },
+    )
+
+
+_LEAD_STORE_MARKER = "LEAD_STORE_RECONCILE_MARKER"
+_BUNDLE = "dist/assets/index-Bxb0DgZR.js"
+
+
+def _react_workspace(tmp_path: Path) -> Path:
+    """The tb4n5 react-lead-form shape (S): small app files, larger sources including a ~10 KB
+    ``leadStore.ts``, and the ~145 KB minified Vite bundle ``npm run build`` left untracked."""
+
+    repository = tmp_path / "app"
+    repository.mkdir(mode=0o700)
+    _git(repository, "init", "--quiet")
+    (repository / "package.json").write_text('{"name": "react-lead-form"}\n', encoding="utf-8")
+    _git(repository, "add", "--", "package.json")
+    _git(
+        repository,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "baseline",
+    )
+    # 18 small files (each under 4 KiB, about 26 KB in all) sort ahead of everything else.
+    (repository / "src" / "small").mkdir(parents=True)
+    for index in range(18):
+        (repository / "src" / "small" / f"part{index:02d}.ts").write_text(
+            "".join(f"export const p{index}_{row} = {row};\n" for row in range(48)),
+            encoding="utf-8",
+        )
+    (repository / "src" / "components").mkdir(parents=True)
+    (repository / "src" / "components" / "LeadForm.tsx").write_text(
+        "".join(f"export const field{row} = 'f{row}';\n" for row in range(150)), encoding="utf-8"
+    )
+    (repository / "src" / "lib").mkdir(parents=True)
+    (repository / "src" / "lib" / "leadStore.ts").write_text(
+        f"// {_LEAD_STORE_MARKER}: reconcile, quarantine, promote, atomic write\n"
+        + "".join(f"export function step{row}() {{ return {row}; }}\n" for row in range(260)),
+        encoding="utf-8",
+    )
+    (repository / "tests").mkdir()
+    (repository / "tests" / "submitLead.test.ts").write_text(
+        "".join(f"test('case {row}', () => expect({row}).toBe({row}));\n" for row in range(110)),
+        encoding="utf-8",
+    )
+    (repository / "dist" / "assets").mkdir(parents=True)
+    (repository / _BUNDLE).write_text(
+        "".join(f"var m{row}=" + "{a:1,number:!0,range:!0};" * 120 + "\n" for row in range(46)),
+        encoding="utf-8",
+    )
+    return repository
+
+
+def _react_change(repository: Path, priority_paths: tuple[str, ...] = ()) -> CheckTimeChange:
+    """Captured and redacted exactly as the service captures a check-time change."""
+
+    redacted = cast(
+        Callable[[CheckChangeCapture], CheckChangeCapture],
+        getattr(check_change_module, "_redacted"),
+    )
+    capture = redacted(
+        GitChangeCaptureAdapter().capture(
+            os.fspath(repository), None, priority_paths=priority_paths
+        )
+    )
+    base = _change()
+    return CheckTimeChange(
+        replace(base.object_ref, plaintext_size=len(capture.text) + 100), capture
+    )
+
+
+def _provider_text(semantic: SemanticCase) -> str:
+    """The provider-bound packet when privacy approves every item."""
+
+    every = frozenset(item.item_id for item in semantic.items)
+    return semantic_case_to_prepared_payload(semantic, every).decode("utf-8")
+
+
+def test_the_central_implementation_reaches_the_packet_ahead_of_a_built_bundle(
+    tmp_path: Path,
+) -> None:
+    """tb4n5 react-lead-form: ``leadStore.ts`` sat at byte 178 KB of the change, behind the
+    bundle, so no packet (four 16 KiB parts of a 128 KiB budget) ever carried it."""
+
+    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
+    assert (selection.max_excerpt_bytes, selection.max_total_excerpt_bytes) == (16_384, 131_072)
+    repository = _react_workspace(tmp_path)
+    change = _react_change(repository)
+    text = change.capture.text
+    assert len(text) > selection.max_total_excerpt_bytes
+    assert text.index(b"b/src/lib/leadStore.ts") < text.index(f"b/{_BUNDLE}".encode())
+
+    semantic = _build(_statement_case(), change=change, selection=selection)
+
+    sent = _provider_text(semantic)
+    assert _LEAD_STORE_MARKER in sent
+    assert "b/src/components/LeadForm.tsx" in sent
+    assert "b/tests/submitLead.test.ts" in sent
+    lead = next(
+        item.item_id
+        for item in semantic.items
+        if item.item_id.startswith("change-check-time-")
+        and _LEAD_STORE_MARKER.encode() in item.content
+    )
+    manifest = semantic.packet.input_manifest
+    assert manifest is not None
+    assert lead in manifest.current_diff.selected_item_ids
+    # The bundle stays in the change and its header, and the cut is disclosed.
+    assert f"{_BUNDLE} (+46 -0) untracked; generated, build or minified output" in sent
+    assert "check_time_change_truncated" in semantic.packet.coverage.known_gaps
+
+
+def test_a_declared_build_output_still_takes_the_change_share_first(tmp_path: Path) -> None:
+    repository = _react_workspace(tmp_path)
+    change = _react_change(repository, priority_paths=(_BUNDLE,))
+
+    semantic = _build(_statement_case(), change=change)
+
+    body = change.capture.text.split(b"End of header. The unified diff follows.\n", 1)[1]
+    assert body.startswith(f"diff --git a/{_BUNDLE} b/{_BUNDLE}".encode())
+    first = next(item for item in semantic.items if item.item_id == "change-check-time-001")
+    assert f"b/{_BUNDLE}".encode() in first.content
+    assert b"generated, build or minified" not in change.capture.text

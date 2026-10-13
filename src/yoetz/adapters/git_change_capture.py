@@ -194,6 +194,9 @@ _OMIT_TEXT: Final[dict[_OmitReason, str]] = {
         "record does not fully list, so it may predate the task"
     ),
 }
+# A file ranked after every other file as generated, build or minified output (tb4n5): it is
+# still part of the change and still shown when the bounds leave room for it.
+_DEPRIORITIZED_TEXT: Final = "generated, build or minified output, placed after the other files"
 # Omitted for what the file is, not its size: its line counts are not shown either.
 _WITHHELD_COUNTS: Final[frozenset[_OmitReason]] = frozenset(
     {
@@ -282,6 +285,9 @@ class _Section:
     omitted: _OmitReason | None
     # An untracked file that already existed when the task started and changed since (#1045).
     preexisting: bool = False
+    # Ranked last as generated, build or minified output (tb4n5, #1045 follow-up); set where the
+    # rendered order is fixed, so the header can say why the file comes last.
+    deprioritized: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -635,15 +641,110 @@ def _priority_tier(path: bytes, priority: tuple[bytes, ...]) -> int | None:
     return None
 
 
+# Generated, build and minified output (tb4n5 react-lead-form, issue #1045 follow-up): a 145 KB
+# minified ``dist/`` bundle from ``npm run build`` sorted path-first ahead of ``src/lib/...`` and
+# took the packet's change share, so the central implementation never reached the reviewer. Such
+# a file is ranked after every other file. It is never left out for being generated: it stays in
+# the change, listed in the header with a fixed note, and is cut only by the same bounds as any
+# file. A declared deliverable keeps its first place even under ``dist/``: a requested build
+# output is the work under review. Names are matched exactly; nothing is opened to decide.
+_GENERATED_DIRECTORIES: Final = frozenset(
+    {
+        b".next",
+        b".nuxt",
+        b".output",
+        b".parcel-cache",
+        b".svelte-kit",
+        b".turbo",
+        b".vite",
+        b"__pycache__",
+        b"build",
+        b"coverage",
+        b"dist",
+        b"node_modules",
+        b"out",
+        b"target",
+    }
+)
+_GENERATED_SUFFIXES: Final = (b".min.js", b".min.mjs", b".min.cjs", b".min.css", b".map")
+_LOCKFILE_NAMES: Final = frozenset(
+    {
+        b"Cargo.lock",
+        b"Gemfile.lock",
+        b"Pipfile.lock",
+        b"Podfile.lock",
+        b"bun.lock",
+        b"bun.lockb",
+        b"composer.lock",
+        b"flake.lock",
+        b"go.sum",
+        b"mix.lock",
+        b"npm-shrinkwrap.json",
+        b"package-lock.json",
+        b"packages.lock.json",
+        b"pdm.lock",
+        b"pnpm-lock.yaml",
+        b"poetry.lock",
+        b"uv.lock",
+        b"yarn.lock",
+    }
+)
+# A rendered section at least this large whose lines average more than ``_MINIFIED_LINE_BYTES``
+# is minified or machine-written (the react bundle: 145,685 bytes in 46 lines). Hand-written
+# source averages tens of bytes per line, so ordinary code never reaches it.
+_MINIFIED_MIN_BYTES: Final = 8_192
+_MINIFIED_LINE_BYTES: Final = 1_000
+# Ranks a file whose size is unknown after every file whose size is known, within its tier.
+_UNKNOWN_SIZE: Final = 1 << 62
+
+
+def _generated_path(path: bytes) -> bool:
+    """Whether ``path`` names known generated or build output: by directory or by file name."""
+
+    bare = path.rstrip(b"/")
+    parts = bare.split(b"/")
+    directories = parts if path.endswith(b"/") else parts[:-1]
+    name = parts[-1]
+    return (
+        any(part in _GENERATED_DIRECTORIES for part in directories)
+        or name in _LOCKFILE_NAMES
+        or name.endswith(_GENERATED_SUFFIXES)
+    )
+
+
+def _minified(text: bytes | None) -> bool:
+    """Whether a rendered section reads as minified: large, with very long lines on average."""
+
+    if text is None or len(text) < _MINIFIED_MIN_BYTES:
+        return False
+    return len(text) // (text.count(b"\n") + 1) > _MINIFIED_LINE_BYTES
+
+
+def _deprioritized(section: _Section, priority: tuple[bytes, ...]) -> bool:
+    """Whether a rendered section ranks last: generated or minified, and not a deliverable."""
+
+    return _priority_tier(section.path, priority) is None and (
+        _generated_path(section.path) or _minified(section.text)
+    )
+
+
 def _section_rank(section: _Section, priority: tuple[bytes, ...]) -> tuple[int, int, bytes]:
-    """Order of a section in the rendered change: deliverables, small files, then the rest."""
+    """Order of a section in the rendered change.
+
+    Declared deliverables first, then small files in path order, then the rest by size (smallest
+    first, so several source files fit ahead of one large file), then generated, build or
+    minified output by size (tb4n5). Path order breaks every tie.
+    """
 
     tier = _priority_tier(section.path, priority)
     if tier is not None:
         return (0, tier, section.path)
-    if section.text is not None and len(section.text) <= _SMALL_SECTION_BYTES:
+    size = 0 if section.text is None else len(section.text)
+    if _generated_path(section.path) or _minified(section.text):
+        return (3, size, section.path)
+    if section.text is not None and size <= _SMALL_SECTION_BYTES:
         return (1, 0, section.path)
-    return (2, 0, section.path)
+    return (2, size, section.path)
 
 
 # A tracked file whose numstat line counts sum to at most this many is ranked as small before its
@@ -652,29 +753,38 @@ _SMALL_SECTION_LINES: Final = 64
 
 
 def _tracked_read_rank(section: _Section, priority: tuple[bytes, ...]) -> tuple[int, int, bytes]:
-    """Read order of a tracked file before its diff is loaded: deliverables, small, the rest."""
+    """Read order of a tracked file before its diff is loaded.
+
+    Deliverables, small files, the rest by changed line count, then generated or build output
+    (by path or name alone: no diff text exists yet), as in ``_section_rank``.
+    """
 
     tier = _priority_tier(section.path, priority)
     if tier is not None:
         return (0, tier, section.path)
-    if (
-        section.added.isdigit()
-        and section.deleted.isdigit()
-        and int(section.added) + int(section.deleted) <= _SMALL_SECTION_LINES
-    ):
+    lines = (
+        int(section.added) + int(section.deleted)
+        if section.added.isdigit() and section.deleted.isdigit()
+        else _UNKNOWN_SIZE
+    )
+    if _generated_path(section.path):
+        return (3, lines, section.path)
+    if lines <= _SMALL_SECTION_LINES:
         return (1, 0, section.path)
-    return (2, 0, section.path)
+    return (2, lines, section.path)
 
 
 def _untracked_order(
     pinned: _Workspace, paths: list[bytes], priority: tuple[bytes, ...], deadline: float
 ) -> list[bytes]:
-    """Untracked paths in read order: deliverables, then small files, then the rest (tb4n2 R7).
+    """Untracked paths in read order: deliverables, small files, the rest by size, then
+    generated or build output (tb4n2 R7, tb4n5).
 
     The untracked file limit keeps the head of this order, so a 12-byte ``requirements.txt`` is
-    never left unread behind hundreds of large scratch files. Sizes come from the link-free
-    metadata walk of at most ``_MAX_UNTRACKED_ORDER_STATS`` paths (in path order) before the
-    deadline; nothing is opened, and an unknown size ranks as large.
+    never left unread behind hundreds of large scratch files, and a build directory never pushes
+    a source file past the limit. Sizes come from the link-free metadata walk of at most
+    ``_MAX_UNTRACKED_ORDER_STATS`` paths (in path order) before the deadline; nothing is opened,
+    and an unknown size ranks as large.
     """
 
     ordered = sorted(paths)
@@ -692,8 +802,12 @@ def _untracked_order(
         tier = _priority_tier(path, priority)
         if tier is not None:
             return (0, tier, path)
-        size = sizes.get(path)
-        return (1 if size is not None and size <= _SMALL_SECTION_BYTES else 2, 0, path)
+        size = sizes.get(path, _UNKNOWN_SIZE)
+        if _generated_path(path):
+            return (3, size, path)
+        if size <= _SMALL_SECTION_BYTES:
+            return (1, 0, path)
+        return (2, size, path)
 
     return sorted(ordered, key=rank)
 
@@ -1713,8 +1827,11 @@ class GitChangeCaptureAdapter:
             nested_unlisted += read.unlisted_untracked
             nested_kept += read.kept
             nested_truncated = nested_truncated or read.listing_truncated
-        # Declared deliverables first, then small files, then the rest (tb4n2 R7, P1-11): the
-        # body budget and every later packet cut keep the head of this order.
+        # Declared deliverables first, then small files, then the rest by size, then generated,
+        # build or minified output (tb4n2 R7, P1-11, tb4n5): the body budget and every later
+        # packet cut keep the head of this order. The header notes each file ranked last.
+        for section in sections:
+            section.deprioritized = _deprioritized(section, priority)
         sections.sort(key=lambda item: _section_rank(item, priority))
         inputs = self._task_inputs(
             pinned,
@@ -3150,6 +3267,8 @@ def _header(
                     if section.preexisting
                     else "",
                     "" if section.omitted is None else _OMIT_TEXT[section.omitted],
+                    # Last, so a path is still read up to its counts or first note (tb4n5).
+                    _DEPRIORITIZED_TEXT if section.deprioritized else "",
                 )
                 if note
             ]
