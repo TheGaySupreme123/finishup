@@ -523,7 +523,7 @@ GUIDANCE_RESOURCES: Final = (
         title="Yoetz publication policy",
         description=(
             "Read when a result or error names it, or an event shape is unclear. What is material "
-            "enough to publish, how large a batch should be, the sixteen event families, and "
+            "enough to publish, how large a batch should be, the sixteen core event families, and "
             "what is never published."
         ),
         annotations=GuidanceResourceAnnotations(audience=("assistant",), priority=0.8),
@@ -548,8 +548,9 @@ GUIDANCE_RESOURCES: Final = (
         description=(
             "Read when a host drops schema metadata or after an invalid request, and before setup, "
             "consent, credential/vault operations, import, or recommendation decisions. Complete "
-            "copy-ready bodies for all six operations and all nine ordinary publication "
-            "families, with explicit placeholder replacement rules."
+            "copy-ready bodies for all six operations and all eighteen publish_work families "
+            "(nine ordinary, seven lifecycle, two coordination), with explicit placeholder "
+            "replacement rules."
         ),
         annotations=GuidanceResourceAnnotations(audience=("assistant",), priority=0.7),
     ),

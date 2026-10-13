@@ -25,8 +25,9 @@ def _error(result: object) -> dict[str, object]:
         # Shapes observed in real agent requests: guessed from tool names, with underscores, and
         # derived from event-family names. None is in the closed catalog, and none names exactly
         # one catalogued topic (``plan-revised``, also observed, now reads the one topic its words
-        # name: tb4n4, #1049, ``test_tb4n4_call_traps``).
-        "publish-work",
+        # name: tb4n4, #1049, ``test_tb4n4_call_traps``; ``publish-work`` is now an explicit alias
+        # of the publication-templates overview: tb4n5, #1049).
+        "publish-work-coordination",
         "publish_work-plan-revision",
         "obligation-published",
     ),

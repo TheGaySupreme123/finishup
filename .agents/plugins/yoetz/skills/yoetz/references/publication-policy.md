@@ -14,8 +14,12 @@ For a large inventory, create obligations per coherent work package. Publish one
 
 Publish one batch per material transition, roughly one to eight events. A normal session is a handful of batches: the plan and its obligations, each independently useful result with its evidence, the completion claim, and any finding response. It is not one batch per file, per tool call, or per message.
 
-State-sensitive families require `expected_frontier`. Read it from `status` and include it in the
-batch; omitting it returns retryable `expected_frontier_required` without writing an operation.
+State-sensitive families require `expected_frontier` (never `null`). Send the frontier you
+already hold: the first plan batch uses the `frontier` that `start` returned (its
+`next_request_template` already carries it), and every later batch uses the `result_frontier` of
+your last accepted `publish_work`, `check` or `respond`. No `status` read is needed for it; read
+`status` only when you hold no frontier, or after a `frontier_changed` conflict. Omitting it
+returns retryable `expected_frontier_required` without writing an operation.
 The guard is task-scoped. Publication tolerates a held frontier when every intervening record is
 observation-authored and then appends at the real head. Check acquisition applies the same suffix
 predicate but freezes the case at that real head. Receipt may instead stay pinned to the supplied
@@ -26,6 +30,11 @@ repair facts for a retry rather than guessing a replacement frontier.
 These are not publishable transitions: reading or searching, running a command whose result you already expect, formatting, regenerating a derived file, repeating a status read, or republishing state that has not changed since the last accepted event. When in doubt, ask whether an independent reader of the ledger alone would conclude something different without the fact.
 
 ## The sixteen event families
+
+These are the core protocol families. `publish_work` admits eighteen families in all: the nine
+ordinary core families below (plan, obligation, assignment, decision, action, result, evidence,
+claim, revised plan), seven delegation and work lifecycle families and two coordination families,
+each with a template in `yoetz://guidance/request-templates.md`.
 
 - `session_opened` — establishes the recorded session; it does not prove workspace access.
 - `session_resumed` — records a resume assertion; it does not prove continuity outside the ledger.
@@ -47,7 +56,10 @@ These are not publishable transitions: reading or searching, running a command w
 
 ## Obligations, evidence, and claims
 
-An obligation names what must be satisfied. Evidence is a bounded, provenance-labeled reason to believe something about it. A claim states a conclusion. Link them explicitly; do not substitute a file list for an obligation or a claim for evidence.
+<a id="plan-and-obligations"></a>
+
+The plan and its obligations are published together in the first plan batch: see
+`yoetz://guidance/request-templates.md#publish-work-plan-plus-obligation`. An obligation names what must be satisfied. Evidence is a bounded, provenance-labeled reason to believe something about it. A claim states a conclusion. Link them explicitly; do not substitute a file list for an obligation or a claim for evidence.
 
 ### Digest subjects and provenance
 
@@ -368,7 +380,7 @@ replay once only for `absent`, use the stored `complete` outcome, and follow an 
 continuation before replaying a `pending` request. A read timeout gets a new read request ID with
 the same intent. Never manufacture a replacement event merely because a response was lost.
 
-A `status` read and a dry run before a publish are optional, not a ritual: the write is all or nothing. A rejected batch appends nothing and names what stopped it, not every error (for drafts, the first rejected draft and its field): fix it and resubmit, since another bad draft surfaces only on the next attempt, as it would in a dry run. An accepted write returns the new frontier and the accepted event ids. Use `dry_run: true` when you are unsure a batch will be accepted (a claim correction, a plan revision, a large batch); the preview is not evidential and must not be cited as a check, publication, or coverage source, and the real publish reuses the same `request_id` with `dry_run` omitted or false. Before resolving an obligation that names requested items, account for each exact value that has no attempt yet. When you need the picture, call `check` with `mode: inspect` instead of several status reads: it records nothing and returns what is left with whose move each gap is (requested items not attempted are named by index), what the hooks observed since the last check, and whether each obligation's resolution evidence links to its declared deliverables or commands. Your host approves it as it approves any `check` call; if the host holds or refuses it, nothing is pending in Yoetz, so read `status` instead. `status view=obligations` shows the exact `unattempted_items` values.
+A `status` read and a dry run before a publish are optional, not a ritual: the write is all or nothing. A rejected batch appends nothing and names what stopped it, not every error (for drafts, the first rejected draft and its field): fix it and resubmit, since another bad draft surfaces only on the next attempt, as it would in a dry run. An accepted write returns the new frontier (`result_frontier`) and the accepted event ids; send that frontier as the next write's `expected_frontier`. Use `dry_run: true` when you are unsure a batch will be accepted (a claim correction, a plan revision, a large batch); the preview is not evidential and must not be cited as a check, publication, or coverage source, and the real publish reuses the same `request_id` with `dry_run` omitted or false. Before resolving an obligation that names requested items, account for each exact value that has no attempt yet. When you need the picture, call `check` with `mode: inspect` instead of several status reads: it records nothing and returns what is left with whose move each gap is (requested items not attempted are named by index), what the hooks observed since the last check, and whether each obligation's resolution evidence links to its declared deliverables or commands. Your host approves it as it approves any `check` call; if the host holds or refuses it, nothing is pending in Yoetz, so read `status` instead. `status view=obligations` shows the exact `unattempted_items` values.
 
 Worked examples for each ordinary publishable family — and a cross-linked
 action/result/evidence/claim batch — live in the `publish_work` tool input schema `examples` entry

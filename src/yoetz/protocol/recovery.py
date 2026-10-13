@@ -240,6 +240,18 @@ _DIRECTIVES: Final = (
         guidance_uri=_PUBLICATION_RECOVERY,
         nudge="A frontier conflict means the ledger moved, not that your content was wrong.",
     ),
+    # tb4n5 (#1048): a batch that sent no frontier is not a conflict. Every write already returned
+    # one, and the first plan uses the frontier start returned, so no status read is needed.
+    RecoveryDirective(
+        token="frontier_held_required",
+        directive=(
+            "This batch sent no expected_frontier, so nothing was written. Send the frontier you "
+            "hold: the one start returned for a first plan, else your last accepted write's "
+            "result_frontier. Retry with this same request_id."
+        ),
+        guidance_uri=_PUBLICATION_RECOVERY,
+        nudge="Read status for a frontier only when you hold none.",
+    ),
     RecoveryDirective(
         token="session_rebind_required",
         directive=(

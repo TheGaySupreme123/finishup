@@ -1618,6 +1618,10 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
                             # Schema-listed required names the instance lacks (frozen schema
                             # vocabulary), so the hint names the absent key, not the whole list.
                             "missing_fields": exc.missing_fields or None,
+                            # tb4n5 (#1049): the frozen const of the sibling that narrowed this
+                            # value (``evidence_kind`` for ``digest_binding/subject``).
+                            "condition_field": exc.condition_field,
+                            "condition_value": exc.condition_value,
                         },
                     }
                 ],

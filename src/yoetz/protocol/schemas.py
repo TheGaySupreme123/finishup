@@ -1224,6 +1224,14 @@ def validate_schema_instance(name: str, version: str, value: JsonValue) -> None:
                 # that rejected it, so name that family and version: several families share a
                 # field name with different admitted shapes (tb4n1: result ``evidence_refs``).
                 identity = _draft_family_for_payload_path(instance, path)
+            # tb4n5 (#1049): a payload value a sibling's const narrows (``digest_binding.subject``
+            # by ``evidence_kind``) names the frozen branch the draft selected, so the hint states
+            # that branch's subset instead of the property's whole union.
+            condition = (
+                _payload_condition_for(instance, path, identity)
+                if identity is not None and reason is None
+                else None
+            )
             raise SchemaInstanceInvalid(
                 path,
                 reason=reason,
@@ -1232,6 +1240,8 @@ def validate_schema_instance(name: str, version: str, value: JsonValue) -> None:
                 unknown_count=_unknown_property_count(best) if reason is not None else 0,
                 misplaced_field=_misplaced_known_field(best) if reason is not None else None,
                 missing_fields=_missing_required_fields(best),
+                condition_field=condition[0] if condition is not None else None,
+                condition_value=condition[1] if condition is not None else None,
             ) from None
         # Root-level object rules (dependentRequired, if/then anyOf required) report an empty
         # instance path. Project only schema-named fields so MCP can name the corrective pair.
@@ -1319,6 +1329,90 @@ def _draft_family_for_payload_path(
                 if SCHEMA_VERSION_PATTERN.fullmatch(document.schema_version) is None:
                     return None
                 return (family, document.schema_version)
+    except Exception:
+        return None
+    return None
+
+
+def _payload_condition_for(
+    instance: object, path: tuple[str | int, ...], identity: tuple[str, str]
+) -> tuple[str, str] | None:
+    """The ``(field, const)`` of the family branch that narrows the value at ``path``, or None.
+
+    Only a top-level ``allOf`` rule of the catalogued family schema qualifies: its ``if`` holds
+    exactly one ``const`` on a required sibling field, and its ``then`` narrows the payload path
+    below ``/event_drafts/<n>/payload`` to an ``enum``. The draft's sibling value selects the rule
+    only when it byte-equals that const, and the pair returned is read from the schema, so nothing
+    outside the frozen vocabulary travels (``evidence_kind`` ``test_result`` for
+    ``digest_binding/subject``).
+    """
+
+    try:
+        tail = path[3:]
+        if (
+            len(tail) < 2
+            or any(type(segment) is not str for segment in tail)
+            or not isinstance(instance, Mapping)
+        ):
+            return None
+        drafts = cast(Mapping[str, object], instance).get("event_drafts")
+        index = path[1]
+        if not isinstance(drafts, list) or type(index) is not int:
+            return None
+        draft = cast(list[object], drafts)[index]
+        if not isinstance(draft, Mapping):
+            return None
+        payload = cast(Mapping[str, object], draft).get("payload")
+        if not isinstance(payload, Mapping):
+            return None
+        family, version = identity
+        state = _load_catalog_state()
+        document = schema_document_for(family.replace("_", "-"), version)
+        rules = state.plain_by_id[document.schema_id].get("allOf")
+        if not isinstance(rules, list):
+            return None
+        for rule in cast(list[JsonValue], rules):
+            if not isinstance(rule, Mapping):
+                continue
+            condition = cast(Mapping[str, JsonValue], rule).get("if")
+            narrowed: JsonValue = cast(Mapping[str, JsonValue], rule).get("then")
+            if not isinstance(condition, Mapping):
+                continue
+            properties = cast(Mapping[str, JsonValue], condition).get("properties")
+            required = cast(Mapping[str, JsonValue], condition).get("required")
+            if not isinstance(properties, Mapping) or not isinstance(required, list):
+                continue
+            consts = [
+                (name, cast(Mapping[str, JsonValue], spec).get("const"))
+                for name, spec in cast(Mapping[str, JsonValue], properties).items()
+                if isinstance(spec, Mapping)
+            ]
+            if len(consts) != 1:
+                continue
+            field, value = consts[0]
+            if (
+                type(value) is not str
+                or field == tail[0]
+                or field not in cast(list[JsonValue], required)
+                or EVENT_FAMILY_NAME_PATTERN.fullmatch(field) is None
+            ):
+                continue
+            for segment in tail:
+                nested = (
+                    cast(Mapping[str, JsonValue], narrowed).get("properties")
+                    if isinstance(narrowed, Mapping)
+                    else None
+                )
+                narrowed = (
+                    cast(Mapping[str, JsonValue], nested).get(cast(str, segment))
+                    if isinstance(nested, Mapping)
+                    else None
+                )
+            if not isinstance(narrowed, Mapping) or "enum" not in narrowed:
+                continue
+            submitted = cast(Mapping[str, object], payload).get(field)
+            if type(submitted) is str and submitted == value:
+                return (field, value)
     except Exception:
         return None
     return None

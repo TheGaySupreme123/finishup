@@ -187,6 +187,15 @@ implies (which id kind a reference list names, `status` `limit`, `at_frontier`, 
 `obligation_published` `resolution_evidence_refs` sentence also answers a rejection located at the
 list itself, so a resolution that omits the list or sends it empty is told what it holds: one or
 more evidence (`evd_`) or result (`res_`) ids, with every other field repeated (tb4n4, #1049).
+A payload value a sibling's `const` narrows in a top-level `allOf` rule of its family (tb4n5,
+#1049: `evidence_recorded` `digest_binding.subject` by `evidence_kind`) is hinted from that rule,
+not from the property's union: the schema validator names the frozen `(field, const)` of the branch
+the draft selected (`SchemaInstanceInvalid.condition_field` / `condition_value`, read from the
+schema and admitted only when the draft's value byte-equals it), and the hint leads with that
+branch's subset (`subject for evidence_kind test_result admits approved_check_receipt,
+static_analysis_report, test_report, test_stdout`), then every other branch's, then each value a
+peer const constrains (`approved_check_receipt needs provenance approved_check`). Without a
+selected branch it names every branch. Only `field` and `reason` reach the wire.
 
 Two request shapes are read instead of refused (tb4n4, #1049). Both are normalized by the protocol
 request model before the schema check, so every surface that validates a request (MCP bridge, CLI,
@@ -452,7 +461,12 @@ The anchor names a topic when it is the topic's anchor once case, `_` and punctu
 slug way (`publish_work-decision`), an explicit `<a id>` target the document writes under that
 topic's heading (`publication-policy.md#attempt-accounting`), or words that all appear in that
 topic's anchor and in no other anchor of the document (`request-templates.md#decision`). Two or more
-candidates never resolve; `resources/read` keeps exact URIs. Any other anchor outside the catalog
+candidates never resolve; `resources/read` keeps exact URIs. The guesses tb4n5 agents made are
+explicit `<a id>` aliases (#1049): `request-templates.md#publish-work` and
+`#ordinary-publication` read `#publication-templates` (the list of every `publish_work` template's
+exact URI), `request-templates.md#plan-and-obligations` reads
+`#publish-work-plan-plus-obligation`, and `publication-policy.md#plan-and-obligations` reads
+`#obligations-evidence-and-claims`. Any other anchor outside the catalog
 on a registered document is
 rejected as `INVALID_REQUEST` with `safe_details.field = "/uri"` and a message listing that
 document's registered anchors plus the whole-document retry; an unregistered document lists the
@@ -462,10 +476,16 @@ decode a fractional number in that result (see the Codex integration runbook).
 
 Protocol reason
 `expected_frontier_required` marks a state-sensitive `publish_work` batch that omitted
-`expected_frontier`. It names that field and is retryable because validation wrote no durable
-operation; the caller may reuse the same `request_id` with a corrected body. Here `retryable`
-describes whether safe recovery exists for the durable state reached, not whether the request bytes
-must remain unchanged. A stale supplied frontier remains `frontier_changed`.
+`expected_frontier` (or sent `null`). It names that field and is retryable because validation wrote
+no durable operation; the caller may reuse the same `request_id` with a corrected body. Here
+`retryable` describes whether safe recovery exists for the durable state reached, not whether the
+request bytes must remain unchanged. Its continuation is `frontier_held_required` (tb4n5, #1048):
+send the frontier the caller already holds (the `frontier` `start` returned for the first plan,
+otherwise the `result_frontier` of its last accepted write), never a status read. A stale supplied
+frontier remains `frontier_changed`, whose continuation `frontier_refresh_required` reads `status`.
+The `expected_frontier` field description every write tool advertises, the publication policy, the
+request templates and the operating card name the same source; the `start` and accepted
+`publish_work` text summaries say which write sends the returned frontier next.
 
 For an accepted state-sensitive batch, `expected_frontier` is task-scoped. Under ADR-022, a held
 frontier may trail the current head only when every intervening record is observation-authored under
@@ -579,8 +599,10 @@ not use list as a discovery step. A list failure is not a missing server.
 capability is not advertised — that pairing is conformant and is asserted, not "fixed". Guidance
 must not present MCP resource-template discovery as a recovery path. The static
 `yoetz://guidance/request-templates.md` resource is an ordinary guidance resource: it carries
-complete, schema-valid fallback request bodies for the six operations and all nine ordinary
-publication families. It does not weaken catalog admission or add an MCP resource template.
+complete, schema-valid fallback request bodies for the six operations and all eighteen families
+`publish_work` admits (`ORDINARY_MCP_PUBLISH_EVENT_FAMILIES`: the nine ordinary families, seven
+delegation and work lifecycle families and two coordination families). It does not weaken catalog
+admission or add an MCP resource template.
 Internal-only value error: `ProtocolValueError(reason_code: str)` — bounded reason codes, never
 free text from input. CLI exit classes (0/2/10/11/20/30/40/70/130) map from codes in
 `cli/exits.py` only.
@@ -9509,8 +9531,15 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `finding_obligation_scope(state, finding_id) -> frozenset[ObligationId]`,
   `task_fact_bears_on_finding(code, *, state, finding_id, markers) -> bool` and
   `scoped_resolution_reasons(reasons, *, state, finding_id, records) -> tuple[str, ...]` (drops the
-  `coverage:<task fact>` reasons that do not bear on the finding; never empties the list).
-  `self_verification_refusal` applies it; readiness, the Stop gate and resolution stay task-wide.
+  `coverage:<task fact>` reasons that do not bear on the finding, and since tb4n5 (#1049) a
+  `coverage:command_attempt_mismatch` that no mismatched item bears on; never empties the list).
+  `command_mismatches(state, records) -> tuple[CommandMismatch, ...]` lists the effective
+  obligations' `asserted_observed_mismatch` items (`CommandMismatch(obligation_id, item_index,
+  asserted_action_ids, observed_event_ids)`), `command_mismatches_for_finding` the ones about one
+  finding (all of them when a subject cannot be placed) and `command_mismatch_bears_on_finding`
+  whether any is (true when none is located). `self_verification_refusal` applies it; the
+  `finding_not_proof_limited` refusal names those rows by id and index; readiness, the Stop gate and
+  resolution stay task-wide.
 - **Fact lineage and canonical commands (ADR-045, issue #1028).**
   `kernel/fact_lineage.FactLineage(code, rule, state, obligation_id, item_index, check_event_id,
   frontier, prior_event_id, prior_frontier, prior_size_bytes, prior_lines, now_size_bytes,

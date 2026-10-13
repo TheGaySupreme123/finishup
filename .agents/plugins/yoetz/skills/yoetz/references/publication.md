@@ -12,8 +12,9 @@ Each obligation's `source_refs` cites the task-statement event (see `startup.md`
 an existing obligation: to map a missed requirement, publish a new obligation.
 Then publish material transitions, results, evidence, and a completion claim. Keep one transition together in a small
 batch. `work_closed` closes work; a receipt never does. Every retryable write carries its
-idempotency identity and expected frontier. Reuse exact request and event ids only for the allowed
-same-body recovery path.
+idempotency identity and expected frontier: the `frontier` `start` returned for the first plan,
+then the `result_frontier` of your last accepted write (read `status` for one only when you hold
+none). Reuse exact request and event ids only for the allowed same-body recovery path.
 
 Do not publish hidden reasoning or chain-of-thought, full prompts, transcripts, conversation history,
 credentials, secrets, whole files/repositories, or broad unrelated source. A digest is provenance,

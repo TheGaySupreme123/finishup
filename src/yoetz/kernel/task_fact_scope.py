@@ -16,6 +16,12 @@ The scope rule is structural and replay-derived:
   naming it;
 * the task-wide ``edited_after_last_verification`` bears only on a finding about verification or
   evidence (the kinds in ``VERIFICATION_FINDING_KINDS``);
+* ``command_attempt_mismatch`` (tb4n5, #1049) is keyed per obligation and requested command item
+  (``kernel.command_attempts``): it bears on a finding about a mismatched obligation, about an
+  action that asserted the mismatched item or about a run or result linked into that relation,
+  and on nothing else (tb4n5 react S: a mismatch on a command obligation refused ``self_verified``
+  on an ``action_without_result`` finding about an edit action that named no obligation). A
+  mismatch Yoetz cannot locate at the current prefix bears (fail closed);
 * every other code, including every non-task-fact code, bears as before.
 
 Only ``scoped_resolution_reasons`` changes what a caller sees; nothing here changes a fact, a
@@ -25,11 +31,13 @@ finding's resolution, closure readiness or the Stop gate.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from typing import Final
 
 from yoetz.domain.events import ClaimKind, LedgerRecord
 from yoetz.domain.findings import FindingKind
 from yoetz.domain.values import ClaimId, EventId, FindingId, ObligationId
+from yoetz.kernel.command_attempts import command_attempts
 from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.task_facts import (
     EDITED_AFTER_LAST_VERIFICATION_GAP,
@@ -39,7 +47,12 @@ from yoetz.kernel.task_facts import (
 )
 
 __all__ = [
+    "COMMAND_ATTEMPT_MISMATCH_GAP",
     "VERIFICATION_FINDING_KINDS",
+    "CommandMismatch",
+    "command_mismatch_bears_on_finding",
+    "command_mismatches",
+    "command_mismatches_for_finding",
     "finding_obligation_scope",
     "scoped_resolution_reasons",
     "task_fact_bears_on_finding",
@@ -64,6 +77,133 @@ _CHECK_TIME_FACTS: Final = frozenset(
     if code.startswith("requested_output_") or code.startswith("declared_output_")
 )
 _COVERAGE_PREFIX: Final = "coverage:"
+COMMAND_ATTEMPT_MISMATCH_GAP: Final = "command_attempt_mismatch"
+_MISMATCH_REASON: Final = _COVERAGE_PREFIX + COMMAND_ATTEMPT_MISMATCH_GAP
+# Subject prefixes this scope reads; a subject of any other kind keeps the mismatch (fail closed).
+_SCOPED_SUBJECT_PREFIXES: Final = ("obl_", "clm_", "evt_", "act_", "res_", "evd_")
+
+
+@dataclass(frozen=True, slots=True)
+class CommandMismatch:
+    """One requested command item whose linked observed runs all ran another command.
+
+    ``item_index`` is the item's index in the obligation's ``requested_items``; the action and
+    event ids are the asserted actions and the linked observed run events
+    (``kernel.command_attempts``). Every value is a ledger id or an index, never command text.
+    """
+
+    obligation_id: ObligationId
+    item_index: int
+    asserted_action_ids: tuple[str, ...]
+    observed_event_ids: tuple[str, ...]
+
+
+def command_mismatches(
+    state: ProjectionState, records: tuple[LedgerRecord, ...]
+) -> tuple[CommandMismatch, ...]:
+    """Every effective obligation's mismatched requested command items, in obligation order."""
+
+    rows: list[CommandMismatch] = []
+    for obligation in sorted(effective_obligations(state), key=lambda value: str(value).encode()):
+        record = state.obligations.get(obligation)
+        if record is None or record.payload is None:
+            continue
+        for attempt in command_attempts(state, records, obligation):
+            if attempt.relation == "asserted_observed_mismatch":
+                rows.append(
+                    CommandMismatch(
+                        obligation,
+                        int(attempt.requested_item_index),
+                        tuple(attempt.asserted_action_ids),
+                        tuple(attempt.observed_event_ids),
+                    )
+                )
+    return tuple(rows)
+
+
+def _mismatch_related(
+    state: ProjectionState, finding_id: FindingId, row: CommandMismatch
+) -> bool | None:
+    """Whether one mismatch row is about the finding; ``None`` when a subject cannot be placed.
+
+    Related: the finding is about the mismatched obligation (``finding_obligation_scope``), or a
+    subject is an action that asserted the item, a linked observed run event, or a result or
+    evidence the obligation cites for its resolution (or the action behind such a result).
+    """
+
+    record = state.findings.get(finding_id)
+    if record is None or record.payload is None:
+        return None
+    if row.obligation_id in finding_obligation_scope(state, finding_id):
+        return True
+    obligation = state.obligations.get(row.obligation_id)
+    cited: frozenset[str] = (
+        frozenset(str(ref) for ref in obligation.payload.resolution_evidence_refs)
+        if obligation is not None and obligation.payload is not None
+        else frozenset()
+    )
+    linked_actions = frozenset(row.asserted_action_ids) | {
+        str(result.payload.action_id)
+        for key, result in state.results.items()
+        if result.payload is not None and str(key) in cited
+    }
+    by_event: dict[str, str] = {}
+    for key, item in state.actions.items():
+        by_event[str(item.source_event_id)] = str(key)
+    for key, item in (*state.results.items(), *state.evidence.items()):
+        by_event.setdefault(str(item.source_event_id), str(key))
+    for ref in record.payload.subject_refs:
+        text = str(ref)
+        if not text.startswith(_SCOPED_SUBJECT_PREFIXES):
+            return None
+        if text.startswith("evt_"):
+            if text in row.observed_event_ids:
+                return True
+            placed = by_event.get(text)
+            if placed is None:
+                if any(
+                    str(item.source_event_id) == text
+                    for table in (state.obligations, state.claims)
+                    for item in table.values()
+                ):
+                    continue
+                # An event this projection cannot place: keep the mismatch (fail closed).
+                return None
+            text = placed
+        if text in cited or text in linked_actions:
+            return True
+    return False
+
+
+def command_mismatches_for_finding(
+    state: ProjectionState, finding_id: FindingId, mismatches: Iterable[CommandMismatch]
+) -> tuple[CommandMismatch, ...]:
+    """The mismatch rows about this finding; every row when one cannot be placed (fail closed)."""
+
+    rows = tuple(mismatches)
+    related: list[CommandMismatch] = []
+    for row in rows:
+        verdict = _mismatch_related(state, finding_id, row)
+        if verdict is None:
+            return rows
+        if verdict:
+            related.append(row)
+    return tuple(related)
+
+
+def command_mismatch_bears_on_finding(
+    state: ProjectionState, finding_id: FindingId, mismatches: Iterable[CommandMismatch]
+) -> bool:
+    """Whether a listed ``command_attempt_mismatch`` says anything about *finding_id*.
+
+    A mismatch the current prefix cannot locate (no mismatched row) bears: the check that listed
+    it saw one, and nothing here can say which obligation it was about.
+    """
+
+    rows = tuple(mismatches)
+    if not rows:
+        return True
+    return bool(command_mismatches_for_finding(state, finding_id, rows))
 
 
 def finding_obligation_scope(
@@ -153,19 +293,30 @@ def scoped_resolution_reasons(
         for reason in reasons
         if reason.startswith(_COVERAGE_PREFIX) and reason[len(_COVERAGE_PREFIX) :] in TASK_FACT_GAPS
     ]
-    if not task_fact_reasons:
+    mismatch_listed = _MISMATCH_REASON in reasons
+    if not task_fact_reasons and not mismatch_listed:
         return reasons
-    markers = None if records is None else task_fact_signals(state, records).markers
-    dropped = {
-        reason
-        for reason in task_fact_reasons
-        if not task_fact_bears_on_finding(
-            reason[len(_COVERAGE_PREFIX) :],
-            state=state,
-            finding_id=finding_id,
-            markers=markers,
+    dropped: set[str] = set()
+    if task_fact_reasons:
+        markers = None if records is None else task_fact_signals(state, records).markers
+        dropped.update(
+            reason
+            for reason in task_fact_reasons
+            if not task_fact_bears_on_finding(
+                reason[len(_COVERAGE_PREFIX) :],
+                state=state,
+                finding_id=finding_id,
+                markers=markers,
+            )
         )
-    }
+    if (
+        mismatch_listed
+        and records is not None
+        and not command_mismatch_bears_on_finding(
+            state, finding_id, command_mismatches(state, records)
+        )
+    ):
+        dropped.add(_MISMATCH_REASON)
     scoped = tuple(reason for reason in reasons if reason not in dropped)
     # When an unrelated task fact is the only thing left between the finding and its resolution,
     # keep it: the agent clears it by doing that work (re-running its verification), and saying

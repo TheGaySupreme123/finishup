@@ -18,8 +18,11 @@ schema metadata do not require this document.
 Every `req_`, `evt_`, `ses_`, `wri_`, `tsk_`, `obl_`, `act_`, `res_`, `evd_`, `clm_`, and `fnd_`
 value below is a shape-valid placeholder. Replace it with the real fresh or returned identifier
 required by the operation. Also replace every illustrative task string, reference, timestamp,
-frontier sequence, and digest. A frontier must come from the latest accepted result or `status`;
-`head_digest: "genesis"` is valid only with `sequence: "0"`. Keep canonical integers such as
+frontier sequence, and digest. A frontier is the one you already hold: the `frontier` `start`
+returned for the first plan, then the `result_frontier` of your latest accepted write; read
+`status` for one only when you hold none or after `frontier_changed`. Never send
+`expected_frontier: null` on a state-sensitive batch. `head_digest: "genesis"` is valid only with
+`sequence: "0"`. Keep canonical integers such as
 frontier sequences, limits, and `max_findings` as JSON strings (a `status` `limit` sent as a JSON
 integer from 1 to 100 is read as its string).
 
@@ -91,6 +94,9 @@ is an explicit incomplete-guidance result. Retry the exact page, or restart at p
 revision mismatch; do not start work or claim guidance is loaded until the assembler succeeds.
 
 ## Publication templates
+
+<a id="publish-work"></a>
+<a id="ordinary-publication"></a>
 
 Exact topic URIs; use these anchors verbatim and never derive one:
 
@@ -203,6 +209,8 @@ task, and do not request a receipt before that check reaches a terminal result.
 
 ## `publish_work`: plan plus obligation
 
+<a id="plan-and-obligations"></a>
+
 This is the first material publication. Name the requested outcome in `description` and
 `acceptance_criteria`, and its acceptance evidence in `evidence_expectation`; do not turn
 routine file mechanics into obligations. The requested outcome is not an `item_kind`.
@@ -218,6 +226,10 @@ the program under test receives (a protocol command such as `VERSION`, a query, 
 not a `command` item; state it in `description` or `acceptance_criteria`. Resolve the obligation
 citing the observed run. If a script or client ran the command for you, link that run as shown
 under the action template; the link is disclosed as your equivalence.
+
+Send this first plan with `expected_frontier` set to the `frontier` your `start` returned (the
+`start` result's `next_request_template` already carries it); the genesis value in the example
+below only keeps it schema-valid. An observation recorded since `start` does not invalidate it.
 
 To resolve an obligation, publish this same `obligation_published` draft again with a new
 `event_id`, every meaning field exactly as recorded (`status` `view: "obligations"` shows them),
@@ -861,7 +873,15 @@ Use `finding_frontier` = any frontier at or after the finding's own record: the 
 frontier (the result frontier of the `check` that returned it also works). No historical frontier
 search is needed. Only a frontier before that record is rejected, including the finding's
 `subject_frontier`, which names the state the check tested. A response records a disposition; it
-never erases the finding. Observation-authored non-actionable findings need no response.
+never erases the finding. Observation-authored non-actionable findings need no response. Answer
+only a finding that is still open: one a check already resolved (`verified_resolved`) or one whose
+answer is final (`disputed_after_rebuttal`, `self_verified`) shows `next_actions: ["none"]` and
+takes no response, and nothing is recorded for one.
+
+`acknowledged` on an AI-powered finding needs one concrete resolution attempt you recorded after
+the finding, cited in `evidence_refs`: the `evd_` or `res_` id of the repair, requested evidence or
+verification result (ids named only in `reason` do not count). A limitation request or an
+`answer_question` step needs none.
 
 A reviewer finding whose `requested_next_step` is `state_unresolved_limitation` asks you to state a
 limit, not to do work, and your answer decides what it means. If the requirement may be met but
@@ -887,6 +907,7 @@ proves the issue absent resolves the finding by itself.
   "finding_frontier": {"sequence": "11", "head_digest": "sha256:0b77cea7992de93fe83a6748fbd6b4557b53d965e3fe0d2d8a1f47023d5edb72"},
   "disposition": "acknowledged",
   "reason": "Replace with the bounded answer or disposition reason; required for acknowledged on a reviewer finding",
+  "evidence_refs": ["evd_00000000-0000-4000-8000-000000000002"],
   "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
   "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
 }

@@ -500,6 +500,7 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
         "check_admission_same_identity",
         "consent_ceremony_required",
         "field_ownership_repair",
+        "frontier_held_required",
         "frontier_refresh_required",
         "input_correction_new_identity",
         "operation_pending_inspect",
@@ -581,7 +582,8 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "check_admission_in_progress": "check_admission_same_identity",
         "duplicate_set_member": "sorted_set_required",
         "endpoint_unsafe": "storage_root_unsafe",
-        "expected_frontier_required": "frontier_refresh_required",
+        # tb4n5 (#1048): a missing frontier is fixed with the one the caller holds, not a read.
+        "expected_frontier_required": "frontier_held_required",
         "frontier_changed": "frontier_refresh_required",
         "frontier_digest_mismatch": "frontier_refresh_required",
         "operation_recovery_unavailable": "recovery_check_then_correct",

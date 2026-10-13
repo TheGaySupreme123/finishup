@@ -1337,9 +1337,13 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
 
     expected_frontier = properties.get("expected_frontier")
     if isinstance(expected_frontier, dict):
+        # tb4n5 (#1048): every write returns its frontier, so the frontier an agent already holds
+        # is the one to send; a status read for it is needed only when none is held or the ledger
+        # moved under a cooperative write (frontier_changed).
         expected_frontier["description"] = (
-            "Use the sequence and head digest returned by status. Genesis is valid only with "
-            "sequence 0."
+            "Send the frontier you hold: the one start returned first, then your last accepted "
+            "write's result_frontier (later hook observations are tolerated). Read status only "
+            "when you hold none or after frontier_changed."
         )
 
     if name == "start-request":
@@ -1962,7 +1966,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "Respond to a finding",
         "Records an acknowledgement, self-verification, provenance dispute, or rejection for one "
         "finding at any frontier at or after its record, such as the current status frontier, "
-        "not its subject_frontier. For an unresolved finding: repair it and check first. "
+        "not its subject_frontier. A finding a check resolved (verified_resolved) or whose answer "
+        "is final (next_actions none) takes no response. Acknowledging an AI-powered finding "
+        "cites in evidence_refs an evd_ or res_ recorded after it. "
+        "For an unresolved finding: repair it and check first. "
         "If you repaired it and Yoetz still cannot confirm it (a Yoetz limit), verify it yourself, "
         "record that evidence, and respond self_verified saying how you checked it, with the "
         "evidence ids; it is refused (finding_not_rechecked, finding_not_proof_limited) while "
@@ -2131,7 +2138,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:e2918f20e8569f49d9ca6d8acf9464bfa130d3f9218150bbcdf269d2c8be2482",
-                "respond": "sha256:41dee68d3de5fa8d4d9d95a70f01660c1fab93bbf47c8a93ca0c7253abd11433",
+                "respond": "sha256:bbe5f1bd0a761df1df8eda28c71f727cc4531a52678bba0f8ac622bd88fbcc34",
                 "status": "sha256:fcc6116a60b0b0938bebc5b327663fafeee1f28c6dffcd4a6ccb628711531551",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:874876f601c5eb51d0b2059f71c4def9b59be842fbf4d59ac888146d6c8994b8",
@@ -2143,7 +2150,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:d74368f4c375bd9f1f32bf6a99fa28c1cfd2f8366048e8dd617df54d9f606fe4",
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:5288325f21a2f4f13990fae882c18a4345239eecf09703a0b843c81a49d3dc40",
-                "respond": "sha256:41dee68d3de5fa8d4d9d95a70f01660c1fab93bbf47c8a93ca0c7253abd11433",
+                "respond": "sha256:bbe5f1bd0a761df1df8eda28c71f727cc4531a52678bba0f8ac622bd88fbcc34",
                 "status": "sha256:fcc6116a60b0b0938bebc5b327663fafeee1f28c6dffcd4a6ccb628711531551",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:874876f601c5eb51d0b2059f71c4def9b59be842fbf4d59ac888146d6c8994b8",
@@ -2154,8 +2161,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:6311e9b21741e5c0e9ef998e062198ecb6df6f24d51d88435d6aed94de3fe604",
-        "strict": "sha256:d5bf01594f41c378a8a0502ffb883b3915ebafb18ab3d3a5a1493ed96ac252c4",
+        "policy": "sha256:5d022b27f7cae14950a3a1db88ad52d444ad3050815bbfc75550773954586085",
+        "strict": "sha256:67b173601306dc4540835d406d70c37794482797d7929e073e73c7bde7656fb3",
     }
 )
 

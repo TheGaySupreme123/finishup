@@ -194,3 +194,69 @@ def test_reviewer_output_discloses_text_budget_truncation() -> None:
     )
     assert "Reviewer output truncated at the local text budget." in rendered
     assert len(rendered.encode("utf-8")) <= 12_288
+
+
+def test_start_text_says_the_first_plan_sends_this_frontier() -> None:
+    """tb4n5 (#1048): six first plans sent ``expected_frontier: null`` after a status read."""
+
+    summary = render_safe_compact_summary(
+        {
+            "ok": True,
+            "outcome": "created",
+            "task_id": _TASK,
+            "session_id": _SESSION,
+            "writer_id": _WRITER,
+            "frontier": {"sequence": "3", "head_digest": _HEAD},
+            "next_request_template": {"evidential": False, "operation": "publish_work"},
+        }
+    )
+    assert summary == (
+        f"Operation outcome: created; task: {_TASK}; session: {_SESSION}; "
+        f"writer: {_WRITER}; frontier: 3; head_digest: {_HEAD}. Send this frontier as "
+        "expected_frontier on your first plan publish_work (next_request_template carries it); "
+        "no status read is needed for it."
+    )
+
+
+def test_accepted_publish_text_says_the_next_write_sends_this_frontier() -> None:
+    accepted = render_safe_compact_summary(
+        {
+            "ok": True,
+            "outcome": "accepted",
+            "accepted_events": [{"event_id": "evt_x"}],
+            "result_frontier": {"sequence": "9", "head_digest": _HEAD},
+        }
+    )
+    assert accepted == (
+        f"Operation outcome: accepted; accepted events: 1; frontier: 9; head_digest: {_HEAD}. "
+        "Send this frontier as the next write's expected_frontier; no status read is needed for it."
+    )
+    # A preview appends nothing, so it names no next frontier.
+    preview = render_safe_compact_summary(
+        {
+            "ok": True,
+            "outcome": "dry_run",
+            "result_frontier": {"sequence": "9", "head_digest": _HEAD},
+        }
+    )
+    assert "expected_frontier" not in preview
+
+
+def test_action_required_status_text_names_the_inspection_read() -> None:
+    summary = render_safe_compact_summary(
+        {
+            "ok": True,
+            "view": "compact",
+            "head_frontier": {"sequence": "12", "head_digest": _HEAD},
+            "closure_readiness": {
+                "state": "action_required",
+                "agent_actionable": ["obligations_open"],
+                "standing_limitations": [],
+                "acknowledged_not_done_count": "0",
+            },
+        }
+    )
+    assert "Agent-actionable: obligations_open." in summary
+    assert "What is left and why, in one read: check with mode inspect (records nothing)." in (
+        summary
+    )
