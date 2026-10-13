@@ -490,3 +490,215 @@ def test_a_failing_read_is_not_raised(tmp_path: Path) -> None:
         )
 
     assert asyncio.run(run()) == ()
+
+
+# tb4n5 biped-contact-dynamics D (the #1044 follow-up, ADR-035 amendment): ``solve.py`` only
+# *writes* ``walk.npz``, ``run.npz`` and ``jump.npz`` (``model.export(..., out/'walk.npz')``, whose
+# sink is ``np.savez_compressed``); the declared outputs ``results/*.npz`` carry the same names, and
+# the agent's validator left 18 copies under ``checks/case_*/``. All 18 matched by basename and
+# blocked closure. Lines 155, 181, 183, 268, 322, 405 and 414 of the recorded attempt, trimmed.
+_BIPED_SOLVER = """import json
+from pathlib import Path
+
+import numpy as np
+
+
+class Model:
+    def export(self, path, pitch, momentum, duration, dt, output):
+        t = np.arange(0.0, duration, dt)
+        np.savez_compressed(output, t=t, state=t, u=t, contact_forces=t, mode=t)
+        print(f'{output.name}: {len(t)} samples', flush=True)
+
+
+def walking(model, cfg, out):
+    model.export(path,lambda t:pp(phase(t)[1]),lambda t:hh(phase(t)[1]),steps*T,dt,out/'walk.npz')
+
+
+def running(model, cfg, out):
+    model.export(path,lambda t:pp(phase(t)[1]),lambda t:hh(phase(t)[1]),(steps-1)*T+ts,dt,out/'run.npz')
+
+
+def jumping(model, cfg, out):
+    model.export(path,lambda t:float(sol.sol(t)[0]),lambda t:0.,T,dt,out/'jump.npz')
+
+
+def main():
+    with args.config.open() as f:cfg=json.load(f)
+"""
+_MOTIONS = ("walk.npz", "run.npz", "jump.npz")
+
+
+def _biped(tmp_path: Path, solver: str = _BIPED_SOLVER) -> tuple[Path, object]:
+    repository, base = _repository(tmp_path, {"README.md": "Biped\n"})
+    for directory in ("submission", "results", *(f"checks/case_{n}" for n in range(6))):
+        (repository / directory).mkdir(parents=True)
+    (repository / "submission" / "solve.py").write_text(solver, encoding="utf-8")
+    for motion in _MOTIONS:
+        (repository / "results" / motion).write_bytes(b"\x93NUMPY\x00\x01motion")
+        for n in range(6):
+            (repository / "checks" / f"case_{n}" / motion).write_bytes(b"\x93NUMPY\x00\x01copy")
+    (repository / "checks" / "validate.py").write_text("print('ok')\n", encoding="utf-8")
+    return repository, base
+
+
+def _biped_delivery(*, results: bool = True) -> tuple[RequestedItem, ...]:
+    declared = [_item("submission/solve.py")]
+    if results:
+        declared.extend(_item(f"results/{motion}") for motion in _MOTIONS)
+    return tuple(declared)
+
+
+def test_tb4n5_biped_writer_literals_raise_no_dependency_on_validation_copies(
+    tmp_path: Path,
+) -> None:
+    repository, base = _biped(tmp_path)
+
+    # The recorded shape: written by the solver, shared with the declared results, in another
+    # directory. None of the 18 copies is a dependency.
+    assert _pairs(repository, base, _projection(*_biped_delivery())) == ()
+    # Each reason alone is enough: without the declared results the literals are still only
+    # written, so the copies are still not dependencies.
+    assert _pairs(repository, base, _projection(*_biped_delivery(results=False))) == ()
+
+
+def test_a_basename_shared_with_a_declared_file_or_in_an_unrelated_directory_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    """A *read* of a bare ``walk.npz`` still names no copy: the declared ``results/walk.npz`` has
+    that name, and no literal ties the reference to ``checks/case_*``."""
+
+    reader = "import numpy as np\nWALK = np.load('walk.npz')\n"
+    repository, base = _biped(tmp_path, reader)
+    assert _pairs(repository, base, _projection(*_biped_delivery())) == ()
+    assert _pairs(repository, base, _projection(*_biped_delivery(results=False))) == ()
+    # A literal that names the copies' directory ties the reference to it: a dependency again.
+    (repository / "submission" / "solve.py").write_text(
+        "import os\nimport numpy as np\n"
+        "WALK = np.load(os.path.join('checks', 'case_0', 'walk.npz'))\n",
+        encoding="utf-8",
+    )
+    assert _pairs(repository, base, _projection(*_biped_delivery(results=False))) == (
+        ("submission/solve.py", "checks/case_0/walk.npz"),
+    )
+
+
+def test_same_basename_in_two_directories_resolves_to_the_one_beside_the_deliverable(
+    tmp_path: Path,
+) -> None:
+    repository, base = _repository(tmp_path, {"README.md": "Two models\n"})
+    for directory in ("a", "b", "c"):
+        (repository / directory).mkdir()
+    for directory in ("a", "b"):
+        (repository / directory / "model.npz").write_bytes(b"\x93NUMPY\x00\x01model")
+    loader = "import numpy as np\nMODEL = np.load('model.npz')\n"
+    (repository / "a" / "run.py").write_text(loader, encoding="utf-8")
+    (repository / "c" / "run.py").write_text(loader, encoding="utf-8")
+    assert _pairs(repository, base, _projection(_item("a/run.py"))) == (
+        ("a/run.py", "a/model.npz"),
+    )
+    # From a third directory neither copy is tied to the bare name: ambiguous, not reported.
+    assert _pairs(repository, base, _projection(_item("c/run.py"))) == ()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "save_model(model, 'weights.npz')",
+        "export_report(data, os.path.join(HERE, 'weights.npz'))",
+        "frame.to_csv('weights.npz', index=False)",
+        "np.savez(os.path.join(HERE, 'weights.npz'), **tables)",
+        "np.savez_compressed(Path(HERE) / 'weights.npz', **tables)",
+        "Path('weights.npz').write_bytes(data)",
+        "(HERE / 'weights.npz').write_bytes(data)",
+        "json.dump(obj, open('weights.npz', 'w'))",
+        "handle = open('weights.npz', mode='wb')",
+        "torch.save(state, 'weights.npz')",
+    ],
+)
+def test_a_literal_the_deliverable_only_writes_is_not_a_dependency(
+    tmp_path: Path, line: str
+) -> None:
+    repository, base = _repository(tmp_path, {"README.md": "Writer\n"})
+    (repository / "train.py").write_text(
+        f"import json, os\nfrom pathlib import Path\nHERE = Path(__file__).parent\n{line}\n",
+        encoding="utf-8",
+    )
+    (repository / "weights.npz").write_bytes(b"\x93NUMPY\x00\x01weights")
+    assert _pairs(repository, base, _projection(_item("train.py"))) == ()
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "MODEL = np.load('weights.npz')",
+        "MODEL = np.load(os.path.join(HERE, 'weights.npz'))",
+        "MODEL = torch.load(Path(HERE) / 'weights.npz')",
+        "TEXT = (HERE / 'weights.npz').read_bytes()",
+        "with open('weights.npz', 'rb') as handle: MODEL = handle.read()",
+        "with open('weights.npz') as handle: MODEL = handle.read()",
+        "MODEL_PATH = HERE / 'weights.npz'",
+    ],
+)
+def test_a_read_or_an_unclassified_use_is_still_a_dependency(tmp_path: Path, line: str) -> None:
+    repository, base = _repository(tmp_path, {"README.md": "Reader\n"})
+    (repository / "serve.py").write_text(
+        "import os\nfrom pathlib import Path\nimport numpy as np\n"
+        f"HERE = Path(__file__).parent\n{line}\n",
+        encoding="utf-8",
+    )
+    (repository / "weights.npz").write_bytes(b"\x93NUMPY\x00\x01weights")
+    assert _pairs(repository, base, _projection(_item("serve.py"))) == (
+        ("serve.py", "weights.npz"),
+    )
+
+
+def test_read_before_write_is_a_dependency(tmp_path: Path) -> None:
+    """A cache the deliverable loads when present and writes otherwise still needs delivering."""
+
+    repository, base = _vigenere(tmp_path)
+    (repository / "artifacts" / "cracker.py").write_text(
+        "import os\nimport numpy as np\nHERE = os.path.dirname(os.path.abspath(__file__))\n"
+        "def tables():\n"
+        "    if os.path.exists(os.path.join(HERE, 'english_ngrams.npz')):\n"
+        "        return np.load(os.path.join(HERE, 'english_ngrams.npz'))\n"
+        "    built = build()\n"
+        "    np.savez(os.path.join(HERE, 'english_ngrams.npz'), **built)\n"
+        "    return built\n",
+        encoding="utf-8",
+    )
+    delivered = (_item("artifacts/cracker.py"), _item("artifacts/requirements.txt"))
+    assert _pairs(repository, base, _projection(*delivered)) == (
+        ("artifacts/cracker.py", "artifacts/english_ngrams.npz"),
+    )
+
+
+def test_a_runtime_rebuild_that_keeps_its_output_literals_raises_nothing(
+    tmp_path: Path,
+) -> None:
+    """The vigenere repair "rebuild it at run time" may still name the files it writes."""
+
+    repository, base = _vigenere(tmp_path)
+    (repository / "artifacts" / "cracker.py").write_text(
+        "import os\nimport numpy as np\nHERE = os.path.dirname(os.path.abspath(__file__))\n"
+        "NGRAMS = build_ngrams()\nWORDS = build_words()\n"
+        "np.savez(os.path.join(HERE, 'english_ngrams.npz'), **NGRAMS)\n"
+        "np.savez(os.path.join(HERE, 'english_words.npz'), **WORDS)\n",
+        encoding="utf-8",
+    )
+    delivered = (_item("artifacts/cracker.py"), _item("artifacts/requirements.txt"))
+    assert _pairs(repository, base, _projection(*delivered)) == ()
+
+
+def test_shell_redirections_and_string_or_comment_parentheses(tmp_path: Path) -> None:
+    repository, base = _repository(tmp_path, {"README.md": "Shell\n"})
+    (repository / "report.txt").write_text("report\n", encoding="utf-8")
+    (repository / "input.txt").write_text("input\n", encoding="utf-8")
+    (repository / "run.sh").write_text(
+        '#!/bin/sh\npython gen.py > "report.txt"\nsort < "input.txt"\n', encoding="utf-8"
+    )
+    assert _pairs(repository, base, _projection(_item("run.sh"))) == (("run.sh", "input.txt"),)
+    # A parenthesis inside a string or a comment does not move the call that holds the literal.
+    (repository / "tool.py").write_text(
+        "print('(')  # unbalanced ( in a comment\nnp.save('report.txt', data)\n", encoding="utf-8"
+    )
+    assert _pairs(repository, base, _projection(_item("tool.py"))) == ()

@@ -1013,11 +1013,17 @@ async def undeclared_references(
         )[:_MAX_REFERENCE_CANDIDATES]
         if not targets or not candidates:
             return ()
+        # Every declared item, any role: a basename-only literal that a declared file shares
+        # most plausibly names that file (tb4n5 biped, the #1044 follow-up).
+        declared_paths = tuple(sorted(path for path in covered if _plain_relative(path)))[
+            :_MAX_REFERENCE_CANDIDATES
+        ]
         found: object = await asyncio.to_thread(
-            cast(Callable[[str, tuple[str, ...], tuple[str, ...]], object], find),
+            cast(Callable[[str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], object], find),
             source.workspace,
             targets,
             candidates,
+            declared_paths,
         )
         if type(found) is not tuple:
             raise TypeError("undeclared_reference_pairs_invalid")
