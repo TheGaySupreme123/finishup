@@ -449,9 +449,14 @@ repository for (a `.git` at or above it, or a bare repository or other Git direc
 recognised by Git's own `is_git_directory`/`validate_headref` rules: a `HEAD` that is a link into
 `refs/`, or reads `ref:` and optional whitespace then `refs/`, or starts with a 40-digit object id
 in either case, beside searchable `objects` and `refs` in its common directory), while a directory
-with none keeps its plain directory identity, as without Git. `HEAD` is read without blocking and
-only when it is a regular file; one Git itself would block on (a FIFO, socket or device) beside
-`objects` and `refs` is refused rather than read. Structural capture refuses to open the
+with none keeps its plain directory identity, as without Git. The detector is deliberately not an
+exact copy of Git's discovery where Git would follow a link or block: `HEAD` and `commondir` are
+read without blocking and only when they are regular files. A `HEAD` that is a FIFO, socket or
+device beside `objects` and `refs`, and a valid `HEAD` beside a `commondir` that is a link, a
+special file, empty or holds a NUL byte, are not decided the way Git would decide them; they are
+refused with `git_version_unsupported` (a supported Git refuses or resolves them as a repository,
+never as a plain directory), so the detector errs only toward refusal. Structural capture refuses
+to open the
 workspace (`yoetz state capture` prints the remedy), and this capture reports
 `check_time_change_unavailable_git_version_unsupported` (one more recorded gap code, classified
 exactly as its G7 siblings, so the gap table holds 216 recorded codes plus 3 readiness-only rows

@@ -1389,8 +1389,9 @@ _FOREIGN_DIGEST = "sha256:" + "0" * 64
         ("other_version", True, False, ("service_incompatible", None, True)),
         ("other_version_digest_unreadable", True, False, ("service_incompatible", None, True)),
         ("other_digest_version_invalid", True, False, ("service_incompatible", None, True)),
-        # Explicit legacy policy: a stamp with no identity keys at all (Yoetz 0.1.x).
-        ("legacy_stamp", True, False, ("service_incompatible", None, True)),
+        # No identity key at all: Yoetz 0.1.x, or an earlier modern writer whose manifest lookup
+        # failed. Absence is not evidence: never incompatible, never replaced automatically.
+        ("legacy_stamp", True, False, ("service_unavailable", "handshake", False)),
     ],
 )
 def test_an_unanswered_hello_is_incompatible_only_when_the_stamp_names_another_installation(
@@ -1633,12 +1634,34 @@ async def test_supersede_signals_only_a_live_foreign_identity_holder(
         ):
             stamp_raw(holder.pid, identity)
             assert await client_module.supersede_incompatible_service(deadline=deadline) is False
+            # Not even the explicit restart replaces a partly readable stamp.
+            assert (
+                await client_module.supersede_incompatible_service(
+                    deadline=deadline, replace_newer=True, replace_legacy=True
+                )
+                is False
+            )
             assert holder.poll() is None
         assert recorded == []
-        # A legacy stamp (no identity keys at all, as Yoetz 0.1.x wrote it) from a live process
-        # is a supersede candidate by explicit upgrade policy.
+        # A stamp with no identity keys at all (Yoetz 0.1.x, or an earlier modern writer whose
+        # manifest lookup failed) is never replaced automatically (#1040 follow-up) ...
         stamp(holder.pid, None, None)
-        assert await client_module.supersede_incompatible_service(deadline=deadline) is True
+        assert await client_module.supersede_incompatible_service(deadline=deadline) is False
+        assert (
+            await client_module.supersede_incompatible_service(
+                deadline=deadline, replace_newer=True
+            )
+            is False
+        )
+        assert holder.poll() is None
+        assert recorded == []
+        # ... only by the owner's explicit restart.
+        assert (
+            await client_module.supersede_incompatible_service(
+                deadline=deadline, replace_newer=True, replace_legacy=True
+            )
+            is True
+        )
         reaper.join(timeout=5)
         assert holder.returncode is not None and holder.returncode != 0
         assert recorded == ["service_supersede"]

@@ -1101,8 +1101,8 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "service_handshake_failed": (
             "The local Yoetz service closed the connection while setting it up and answered "
-            "nothing, so nothing was recorded. Its stamp does not name another installation, so "
-            "replacing it would not help. It recorded why: ask the user to run 'yoetz service "
+            "nothing, so nothing was recorded. Its stamp does not show another installation, so "
+            "it was not replaced. It recorded why: ask the user to run 'yoetz service "
             "diagnostics' on a local terminal. Do not run service lifecycle commands for this."
         ),
     }

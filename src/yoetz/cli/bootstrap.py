@@ -394,9 +394,10 @@ def _handshake_failure_line(error: ControlError, phase: str) -> str:
         return "\n".join(lines)
     head = (
         "service_unavailable: service_handshake_failed: the local service closed the "
-        "connection while setting it up and answered nothing. Its stamp does not name "
-        "another installation, so 'yoetz service restart' would not change this; run "
-        "'yoetz service diagnostics' to read the reason it recorded"
+        "connection while setting it up and answered nothing. Its stamp does not show "
+        "another installation, so it was not replaced; run 'yoetz service diagnostics' to read "
+        "the reason it recorded. Only a holder stamped without any identity (an older Yoetz) "
+        "is replaced by an explicit 'yoetz service restart'"
     )
     return _with_correlation(_with_holder_pid(head), error)
 

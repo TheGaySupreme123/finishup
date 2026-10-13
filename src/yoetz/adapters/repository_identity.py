@@ -146,8 +146,11 @@ def _common_directory(candidate: Path) -> Path | None:
     """The directory Git reads ``objects/`` and ``refs/`` from for ``candidate``, or None.
 
     A linked worktree's Git directory names its repository's common directory in
-    ``commondir``; any other Git directory is its own. None means a ``commondir`` that is not a
-    readable regular file, which Git itself cannot use either.
+    ``commondir``; any other Git directory is its own. Only a regular, non-link ``commondir``
+    is read, without blocking, up to a bound. None means this module cannot decide what Git
+    would make of the pointer, not that Git rejects it: Git follows a linked ``commondir``,
+    blocks on a FIFO, stops at an embedded NUL and fails on an empty one. The caller refuses
+    such a candidate rather than reading it as a plain directory.
     """
 
     pointer = candidate / "commondir"
@@ -172,9 +175,11 @@ def _is_git_directory(candidate: Path) -> bool:
 
     A bare repository (and a ``.git`` directory entered directly) has no ``.git`` child: Git
     recognises it by a valid ``HEAD`` (``_head_is_valid``) and searchable ``objects`` and
-    ``refs`` in its common directory. A ``HEAD`` Git would block on counts as a Git directory
-    when those are present: such a locator cannot be resolved by Git either, so it is refused
-    rather than committed as a plain directory.
+    ``refs`` in its common directory. Where this cannot be decided without following a link or
+    blocking (a ``HEAD`` that is a FIFO, socket or device beside ``objects`` and ``refs``, or a
+    valid ``HEAD`` beside a ``commondir`` that is not a plain readable pointer) the answer is
+    yes: the locator is then refused with a typed error, never committed as a plain directory
+    whose identity a supported Git would not give it.
     """
 
     head = _head_is_valid(candidate / "HEAD")
@@ -182,7 +187,7 @@ def _is_git_directory(candidate: Path) -> bool:
         return False
     common = _common_directory(candidate)
     if common is None:
-        return head is None
+        return True
     return os.access(common / "objects", os.X_OK) and os.access(common / "refs", os.X_OK)
 
 

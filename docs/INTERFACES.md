@@ -2910,16 +2910,18 @@ silent close proves nothing by itself, because a service of this very installati
 when its own side of the handshake fails (#1040 follow-up, below); the client reads the singleton
 stamp (`_stamp_identity` in `yoetz.service.client`) and reports `service_incompatible` only on
 evidence: a present, validated field that differs from this installation's (a well-formed
-`schema_manifest_digest`, or a `service_version` that parses as a package version), or, as an
-explicit legacy-upgrade policy distinct from a demonstrated mismatch, a stamp with neither
-identity key at all (Yoetz 0.1.x stamped only `pid` and `instance_id`; writers from 0.2.1 until
-the #1040 follow-up wrote both fields when the schema manifest could be read and neither when it
-could not; a current writer always writes `service_version` and adds the digest when it can read
-it, so a current service never writes the legacy shape). A holder stamped with this installation's identity, one whose stamp cannot be
-read, and one whose identity fields are only partly readable (a key absent or present but
-invalid, beside fields that match) yields the non-retryable
-`ControlError("service_unavailable", phase=...)` described under "A handshake the service
-failed": missing information is never read as another installation. `yoetz service status
+`schema_manifest_digest`, or a `service_version` that parses as a package version). A stamp with
+neither identity key at all is not evidence either: Yoetz 0.1.x stamped only `pid` and
+`instance_id`, but writers from 0.2.1 until the #1040 follow-up wrote both fields when the schema
+manifest could be read and neither when it could not, and such a stamp lasts as long as its
+process, across an upgrade, so absence cannot tell an older installation from a compatible one
+(a current writer always writes `service_version` and adds the digest when it can read it, so a
+current service never writes that shape). A holder stamped with this installation's identity,
+one whose stamp cannot be read, one whose identity fields are only partly readable (a key absent
+or present but invalid, beside fields that match), and one stamped without any identity key
+yields the non-retryable `ControlError("service_unavailable", phase=...)` described under "A
+handshake the service failed", whose remedy is `yoetz service diagnostics`: missing information
+is never read as another installation. `yoetz service status
 --json` emits `service_incompatible` plus the stamped holder identity and a `correlation_id`
 joinable with `yoetz service diagnostics --correlation-id`. Older
 pre-2.2.0 CLIs that lack `handshake_rejected` still decode the answered hello-result
@@ -2927,22 +2929,27 @@ and fail on the digest themselves (`protocol_mismatch` in those binaries). The
 singleton lock stamp carries the holder's `pid`, `instance_id`, `service_version`, and
 `schema_manifest_digest` (bounded, advisory; a missing or invalid field is read as unknown,
 and `SingletonHolder.identity_fields_absent` marks a stamp that has neither key). The same
-evidence rule selects replacement candidates: only a demonstrated mismatch or the legacy stamp
-is ever signalled. On-demand startup — the MCP bridge's path
+evidence rule selects replacement candidates: only a demonstrated mismatch is signalled
+automatically. A holder stamped without any identity key is replaced only by the owner's explicit
+`yoetz service restart` (`supersede_incompatible_service(replace_legacy=True)`), which may also
+replace a newer holder; it is never replaced by on-demand startup, a hook or a bridge.
+On-demand startup — the MCP bridge's path
 and `yoetz service restart` — treats an incompatible holder as an upgrade to complete: it records a
 `service_supersede` diagnostic, sends the holder its ordinary bounded-shutdown signal, waits for the
 lock to be released inside the same 30-second budget, then spawns and connects to a successor of
 this installation. It never signals a process it cannot identify through the owner-only stamp, a
 holder whose stamped identity equals this installation's, a holder whose identity fields are only
-partly readable, a holder whose stamped `service_version`
+partly readable or absent (only the explicit restart may replace an identity-less stamp), a holder
+whose stamped `service_version`
 is newer than this installation's (only the explicit `yoetz service restart` may replace one), or
 anything on Windows. A holder already shown to be another installation (a validated field that
-differs, or the legacy stamp) whose replacement is refused for one of those reasons, or that
-outlives the budget, surfaces as `service_incompatible`; the bridge message then names
-`yoetz service restart`, except for a newer holder, where it asks the user to reopen the session.
-A same-identity or partly readable holder never reaches this path: its unanswered hello is the
-non-retryable `service_handshake_failed` ("A handshake the service failed", below), whose remedy
-is `yoetz service diagnostics`, never a restart. The MCP bridge also retires a *compatible* holder
+differs) whose replacement is refused for one of those reasons, or that outlives the budget,
+surfaces as `service_incompatible`; the bridge message then names `yoetz service restart`, except
+for a newer holder, where it asks the user to reopen the session. A same-identity, partly readable
+or identity-less holder never reaches this path: its unanswered hello is the non-retryable
+`service_handshake_failed` ("A handshake the service failed", below), whose remedy is
+`yoetz service diagnostics`. `yoetz service restart`, given that error, replaces the holder only
+when its stamp carries no identity key, and otherwise reports it unchanged. The MCP bridge also retires a *compatible* holder
 whose hello reports an older package version than the bridge's, through the same stamped
 bounded-shutdown path, so the first session opened after an in-place `yoetz upgrade --accept`
 switches to the new package. Until that transition, already-open processes use retained runtime
@@ -3083,7 +3090,8 @@ public error `handshake_service_fault` with `reason_code` the token (component `
 operation `control_handshake`); an unexpected exception through the unexpected-exception record
 with its class token, origin and `phase: handshake`. Neither record carries the locator, a path,
 Git output or stderr. The client sees only `handshake_rejected` and classifies it by the singleton
-stamp (above): for a holder of this installation, or of unreadable identity, it records
+stamp (above): for a holder of this installation, or of unreadable, partly readable or absent
+identity, it records
 `service_handshake_failed` (component `service.client`, operation `control_handshake`) and raises
 `ControlError("service_unavailable", retryable=False, phase=<phase>, correlation_id=<that
 record>)`, where `phase` is `handshake`, or `handshake_git_version` when the hello carried a
@@ -3097,7 +3105,8 @@ never names another installation or `yoetz service restart`, and asks for `yoetz
 diagnostics` (or a Git 2.25 or later system Git). The CLI prints `service_unavailable:
 service_handshake_failed: …` with the holder pid and correlation id (`--json`: `reason`
 `service_handshake_failed`, `phase`, `retryable: false`, `correlation_id`, `holder`), and
-`yoetz service restart` reports it instead of signalling the holder. It is an availability failure,
+`yoetz service restart` reports it instead of signalling the holder, except that it replaces a
+holder whose stamp carries no identity key (the one path allowed to). It is an availability failure,
 so the latch below applies.
 
 **Availability latch (issue #469).** The bridge treats the control reasons `service_unavailable`,

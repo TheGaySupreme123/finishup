@@ -2021,8 +2021,9 @@ async def _service_restart(json_output: bool) -> int:
 
     A compatible holder is stopped through its ordinary control method; an incompatible holder
     (another installation's service that rejects this CLI's hello) is asked to stop through the
-    same bounded-shutdown signal on-demand startup uses. The successor is then started on
-    demand and its status reported.
+    same bounded-shutdown signal on-demand startup uses, and so is a holder that rejects the
+    hello while its stamp carries no identity field, which only this explicit restart may
+    replace. The successor is then started on demand and its status reported.
     """
 
     from yoetz.service.client import (
@@ -2039,12 +2040,23 @@ async def _service_restart(json_output: bool) -> int:
             client = await build_service_client(workspace_locator=None)
         except ControlError as error:
             if error.reason in {"service_incompatible", "protocol_mismatch"}:
-                # An explicit human restart may also replace a newer holder (a rollback).
-                if not await supersede_incompatible_service(deadline=deadline, replace_newer=True):
+                # An explicit human restart may also replace a newer holder (a rollback) and a
+                # holder stamped without any identity field.
+                if not await supersede_incompatible_service(
+                    deadline=deadline, replace_newer=True, replace_legacy=True
+                ):
                     return _control_failure(error, json_output=json_output)
-            elif error.reason != "service_unavailable" or handshake_failure(error) is not None:
-                # A running service of this installation that fails the handshake cannot be
-                # asked to stop over it, and is never signalled as another installation.
+            elif handshake_failure(error) is not None:
+                # A holder that closed this hello is replaced here only when its stamp carries
+                # no identity field at all (an older Yoetz, or a compatible service whose stamp
+                # lost its identity): this explicit restart is the one path allowed to replace
+                # such a holder. One stamped with this installation's identity, or partly
+                # readable, cannot be asked to stop over the handshake and is never signalled.
+                if not await supersede_incompatible_service(
+                    deadline=deadline, replace_newer=True, replace_legacy=True
+                ):
+                    return _control_failure(error, json_output=json_output)
+            elif error.reason != "service_unavailable":
                 return _control_failure(error, json_output=json_output)
         else:
             try:

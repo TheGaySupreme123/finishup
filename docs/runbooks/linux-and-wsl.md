@@ -85,8 +85,9 @@ A handshake the service fails is named on both sides. The service records it onc
 `service.daemon`, `operation` `control_handshake`, `reason` `handshake_service_fault` with
 `reason_code` the closed refusal such as `git_version_unsupported`, or the unexpected exception's
 class token and origin with `phase` `handshake`); no path, Git output or stderr is recorded. The
-client reports `service_incompatible` only when the singleton stamp names another installation. For
-this installation's own holder it reports `service_handshake_failed`:
+client reports `service_incompatible` only when a validated field of the singleton stamp names
+another installation. For this installation's own holder, and for a holder whose stamp identity is
+unreadable, partly readable or absent, it reports `service_handshake_failed`:
 
 | Surface | What it shows |
 |---|---|
@@ -95,7 +96,10 @@ this installation's own holder it reports `service_handshake_failed`:
 | `yoetz service diagnostics` | the service's `handshake_service_fault` record with its `reason_code`, and the client's `service_handshake_failed` record |
 
 `yoetz service restart` does not help (it reports the same failure rather than signalling the
-holder); repair the cause the diagnostics name, typically the system Git. PR CI's image smoke
+holder); repair the cause the diagnostics name, typically the system Git. The one exception is a
+holder whose stamp carries no identity key at all (an older Yoetz, or a service whose stamp lost
+its identity when its schema manifest could not be read): nothing replaces it automatically, and
+an explicit `yoetz service restart` does. PR CI's image smoke
 (`scripts/ci/service_image_smoke.sh`) records `git --version` (and fails unless it is 2.25.x),
 initializes a passphrase vault under an isolated root, and from inside a Git repository reads ready
 status, starts a task and runs a deterministic check whose change capture must succeed (its test-edit

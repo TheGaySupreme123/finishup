@@ -1859,8 +1859,8 @@ def _control_error_result(
             else:
                 message = (
                     "The local Yoetz service closed the connection while setting it up and "
-                    "answered nothing, so nothing was recorded. Its stamp does not name another "
-                    "installation, so restarting or replacing it would not help. It recorded "
+                    "answered nothing, so nothing was recorded. Its stamp does not show another "
+                    "installation, so it was not replaced. It recorded "
                     "why: give the user this correlation_id and ask them to run 'yoetz service "
                     "diagnostics' on a local terminal. Do not run service lifecycle commands for "
                     "this."

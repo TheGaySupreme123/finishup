@@ -549,7 +549,7 @@ def _attachment_recovery_context(reason: str) -> str:
     if reason == "service_handshake_failed":
         return (
             "Yoetz attachment pending: service_handshake_failed. The running local service "
-            "closed the connection while setting it up; restarting it does not help. Call start "
+            "closed the connection while setting it up; the hook did not replace it. Call start "
             "and follow its typed result, which names the cause or the diagnostics to read. "
         )
     # A timed-out attachment may have sent start under the hook's own request identity, which

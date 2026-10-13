@@ -580,6 +580,90 @@ async def test_every_head_form_git_accepts_is_refused_below_the_minimum(
     assert context.identity_kind == "directory"
 
 
+def _bare_with_commondir(tmp_path: Path, name: str, kind: str) -> Path:
+    """A bare repository (valid HEAD, objects, refs) with one shape of ``commondir`` pointer."""
+
+    bare = (tmp_path / name).resolve()
+    _git(tmp_path, "init", "--quiet", "--bare", os.fspath(bare))
+    pointer = bare / "commondir"
+    if kind == "regular":
+        pointer.write_bytes(b".\n")
+    elif kind == "symlinked":
+        (tmp_path / f"{name}-target").write_bytes(b".\n")
+        pointer.symlink_to(tmp_path / f"{name}-target")
+    elif kind == "fifo":
+        os.mkfifo(pointer)
+    elif kind == "nul":
+        pointer.write_bytes(b".\x00ignored\n")
+    elif kind == "empty":
+        pointer.write_bytes(b"")
+    elif kind == "dangling":
+        pointer.symlink_to(tmp_path / f"{name}-missing")
+    else:
+        raise AssertionError(kind)
+    return bare
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("kind", ["regular", "symlinked", "fifo", "nul", "empty", "dangling"])
+async def test_a_commondir_the_detector_cannot_decide_is_refused_below_the_minimum(
+    install_git: _InstallShim, tmp_path: Path, kind: str
+) -> None:
+    """#1040 review round 3: a valid HEAD beside an undecidable pointer never becomes a directory.
+
+    Git follows a linked ``commondir``, blocks on a FIFO, stops at a NUL and fails on an empty
+    one; the detector reads none of those. Whatever a supported Git would make of the pointer, it
+    never commits the locator as a plain directory, so below the minimum the locator is refused,
+    at the bare root and inside it, and the detector never blocks.
+    """
+
+    import threading
+
+    from yoetz.adapters import repository_identity as identity_module
+
+    bare = _bare_with_commondir(tmp_path, f"{kind}.git", kind)
+    nested = bare / "refs" / "heads"
+    detected: dict[str, bool] = {}
+
+    def detect() -> None:
+        marker = identity_module._has_git_marker  # pyright: ignore[reportPrivateUsage]
+        detected["root"] = marker(bare)
+        detected["nested"] = marker(nested)
+
+    worker = threading.Thread(target=detect, daemon=True)
+    worker.start()
+    worker.join(timeout=5.0)
+    assert not worker.is_alive(), "the commondir probe blocked"
+    assert detected == {"root": True, "nested": True}
+    install_git("2.24.4")
+    for located in (bare, nested):
+        with pytest.raises(RepositoryIdentityError) as refused:
+            await resolve_repository_privacy_context(
+                WorkspaceLocator(os.fspath(located)), _MacKey()
+            )
+        assert refused.value.reason == GIT_VERSION_UNSUPPORTED, (kind, located)
+
+
+def test_an_invalid_head_beside_any_commondir_is_still_not_a_git_directory(tmp_path: Path) -> None:
+    """Git checks HEAD first: without a valid one, no pointer makes a Git directory."""
+
+    from yoetz.adapters import repository_identity as identity_module
+
+    for kind in ("regular", "symlinked", "nul", "empty"):
+        lookalike = tmp_path / f"lookalike-{kind}"
+        (lookalike / "objects").mkdir(parents=True)
+        (lookalike / "refs").mkdir()
+        (lookalike / "HEAD").write_text("not a ref\n", encoding="utf-8")
+        pointer = lookalike / "commondir"
+        if kind == "symlinked":
+            (tmp_path / f"target-{kind}").write_bytes(b".\n")
+            pointer.symlink_to(tmp_path / f"target-{kind}")
+        else:
+            pointer.write_bytes({"regular": b".\n", "nul": b".\x00x\n", "empty": b""}[kind])
+        is_git_directory = identity_module._is_git_directory  # pyright: ignore[reportPrivateUsage]
+        assert is_git_directory(lookalike) is False, kind
+
+
 def test_a_special_file_head_never_blocks_the_detector(tmp_path: Path) -> None:
     """A FIFO named HEAD is never opened for a blocking read (#1040 review)."""
 

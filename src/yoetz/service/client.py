@@ -556,12 +556,18 @@ def _stamp_identity(holder: SingletonHolder) -> _StampIdentity:
     """How a stamped holder's identity compares with this installation's, on evidence only.
 
     ``other`` needs a present, validated field that differs: a schema-manifest digest or a
-    package version that is not this installation's. ``legacy`` is a stamp with neither identity
-    key at all, as installations that predate the fields wrote it (Yoetz 0.1.x); treating such a
-    holder as an older installation to replace is an explicit upgrade policy, not a demonstrated
-    mismatch. ``same`` needs both fields readable and equal. Anything else, a field absent or
-    unreadable beside fields that match, is ``unknown``: missing information is never read as
-    another installation, so it never makes a holder incompatible or a supersede candidate.
+    package version that is not this installation's. ``same`` needs both fields readable and
+    equal. Anything else, a field absent or unreadable beside fields that match, is ``unknown``:
+    missing information is never read as another installation, so it never makes a holder
+    incompatible or an automatic supersede candidate.
+
+    ``legacy`` is a stamp with neither identity key at all. Yoetz 0.1.x wrote that shape, but so
+    did every writer from 0.2.1 until the #1040 follow-up whenever its schema-manifest lookup
+    failed, and such a stamp outlives the upgrade for as long as its process runs. Absence alone
+    therefore cannot tell an older installation from a compatible one: ``legacy`` is treated like
+    ``unknown`` everywhere automatic (an unanswered hello is ``service_handshake_failed``, never
+    ``service_incompatible``), and only an explicit ``yoetz service restart`` may replace it
+    (``supersede_incompatible_service(replace_legacy=True)``).
     """
 
     if holder.identity_fields_absent:
@@ -577,8 +583,9 @@ def _stamp_identity(holder: SingletonHolder) -> _StampIdentity:
     return "unknown"
 
 
-# Stamp classes that may be reported as ``service_incompatible`` and replaced through the stamp.
-_REPLACEABLE_STAMPS: Final[frozenset[_StampIdentity]] = frozenset({"other", "legacy"})
+# The one stamp class that is evidence of another installation: reported as
+# ``service_incompatible`` and replaceable without an explicit human restart.
+_REPLACEABLE_STAMPS: Final[frozenset[_StampIdentity]] = frozenset({"other"})
 
 
 def _system_git_below_minimum() -> bool:
@@ -598,10 +605,10 @@ def _unanswered_hello(workspace_locator: WorkspaceLocator | None) -> ControlErro
     as resolving the caller's repository with a Git it cannot use (it records why). Only the
     owner-only singleton stamp tells them apart, so ``service_incompatible``, whose remedy is
     replacing the service, is reported only when the stamp shows another identity: a validated
-    field that differs, or the legacy stamp without identity fields (``_stamp_identity``). A
-    holder stamped with this installation's identity, one whose stamp cannot be read, and one
-    whose identity fields are only partly readable is a failed handshake that restarting would
-    not change: non-retryable ``service_unavailable`` with ``phase`` ``handshake``, or
+    field that differs (``_stamp_identity``). A holder stamped with this installation's
+    identity, one whose stamp cannot be read, one whose identity fields are only partly readable,
+    and one stamped without any identity field is a failed handshake that is never replaced
+    automatically: non-retryable ``service_unavailable`` with ``phase`` ``handshake``, or
     ``handshake_git_version`` when this hello named a workspace and the system Git is older than
     the documented minimum. The correlation id resolves the client-side record; the service's
     own record names the cause.
@@ -1703,7 +1710,9 @@ def holder_version_order(holder_version: str | None) -> Literal["older", "same",
     return "newer" if holder > own else "same"
 
 
-async def supersede_incompatible_service(*, deadline: float, replace_newer: bool = False) -> bool:
+async def supersede_incompatible_service(
+    *, deadline: float, replace_newer: bool = False, replace_legacy: bool = False
+) -> bool:
     """Ask the live same-user singleton holder to stop and wait for it to release the endpoint.
 
     Called after a listening service rejected this client's hello, or when a new host session
@@ -1712,11 +1721,13 @@ async def supersede_incompatible_service(*, deadline: float, replace_newer: bool
     bounded-shutdown signal, and is polled until it releases the lock. Returns ``True`` once the
     endpoint is free, ``False`` when no supersede candidate can be identified (no live stamped
     holder, an identical-identity holder that rejected us anyway, a holder whose identity fields
-    are only partly readable, a holder stamped by a newer package than this one, or a platform
-    without POSIX signals), and raises
-    ``service_incompatible`` when the holder outlives the deadline. Only an explicit human
-    ``yoetz service restart`` passes ``replace_newer``: an upgrade moves forward, so a process
-    left over from before an in-place package upgrade never replaces its successor. A durable
+    are only partly readable, a holder stamped without any identity field unless
+    ``replace_legacy``, a holder stamped by a newer package than this one, or a platform without
+    POSIX signals), and raises ``service_incompatible`` when the holder outlives the deadline.
+    Only an explicit human ``yoetz service restart`` passes ``replace_newer`` and
+    ``replace_legacy``: an upgrade moves forward, so a process left over from before an in-place
+    package upgrade never replaces its successor, and a stamp without identity fields may be a
+    compatible service (``_stamp_identity``), so only the owner's restart replaces it. A durable
     diagnostic names every attempt.
     """
 
@@ -1728,10 +1739,12 @@ async def supersede_incompatible_service(*, deadline: float, replace_newer: bool
     holder = probe_singleton_holder_identity(_singleton_lock_path())
     if holder is None:
         return False
-    if _stamp_identity(holder) not in _REPLACEABLE_STAMPS:
+    identity = _stamp_identity(holder)
+    if identity not in _REPLACEABLE_STAMPS and not (replace_legacy and identity == "legacy"):
         # Same installation identity yet it rejected the hello: this is not an upgrade, and
         # stopping it would not change the outcome. A stamp whose identity is only partly
-        # readable proves no other installation either, so it is never signalled. Report
+        # readable, or absent, proves no other installation either, so it is never signalled
+        # here; only the owner's explicit restart may replace an identity-less stamp. Report
         # instead of restarting.
         return False
     if not replace_newer and holder_version_order(holder.service_version) == "newer":

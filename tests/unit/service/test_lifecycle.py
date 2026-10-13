@@ -462,6 +462,111 @@ async def test_a_current_stamp_is_never_legacy_shaped_even_without_its_manifest(
         await lifecycle.close()
 
 
+def _pre_fix_stamp_singleton_holder(self: ServiceLifecycle, descriptor: int) -> None:
+    """``ServiceLifecycle._stamp_singleton_holder`` exactly as f30a4f70e (and v0.2.1) wrote it.
+
+    Frozen here because a running service of that writer keeps its stamp across an upgrade: when
+    its manifest lookup failed, it wrote neither identity key, the shape Yoetz 0.1.x writes.
+    """
+
+    import contextlib
+    from typing import cast
+
+    from yoetz import __version__
+    from yoetz.protocol.canonical import JsonValue
+
+    instance_id = cast(str, getattr(self, "_instance_id"))
+    holder_identity = cast(dict[str, JsonValue], getattr(self, "_holder_identity"))
+    body: dict[str, JsonValue] = {"instance_id": instance_id, "pid": os.getpid()}
+    body.update(holder_identity)
+    with contextlib.suppress(Exception):
+        from yoetz.protocol.schemas import schema_manifest_digest
+
+        body["schema_manifest_digest"] = schema_manifest_digest()
+        body["service_version"] = __version__
+    with contextlib.suppress(OSError):
+        os.ftruncate(descriptor, 0)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.write(descriptor, canonical_encode(cast(JsonValue, body)) + b"\n")
+
+
+@pytest.mark.anyio
+async def test_an_identity_less_stamp_from_an_earlier_modern_writer_is_never_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1040 review round 3: the pre-fix writer's stamp of a compatible service is not legacy.
+
+    Such a stamp is byte-for-byte what Yoetz 0.1.x wrote, so absence of identity cannot tell an
+    older installation from this compatible one: an unanswered hello is a handshake failure, no
+    automatic path selects it for SIGTERM, and only the explicit restart may replace it.
+    """
+
+    import yoetz.observability.logging as logging_module
+    import yoetz.protocol.schemas as schemas_module
+    import yoetz.service.client as client_module
+    from yoetz.ports.control import ControlError, WorkspaceLocator
+
+    path = tmp_path / "service.lock"
+    real_digest = schemas_module.schema_manifest_digest
+
+    def unreadable_manifest() -> str:
+        raise OSError("manifest_unreadable")
+
+    monkeypatch.setattr(
+        ServiceLifecycle, "_stamp_singleton_holder", _pre_fix_stamp_singleton_holder
+    )
+    monkeypatch.setattr(schemas_module, "schema_manifest_digest", unreadable_manifest)
+    lifecycle = _lifecycle(_Clock(), singleton_lock_path=path)
+    await lifecycle.acquire_singleton()
+    signals: list[tuple[int, int]] = []
+    try:
+        monkeypatch.setattr(schemas_module, "schema_manifest_digest", real_digest)
+        assert path.read_bytes() == (
+            canonical_encode({"instance_id": _INSTANCE_ID, "pid": os.getpid()}) + b"\n"
+        )
+        holder = probe_singleton_holder_identity(path)
+        assert holder is not None
+        assert holder.identity_fields_absent is True
+
+        monkeypatch.setattr(client_module, "_singleton_lock_path", lambda: path)
+        real_kill = os.kill
+
+        def kill(pid: int, sig: int) -> None:
+            if sig == 0:
+                real_kill(pid, 0)
+                return
+            signals.append((pid, sig))
+
+        monkeypatch.setattr(os, "kill", kill)
+
+        def record(**_fields: object) -> str:
+            return "err_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+        monkeypatch.setattr(logging_module, "record_public_error_without_raising", record)
+        unanswered = client_module._unanswered_hello  # pyright: ignore[reportPrivateUsage]
+        error = unanswered(WorkspaceLocator("/private/repository"))
+        assert (error.reason, error.retryable) == ("service_unavailable", False)
+        assert client_module.handshake_failure(error) is not None
+        loop = asyncio.get_running_loop()
+        for replace_newer in (False, True):
+            assert (
+                await client_module.supersede_incompatible_service(
+                    deadline=loop.time() + 1.0, replace_newer=replace_newer
+                )
+                is False
+            )
+        assert signals == []
+        # The owner's explicit restart is the one path that signals it.
+        with pytest.raises(ControlError, match="service_incompatible"):
+            await client_module.supersede_incompatible_service(
+                deadline=loop.time() + 0.2, replace_newer=True, replace_legacy=True
+            )
+        assert len(signals) == 1 and signals[0][0] == os.getpid()
+    finally:
+        await lifecycle.transition(ServiceState.LOCKED)
+        await lifecycle.close()
+
+
 @pytest.mark.anyio
 async def test_singleton_stamp_carries_the_instance_lifecycle_and_source_ref(
     tmp_path: Path,
