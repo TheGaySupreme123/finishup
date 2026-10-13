@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import re
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import partial
@@ -341,12 +340,6 @@ _UNAVAILABLE_GAPS = frozenset(
 )
 SEMANTIC_REJECTED_REF_OUTSIDE_CASE: Final = "ref_outside_case"
 SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM: Final = "hidden_source_claim"
-# tb4n5 live-database-cutover: ``password=[REDACTED]`` in the check-time change was raised as an
-# undefined name. A challenge whose own quote holds one of Yoetz's redaction markers and whose
-# summary or discrepancy names that marker as the defect (an undefined name, a syntax error,
-# missing configuration) rests on Yoetz's substitution, not the agent's code: dropped and counted
-# (``_rests_on_redaction_marker``). A defect named elsewhere on such a line is kept.
-SEMANTIC_REJECTED_REDACTION_MARKER: Final = "redaction_marker_premise"
 SEMANTIC_REJECTED_SNIPPET: Final = "snippet_invalid"
 # None of a challenge's cited refs is proven sent in the packet (issue #976). Distinct from a quote
 # problem: the concern itself is surfaced as advisory text, it just anchors to nothing.
@@ -513,7 +506,6 @@ class SemanticJudgmentReview:
 _SEMANTIC_REJECTION_REASONS: Final = frozenset(
     {
         SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM,
-        SEMANTIC_REJECTED_REDACTION_MARKER,
         SEMANTIC_REJECTED_REF_NOT_CARRIED,
         SEMANTIC_REJECTED_REF_OUTSIDE_CASE,
         SEMANTIC_REJECTED_ROUTINE_COMPLETENESS,
@@ -3851,37 +3843,6 @@ def _recorded_finding_subjects(case: DeterministicCase, ref: str) -> tuple[str, 
     return subjects
 
 
-_REDACTION_MARKER_TEXTS: Final = ("[REDACTED]", "[withheld-by-yoetz:possible-credential]")
-_MARKER_TOKEN: Final = r"(?:redacted|withheld-by-yoetz|possible-credential)"
-_MARKER_DEFECT: Final = (
-    r"(?:undefined|not defined|name ?error|syntax ?error|invalid syntax|unresolved"
-    r"|invalid identifier|missing (?:value|config(?:uration)?))"
-)
-# The marker's own token and a code-defect term in one clause (no sentence or clause break, at
-# most 80 characters apart), in either order.
-_MARKER_PREMISE: Final = re.compile(
-    rf"{_MARKER_TOKEN}[^.;\n]{{0,80}}?{_MARKER_DEFECT}|{_MARKER_DEFECT}[^.;\n]{{0,80}}?{_MARKER_TOKEN}",
-    re.IGNORECASE,
-)
-
-
-def _rests_on_redaction_marker(challenge: ReviewerChallenge) -> bool:
-    """Whether a challenge treats Yoetz's own redaction marker as the agent's defect (tb4n5).
-
-    Narrow by design: the challenge's own supporting quote must hold an exact marker, and its
-    summary or discrepancy must name the marker beside a code-defect term. The reviewer was told
-    both markers stand for values Yoetz withheld; a premise built on one is never the agent's.
-    """
-
-    snippet = challenge.snippet or ""
-    if not any(marker in snippet for marker in _REDACTION_MARKER_TEXTS):
-        return False
-    return any(
-        _MARKER_PREMISE.search(text) is not None
-        for text in (challenge.summary, challenge.discrepancy)
-    )
-
-
 def _claims_unchanged_over_hidden_source(
     case: DeterministicCase,
     challenge: ReviewerChallenge,
@@ -4304,11 +4265,6 @@ def validate_semantic_judgment(
         if _claims_unchanged_over_hidden_source(case, challenge):
             rejections[SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM] = (
                 rejections.get(SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM, 0) + 1
-            )
-            continue
-        if _rests_on_redaction_marker(challenge):
-            rejections[SEMANTIC_REJECTED_REDACTION_MARKER] = (
-                rejections.get(SEMANTIC_REJECTED_REDACTION_MARKER, 0) + 1
             )
             continue
         if yoetz_process_state_only(case.projection, challenge.finding_kind, refs, observed):

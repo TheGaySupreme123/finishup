@@ -163,13 +163,12 @@ content-returning read needed its own decision. This is that decision, for exact
    reviewer read as an undefined name and raised as a `code_defect`. The reviewer's standing
    instruction now names both markers as Yoetz's own substitutions for an unavailable original
    value or expression, never evidence of a syntax error, an undefined name or missing
-   configuration, and the packet-limit glossary explains `check_time_change_redacted`. Beyond
-   the prompt, the check drops and counts (`redaction_marker_premise`, disclosed as
-   `semantic_challenges_rejected`) a challenge whose own supporting quote holds either marker and
-   whose summary or discrepancy names that marker beside a code-defect term (undefined, not
-   defined, NameError, syntax error, unresolved, missing value or configuration) in one clause.
-   The rule is deliberately narrow, like the hidden-source rule: a defect named elsewhere on a
-   line that holds a marker is kept and reviewed. The
+   configuration, and the packet-limit glossary explains `check_time_change_redacted`. No
+   check-side filter reads the reviewer's words for a marker premise: one keyed on wording near
+   the marker also dropped real defects in the surrounding readable code ("beside the redacted
+   password, DB_PORT is undefined"), so it was withdrawn in the tb4n5 fix review. A finding that
+   still rests on a marker is answered by the agent as a Yoetz limit (agent guidance), and the
+   existing hidden-source rule still applies. The
    shown-file record (item 9) and reviewer-quote proof treat both markers alike: each is a
    redaction, and a file holding either is never `fully_shown`. A change stored before this
    amendment holds `[REDACTED]` only, so its shown-file record, view commitments and replay are

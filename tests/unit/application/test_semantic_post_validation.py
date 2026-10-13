@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import replace
+from typing import Literal
 
 import pytest
 
@@ -2158,8 +2159,8 @@ def test_a_historical_obligation_publication_event_is_not_new_material() -> None
 
 
 _CUTOVER_LINE = (
-    "+    return URL.create('postgresql+psycopg',username=config.POSTGRES_USER,"
-    "password=[withheld-by-yoetz:possible-credential],host='localhost')"
+    "+    return URL.create('postgresql+psycopg',password=[REDACTED],"
+    "host=config.POSTGRES_HOST,port=DB_PORT)"
 )
 
 
@@ -2180,54 +2181,41 @@ def _defect(summary: str, discrepancy: str, snippet: str) -> ReviewerChallenge:
 @pytest.mark.parametrize(
     "discrepancy",
     [
-        # tb4n5 live-database-cutover, as the reviewer wrote it (with the old marker).
-        "The shown api/db.py builds the PostgreSQL URL with password=[REDACTED] which raises "
-        "NameError unless REDACTED is defined",
-        "password=[withheld-by-yoetz:possible-credential] is not defined anywhere in the module",
-        "Invalid syntax: the withheld-by-yoetz placeholder is not a Python expression",
+        "DB_PORT is undefined and raises NameError at startup",
+        # Round-2 review of tb4n5: wording about the redaction beside a real defect in the
+        # surrounding readable code must never decide whether that defect survives.
+        "Beside the redacted password, DB_PORT is undefined and raises NameError at startup",
+        "Redacted password aside, DB_PORT is undefined and raises NameError at startup",
+        "The password is redacted; DB_PORT is undefined and raises NameError at startup",
+        "Not the [withheld-by-yoetz:possible-credential] value: DB_PORT is not defined anywhere",
     ],
 )
-def test_a_premise_resting_on_a_redaction_marker_never_becomes_a_finding(
-    discrepancy: str,
+@pytest.mark.parametrize("phase", ["final", "routine"])
+def test_a_defect_beside_a_redaction_marker_stays_reviewable(
+    discrepancy: str, phase: Literal["final", "routine"]
 ) -> None:
-    """The marker stands for a value Yoetz withheld; a defect built on it is never the agent's,
-    while a real defect on the same line stays reviewable (checker review of tb4n5)."""
-
-    from yoetz.application.check import SEMANTIC_REJECTED_REDACTION_MARKER
+    """tb4n5: no check-side filter reads the reviewer's words for a redaction-marker premise; a
+    concern about readable code on a line that holds a marker keeps its normal frame (a finding
+    in the final review, an advisory note in a routine one) whatever words surround it. The
+    reviewer instruction and the agent guidance carry the marker rule instead."""
 
     case = make_case(extra_refs=(clm(1),))
     sent = f"diff --git a/api/db.py b/api/db.py\n{_CUTOVER_LINE}\n"
-    marker_premise = _defect(
-        "PostgreSQL connection setup uses an unresolved password expression",
-        discrepancy,
-        _CUTOVER_LINE,
-    )
-    real = _defect(
-        "The database host is hard-coded",
-        "The URL hard-codes host='localhost' instead of config.POSTGRES_HOST, so the cutover "
-        "never reaches the new database",
-        _CUTOVER_LINE,
-    )
-    elsewhere = _defect(
-        "An undefined name in the migration",
-        "migrate() calls undefined helper copy_rows, which raises NameError at startup",
-        "+    copy_rows(source, target)",
-    )
+    challenge = _defect("Undefined database port", discrepancy, _CUTOVER_LINE)
+
     review = validate_semantic_judgment(
         case,
         (),
-        SemanticJudgment("challenges_returned", (marker_premise, real, elsewhere)),
+        SemanticJudgment("challenges_returned", (challenge,)),
         _provenance(),
         expected_frontier=case.frontier,
         citable_refs=frozenset({str(clm(1))}),
-        provider_input_text_by_ref={
-            str(clm(1)): (sent + "+    copy_rows(source, target)\n",),
-        },
-        review_phase="final",
+        provider_input_text_by_ref={str(clm(1)): (sent,)},
+        review_phase=phase,
     )
 
-    assert [candidate.summary for candidate in review.candidates] == [
-        "The database host is hard-coded",
-        "An undefined name in the migration",
-    ]
-    assert review.rejected_by_reason == ((SEMANTIC_REJECTED_REDACTION_MARKER, 1),)
+    assert review.rejected_by_reason == ()
+    if phase == "final":
+        assert [candidate.summary for candidate in review.candidates] == ["Undefined database port"]
+    else:
+        assert review.candidates == () and review.advisory_notes == 1

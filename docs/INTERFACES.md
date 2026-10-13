@@ -1472,9 +1472,7 @@ Two further check-path operations describe a review that did reach a provider:
 `semantic_review_accounting` is appended once per dispatched review carrying counts only —
 `semantic_conclusion`, `semantic_challenges_returned`, `semantic_candidates_accepted`,
 `semantic_challenges_rejected`, the per-reason split `semantic_rejected_<reason>`
-(`ref_not_carried`, `ref_outside_case`, `hidden_source_claim`, `redaction_marker_premise` (tb4n5:
-a challenge whose own quote holds `[REDACTED]` or `[withheld-by-yoetz:possible-credential]` and whose
-summary or discrepancy names that marker beside a code-defect term), `subject_refs_over_limit`,
+(`ref_not_carried`, `ref_outside_case`, `hidden_source_claim`, `subject_refs_over_limit`,
 `routine_completeness`, `yoetz_process_state`),
 `semantic_review_refs_reduced`, `semantic_review_snippets_rejected`,
 `semantic_restatements_suppressed`, `semantic_challenges_advisory` (routine correctness notes,
