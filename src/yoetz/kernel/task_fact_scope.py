@@ -32,7 +32,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, cast
 
 from yoetz.domain.events import ClaimKind, LedgerRecord
 from yoetz.domain.findings import FindingKind
@@ -378,7 +378,7 @@ def _scope_unreadable(state: ProjectionState, finding_id: FindingId) -> bool:
     finding = _readable(state.findings.get(finding_id))
     if finding is None:
         return True
-    action_events = {str(item.source_event_id): item for item in state.actions.values()}
+    placed = _placed_events(state)
     for ref in finding.subject_refs:
         text = str(ref)
         if text.startswith("obl_"):
@@ -388,10 +388,39 @@ def _scope_unreadable(state: ProjectionState, finding_id: FindingId) -> bool:
             if _readable(state.claims.get(ClaimId(text))) is None:
                 return True
         elif text.startswith("evt_"):
-            action = action_events.get(text)
-            if action is not None and _readable(action) is None:
+            # tb4n5 check D6: an event the projection cannot place (no row records it) is as
+            # unknown as an unreadable one; only a placed, readable event can show the scope.
+            row = placed.get(text)
+            if row is None or _readable(row) is None:
                 return True
     return False
+
+
+def _placed_events(state: ProjectionState) -> dict[str, ProjectionRecord[object]]:
+    """Every projection row by the event that recorded it (the newest row of a key wins)."""
+
+    placed: dict[str, ProjectionRecord[object]] = {}
+    tables: tuple[Iterable[object], ...] = (
+        state.obligations.values(),
+        state.decisions.values(),
+        state.assignments.values(),
+        state.actions.values(),
+        state.results.values(),
+        state.evidence.values(),
+        state.claims.values(),
+        state.findings.values(),
+        state.responses.values(),
+        state.coordination_contexts.values(),
+        state.coordination_dispositions.values(),
+        state.coordination_declarations.values(),
+    )
+    for table in tables:
+        for row in table:
+            typed = cast(ProjectionRecord[object], row)
+            placed.setdefault(str(typed.source_event_id), typed)
+    for plan in state.plans.values():
+        placed.setdefault(str(plan.source_event_id), cast(ProjectionRecord[object], plan))
+    return placed
 
 
 def scoped_resolution_reasons(

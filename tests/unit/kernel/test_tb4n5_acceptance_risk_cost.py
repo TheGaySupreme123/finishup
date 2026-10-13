@@ -54,7 +54,10 @@ _BUDGET_SECONDS: Final = 1.0
 _OBSERVED_AT: Final = timestamp_from_string("2026-10-13T12:00:00.000Z")
 
 
-def _projection() -> ProjectionState:
+def _projection(*, shared: bool = False, linked_actions: int = 0) -> ProjectionState:
+    """``shared``: every obligation cites the same eight evidence items; ``linked_actions``
+    distinct actions each have a result citing the first of them (check D3-R2)."""
+
     number = 0
 
     def next_number() -> int:
@@ -65,8 +68,11 @@ def _projection() -> ProjectionState:
     obligations = {}
     evidence = {}
     for index in range(_OBLIGATIONS):
-        refs = tuple(evd(10_000 + index * _REFS_PER_OBLIGATION + slot) for slot in range(8))
+        base = 10_000 if shared else 10_000 + index * _REFS_PER_OBLIGATION
+        refs = tuple(evd(base + slot) for slot in range(_REFS_PER_OBLIGATION))
         for ref in refs:
+            if ref in evidence:
+                continue
             evidence[ref] = evidence_record(
                 EvidenceRecordedPayload(
                     evidence_id=ref,
@@ -105,6 +111,19 @@ def _projection() -> ProjectionState:
         )
         for index in range(_UNRELATED_RESULTS)
     }
+    for index in range(linked_actions):
+        action = act(100_000 + index)
+        actions[action] = record(
+            ActionRecordedPayload(action, ActionKind.REVIEW, "Reviewed the shared report"),
+            next_number(),
+        )
+        result = res(100_000 + index)
+        results[result] = record(
+            ResultRecordedPayload(
+                result, action, ResultOutcome.SUCCESS, evidence_refs=(evd(10_000),)
+            ),
+            next_number(),
+        )
     return replace(
         empty_projection_state(),
         frontier=number,
@@ -143,3 +162,35 @@ def test_a_long_task_is_classified_well_inside_the_stop_deadline(
     assert acceptance_risk(state, (), resolved) is flagged
     assert calls == 1
     assert time.perf_counter() - again_started < 0.05
+
+
+def test_shared_evidence_behind_many_actions_is_resolved_once_per_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Check D3-R2: 200 obligations cite the same eight items; 1,000 actions stand behind one."""
+
+    state = _projection(shared=True, linked_actions=1_000)
+    resolved = tuple(state.obligations)
+    resolutions = 0
+    original = evidence_alignment.source_actions
+
+    def counting(
+        projection: ProjectionState,
+        records_by_event: object,
+        ref: str,
+        evidence_actions: object = None,
+        source_cache: dict[str, object] | None = None,
+    ) -> object:
+        nonlocal resolutions
+        if source_cache is None or ref not in source_cache:
+            resolutions += 1
+        return original(projection, records_by_event, ref, evidence_actions, source_cache)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(evidence_alignment, "source_actions", counting)
+    started = time.perf_counter()
+    flagged = acceptance_risk(state, (), resolved)
+    elapsed = time.perf_counter() - started
+    assert len(flagged) == _OBLIGATIONS
+    # Each shared reference is resolved once for the whole read, not once per obligation.
+    assert resolutions == _REFS_PER_OBLIGATION
+    assert elapsed < _BUDGET_SECONDS, elapsed

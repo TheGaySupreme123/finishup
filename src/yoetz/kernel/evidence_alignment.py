@@ -127,27 +127,42 @@ def source_actions(
     records_by_event: Mapping[EventId, LedgerRecord],
     ref: str,
     evidence_actions: Mapping[str, tuple[ActionId, ...]] | None = None,
+    source_cache: dict[str, tuple[tuple[ActionRecordedPayload, EventId], ...]] | None = None,
 ) -> tuple[tuple[ActionRecordedPayload, EventId], ...]:
     """The actions a cited result or evidence item came from, by recorded link.
 
     ``evidence_actions`` is ``results_by_evidence(projection)`` when the caller resolves many
     references against one projection; without it the inventory is scanned for this one.
+    ``source_cache`` holds each reference's answer for one read, so a reference many obligations
+    cite is resolved once (tb4n5 check D3-R2: 200 obligations sharing one evidence item behind
+    1,000 results rebuilt the same tuple 200 times).
     """
 
+    if source_cache is not None:
+        cached = source_cache.get(ref)
+        if cached is not None:
+            return cached
     actions: list[tuple[ActionRecordedPayload, EventId]] = []
+    # An action id names one projection row, so its identity is the deduplication key; comparing
+    # payload pairs made a reference with many linked actions quadratic.
+    seen: set[ActionId] = set()
 
     def add(action_id: ActionId) -> None:
+        if action_id in seen:
+            return
         record = projection.actions.get(action_id)
         if record is not None and record.payload is not None:
-            pair = (record.payload, record.source_event_id)
-            if pair not in actions:
-                actions.append(pair)
+            seen.add(action_id)
+            actions.append((record.payload, record.source_event_id))
 
     if ref.startswith("res_"):
         result = projection.results.get(ResultId(ref))
         if result is not None and result.payload is not None:
             add(result.payload.action_id)
-        return tuple(actions)
+        answer = tuple(actions)
+        if source_cache is not None:
+            source_cache[ref] = answer
+        return answer
     if evidence_actions is None:
         evidence_actions = results_by_evidence(projection)
     for action_id in evidence_actions.get(ref, ()):
@@ -163,7 +178,10 @@ def source_actions(
                 and type(parent_record.payload) is ActionRecordedPayload
             ):
                 add(parent_record.payload.action_id)
-    return tuple(actions)
+    answer = tuple(actions)
+    if source_cache is not None:
+        source_cache[ref] = answer
+    return answer
 
 
 def evidence_sources(
@@ -172,6 +190,7 @@ def evidence_sources(
     observed_events: frozenset[EventId],
     payload: ObligationPublishedPayload,
     evidence_actions: Mapping[str, tuple[ActionId, ...]] | None = None,
+    source_cache: dict[str, tuple[tuple[ActionRecordedPayload, EventId], ...]] | None = None,
 ) -> tuple[EvidenceSource, ...]:
     """Each cited resolution reference (at most 64), its origin and the declared items it names."""
 
@@ -180,7 +199,9 @@ def evidence_sources(
         evidence_actions = results_by_evidence(projection)
     sources: list[EvidenceSource] = []
     for ref in tuple(payload.resolution_evidence_refs)[:MAX_ALIGNMENT_ROWS]:
-        actions = source_actions(projection, records_by_event, str(ref), evidence_actions)
+        actions = source_actions(
+            projection, records_by_event, str(ref), evidence_actions, source_cache
+        )
         named: set[int] = set()
         origin: SourceOrigin = "unattributed"
         for action, source_event in actions:

@@ -7158,8 +7158,9 @@ the basis could not be read):
   every resolved obligation and the rule `resolved_obligations_acceptance_reread`). The alignment it
   reads is `yoetz.kernel.evidence_alignment` (`declared_items`, `results_by_evidence`,
   `source_actions`, `evidence_sources`, `alignment_of`), shared with the inspection's
-  `evidence_alignment`; the inventories are indexed once per call and an identical call is
-  answered from a one-entry memo (Stop's status deadline is 4,000 ms). The status
+  `evidence_alignment`; the inventories are indexed once per call, each cited reference's
+  source actions are resolved once per call (`source_cache`) and deduplicated by action id, and an
+  identical call is answered from a one-entry memo (Stop's status deadline is 4,000 ms). The status
   directive's re-check note names the flagged set and the `yoetz-acceptance:<obligation id>:met`
   line that answers it. `receipt_blocking_finding_count` keeps its wire name and means
   `finding_counts.to_do + finding_counts.unmet`.
@@ -9553,8 +9554,8 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   one finding (all of them when a subject is missing, redacted or cannot be placed; a result or
   event subject resolves through its recorded action, so the linked observed run's result event
   relates) and `command_mismatch_bears_on_finding` whether any is (true when none is located). An
-  obligation-scoped task fact also bears when a claim, obligation or action-event subject is
-  missing or redacted. `self_verification_refusal` applies it; the
+  obligation-scoped task fact also bears when a claim or obligation subject is missing or
+  redacted, or an event subject no projection row records (or records unreadably). `self_verification_refusal` applies it; the
   `finding_not_proof_limited` refusal names those rows by id and index; readiness, the Stop gate and
   resolution stay task-wide.
 - **Fact lineage and canonical commands (ADR-045, issue #1028).**

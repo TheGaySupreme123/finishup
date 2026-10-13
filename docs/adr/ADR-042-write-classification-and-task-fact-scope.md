@@ -201,7 +201,8 @@ A claim or obligation subject that is missing or redacted, the action an event s
 when that action is unreadable, or an event the projection cannot place keeps the mismatch;
 only a subject whose every link was read and found unrelated drops it. The same unreadable-subject
 rule now also keeps an obligation-scoped task fact (decision 6), which previously treated a
-redacted claim as naming nothing. A finding on the linked observed run's result event (not only
+redacted claim as naming nothing; an event subject no projection row records counts as unreadable
+there too (round 2, check D6). A finding on the linked observed run's result event (not only
 its action event) bears on the mismatch: a result subject resolves through its recorded action.
 `command_mismatches` is memoized for the last (projection, prefix, command-identity key
 generation), so a key change in the process recomputes it.

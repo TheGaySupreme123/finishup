@@ -42,7 +42,7 @@ from yoetz.domain.events import (
     ObligationStatus,
     is_observation_authored,
 )
-from yoetz.domain.values import Frontier, ResultId
+from yoetz.domain.values import EventId, Frontier, ResultId
 from yoetz.kernel.closure_class import (
     FindingClosure,
     FindingClosureClass,
@@ -375,6 +375,7 @@ def inspection_alignment(
     observed_events = observed_event_ids_from_records(records)
     records_by_event = {record.event_id: record for record in records}
     evidence_actions = results_by_evidence(projection)
+    source_cache: dict[str, tuple[tuple[ActionRecordedPayload, EventId], ...]] = {}
     rows: list[dict[str, JsonValue]] = []
     obligations = sorted(effective_obligations(projection), key=lambda value: str(value).encode())
     for obligation in obligations:
@@ -383,7 +384,7 @@ def inspection_alignment(
             continue
         declared = declared_items(payload)
         cited = evidence_sources(
-            projection, records_by_event, observed_events, payload, evidence_actions
+            projection, records_by_event, observed_events, payload, evidence_actions, source_cache
         )
         sources: list[JsonValue] = []
         for item in cited:

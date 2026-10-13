@@ -56,7 +56,7 @@ from yoetz.kernel.task_fact_scope import (
     scoped_resolution_reasons,
     task_fact_bears_on_finding,
 )
-from yoetz.kernel.task_facts import register_command_identity_key
+from yoetz.kernel.task_facts import register_command_identity_key, task_fact_signals
 from yoetz.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
@@ -402,3 +402,43 @@ def test_an_obligation_scoped_task_fact_also_fails_closed_on_a_redacted_claim() 
     assert not task_fact_bears_on_finding(
         "planned_verification_stale", state=readable_other, finding_id=fnd(1), markers=markers
     )
+
+
+def test_an_unplaced_event_subject_keeps_an_obligation_scoped_task_fact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Check D6: the projection cannot place the event, so its obligation scope is unknown."""
+
+    ledger, _events = _react_s()
+    state = replay(ledger.prefix)
+    markers = task_fact_signals(state, ledger.prefix).markers
+    assert ("planned_verification_not_observed", _COMMANDS) in markers
+    unplaced = _with_finding(
+        state, FindingKind.CODE_DEFECT, "evt_00000000-0000-4000-8000-00000000ffff"
+    )
+    reasons = (
+        "reviewer_verdict_unassessable",
+        "coverage:planned_verification_not_observed",
+        "coverage:truncated_payload",
+    )
+    assert (
+        scoped_resolution_reasons(reasons, state=unplaced, finding_id=fnd(1), records=ledger.prefix)
+        == reasons
+    )
+    monkeypatch.setattr(
+        self_verification,
+        "finding_resolution_attempt",
+        lambda *_args: _attempt(reasons),  # pyright: ignore[reportUnknownLambdaType,reportUnknownArgumentType]
+    )
+    assert (
+        self_verification.self_verification_refusal(unplaced, fnd(1), ledger.prefix)
+        == self_verification.FINDING_NOT_PROOF_LIMITED
+    )
+    assert self_verification.self_verification_blocking_reasons(
+        unplaced, fnd(1), ledger.prefix
+    ) == ("coverage:planned_verification_not_observed",)
+    # A placed, readable event about another obligation still drops the unrelated fact.
+    edit = _with_finding(state, FindingKind.CODE_DEFECT, str(_events["edit"]))
+    assert scoped_resolution_reasons(
+        reasons, state=edit, finding_id=fnd(1), records=ledger.prefix
+    ) == ("reviewer_verdict_unassessable", "coverage:truncated_payload")

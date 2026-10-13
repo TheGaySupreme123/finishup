@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from yoetz.domain.events import (
+    ActionRecordedPayload,
     EvidenceDigestProvenance,
     EvidenceRecordedPayload,
     LedgerRecord,
@@ -137,6 +138,8 @@ class _ReadIndex:
     evidence_actions: Mapping[str, tuple[ActionId, ...]]
     global_attempted: frozenset[str]
     attempted_by_obligation: Mapping[ObligationId, frozenset[str]]
+    # Each cited reference's source actions, resolved once for the whole read (check D3-R2).
+    source_cache: dict[str, tuple[tuple[ActionRecordedPayload, EventId], ...]]
 
 
 def _read_index(projection: ProjectionState, records: tuple[LedgerRecord, ...]) -> _ReadIndex:
@@ -178,6 +181,7 @@ def _read_index(projection: ProjectionState, records: tuple[LedgerRecord, ...]) 
         results_by_evidence(projection),
         frozenset(global_attempted),
         {key: frozenset(value) for key, value in by_obligation.items()},
+        {},
     )
 
 
@@ -203,6 +207,7 @@ def _reasons(
         index.observed_events,
         payload,
         index.evidence_actions,
+        index.source_cache,
     )
     if declared and alignment_of(declared, sources) in {
         "evidence_off_declared_items",

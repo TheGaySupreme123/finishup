@@ -916,6 +916,9 @@ each, 20,003 results: about 4.5 s, 9.1 s on a loaded host). The inventories are 
 per read (`evidence_alignment.results_by_evidence`, one pass over actions for attempted items, the
 command-attempt fallback only for an obligation that requests a command), and an identical call
 (same projection, prefix, resolved set and command-identity key generation) is answered from a
-one-entry memo; the same shape now takes about 0.02 s. No risk decision changed.
+one-entry memo; the same shape now takes about 0.02 s. No risk decision changed. Round 2 (check
+D3-R2): each cited reference's source actions are resolved once per read and deduplicated by
+action identity, so 200 obligations sharing eight items, one of them behind 1,000 linked actions
+(21,003 results), take about 0.07 s instead of about 9.3 s.
 `tests/unit/kernel/test_tb4n5_acceptance_risk_cost.py` holds it under one second and counts one
 index build per read.
