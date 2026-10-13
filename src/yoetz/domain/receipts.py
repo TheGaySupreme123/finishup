@@ -281,7 +281,9 @@ SEMANTIC_MISSING_ITEMS_REJECTED_GAP: Final = "semantic_missing_items_rejected"
 SEMANTIC_MISSING_NON_CONVERGENT_GAP: Final = "semantic_missing_non_convergent"
 # tb4n1 D3: the reviewer twice in a row (the request and its one retry, no edit since), or four
 # times since the last assessed review, could not assess the packet, so the check runs without the
-# AI-powered review instead of looping on a packet that cannot show the work
+# AI-powered review instead of looping on a packet that cannot show the work. tb4n5 follow-up of
+# #1046: the same holds for one AI-powered finding ruled ``unassessable`` that often in a row
+# (``review_round.unassessable_review_exhausted``); it stays open and unresolved
 # (``kernel/review_round.py``). A Yoetz limit, never agent work; the receipt discloses it.
 SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
     "semantic_review_skipped_insufficient_packet"
@@ -339,9 +341,10 @@ SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP: Final = "semantic_prior_verdicts_unsupp
 SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP: Final = "semantic_restatements_suppressed"
 # Issue #1042: reviewer challenges the check did not record as findings because they called work
 # "never attempted" during a routine review (``routine_completeness``, ADR-040 section 5) or were
-# about Yoetz's own capture or process state (``yoetz_process_state``). A disclosure of the review
-# dialogue, never a limit on what the review saw: it does not bound the receipt and does not veto
-# an absence proof.
+# about Yoetz's own capture or process state (``yoetz_process_state``), or (tb4n5 follow-up)
+# restated an action/result relation the local rule owns (``local_rule_owned``). A disclosure of
+# the review dialogue, never a limit on what the review saw: it does not bound the receipt and does
+# not veto an absence proof.
 SEMANTIC_PROCESS_STATE_FILTERED_GAP: Final = "semantic_process_state_filtered"
 # The check-time change (ADR-031) is the service's own read of the task's repository when a check
 # runs. Each code names one limit on what that single object could show the reviewer. None of

@@ -2868,6 +2868,39 @@ class PublishWorkBlockerNoticeModel(_ClosedModel):
         return self
 
 
+# tb4n5 follow-up (owner decision 2026-10-13): the fixed publish-time text for an action the batch
+# recorded that no ``result_recorded`` names yet. It carries no caller value; the act_ id rides
+# beside it. 15 of 15 tb4n5 ``action_without_result`` findings were agent-published actions whose
+# result followed only after the check asked for it.
+PUBLISH_ACTION_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "result_not_linked": (
+            "No result names this action yet. Record its outcome as a result_recorded whose"
+            " payload action_id is this act_ id (outcome success, failure, partial or unknown,"
+            " with a summary), normally in the same publish_work batch as the action; evidence,"
+            " decisions and causal parents do not link it. If the work is still running, publish"
+            " the result when it ends; if it was abandoned, record outcome unknown and say so."
+            " Until a result names it, unrelated work in a later batch raises"
+            " action_without_result."
+        ),
+    }
+)
+
+
+class PublishWorkActionNoticeModel(_ClosedModel):
+    """One publish-time notice for an action no result names yet: closed code and fixed text."""
+
+    action_id: ActionIdWire
+    notice: Literal["result_not_linked"]
+    text: str
+
+    @model_validator(mode="after")
+    def _validate_fixed_text(self) -> PublishWorkActionNoticeModel:
+        if self.text != PUBLISH_ACTION_NOTICE_TEXTS[self.notice]:
+            raise ValueError("publish_action_notice_text_mismatch")
+        return self
+
+
 class PublishWorkSuccessModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
@@ -2887,8 +2920,10 @@ class PublishWorkSuccessModel(_ClosedModel):
     privacy_projection: PrivacyProjectionModel
     # Issue #985: present only when the batch carried a yoetz-blocker line Yoetz has a notice for.
     blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
+    # tb4n5 follow-up: present only when the batch recorded an action no result names yet.
+    action_notices: tuple[PublishWorkActionNoticeModel, ...] | None = None
 
-    optional_non_null_fields = frozenset({"blocker_notices"})
+    optional_non_null_fields = frozenset({"blocker_notices", "action_notices"})
 
     @model_validator(mode="after")
     def _validate_publish_success(self) -> PublishWorkSuccessModel:
@@ -2897,6 +2932,7 @@ class PublishWorkSuccessModel(_ClosedModel):
         _require_unique(self.warning_codes, limit=1)
         _require_unique(self.gaps, limit=64)
         _validate_blocker_notices(self.blocker_notices)
+        _validate_action_notices(self.action_notices)
         _validate_model_against_schema(self, "publish-work-result")
         return self
 
@@ -2983,8 +3019,10 @@ class PublishWorkDryRunModel(_ClosedModel):
     gaps: tuple[CodeWire, ...]
     # Issue #985: the same publish-time blocker notices a real publish would return.
     blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
+    # tb4n5 follow-up: the same unlinked-action notices a real publish would return.
+    action_notices: tuple[PublishWorkActionNoticeModel, ...] | None = None
 
-    optional_non_null_fields = frozenset({"blocker_notices"})
+    optional_non_null_fields = frozenset({"blocker_notices", "action_notices"})
 
     @model_validator(mode="after")
     def _validate_publish_dry_run(self) -> PublishWorkDryRunModel:
@@ -2994,6 +3032,7 @@ class PublishWorkDryRunModel(_ClosedModel):
             raise ValueError("dry_run_frontier_moved")
         _require_unique(self.gaps, limit=64)
         _validate_blocker_notices(self.blocker_notices)
+        _validate_action_notices(self.action_notices)
         _validate_model_against_schema(self, "publish-work-result")
         return self
 
@@ -3004,6 +3043,15 @@ def _validate_blocker_notices(notices: tuple[PublishWorkBlockerNoticeModel, ...]
     if not 1 <= len(notices) <= 64:
         raise ValueError("publish_blocker_notice_count_invalid")
     _require_unique(tuple((item.obligation_id, item.blocker_kind) for item in notices), limit=64)
+
+
+def _validate_action_notices(notices: tuple[PublishWorkActionNoticeModel, ...] | None) -> None:
+    # One row per unpaired action, so the bound is the batch bound: a full batch is never cut.
+    if notices is None:
+        return
+    if not 1 <= len(notices) <= MAX_EVENTS_PER_BATCH:
+        raise ValueError("publish_action_notice_count_invalid")
+    _require_unique(tuple(item.action_id for item in notices), limit=MAX_EVENTS_PER_BATCH)
 
 
 def _publish_work_result_kind(value: object) -> str:
@@ -6728,6 +6776,11 @@ _PUBLISH_STRUCTURAL_POINTERS: Final = (
         "/blocker_notices/*",
         ("blocker_kind", "notice", "obligation_id", "text"),
     )
+    # tb4n5 follow-up: the agent's own act_ id, a closed code and fixed repository text only.
+    + _prefix_leaf_patterns(
+        "/action_notices/*",
+        ("action_id", "notice", "text"),
+    )
 )
 
 # ADR-045: closed tokens, counts and service-minted ids only (no path, command text or prose).
@@ -7924,10 +7977,10 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1611
+        len(result) != 1614
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
-        # #1047 +2 (follow_up_round)
+        # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

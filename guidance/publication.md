@@ -34,6 +34,8 @@ For completion scope, put admissible evidence in `supporting_refs`, partial/fail
 in `limitation_refs`, and the named in-scope obligations in `obligation_refs`. Mirror
 `evidence_refs` and `artifact_refs` exactly where the event family requires it. Record every
 requested item attempted on `action_recorded.attempted_items`; it does not belong on a claim.
+Publish each action's outcome as a `result_recorded` whose `action_id` names it, normally in the
+same batch as the action; evidence and decisions do not link an action.
 
 Do not change an existing test's assertion or expectation, rename it, skip it, or delete it to make
 the implementation pass. Change pre-existing test code only for broken setup, an outdated fixture,

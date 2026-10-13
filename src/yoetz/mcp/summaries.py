@@ -1433,7 +1433,8 @@ def _check_lead_variants(
         return (
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
             "assessed review) "
-            "could not assess the packet (verify it yourself; a repair re-arms it until that cap); "
+            "could not assess the packet or an answered finding (verify it yourself; a repair "
+            "re-arms it until that cap); "
             f"local check verdict: {verdict}; {counts}",
             f"AI-powered review skipped (verify it yourself); local check verdict: {verdict}; "
             f"{counts}",
@@ -2657,6 +2658,51 @@ def render_publish_blocker_notices(envelope: object) -> str:
         hidden = len(named) - _MAX_RENDERED_BLOCKER_NOTICES
         more = f" (+{hidden} more)" if hidden > 0 else ""
         lines.append(f"Blocker notice for {listed}{more}: {PUBLISH_BLOCKER_NOTICE_TEXTS[notice]}")
+    return "\n".join(lines)
+
+
+_ACTION_ID: Final = re.compile(
+    r"^act_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
+)
+_MAX_RENDERED_ACTION_NOTICES: Final = 8
+
+
+def render_publish_action_notices(envelope: object) -> str:
+    """Render a publish result's unlinked-action notices as model-visible text (tb4n5 follow-up).
+
+    Only rows whose closed code and act_ id validate, and whose text is exactly the fixed
+    repository text for that code, are rendered; anything else renders nothing. One line per
+    notice code, naming the actions it covers.
+    """
+
+    from yoetz.protocol.models import PUBLISH_ACTION_NOTICE_TEXTS
+
+    source = _mapping(envelope)
+    rows = source.get("action_notices")
+    if not isinstance(rows, Sequence) or isinstance(rows, str):
+        return ""
+    grouped: dict[str, list[str]] = {}
+    for row in cast(Sequence[JsonValue], rows):
+        if not isinstance(row, Mapping):
+            return ""
+        item = cast(Mapping[str, JsonValue], row)
+        notice, action, text = item.get("notice"), item.get("action_id"), item.get("text")
+        if (
+            type(notice) is not str
+            or notice not in PUBLISH_ACTION_NOTICE_TEXTS
+            or text != PUBLISH_ACTION_NOTICE_TEXTS[notice]
+            or type(action) is not str
+            or _ACTION_ID.fullmatch(action) is None
+        ):
+            return ""
+        grouped.setdefault(notice, []).append(action)
+    lines: list[str] = []
+    for notice in sorted(grouped):
+        named = grouped[notice]
+        listed = ", ".join(named[:_MAX_RENDERED_ACTION_NOTICES])
+        hidden = len(named) - _MAX_RENDERED_ACTION_NOTICES
+        more = f" (+{hidden} more)" if hidden > 0 else ""
+        lines.append(f"Action notice for {listed}{more}: {PUBLISH_ACTION_NOTICE_TEXTS[notice]}")
     return "\n".join(lines)
 
 

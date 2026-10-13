@@ -509,6 +509,48 @@ The `attempted_items` entry above repeats the obligation template's
 `requested_items[0].value` byte for byte. Publish it on the action that attempted the item —
 including a failed attempt — so the receipt can account for every requested item.
 
+Every action needs a `result_recorded` whose payload `action_id` is its `act_` id. Publish a
+completed action together with its result in one batch, as below; evidence, decisions and causal
+parents do not link an action. A batch that records an action no result names yet returns it in
+`action_notices`; a sibling action in the same batch never raises `action_without_result`, but
+unrelated work in a later batch does. If the work is still running, publish the result when it
+ends; if it was abandoned, record outcome `unknown` and say so in the summary.
+
+```json
+{
+  "protocol_version": "0.1", "schema_version": "1.0.0",
+  "request_id": "req_00000000-0000-4000-8000-000000000060",
+  "session_id": "ses_00000000-0000-4000-8000-000000000001",
+  "writer_id": "wri_00000000-0000-4000-8000-000000000001",
+  "expected_frontier": {"sequence": "0", "head_digest": "genesis"},
+  "event_drafts": [{
+    "event_id": "evt_00000000-0000-4000-8000-000000000060",
+    "schema": {"name": "action_recorded", "version": "1.0.0"},
+    "occurred_at": "2026-01-01T00:00:00.000Z", "causal_parents": [],
+    "payload": {
+      "action_id": "act_00000000-0000-4000-8000-000000000060",
+      "action_kind": "edit",
+      "description": "Replace with the completed change",
+      "obligation_refs": ["obl_00000000-0000-4000-8000-000000000001"]
+    },
+    "artifact_refs": [], "evidence_refs": []
+  }, {
+    "event_id": "evt_00000000-0000-4000-8000-000000000061",
+    "schema": {"name": "result_recorded", "version": "1.0.0"},
+    "occurred_at": "2026-01-01T00:00:00.000Z",
+    "causal_parents": ["evt_00000000-0000-4000-8000-000000000060"],
+    "payload": {
+      "result_id": "res_00000000-0000-4000-8000-000000000060",
+      "action_id": "act_00000000-0000-4000-8000-000000000060",
+      "outcome": "success", "summary": "Replace with what the change achieved"
+    },
+    "artifact_refs": [], "evidence_refs": []
+  }],
+  "actor": {"actor_id": "harness:mcp-template", "actor_type": "harness"},
+  "client": {"kind": "cooperative_agent", "version": "0.1.0", "integration": "cooperative_mcp"}
+}
+```
+
 When a script or another command ran the planned command for you, the observed run does not
 match the requested value and `planned_verification_not_observed` stays. Link that run instead:
 an `action_recorded` of kind `command` whose `attempted_items` holds the planned command's exact

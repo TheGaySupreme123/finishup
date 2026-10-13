@@ -513,8 +513,8 @@ def render_human_check(result: CheckSuccessModel) -> str:
         lines.append(
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
             "assessed review) "
-            "could not assess the packet. This is a Yoetz limit, not a blocker: verify the work "
-            "yourself; a real repair re-arms the review until that cap."
+            "could not assess the packet, or a finding you answered. This is a Yoetz limit, not a "
+            "blocker: verify the work yourself; a real repair re-arms the review until that cap."
         )
     if result.coverage.known_gaps:
         lines.append("Coverage gaps: " + ", ".join(result.coverage.known_gaps))

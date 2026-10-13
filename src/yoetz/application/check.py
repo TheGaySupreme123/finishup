@@ -33,6 +33,7 @@ from yoetz.domain.events import (
     ClaimKind,
     DeliverableState,
     LedgerRecord,
+    ResultRecordedPayload,
     undeclared_reference_path_valid,
 )
 from yoetz.domain.findings import (
@@ -192,12 +193,21 @@ from yoetz.kernel.policies.work_integrity import (
     reportable_absent_outputs,
     work_integrity_findings,
 )
-from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
+from yoetz.kernel.projections import (
+    PROJECTION_VERSION,
+    EvidenceProjectionRecord,
+    ProjectionRecord,
+    ProjectionState,
+)
 from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
 from yoetz.kernel.reducers import replay
-from yoetz.kernel.review_frame import agent_probe_only, yoetz_process_state_only
+from yoetz.kernel.review_frame import (
+    agent_probe_only,
+    local_rule_owned,
+    yoetz_process_state_only,
+)
 from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
@@ -297,6 +307,7 @@ if TYPE_CHECKING:  # the inspection module imports status, which imports this mo
 __all__ = [
     "SEMANTIC_CASE_CONTENT_GAPS",
     "SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM",
+    "SEMANTIC_REJECTED_LOCAL_RULE_OWNED",
     "SEMANTIC_REJECTED_ROUTINE_COMPLETENESS",
     "SEMANTIC_REJECTED_YOETZ_PROCESS_STATE",
     "SEMANTIC_REJECTED_REF_NOT_CARRIED",
@@ -353,11 +364,20 @@ SEMANTIC_REJECTED_ROUTINE_COMPLETENESS: Final = "routine_completeness"
 # challenge whose every subject is Yoetz's own capture or process record
 # (``kernel.review_frame.yoetz_process_state_only``). Counted, never minted.
 SEMANTIC_REJECTED_YOETZ_PROCESS_STATE: Final = "yoetz_process_state"
-# The two reasons above are about work in progress or Yoetz's own state, not about material the
-# check failed to carry: they are disclosed as ``semantic_process_state_filtered`` (never
-# bounding, never vetoing an absence proof) instead of ``semantic_challenges_rejected``.
+# tb4n5 follow-up of #1042: an ``action_without_result`` or ``result_without_action`` challenge
+# about readable ledger actions or results (``kernel.review_frame.local_rule_owned``). The local
+# work-integrity rule owns that relation over the whole ledger. Counted, never minted.
+SEMANTIC_REJECTED_LOCAL_RULE_OWNED: Final = "local_rule_owned"
+# The three reasons above are about work in progress, Yoetz's own state or a ledger relation the
+# local rule decides, not about material the check failed to carry: they are disclosed as
+# ``semantic_process_state_filtered`` (never bounding, never vetoing an absence proof) instead of
+# ``semantic_challenges_rejected``.
 _PROCESS_STATE_REJECTIONS: Final = frozenset(
-    {SEMANTIC_REJECTED_ROUTINE_COMPLETENESS, SEMANTIC_REJECTED_YOETZ_PROCESS_STATE}
+    {
+        SEMANTIC_REJECTED_ROUTINE_COMPLETENESS,
+        SEMANTIC_REJECTED_YOETZ_PROCESS_STATE,
+        SEMANTIC_REJECTED_LOCAL_RULE_OWNED,
+    }
 )
 # The closed packet content gaps a semantic evaluation may carry into check coverage. Each is
 # classified for finding resolution in ``kernel/finding_resolution.py`` (issue #904); adding one
@@ -506,6 +526,7 @@ class SemanticJudgmentReview:
 _SEMANTIC_REJECTION_REASONS: Final = frozenset(
     {
         SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM,
+        SEMANTIC_REJECTED_LOCAL_RULE_OWNED,
         SEMANTIC_REJECTED_REF_NOT_CARRIED,
         SEMANTIC_REJECTED_REF_OUTSIDE_CASE,
         SEMANTIC_REJECTED_ROUTINE_COMPLETENESS,
@@ -3859,6 +3880,25 @@ def _claims_unchanged_over_hidden_source(
     )
 
 
+def _ruling_material(
+    projection: ProjectionState, ref: str
+) -> EvidenceProjectionRecord | ProjectionRecord[ResultRecordedPayload] | None:
+    """The evidence or result a ruling cites, by its own id or by the event that recorded it."""
+
+    if ref.startswith("evd_"):
+        return projection.evidence.get(evidence_id(ref))
+    if ref.startswith("res_"):
+        return projection.results.get(result_id(ref))
+    if ref.startswith("evt_"):
+        for evidence_row in projection.evidence.values():
+            if str(evidence_row.source_event_id) == ref:
+                return evidence_row
+        for result_row in projection.results.values():
+            if str(result_row.source_event_id) == ref:
+                return result_row
+    return None
+
+
 def _ruling_supported(
     kind: str,
     cited: tuple[str, ...],
@@ -3866,17 +3906,19 @@ def _ruling_supported(
     finding: FindingId,
     projection: ProjectionState,
 ) -> bool:
-    """Whether the refs a ruling kept can carry what that ruling claims."""
+    """Whether the refs a ruling kept can carry what that ruling claims.
+
+    A ``fixed`` ruling needs readable evidence or a result recorded after the finding. The packet
+    offers both by the event that recorded them as well as by their own id, and reviewers cite the
+    event (tb4n5: 0 ``res_`` citations in 41 reviews; kv ``fnd_c96c2b9f`` was ruled supported on
+    ``evt_3318a99d``, the repair result's event), so an ``evt_`` resolves to the evidence or result
+    it recorded before the frontier test. An ``evt_`` that recorded anything else (an action, a
+    claim, a response) never supports ``fixed``.
+    """
 
     if kind == "fixed":
         for ref in cited:
-            row = (
-                projection.evidence.get(evidence_id(ref))
-                if ref.startswith("evd_")
-                else projection.results.get(result_id(ref))
-                if ref.startswith("res_")
-                else None
-            )
+            row = _ruling_material(projection, ref)
             if (
                 row is not None
                 and row.payload is not None
@@ -3896,6 +3938,12 @@ def _ruling_supported(
 
 # The reviewer rulings that keep an answered finding open (issue #1020).
 _HELD_OPEN_RULINGS: Final = frozenset({"still_present", "answered_not_fixed", "unassessable"})
+# The rulings that say the concern remains, the only ones ruling admission records as a standing
+# disagreement over the agent's position (tb4n5 follow-up of #1046). ``unassessable`` keeps the
+# item open but disagrees with nothing: the reviewer could not judge it, so it stays an open round.
+# A restatement of the concern is a re-raise and keeps its own dispute rule
+# (``_record_restatement``).
+_DISAGREEING_RULINGS: Final = frozenset({"still_present", "answered_not_fixed"})
 
 
 def _finding_concern(case: DeterministicCase, key: FindingId) -> ConcernKey:
@@ -4042,7 +4090,11 @@ def _admit_prior_verdicts(
         supported = _ruling_supported(
             kind, cited, record.source_frontier, record.payload.finding_id, projection
         )
-        if shown and _disputed_after_rebuttal(case, record.payload.finding_id, kind, cited):
+        if (
+            shown
+            and kind in _DISAGREEING_RULINGS
+            and _disputed_after_rebuttal(case, record.payload.finding_id, kind, cited)
+        ):
             # Issue #1020 (ADR-040): the reviewer saw the agent's reasoned position and kept the
             # item open without citing anything newer. Recorded as a standing disagreement.
             unsupported += lost_cite
@@ -4051,13 +4103,18 @@ def _admit_prior_verdicts(
             unsupported += 1
             if (
                 shown
-                and kind != "withdrawn"
+                and kind in _DISAGREEING_RULINGS
                 and _disputed_after_rebuttal(case, record.payload.finding_id, "unassessable", cited)
             ):
-                # tb4n3 RC-7 (D-6): a ruling that cannot stand over a standing position and cites
-                # nothing newer is the standing disagreement, not an open review round.
+                # tb4n3 RC-7 (D-6): a ruling that keeps the item open, cannot stand over a standing
+                # position and cites nothing newer is the standing disagreement, not an open
+                # review round.
                 kind = DISPUTED_AFTER_REBUTTAL_VERDICT
             else:
+                # tb4n5 follow-up of #1046: an unsupported ``fixed`` (the reviewer says the issue
+                # is gone), a ``withdrawn`` with no rejection to accept, or an honest
+                # ``unassessable`` is never a reviewer disagreement; it is unassessable, an open
+                # round the next review can rule on (kv ``fnd_c96c2b9f`` latched as a dispute).
                 kind = "unassessable"
         elif lost_cite and kind == "fixed":
             # A trimmed citation is disclosed, but a ``fixed`` the remaining cites still support
@@ -4273,6 +4330,15 @@ def validate_semantic_judgment(
             # work. Counted and disclosed, never minted.
             rejections[SEMANTIC_REJECTED_YOETZ_PROCESS_STATE] = (
                 rejections.get(SEMANTIC_REJECTED_YOETZ_PROCESS_STATE, 0) + 1
+            )
+            continue
+        if local_rule_owned(case.projection, challenge.finding_kind, refs):
+            # tb4n5 follow-up of #1042: the action/result relation is the local rule's, decided over
+            # the whole ledger; the reviewer's copy duplicated or misplaced it and latched
+            # ``disputed_after_rebuttal`` while the local twin resolved. Counted and disclosed,
+            # never minted. Every other kind about the same action is still reviewed.
+            rejections[SEMANTIC_REJECTED_LOCAL_RULE_OWNED] = (
+                rejections.get(SEMANTIC_REJECTED_LOCAL_RULE_OWNED, 0) + 1
             )
             continue
         if routine and challenge.finding_kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED:

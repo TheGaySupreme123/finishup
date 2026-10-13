@@ -139,6 +139,151 @@ def test_deterministic_case_codec_round_trips_canonical_bytes() -> None:
     assert canonical_encode(deterministic_case_to_json(decoded)) == canonical_encode(encoded)
 
 
+def _batched_ledger() -> tuple[Any, tuple[Any, ...]]:
+    """One cooperative batch of an edit and a command (tb4n5 medical S L95), the command's result,
+    a hook observation recorded under the same operation id, and a later lone action."""
+
+    from builders.observed_runs import ObservedLedger
+    from yoetz.domain.events import (
+        ActionKind,
+        ActionRecordedPayload,
+        EventSchema,
+        ResultOutcome,
+        ResultRecordedPayload,
+    )
+    from yoetz.domain.values import action_id, result_id
+
+    batch = "req_00000000-0000-4000-8000-0000000000b1"
+    later = "req_00000000-0000-4000-8000-0000000000b2"
+    action = EventSchema("action_recorded", "1.0.0")
+    ledger = ObservedLedger()
+    edit = ledger.append(
+        action,
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-0000000000e1"),
+            ActionKind.EDIT,
+            "Rewrote the scoring engine",
+            obligation_refs=(obl(1),),
+        ),
+        observed=False,
+        operation=batch,
+    )
+    command = ledger.append(
+        action,
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-0000000000e2"),
+            ActionKind.COMMAND,
+            "Reseeded the database",
+            command="python reseed.py",
+            obligation_refs=(obl(2),),
+        ),
+        observed=False,
+        operation=batch,
+    )
+    ledger.append(
+        EventSchema("result_recorded", "1.0.0"),
+        ResultRecordedPayload(
+            result_id("res_00000000-0000-4000-8000-0000000000e2"),
+            action_id("act_00000000-0000-4000-8000-0000000000e2"),
+            ResultOutcome.SUCCESS,
+        ),
+        observed=False,
+        operation=batch,
+    )
+    # A service-stamped observation never joins an agent batch, whatever its operation id.
+    ledger.append(
+        action,
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-0000000000e3"),
+            ActionKind.EDIT,
+            "Observed edit via Codex hook",
+        ),
+        observed=True,
+        operation=batch,
+    )
+    lone = ledger.append(
+        action,
+        ActionRecordedPayload(
+            action_id("act_00000000-0000-4000-8000-0000000000e4"),
+            ActionKind.EDIT,
+            "Unrelated later edit",
+            obligation_refs=(obl(3),),
+        ),
+        observed=False,
+        operation=later,
+    )
+    return (edit, command, lone), tuple(ledger.prefix)
+
+
+def test_cooperative_batches_are_frozen_with_the_case_and_round_trip() -> None:
+    (edit, command, _lone), records = _batched_ledger()
+    full = build_deterministic_case(replay(records), records, CaseAvailabilityFacts())
+    assert full.action_batches == (
+        (edit, command) if str(edit) < str(command) else (command, edit),
+    )
+    encoded = deterministic_case_to_json(full)
+    assert encoded["action_batches"] == [[str(item) for item in full.action_batches[0]]]
+    assert deterministic_case_from_json(encoded) == full
+    assert canonical_encode(deterministic_case_to_json(deterministic_case_from_json(encoded))) == (
+        canonical_encode(encoded)
+    )
+    # The later batch's unrelated edit raises the unpaired edit; the sibling never did.
+    findings = run_deterministic_policies(full, WORK_INTEGRITY_POLICY_PACK).assessments
+    raised = [
+        item.candidate
+        for item in findings
+        if item.candidate.kind is FindingKind.ACTION_WITHOUT_RESULT
+    ]
+    assert [candidate.subject_refs for candidate in raised] == [(edit,)]
+    # Before the later batch, the same-batch sibling alone raises nothing.
+    prefix = records[:-1]
+    batch_only = build_deterministic_case(replay(prefix), prefix, CaseAvailabilityFacts())
+    assert not any(
+        item.candidate.kind is FindingKind.ACTION_WITHOUT_RESULT
+        for item in run_deterministic_policies(batch_only, WORK_INTEGRITY_POLICY_PACK).assessments
+    )
+    # A case without a multi-action batch keeps its exact bytes: the key is absent.
+    single = records[:1]
+    assert "action_batches" not in deterministic_case_to_json(
+        build_deterministic_case(replay(single), single, CaseAvailabilityFacts())
+    )
+
+
+def test_the_case_decoder_rejects_malformed_action_batches() -> None:
+    (_edit, _command, lone), records = _batched_ledger()
+    encoded = cast(
+        dict[str, Any],
+        strict_json_parse(
+            canonical_encode(
+                deterministic_case_to_json(
+                    build_deterministic_case(replay(records), records, CaseAvailabilityFacts())
+                )
+            )
+        ),
+    )
+    group = cast(list[list[str]], encoded["action_batches"])[0]
+    for malformed in (
+        [],  # an empty list is never emitted
+        [[group[0]]],  # a lone action is not a batch
+        [list(reversed(group))],  # members are sorted
+        [group, [group[1], str(lone)]],  # one event in two batches
+        [[group[0], "evt_99999999-9999-4999-8999-999999999999"]],  # outside the case
+    ):
+        altered = deepcopy(encoded)
+        altered["action_batches"] = malformed
+        with pytest.raises(ValueError, match="deterministic_case_invalid"):
+            deterministic_case_from_json(altered)
+    legacy = {
+        key: value
+        for key, value in encoded.items()
+        if key
+        in {"projection", "frontier", "availability", "allowed_ids", "coverage_by_ref", "gaps"}
+        or key == "action_batches"
+    }
+    with pytest.raises(ValueError, match="deterministic_case_invalid"):
+        deterministic_case_from_json(legacy)
+
+
 def test_legacy_digest_gap_is_scoped_to_evidence_linked_by_current_work() -> None:
     records = replay_records("all-event-families")
     unlinked = records[:8]

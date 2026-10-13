@@ -17,6 +17,13 @@ so the challenge is kept as the reviewer gave it.
   hook's observation of a call to one of Yoetz's own tools (the check in flight, a status poll), or,
   for ``action_without_result``, a hook-observed action: pairing a hook observation with its result
   is Yoetz's capture, never the agent's account.
+* ``local_rule_owned`` (tb4n5 follow-up): an ``action_without_result`` or ``result_without_action``
+  challenge whose cited records show only the pairing gap the local work-integrity rule decides
+  over the whole ledger (an unpaired action, an orphan result, and their own plain output). Its
+  copy duplicated the local finding (vigenere S, live-db S) or misplaced it (medical S cited the
+  sibling command for "the engine edit has no linked result") and latched
+  ``disputed_after_rebuttal`` while the local twin resolved. A challenge under that label that
+  cites a claim, an obligation, a paired action or a failed run keeps its concern.
 * ``agent_probe_only``: a ``task_requirement_unmet`` challenge whose only cited work is hook-observed
   command runs that are not the task's own declared verification (neither matching a requested
   command nor linked to one by the agent), while that declared verification is on record and
@@ -35,7 +42,12 @@ from collections.abc import Iterable, Mapping
 from typing import Final
 
 from yoetz.domain.command_segments import requested_command_shape
-from yoetz.domain.events import ActionKind, ActionRecordedPayload, RequestedItemKind
+from yoetz.domain.events import (
+    ActionKind,
+    ActionRecordedPayload,
+    RequestedItemKind,
+    ResultOutcome,
+)
 from yoetz.domain.findings import FindingKind
 from yoetz.domain.values import EventId, EvidenceId, ObligationId
 from yoetz.domain.yoetz_tools import yoetz_tool_spelling
@@ -57,8 +69,10 @@ from yoetz.kernel.task_facts import (
 )
 
 __all__ = [
+    "LOCAL_RULE_OWNED_KINDS",
     "PLANNED_VERIFICATION_DOUBT_GAPS",
     "agent_probe_only",
+    "local_rule_owned",
     "yoetz_process_state_only",
 ]
 
@@ -151,6 +165,79 @@ def yoetz_process_state_only(
             continue
         return False
     return True
+
+
+# The ledger relations the local work-integrity rules decide over the whole record (tb4n5 follow-up
+# of #1042): an action no result names, and a result that names no action.
+LOCAL_RULE_OWNED_KINDS: Final = frozenset(
+    {FindingKind.ACTION_WITHOUT_RESULT, FindingKind.RESULT_WITHOUT_ACTION}
+)
+
+
+def local_rule_owned(
+    projection: ProjectionState, kind: FindingKind, subject_refs: Iterable[str]
+) -> bool:
+    """Whether a challenge only restates a pairing gap the local rule owns (tb4n5).
+
+    The label is never proof: a reviewer can file a false completion or an unrun verification
+    under ``action_without_result``. So this answers ``True`` only when the cited records
+    themselves show nothing but the pairing gap the local rule decides over the whole ledger:
+
+    * ``action_without_result``: at least one cited event recorded a readable action that no
+      readable result names (an unpaired action), and every cited event is such an action;
+    * ``result_without_action``: at least one cited event recorded a readable, successful result
+      whose action is absent, and every cited event is such a result;
+    * either kind may also cite events of readable evidence that no claim and no result that did
+      not succeed cites (the vigenere S shape: the run's own output beside it).
+
+    Anything else keeps the challenge as the reviewer gave it: an action that already has a result
+    (the concern is not the missing link), a claim or an obligation (a completion, requirement or
+    planned-verification concern), a result or evidence of a run that did not succeed (a failure
+    concern), a decision, or anything unreadable or unknown. The three tb4n5 shapes (vigenere,
+    live-db, medical) cite only unpaired actions and their own output.
+    """
+
+    if kind not in LOCAL_RULE_OWNED_KINDS:
+        return False
+    refs = tuple(subject_refs)
+    if not refs or any(not ref.startswith("evt_") for ref in refs):
+        return False
+    named = {
+        row.payload.action_id
+        for row in projection.results.values()
+        if row.payload is not None and not row.redacted
+    }
+    unpaired_actions = {
+        row.source_event_id
+        for action, row in projection.actions.items()
+        if row.payload is not None and not row.redacted and action not in named
+    }
+    orphan_results = {
+        row.source_event_id
+        for row in projection.results.values()
+        if row.payload is not None
+        and not row.redacted
+        and row.payload.outcome is ResultOutcome.SUCCESS
+        and (
+            (action := projection.actions.get(row.payload.action_id)) is None
+            or action.payload is None
+        )
+    }
+    concerned: set[str] = set()
+    for row in projection.results.values():
+        if row.payload is not None and row.payload.outcome is not ResultOutcome.SUCCESS:
+            concerned.update(str(item) for item in row.payload.evidence_refs)
+    for claim in projection.claims.values():
+        if claim.payload is not None:
+            concerned.update(str(item) for item in claim.payload.supporting_refs)
+    plain_evidence = {
+        row.source_event_id
+        for key, row in projection.evidence.items()
+        if row.payload is not None and not row.redacted and str(key) not in concerned
+    }
+    relation = unpaired_actions if kind is FindingKind.ACTION_WITHOUT_RESULT else orphan_results
+    events = {EventId(ref) for ref in refs}
+    return bool(events & relation) and events <= relation | plain_evidence
 
 
 def agent_probe_only(

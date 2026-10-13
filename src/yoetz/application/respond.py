@@ -968,13 +968,32 @@ def _admit_todo_state(disposition: str, todo: FindingTodoState) -> None:
             field="/finding_id",
         )
     assert todo in ABSOLUTELY_FINAL_TODO_STATES
-    raise _error(
-        PublicErrorCode.INVALID_REQUEST,
-        (
+    if todo is FindingTodoState.VERIFIED_RESOLVED:
+        # tb4n5: four of seven ``finding_terminal`` refusals were an ``acknowledged`` sent after a
+        # recheck had already proved the finding absent. Nothing is wrong and nothing is owed.
+        message = (
+            "The finding is already verified_resolved: a later check proved the issue absent, so "
+            "it needs no answer and nothing was recorded. Do not retry; answer only findings "
+            "that are still open (status view=findings). A new problem is raised by a later "
+            "check as a new finding."
+        )
+    elif todo is FindingTodoState.DISPUTED_AFTER_REBUTTAL:
+        message = (
+            "The finding is already disputed_after_rebuttal: the reviewer kept it open over your "
+            "reasoned answer without citing anything newer. That state is final, needs no "
+            "answer and is not agent work; nothing was recorded. The receipt lists it as a "
+            "standing disagreement; new evidence about the same problem is raised by a later "
+            "check as a new finding."
+        )
+    else:
+        message = (
             f"The finding is already {todo.value}; that state is final and nothing was "
             "recorded. New evidence about the same problem is raised by a later check as a new "
             "finding."
-        ),
+        )
+    raise _error(
+        PublicErrorCode.INVALID_REQUEST,
+        message,
         reason_code="finding_terminal",
         field="/finding_id",
     )

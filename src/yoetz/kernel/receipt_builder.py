@@ -2215,7 +2215,8 @@ def _sections(
         elif not_requested and SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP in gap_codes:
             gap_body = (
                 "AI-powered review was skipped: the reviewer twice in a row, or four times since "
-                "the last assessed review, could not assess the review packet (a Yoetz limit). "
+                "the last assessed review, could not assess the review packet or a finding the "
+                "agent answered (a Yoetz limit). "
                 f"Coverage is limited by: {limited_by}."
             )
         elif not_requested and SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP in gap_codes:

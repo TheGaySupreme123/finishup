@@ -253,6 +253,29 @@ reverse-chronological released versions.
   recorded after it, now closes the finding even when the check records environment facts such as
   verification run only as root; those facts stay disclosed on the receipt (#1046).
 
+- Every published action needs a result that names its `act_` id. The workflow guidance and the
+  operating card now say so up front, and a `publish_work` result (dry runs included) lists each
+  action it recorded that no result names yet in `action_notices`. A second action in the same
+  batch no longer raises `action_without_result` for the first; unrelated work in a later batch
+  still does. Once a result names the action, that finding resolves even when the check also
+  records content-capture limits, which stay disclosed on the receipt.
+
+- The AI-powered reviewer no longer adds its own copy of the local `action_without_result` or
+  `result_without_action` finding: a challenge under that label that cites only the unpaired action
+  (or orphan result) and its plain output is dropped and disclosed by
+  `semantic_process_state_filtered`. One that also cites a claim, an obligation, a paired action or
+  a failed run is kept, so failed or unrun verification and false completion are still reviewed
+  whatever their label (#1042 follow-up).
+
+- A reviewer ruling that a finding is fixed now counts when it cites the repair by the event that
+  recorded it, so a repaired and acknowledged finding the reviewer supports resolves instead of
+  ending as a standing disagreement. A ruling the reviewer could not assess, or a `fixed` that cites
+  nothing newer, stays an open round and is never recorded as a disagreement; after two such
+  rulings on one finding in a row with no edit (four at most), checks stop asking for the review
+  and say so, and the finding stays unresolved. A disputed
+  finding no longer tells you to repair or self-verify it. Answering a finding a recheck already
+  resolved now says that nothing is owed (#1046 follow-up).
+
 - A local-only check you asked for (`deterministic_only`) on a route that does not require
   AI-powered review no longer lists `semantic_review_not_requested` on the receipt, in `status` or
   in closure readiness. Where review is required it is still listed and still bounds the receipt

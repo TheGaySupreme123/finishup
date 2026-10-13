@@ -1495,7 +1495,7 @@ Two further check-path operations describe a review that did reach a provider:
 `semantic_conclusion`, `semantic_challenges_returned`, `semantic_candidates_accepted`,
 `semantic_challenges_rejected`, the per-reason split `semantic_rejected_<reason>`
 (`ref_not_carried`, `ref_outside_case`, `hidden_source_claim`, `subject_refs_over_limit`,
-`routine_completeness`, `yoetz_process_state`),
+`routine_completeness`, `yoetz_process_state`, `local_rule_owned`),
 `semantic_review_refs_reduced`, `semantic_review_snippets_rejected`,
 `semantic_restatements_suppressed`, `semantic_challenges_advisory` (routine correctness notes,
 #1042), `semantic_agent_criteria` (#1043), `semantic_prior_rulings_set_aside`,
@@ -8124,6 +8124,24 @@ before freshness is evaluated, so the existing closed host-observation exception
 redactions and unknown relations still block. All ordinary scope, policy, suppression, refiring,
 freshness and semantic requirements continue to apply.
 
+**Content-capture gaps (tb4n5 follow-up, owner decision 2026-10-13: "under capture gaps").** For
+the same finding, `_action_result_link_proven` (the tested state holds the readable subject action
+and a readable `result_recorded` whose `action_id` names it, both no later than the checked
+frontier) makes `truncated_payload` and `content_capture_unavailable` (`_ACTION_LINK_TOLERATED_GAPS`)
+stop vetoing the absence proof, whatever obligations the action names; the codes remain on the check
+and receipt. The command codes keep the partition above (the owner may widen this later), so tb4n5
+formal S, an unbound action under `command_attempt_mismatch`, still reads
+`command_relation_independence_unproven`. Explanations also replay the pre-check projection when the
+check carries one of the two capture codes.
+
+**Same-batch siblings (tb4n5 follow-up).** The rule's "subsequent unrelated work" never includes a
+sibling action the same cooperative `publish_work` batch recorded: 8 of 15 tb4n5 findings fired only
+on such a sibling. The frozen case carries the batches as `DeterministicCase.action_batches`
+(groups of two or more agent-published `action_recorded` events of one operation id on a
+`cooperative_mcp` or `local_cli` channel; never an observation, import or engine row), and its JSON
+gains the key `action_batches` only when such a group exists, so every other case keeps its exact
+bytes. The work-integrity pack stays `0.3.0` (unreleased, amended in place).
+
 The reducer supplies the same projection context to the qualification predicate used by status
 and receipts. No new event schema, persisted proof metadata, or command execution claim is added.
 Historical event bytes remain intact; rebuilding a projection applies this bounded derivation to
@@ -8748,10 +8766,21 @@ and the status findings view carry `self_verified` as a count and a `todo_state`
 #### `disputed_after_rebuttal`: a standing reviewer disagreement (issue #1020, ADR-040)
 
 `disputed_after_rebuttal` is a recorded reviewer ruling and a final to-do state that Yoetz, not the
-reviewer or the agent, assigns. `_admit_prior_verdicts` records it in place of a `still_present`,
-`answered_not_fixed` or `unassessable` ruling on a shown AI-powered finding whose latest readable
+reviewer or the agent, assigns. `_admit_prior_verdicts` records it in place of a `still_present` or
+`answered_not_fixed` ruling on a shown AI-powered finding whose latest readable
 response is `rejected` with a non-blank reason, when the ruling cites no `evd_`/`res_`/`act_`/`evt_`
-material recorded after that response (findings, claims and obligations are not material). A
+material recorded after that response (findings, claims and obligations are not material). Since the
+tb4n5 amendment (ADR-040, 2026-10-13) an `unassessable` ruling, and an unsupported `fixed` or
+`withdrawn` demoted to it, stay `unassessable` (an open round), and a `fixed` ruling's `evt_`
+citation resolves to the evidence or result that event recorded before the after-the-finding test
+(`_ruling_material`); an acknowledgement with a reason still counts as the standing position (#1030).
+The open `unassessable` round is bounded: `review_round.unassessable_review_exhausted` stops the
+review round (`semantic_review_skipped_insufficient_packet`) after two completed reviews in a row
+ruled one finding `unassessable` with no edit since, or four in a row; the finding stays open and
+unresolved; a `semantic_required` check still runs its review.
+The resolution explanation of a latched row names it whatever the latest disposition, with no repair
+instruction; `respond` on it, or on a `verified_resolved` row, returns `finding_terminal` with a
+message that says nothing is owed. A
 challenge restating such a finding (by `restates`, the restatement key, or a reply naming it)
 records the same ruling. `apply_check_rulings` latches `disputed_after_rebuttal_by_check_event_id`
 on a readable rejection, counts no review round, and never lets a later check upgrade the row to
@@ -8776,7 +8805,14 @@ rejection reason `routine_completeness`; the closing review keeps it even withou
 (issue #1042). In every phase a challenge whose every subject is Yoetz's own capture or process record
 (`kernel.review_frame.yoetz_process_state_only`: the hook observation of a call to one of Yoetz's own
 tools or its result, or, for `action_without_result`, any hook-observed action) is dropped and
-counted under `yoetz_process_state`. Those two reasons add the standing disclosure
+counted under `yoetz_process_state`. An `action_without_result` or `result_without_action`
+challenge whose cited records show only the pairing gap the local rule decides over the whole
+ledger (`kernel.review_frame.local_rule_owned`, tb4n5 follow-up of #1042: every cited event is an
+unpaired readable action, or a successful orphan result, at least one, plus at most evidence no
+claim and no unsuccessful result cites) is dropped and counted under `local_rule_owned`; one citing
+a paired action, a claim, an obligation, a failed run or anything unreadable is kept. Those three
+reasons add the
+standing disclosure
 `semantic_process_state_filtered` (gap table rule G5d: disclosed on both routes, tolerated by both
 absence proofs) instead of `semantic_challenges_rejected`, which keeps bounding for every other
 dropped challenge. The bounded accounting record names each reason
@@ -9558,6 +9594,19 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   obligation, including an id the task does not know: it changes no readiness, gap or finding (use `self_verified`, or
   `acknowledged_not_done` as a last resort). `mcp.summaries.render_publish_blocker_notices`
   renders the rows on the MCP text channel; structural pointers admit the four leaves.
+- **Publish-time action notices (tb4n5 follow-up).** `publish_work` success and dry-run results
+  (publish-work-result 1.1.0, unreleased, changed in place) carry optional `action_notices`
+  (1..100 rows, the batch bound, so a full batch is never cut: `action_id`, `notice`
+  `result_not_linked`, and `text`, the fixed
+  `PUBLISH_ACTION_NOTICE_TEXTS[notice]`), one per action the batch recorded that no
+  `result_recorded` names at the batch's own frontier (`publish_work._action_notices`), absent
+  otherwise. It records nothing and changes no finding: it states the pairing rule (a result whose
+  `action_id` names the action, normally in the same batch; evidence, decisions and causal parents
+  link nothing) before a later batch's unrelated work raises `action_without_result`.
+  `mcp.summaries.render_publish_action_notices` renders the rows on the MCP text channel;
+  structural pointers admit the three leaves (result leaf registry 1614). Golden vectors: fixture
+  `CAN-018` (`fixtures/canonical/publish-action-notices-1.1.0.case.json`, owned by
+  `scripts/generate_publish_action_notices_fixture.py` through the resource ripple).
 - **Closing review of blockers (#976, #978).** `semantic_case.recorded_blockers(projection)`
   returns `(decision event id, kind, open obligation ids)` per blocker decision on open
   obligations, claimed or confirmed, and `review_question_set(phase, blockers)` adds one
