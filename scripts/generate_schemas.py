@@ -8170,7 +8170,49 @@ def _publish_work_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonVal
     document = _load_versioned_template(entry, "operations/publish-work-result-1.0.0.schema.json")
     _admit_recorded_policy_identities(document)
     _add_publish_blocker_notices(document)
+    _add_publish_action_notices(document)
     return document
+
+
+def _add_publish_action_notices(document: dict[str, JsonValue]) -> None:
+    """Optional fixed publish-time notices for an action no result names (tb4n5 follow-up)."""
+
+    from yoetz.protocol.models import PUBLISH_ACTION_NOTICE_TEXTS
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    definitions["action_id"] = {
+        "pattern": ("^act_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+        "type": "string",
+    }
+    definitions["action_notice"] = {
+        "additionalProperties": False,
+        "oneOf": [
+            {
+                "properties": {
+                    "notice": {"const": notice},
+                    "text": {"const": text},
+                }
+            }
+            for notice, text in sorted(PUBLISH_ACTION_NOTICE_TEXTS.items())
+        ],
+        "properties": {
+            "action_id": {"$ref": "#/$defs/action_id"},
+            "notice": {"enum": sorted(PUBLISH_ACTION_NOTICE_TEXTS), "type": "string"},
+            "text": {"type": "string"},
+        },
+        "required": ["action_id", "notice", "text"],
+        "type": "object",
+    }
+    for branch in ("success", "dry_run"):
+        properties = cast(
+            dict[str, JsonValue], cast(dict[str, JsonValue], definitions[branch])["properties"]
+        )
+        properties["action_notices"] = {
+            "items": {"$ref": "#/$defs/action_notice"},
+            "maxItems": 64,
+            "minItems": 1,
+            "type": "array",
+        }
 
 
 def _add_publish_blocker_notices(document: dict[str, JsonValue]) -> None:

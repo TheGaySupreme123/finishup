@@ -1135,8 +1135,35 @@ class DeterministicCase:
     # whether either may leave the machine is the review selection's decision, never the case's.
     task_statement: RecordedTaskStatement | None = None
     task_title: str | None = None
+    # Agent-published action events that one ``publish_work`` batch recorded together (tb4n5
+    # follow-up, owner decision 2026-10-13): each group holds two or more ``action_recorded``
+    # events of one cooperative operation, sorted, and no event is in two groups. Batch membership
+    # is an envelope fact (the operation id) the projection does not keep; the action/result rule
+    # needs it so a sibling action in the same batch is never "subsequent unrelated work".
+    action_batches: tuple[tuple[EventId, ...], ...] = ()
 
     def __post_init__(self) -> None:
+        if type(self.action_batches) is not tuple or any(
+            type(group) is not tuple for group in self.action_batches
+        ):
+            raise _invalid_case()
+        try:
+            batches = tuple(
+                tuple(event_id(value) for value in group) for group in self.action_batches
+            )
+        except (TypeError, ValueError) as exc:
+            raise _invalid_case() from exc
+        batch_members = [member for group in batches for member in group]
+        if (
+            any(
+                len(group) < 2 or group != tuple(sorted(set(group), key=_ascii_key))
+                for group in batches
+            )
+            or batches != tuple(sorted(batches, key=lambda group: _ascii_key(group[0])))
+            or len(set(batch_members)) != len(batch_members)
+        ):
+            raise _invalid_case()
+        object.__setattr__(self, "action_batches", batches)
         if type(self.observation_event_ids) is not frozenset:
             raise _invalid_case()
         try:
@@ -1223,6 +1250,8 @@ class DeterministicCase:
             type(self.task_title) is not str or not self.task_title
         ):
             raise _invalid_case()
+        if any(member not in allowed for group in self.action_batches for member in group):
+            raise _invalid_case()
         object.__setattr__(self, "allowed_ids", allowed)
         object.__setattr__(self, "coverage_by_ref", MappingProxyType(coverage))
 
@@ -1243,6 +1272,9 @@ _TASK_CONTEXT_CASE_JSON_KEYS: Final = _CASE_JSON_KEYS | frozenset({"task_context
 _OBSERVATION_TASK_CONTEXT_CASE_JSON_KEYS: Final = _OBSERVATION_CASE_JSON_KEYS | frozenset(
     {"task_context"}
 )
+# Emitted only when one cooperative batch recorded two or more actions (tb4n5 follow-up), so every
+# case without such a batch keeps its exact bytes. It may join any of the non-legacy key sets.
+_ACTION_BATCHES_CASE_JSON_KEY: Final = "action_batches"
 
 
 def _task_statement_to_json(statement: RecordedTaskStatement) -> dict[str, JsonValue]:
@@ -1497,6 +1529,15 @@ def deterministic_case_to_json(case: DeterministicCase) -> dict[str, JsonValue]:
             if case.task_statement is not None or case.task_title is not None
             else {}
         ),
+        **(
+            {
+                _ACTION_BATCHES_CASE_JSON_KEY: [
+                    [str(member) for member in group] for group in case.action_batches
+                ]
+            }
+            if case.action_batches
+            else {}
+        ),
     }
 
 
@@ -1507,6 +1548,18 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
         frozen = freeze_json(value)
         source = _case_json_object(frozen)
         source_keys = frozenset(source)
+        action_batches: tuple[tuple[EventId, ...], ...] = ()
+        if _ACTION_BATCHES_CASE_JSON_KEY in source_keys:
+            source_keys = source_keys - {_ACTION_BATCHES_CASE_JSON_KEY}
+            if source_keys == _LEGACY_CASE_JSON_KEYS:
+                raise _invalid_case()
+            raw_batches = _case_json_array(source[_ACTION_BATCHES_CASE_JSON_KEY])
+            if not raw_batches:
+                raise _invalid_case()
+            action_batches = tuple(
+                tuple(event_id(cast(str, member)) for member in _case_json_array(group))
+                for group in raw_batches
+            )
         if source_keys not in {
             _CASE_JSON_KEYS,
             _LEGACY_CASE_JSON_KEYS,
@@ -1643,6 +1696,7 @@ def deterministic_case_from_json(value: JsonValue) -> DeterministicCase:
             ),
             task_statement=task_statement,
             task_title=task_title,
+            action_batches=action_batches,
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise _invalid_case() from exc
@@ -2338,7 +2392,44 @@ def build_deterministic_case(
         ),
         task_statement=task_statement,
         task_title=recorded_task_title(accepted_prefix),
+        action_batches=_cooperative_action_batches(projection, accepted_prefix),
     )
+
+
+# The cooperative publication channels a ``publish_work`` batch arrives on. Import and hook
+# operations can carry many unrelated actions under one operation id, so they never form a batch.
+_COOPERATIVE_BATCH_CHANNELS: Final = frozenset(
+    {PublicationChannel.COOPERATIVE_MCP, PublicationChannel.LOCAL_CLI}
+)
+
+
+def _cooperative_action_batches(
+    projection: ProjectionState, records: tuple[LedgerRecord, ...]
+) -> tuple[tuple[EventId, ...], ...]:
+    """Group the agent-published actions each cooperative ``publish_work`` batch recorded.
+
+    One batch is one operation id. Only the event behind a projected action row counts, and only
+    when the agent published it on a cooperative channel (never a service-stamped observation, an
+    import or an engine row); only groups of two or more are kept: a lone action has no sibling.
+    """
+
+    action_events = {row.source_event_id for row in projection.actions.values()}
+    grouped: dict[str, list[EventId]] = {}
+    for record in records:
+        if (
+            type(record) is AcceptedEvent
+            and record.event_id in action_events
+            and record.schema.name == "action_recorded"
+            and record.publication_channel in _COOPERATIVE_BATCH_CHANNELS
+            and not is_observation_authored(record)
+        ):
+            grouped.setdefault(str(record.operation_id), []).append(record.event_id)
+    batches = tuple(
+        tuple(sorted(set(members), key=_ascii_key))
+        for members in grouped.values()
+        if len(set(members)) > 1
+    )
+    return tuple(sorted(batches, key=lambda group: _ascii_key(group[0])))
 
 
 def healthy_storage_availability(

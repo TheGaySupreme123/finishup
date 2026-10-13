@@ -339,9 +339,10 @@ SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP: Final = "semantic_prior_verdicts_unsupp
 SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP: Final = "semantic_restatements_suppressed"
 # Issue #1042: reviewer challenges the check did not record as findings because they called work
 # "never attempted" during a routine review (``routine_completeness``, ADR-040 section 5) or were
-# about Yoetz's own capture or process state (``yoetz_process_state``). A disclosure of the review
-# dialogue, never a limit on what the review saw: it does not bound the receipt and does not veto
-# an absence proof.
+# about Yoetz's own capture or process state (``yoetz_process_state``), or (tb4n5 follow-up)
+# restated an action/result relation the local rule owns (``local_rule_owned``). A disclosure of
+# the review dialogue, never a limit on what the review saw: it does not bound the receipt and does
+# not veto an absence proof.
 SEMANTIC_PROCESS_STATE_FILTERED_GAP: Final = "semantic_process_state_filtered"
 # The check-time change (ADR-031) is the service's own read of the task's repository when a check
 # runs. Each code names one limit on what that single object could show the reviewer. None of

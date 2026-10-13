@@ -245,7 +245,7 @@ continuing the authorized task; it is not clean AI-powered review coverage. Pend
 approval is different: follow the exact continuation below, not the terminal fallback rules.
 
 
-A clean local-only check is not an implementation review: its receipt concludes `no_unresolved_deterministic_findings` at best. Where the route requires AI-powered review, `mode=deterministic_only` records `semantic_review_not_requested`, which bounds the receipt. Where it does not, the check records `semantic_route_required: false` and no review gap: it ran what you asked for. Omit `mode` to follow the configured default; use `semantic_if_configured` only for known-optional review, and disclose the limitation when local-only is deliberate. A check before your first material edit (no edit recorded and no workspace change observed, and not the closing review) also runs locally only, whatever the mode, and carries `semantic_review_deferred_before_first_edit`: nothing was sent, and the next check after an edit reviews as configured. Like `semantic_review_not_requested`, it bounds the receipt only where the route requires review; there, work that needs no edit still gets the closing review, which readiness asks for. Where review is optional it asks for nothing more than a local-only check. Reviewer challenges that something was never attempted while work is in progress, or about Yoetz's own state (a Yoetz tool call, a hook observation awaiting its result), are not recorded as findings; `semantic_process_state_filtered` discloses that they were filtered and never bounds the receipt.
+A clean local-only check is not an implementation review: its receipt concludes `no_unresolved_deterministic_findings` at best. Where the route requires AI-powered review, `mode=deterministic_only` records `semantic_review_not_requested`, which bounds the receipt. Where it does not, the check records `semantic_route_required: false` and no review gap: it ran what you asked for. Omit `mode` to follow the configured default; use `semantic_if_configured` only for known-optional review, and disclose the limitation when local-only is deliberate. A check before your first material edit (no edit recorded and no workspace change observed, and not the closing review) also runs locally only, whatever the mode, and carries `semantic_review_deferred_before_first_edit`: nothing was sent, and the next check after an edit reviews as configured. Like `semantic_review_not_requested`, it bounds the receipt only where the route requires review; there, work that needs no edit still gets the closing review, which readiness asks for. Where review is optional it asks for nothing more than a local-only check. Reviewer challenges that something was never attempted while work is in progress, about Yoetz's own state (a Yoetz tool call, a hook observation awaiting its result), or that an action has no result (or a result no action), which the local check decides over the whole record, are not recorded as findings; `semantic_process_state_filtered` discloses that they were filtered and never bounds the receipt. Pair the action with its result and the local finding resolves.
 
 A non-succeeding `semantic_status` is a coverage gap, not a failure to retry away.
 
@@ -623,24 +623,23 @@ request and report the unresolved start. These continuations do not authorize a 
 
 ### Unrelated command gaps and action-result repairs
 
-A readable deterministic `action_without_result` finding can resolve after a qualifying check
-of its accepted linked result when its explicit action relation is provably disjoint from every
-selected plan obligation requesting a command. The relation includes both the action's direct
-`obligation_refs` and a selected obligation's `resolution_evidence_refs → result → action` link.
-`command_attempt_uncorroborated` and
-`command_attempt_mismatch` remain check/receipt coverage limits. This exception proves that the
-ledger action has a result; it never proves a command ran or succeeded.
+A readable deterministic `action_without_result` finding resolves after a qualifying check of a
+state in which a readable `result_recorded` names the action (its payload `action_id` is the
+action's `act_` id). That rule reads only the action and result rows, so the link proves the issue
+absent even when the check carries `command_attempt_uncorroborated`, `command_attempt_mismatch`,
+`truncated_payload` or `content_capture_unavailable`, whatever obligations the action names: those
+codes remain check and receipt coverage limits, so do not answer `self_verified` for them. The
+link proves that the ledger action has a result; it never proves a command ran or succeeded.
 
-An overlapping command obligation, missing explicit link, unreadable input, or result newer than
-the tested frontier remains conservative. A selected command obligation is included in the
-partition even when its own command was observed matching. Status reconstructs the projection
-immediately before the candidate check and applies the same frontier guards, then explains the
-overlapping obligation IDs or that independence is unproven. AI-powered findings still require completed
+An unreadable action or result, a result newer than the tested frontier, a redacted event, an
+unavailable payload or a missing ref still fails closed, as do a re-fired issue, suppressed
+findings and a scoped-away check. Status reconstructs the projection immediately before the
+candidate check and applies the same frontier guards. AI-powered findings still require completed
 AI-powered review; an acknowledgement or unchanged recheck does not repair a proof limitation.
-When the partition proves independence, the command codes are removed before the ordinary local
-freshness rule runs, so the existing tolerated host-observation exception may also admit a
-`redacted_gap` check when all remaining gaps are in that closed host/evidence set. Projection
-redactions, unreadable payloads, and unknown relations still fail closed.
+Once the link removes those codes, the ordinary local freshness rule runs, so the existing
+tolerated host-observation exception may also admit a `redacted_gap` check when all remaining
+gaps are in that closed host/evidence set. Projection redactions, unreadable payloads, and unknown
+relations still fail closed.
 
 
 ### Missing review content and concrete repair attempts

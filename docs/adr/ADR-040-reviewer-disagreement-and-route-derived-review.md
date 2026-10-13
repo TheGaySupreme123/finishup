@@ -2,7 +2,8 @@
 
 - Status: accepted (2026-10-08)
 - Issues: #1020 (tb4n2 R1), #1021 (tb4n2 R6), #1024 (tb4n3 RC-1), #1030 (tb4n3 RC-7), #1042, #1043,
-  #1046 (tb4n4, amendment of 2026-10-12 below)
+  #1046 (tb4n4, amendment of 2026-10-12 below); tb4n5 follow-ups of #1042 and #1046 and the
+  action/result pairing rule (amendment of 2026-10-13 below)
 - Amends: ADR-034 (finding to-do states), ADR-033 amendment of 2026-10-08 (#986, "record route;
   don't block"), ADR-006 (reviewer instruction)
 - Maintainer acknowledgement: the owner approved all tb4n2 core issues R1-R10, design changes
@@ -20,7 +21,13 @@
   `_review_skip_gaps`), `kernel/task_facts.py` (`material_edit_recorded`),
   `kernel/finding_resolution.py` (`_TASK_FACT_GAPS_TOLERATED_WHEN_FIXED`), `domain/findings.py`
   (`AGENT_CRITERION_UNMET`, `is_limitation_request`), `kernel/closure_class.py`,
-  `kernel/gap_effect.py` and `kernel/closure_readiness.py` (`_closing_review_facts`).
+  `kernel/gap_effect.py` and `kernel/closure_readiness.py` (`_closing_review_facts`). tb4n5
+  amendment: `kernel/policies/work_integrity.py` (`_unresolved_action_findings`),
+  `kernel/deterministic_checks.py` (`action_batches`), `kernel/finding_resolution.py`
+  (`_action_result_link_proven`), `application/publish_work.py` (`_action_notices`),
+  `protocol/models.py` (`PUBLISH_ACTION_NOTICE_TEXTS`), `mcp/summaries.py`,
+  `kernel/review_frame.py` (`local_rule_owned`), `application/check.py`
+  (`SEMANTIC_REJECTED_LOCAL_RULE_OWNED`).
 
 ## Context
 
@@ -406,6 +413,12 @@ never the reviewer's words; anything unreadable keeps the challenge.
   observation with its result is Yoetz's capture; the `check` call is always in flight). A
   description is trusted only on a service-stamped observation. Reason `yoetz_process_state`, every
   phase.
+- Amended 2026-10-13 (tb4n5 follow-up): the local rule owns the action/result relation for every
+  readable action or result, published or observed. `local_rule_owned` drops an
+  `action_without_result` or `result_without_action` challenge that cites a readable action or
+  result event and nothing unreadable, reason `local_rule_owned`, every phase; see the amendment of
+  2026-10-13 below. The restriction to hook-observed subjects above stays only for
+  `yoetz_process_state`.
 - Section 5 now reads the phase the packet named: during a routine review an AI-powered
   `requested_item_never_attempted` is dropped (reason `routine_completeness`); the closing review
   keeps it even when the agent stops without a completion claim, which is exactly the early stop
@@ -536,3 +549,73 @@ unreleased classification version `"8"`, with #1044's `G0c` row (ADR-046). Hosts
 instruction, so Codex, Claude Code and Cursor behave the same; no host adapter changed. Acceptance
 on the tb4n4 exports (replaying the 60 exports for the wrong-finding and in-frame rates) remains for
 the maintainer.
+
+## Amendment 2026-10-13 (tb4n5 follow-ups of #1042 and #1046): the findings lifecycle
+
+Evidence: the tb4n5 rerun on 0.3 at 0291f441d (#1054), 18 attempts, read by two independent
+reviews. Owner decisions of 2026-10-13: state the action/result pairing rule and return a
+publish-time notice; a sibling action in the same publish batch does not trigger
+`action_without_result`; a plain ledger link resolves it under capture gaps, disclosed on the
+receipt; the local rule owns `action_without_result`/`result_without_action` and the AI duplicates
+are dropped; `evt_` citations map to the result or evidence they recorded and an unsupported
+`fixed` never becomes a dispute; an acknowledgement may still count as a rebuttal.
+
+### 1. Every published action is paired with its result
+
+tb4n5 raised `action_without_result` in 13 of 18 attempts (15 local findings), each on an action
+the agent itself published, 8 edits, 4 research actions and 3 commands. None was a lost link: every
+agent published the result after the finding asked for it. Agents conveyed outcomes through
+evidence and decisions, which link nothing, and no guidance said up front that an
+`action_recorded` needs a `result_recorded` naming its `act_` id.
+
+- **Guidance.** `workflow.md` step 5 and the pre-flight, the operating card, `publication.md` and
+  `request-templates.md` (a completed-action example publishing the result in the same batch) state
+  the pairing rule: a result whose payload `action_id` is the action's id, any outcome, normally in
+  the same batch; evidence, decisions and causal parents do not link an action.
+- **Publish-time notice.** `publish_work` (and its dry run) returns `action_notices` naming each
+  action the batch recorded that no result names yet, with one fixed text (`result_not_linked`).
+  It records nothing and changes no finding.
+- **Same-batch siblings.** A sibling action of the same cooperative `publish_work` batch is never
+  "subsequent unrelated work" (8 of 15 tb4n5 findings fired only on one, medical S L95). The frozen
+  case carries the batches (`DeterministicCase.action_batches`, emitted only when present); the
+  work-integrity pack stays `0.3.0`, unreleased and amended in place. A genuinely unaccounted action
+  is still raised by unrelated work in a later batch, and only a result naming the action links it.
+- **A ledger link resolves it.** A readable result naming the readable action at the tested
+  frontier proves a deterministic `action_without_result` absent even under
+  `command_attempt_uncorroborated`, `command_attempt_mismatch`, `truncated_payload` or
+  `content_capture_unavailable`; the codes stay on the check and receipt. #682's obligation
+  partition is retired (INTERFACES, "Command-gap independence"): tb4n5 formal S and react S stayed
+  open after the agent linked the result and had to answer `self_verified`. Redacted or unavailable
+  ledger rows, a later result and every ordinary qualification rule still block.
+
+Hosts: the rule, notice and guidance are shared (check, kernel, publish and the MCP text channel),
+so Codex, Claude Code and Cursor behave the same; the CLI returns the same JSON field. No host
+adapter changed.
+
+### 2. The local rule owns the action/result relation (#1042 follow-up)
+
+In 3 of 9 S tasks the reviewer raised "action has no linked result" beside the local finding on the
+same agent-published action: vigenere S cited the local subject plus an evidence event, live-db S
+the identical subject, and medical S cited the sibling command while its text named the engine
+edit. #1042's filter dropped such a challenge only when every subject was hook-observed, so all
+three were minted; each local twin resolved after the agent linked the result, and each AI twin
+latched `disputed_after_rebuttal` (never clean), and the agent's corrective `self_verified` was
+refused with `finding_terminal`. The reviewer sees a bounded packet and cannot know that a result
+outside it exists; the local rule reads the whole ledger and decides the relation exactly.
+
+`kernel.review_frame.local_rule_owned` is true for an `action_without_result` or
+`result_without_action` challenge that cites at least one event behind a readable action or result,
+and whose every other subject is a readable recorded row (an event behind evidence, a claim, an
+obligation or a decision, or a readable obligation or claim). The check drops it after
+`yoetz_process_state_only`, counted under the rejection reason `local_rule_owned`
+(`semantic_rejected_local_rule_owned` in the accounting record) and disclosed through the existing
+standing code `semantic_process_state_filtered` (G5d: never bounding, never vetoing an absence
+proof). Anything unreadable or unknown keeps the challenge, and so does every other kind about the
+same action: a failed or unrun verification (`failed_work_omitted`, a requirement kind), a false
+completion claim (`claim_without_admissible_evidence`, `completion_with_open_obligations`) and an
+omitted limitation are still reviewed. This supersedes the "agent-published actions are kept" rule
+of section 2 above for these two kinds only. The reviewer instruction is unchanged; the gloss of
+both kinds still describes them.
+
+Not changed here: #1043 (`agent_criterion_unmet` routing for agent-published probes) stays as
+decided; the formal-crypto case is not shown to be beyond the task's scope.

@@ -253,6 +253,18 @@ reverse-chronological released versions.
   recorded after it, now closes the finding even when the check records environment facts such as
   verification run only as root; those facts stay disclosed on the receipt (#1046).
 
+- Every published action needs a result that names its `act_` id. The workflow guidance and the
+  operating card now say so up front, and a `publish_work` result (dry runs included) lists each
+  action it recorded that no result names yet in `action_notices`. A second action in the same
+  batch no longer raises `action_without_result` for the first; unrelated work in a later batch
+  still does. Once a result names the action, that finding resolves even when the check also
+  records command-attempt or content-capture limits, which stay disclosed on the receipt.
+
+- The AI-powered reviewer no longer adds its own `action_without_result` or
+  `result_without_action` finding beside the local one: the local check decides that relation over
+  the whole record, and `semantic_process_state_filtered` discloses the dropped challenge. Failed or
+  unrun verification and false completion claims are still reviewed (#1042 follow-up).
+
 - A local-only check you asked for (`deterministic_only`) on a route that does not require
   AI-powered review no longer lists `semantic_review_not_requested` on the receipt, in `status` or
   in closure readiness. Where review is required it is still listed and still bounds the receipt

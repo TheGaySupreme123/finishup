@@ -17,6 +17,12 @@ so the challenge is kept as the reviewer gave it.
   hook's observation of a call to one of Yoetz's own tools (the check in flight, a status poll), or,
   for ``action_without_result``, a hook-observed action: pairing a hook observation with its result
   is Yoetz's capture, never the agent's account.
+* ``local_rule_owned`` (tb4n5 follow-up): an ``action_without_result`` or ``result_without_action``
+  challenge about readable ledger actions or results. The local work-integrity rule decides that
+  relation over the whole ledger; the reviewer sees a bounded packet, so its copy can only
+  duplicate the local finding (vigenere S, live-db S) or misplace it (medical S cited the sibling
+  command for "the engine edit has no linked result"), and the copy latched
+  ``disputed_after_rebuttal`` while the local twin resolved.
 * ``agent_probe_only``: a ``task_requirement_unmet`` challenge whose only cited work is hook-observed
   command runs that are not the task's own declared verification (neither matching a requested
   command nor linked to one by the agent), while that declared verification is on record and
@@ -37,7 +43,7 @@ from typing import Final
 from yoetz.domain.command_segments import requested_command_shape
 from yoetz.domain.events import ActionKind, ActionRecordedPayload, RequestedItemKind
 from yoetz.domain.findings import FindingKind
-from yoetz.domain.values import EventId, EvidenceId, ObligationId
+from yoetz.domain.values import ClaimId, EventId, EvidenceId, ObligationId
 from yoetz.domain.yoetz_tools import yoetz_tool_spelling
 from yoetz.kernel.observed_failures import observed_action_tool
 from yoetz.kernel.projections import ProjectionState
@@ -57,8 +63,10 @@ from yoetz.kernel.task_facts import (
 )
 
 __all__ = [
+    "LOCAL_RULE_OWNED_KINDS",
     "PLANNED_VERIFICATION_DOUBT_GAPS",
     "agent_probe_only",
+    "local_rule_owned",
     "yoetz_process_state_only",
 ]
 
@@ -151,6 +159,72 @@ def yoetz_process_state_only(
             continue
         return False
     return True
+
+
+# The ledger relations the local work-integrity rules decide over the whole record (tb4n5 follow-up
+# of #1042): an action no result names, and a result that names no action.
+LOCAL_RULE_OWNED_KINDS: Final = frozenset(
+    {FindingKind.ACTION_WITHOUT_RESULT, FindingKind.RESULT_WITHOUT_ACTION}
+)
+
+
+def local_rule_owned(
+    projection: ProjectionState, kind: FindingKind, subject_refs: Iterable[str]
+) -> bool:
+    """Whether a challenge restates an action/result relation the local rule owns (tb4n5).
+
+    True exactly when the challenge is ``action_without_result`` or ``result_without_action``, it
+    cites at least one event that recorded a readable action or result (the relation the local
+    rule reads over the whole ledger, published or observed), and every other subject is a
+    readable recorded row: an event behind a readable action, result, evidence, claim, obligation
+    or decision, or a readable obligation or claim. The reviewer sees a bounded packet and cannot
+    know a result outside it exists; the local rule reads the full record and is exact, so its
+    finding is the only one. Anything unreadable or unknown answers ``False`` and keeps the
+    challenge, as does every other kind about the same action (a failed or unrun verification, a
+    false completion claim, an omitted failure).
+    """
+
+    if kind not in LOCAL_RULE_OWNED_KINDS:
+        return False
+    refs = tuple(subject_refs)
+    if not refs:
+        return False
+    relation = {
+        row.source_event_id
+        for rows in (projection.actions, projection.results)
+        for row in rows.values()
+        if row.payload is not None and not row.redacted
+    }
+    readable: set[EventId] = set(relation)
+    for collection in (
+        projection.evidence,
+        projection.claims,
+        projection.obligations,
+        projection.decisions,
+    ):
+        readable.update(
+            row.source_event_id
+            for row in collection.values()
+            if row.payload is not None and not row.redacted
+        )
+    owned = False
+    for ref in refs:
+        if ref.startswith("evt_"):
+            event = EventId(ref)
+            if event not in readable:
+                return False
+            owned = owned or event in relation
+        elif ref.startswith("obl_"):
+            obligation = projection.obligations.get(ObligationId(ref))
+            if obligation is None or obligation.payload is None:
+                return False
+        elif ref.startswith("clm_"):
+            claim = projection.claims.get(ClaimId(ref))
+            if claim is None or claim.payload is None:
+                return False
+        else:
+            return False
+    return owned
 
 
 def agent_probe_only(

@@ -38,7 +38,7 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [031](ADR-031-check-time-change-capture.md) | The service captures the check-time change as one reviewed object |
 | [032](ADR-032-closure-readiness-checklist-and-material-dependency-coverage.md) | Closure readiness as a checklist, and material-dependency coverage (proposed) |
 | [034](ADR-034-proof-limited-findings-self-verified.md) | Proof-limited findings: the `self_verified` respond disposition |
-| [040](ADR-040-reviewer-disagreement-and-route-derived-review.md) | Binding rules for reviewer disagreement (`disputed_after_rebuttal`); review requirement derived from the route |
+| [040](ADR-040-reviewer-disagreement-and-route-derived-review.md) | Binding rules for reviewer disagreement (`disputed_after_rebuttal`); review requirement derived from the route; the local rule owns action/result pairing (tb4n5) |
 | [041](ADR-041-obligation-status-re-derived-and-refusal-reasons.md) | Obligation status re-derived from current evidence, one obligation version rule, refusals that say why |
 | [043](ADR-043-bounded-agent-facing-text.md) | Bounded agent-facing text: one never-failing composer, and a committed operation never fails on its text |
 | [044](ADR-044-post-compaction-recap.md) | A bounded, sourced recap of Yoetz state when a host resumes after compaction |

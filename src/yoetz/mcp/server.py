@@ -80,6 +80,7 @@ from yoetz.mcp.semantic_destination import (
 )
 from yoetz.mcp.summaries import (
     render_check_reviewer_output,
+    render_publish_action_notices,
     render_publish_blocker_notices,
     render_safe_compact_summary_detailed,
     summary_for_check_awaiting,
@@ -1047,7 +1048,11 @@ def _result_text(
         blocker_notices = _guarded_text(
             "blocker_notices", lambda: render_publish_blocker_notices(wire), failures
         )
-        parts = (compact, totals, manifest, reviewer, blocker_notices)
+        # tb4n5 follow-up: an action the batch recorded with no result naming it, dry runs included.
+        action_notices = _guarded_text(
+            "action_notices", lambda: render_publish_action_notices(wire), failures
+        )
+        parts = (compact, totals, manifest, reviewer, blocker_notices, action_notices)
     note = (
         _record_summary_degradation(failures, request_id=request_id, operation=operation)
         if failures

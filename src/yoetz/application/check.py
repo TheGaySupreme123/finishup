@@ -197,7 +197,11 @@ from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_finding
 from yoetz.kernel.receipt_capacity import current_receipt_findings
 from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
 from yoetz.kernel.reducers import replay
-from yoetz.kernel.review_frame import agent_probe_only, yoetz_process_state_only
+from yoetz.kernel.review_frame import (
+    agent_probe_only,
+    local_rule_owned,
+    yoetz_process_state_only,
+)
 from yoetz.kernel.review_round import review_round_stopped
 from yoetz.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
@@ -297,6 +301,7 @@ if TYPE_CHECKING:  # the inspection module imports status, which imports this mo
 __all__ = [
     "SEMANTIC_CASE_CONTENT_GAPS",
     "SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM",
+    "SEMANTIC_REJECTED_LOCAL_RULE_OWNED",
     "SEMANTIC_REJECTED_ROUTINE_COMPLETENESS",
     "SEMANTIC_REJECTED_YOETZ_PROCESS_STATE",
     "SEMANTIC_REJECTED_REF_NOT_CARRIED",
@@ -353,11 +358,20 @@ SEMANTIC_REJECTED_ROUTINE_COMPLETENESS: Final = "routine_completeness"
 # challenge whose every subject is Yoetz's own capture or process record
 # (``kernel.review_frame.yoetz_process_state_only``). Counted, never minted.
 SEMANTIC_REJECTED_YOETZ_PROCESS_STATE: Final = "yoetz_process_state"
-# The two reasons above are about work in progress or Yoetz's own state, not about material the
-# check failed to carry: they are disclosed as ``semantic_process_state_filtered`` (never
-# bounding, never vetoing an absence proof) instead of ``semantic_challenges_rejected``.
+# tb4n5 follow-up of #1042: an ``action_without_result`` or ``result_without_action`` challenge
+# about readable ledger actions or results (``kernel.review_frame.local_rule_owned``). The local
+# work-integrity rule owns that relation over the whole ledger. Counted, never minted.
+SEMANTIC_REJECTED_LOCAL_RULE_OWNED: Final = "local_rule_owned"
+# The three reasons above are about work in progress, Yoetz's own state or a ledger relation the
+# local rule decides, not about material the check failed to carry: they are disclosed as
+# ``semantic_process_state_filtered`` (never bounding, never vetoing an absence proof) instead of
+# ``semantic_challenges_rejected``.
 _PROCESS_STATE_REJECTIONS: Final = frozenset(
-    {SEMANTIC_REJECTED_ROUTINE_COMPLETENESS, SEMANTIC_REJECTED_YOETZ_PROCESS_STATE}
+    {
+        SEMANTIC_REJECTED_ROUTINE_COMPLETENESS,
+        SEMANTIC_REJECTED_YOETZ_PROCESS_STATE,
+        SEMANTIC_REJECTED_LOCAL_RULE_OWNED,
+    }
 )
 # The closed packet content gaps a semantic evaluation may carry into check coverage. Each is
 # classified for finding resolution in ``kernel/finding_resolution.py`` (issue #904); adding one
@@ -506,6 +520,7 @@ class SemanticJudgmentReview:
 _SEMANTIC_REJECTION_REASONS: Final = frozenset(
     {
         SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM,
+        SEMANTIC_REJECTED_LOCAL_RULE_OWNED,
         SEMANTIC_REJECTED_REF_NOT_CARRIED,
         SEMANTIC_REJECTED_REF_OUTSIDE_CASE,
         SEMANTIC_REJECTED_ROUTINE_COMPLETENESS,
@@ -4265,6 +4280,15 @@ def validate_semantic_judgment(
             # work. Counted and disclosed, never minted.
             rejections[SEMANTIC_REJECTED_YOETZ_PROCESS_STATE] = (
                 rejections.get(SEMANTIC_REJECTED_YOETZ_PROCESS_STATE, 0) + 1
+            )
+            continue
+        if local_rule_owned(case.projection, challenge.finding_kind, refs):
+            # tb4n5 follow-up of #1042: the action/result relation is the local rule's, decided over
+            # the whole ledger; the reviewer's copy duplicated or misplaced it and latched
+            # ``disputed_after_rebuttal`` while the local twin resolved. Counted and disclosed,
+            # never minted. Every other kind about the same action is still reviewed.
+            rejections[SEMANTIC_REJECTED_LOCAL_RULE_OWNED] = (
+                rejections.get(SEMANTIC_REJECTED_LOCAL_RULE_OWNED, 0) + 1
             )
             continue
         if routine and challenge.finding_kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED:

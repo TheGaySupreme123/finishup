@@ -764,10 +764,22 @@ def _orphan_result_findings(case: DeterministicCase) -> list[DeterministicAssess
 
 
 def _unresolved_action_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
+    """An action with no linked result that later unrelated work left behind.
+
+    Later work is an action recorded after it with a disjoint subject key. A sibling action the
+    same ``publish_work`` batch recorded is never later work (tb4n5 follow-up, owner decision
+    2026-10-13): 8 of 15 tb4n5 findings fired only on such a sibling, at the first check after
+    the batch. Its result is still owed: the batch's own publish result names the unpaired action,
+    and the next batch with unrelated work raises the finding.
+    """
+
     linked_actions = {
         record.payload.action_id
         for record in case.projection.results.values()
         if record.payload is not None
+    }
+    batch_of = {
+        member: index for index, group in enumerate(case.action_batches) for member in group
     }
     actions = tuple(
         sorted(
@@ -789,11 +801,13 @@ def _unresolved_action_findings(case: DeterministicCase) -> list[DeterministicAs
             continue
         # Reuse the later action's tuple instead of rebuilding its set for every pair.
         key = (subjects[0], frozenset(subjects[1]))
+        batch = batch_of.get(record.source_event_id)
         later = tuple(
             later_id
             for later_id, later_record in actions
             if later_record.source_frontier > record.source_frontier
             and later_record.payload is not None
+            and (batch is None or batch_of.get(later_record.source_event_id) != batch)
             and _keys_are_disjoint(
                 key,
                 _action_subject_key(

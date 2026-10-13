@@ -47,7 +47,9 @@ RESEARCH_EVIDENCE_POLICY_VERSION: Final = "0.2.0"
 # observed edits or runs trigger the corroboration rule.
 # 0.3.0 (#977): ``requested_item_never_attempted`` waits until the agent has started acting, names
 # a requested file the check-time workspace read found absent whatever was published, and skips
-# obligations a confirmed blocker decision names (a claimed blocker suppresses nothing, #985).
+# obligations a confirmed blocker decision names (a claimed blocker suppresses nothing, #985), and
+# ``action_without_result`` never counts a sibling action of the same ``publish_work`` batch as later
+# work (tb4n5 follow-up). 0.3.0 is unreleased, so the 0.3 line amends it in place.
 WORK_INTEGRITY_POLICY_VERSION: Final = "0.3.0"
 
 CURRENT_POLICY_VERSIONS: Final = MappingProxyType(

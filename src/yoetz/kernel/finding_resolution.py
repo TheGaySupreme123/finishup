@@ -29,7 +29,6 @@ from yoetz.domain.events import (
     ActionKind,
     CheckChangeShownFiles,
     CheckRecordedPayload,
-    ClaimKind,
     LedgerRecord,
     RequestedItemKind,
     ResponseRecordedPayload,
@@ -92,14 +91,12 @@ from yoetz.domain.task_statement import (
     may_carry_task_statement,
 )
 from yoetz.domain.values import ClaimId, EventId, EvidenceId, FindingId, ObligationId, ResultId
-from yoetz.kernel.claims import effective_claim_items
 from yoetz.kernel.plan_drift import (
     INSTRUCTION_REQUIREMENT_UNMAPPED_GAP,
     OBLIGATION_EVIDENCE_STALE_AFTER_SCOPE_EDIT_GAP,
     PLAN_DRIFT_GAPS,
     stale_resolved_obligations,
 )
-from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import (
     MAX_ABSORBED_REFS,
     MAX_CHECK_CHANGE_RAISING_CHECKS,
@@ -258,7 +255,8 @@ _SEMANTIC_ONLY_GAPS: Final = frozenset(
 # events, completion-scope gaps, import ranges, and any code not named here) means the check could
 # not read or bound the material, and blocks both proof classes. The set is closed on purpose: a
 # new gap code blocks resolution until someone decides otherwise here. Command gaps are never
-# added to this set: the separately proved subject partition below is their only exception.
+# added to this set: the command-independent kinds and a proven action/result link below are their
+# only exceptions.
 _EVIDENCE_STRENGTH_GAPS: Final = frozenset(
     {
         "evidence_content_digest_only",
@@ -399,7 +397,8 @@ _COMMAND_GAPS: Final = frozenset({"command_attempt_uncorroborated", "command_att
 # obligation; it cannot weaken an absence proof for these rules, so it stays a disclosure for them.
 # Rules that do read attempts or commands (requested items, failed-work supersession by command
 # identity, the ledger finding that carries the gap itself, research rules that read coverage
-# records) keep the strict treatment, and ``action_without_result`` keeps its proven partition.
+# records) keep the strict treatment, and ``action_without_result`` tolerates them only through a
+# proven action/result link (``_action_result_link_proven``).
 _COMMAND_INDEPENDENT_KINDS: Final = frozenset(
     {
         FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS,
@@ -413,8 +412,8 @@ _COMMAND_INDEPENDENT_KINDS: Final = frozenset(
 )
 # Keep this local to avoid importing the policy module while reducers import this module. If the
 # work-integrity pack changes version, its action-result exception must be reviewed explicitly.
-# Reviewed for 0.2.0 and 0.3.0 (#977): the ``action_without_result`` rule did not change, so every
-# version qualifies.
+# Reviewed for 0.2.0 and 0.3.0 (#977, and the tb4n5 same-batch amendment of 0.3.0): every version
+# decides the issue from the action and result rows alone, so a linked result proves it absent.
 _ACTION_WITHOUT_RESULT_POLICIES: Final = frozenset(
     {
         (WORK_INTEGRITY_POLICY_ID, "0.1.0"),
@@ -423,95 +422,58 @@ _ACTION_WITHOUT_RESULT_POLICIES: Final = frozenset(
     }
 )
 ProofStateCache = MutableMapping[tuple[int, int, str], ProjectionState | None]
+# What a proven action/result link tolerates on a local ``action_without_result`` (tb4n5 follow-up,
+# owner decision 2026-10-13). That rule reads only the action and result rows and the result's
+# ``action_id``; a readable result naming the readable action at the tested frontier decides the
+# issue absent from the ledger alone. Requested-command attempt relations and clipped or uncaptured
+# content are never its input, so they stay receipt disclosures here instead of vetoing the proof
+# (tb4n5 formal S and react S stayed open after the agent linked the result and had to answer
+# ``self_verified``). Redacted or unavailable ledger rows keep blocking: they are its input.
+_ACTION_LINK_TOLERATED_GAPS: Final = _COMMAND_GAPS | frozenset(
+    {"truncated_payload", "content_capture_unavailable"}
+)
 
 
-def _command_gap_partition(
-    finding: Finding, check: CheckRecordedPayload, state: ProjectionState | None
-) -> tuple[str, ...] | None:
-    """Conservatively bound every possible command-gap owner at the tested frontier.
+def _action_link_candidate(finding: Finding, check: CheckRecordedPayload) -> bool:
+    """Whether a proven link could change this local finding's proof (cheap guards first)."""
 
-    Empty means proven independent. IDs mean overlapping command obligations; None means that
-    independence is unknown. We deliberately include matching command obligations as well:
-    absence of a relation on this read must never be turned into an absence proof. This narrow
-    partition needs no new check payload and never reinterprets a command as execution evidence.
-    """
-    if (
-        state is None
-        or state.frontier < check.subject_frontier.sequence
-        or finding.origin is not FindingOrigin.DETERMINISTIC
-        or finding.kind is not FindingKind.ACTION_WITHOUT_RESULT
-        or (finding.policy_id, finding.policy_version) not in _ACTION_WITHOUT_RESULT_POLICIES
-        or finding.coverage.ledger_freshness in _UNPROVEN_FRESHNESS
-        or not set(finding.coverage.known_gaps) <= _DETERMINISTIC_PROOF_TOLERATED_GAPS
-        or state.coverage_gaps
-        or len(finding.subject_refs) != 1
-    ):
-        return None
-    # A check's own finding suffix does not change these inputs. A newer material row or
-    # unreadable input prevents us from using current state as the historical checked state.
-    for rows in (state.plans, state.obligations, state.actions, state.results, state.claims):
-        if any(
-            row.payload is None or row.source_frontier > check.subject_frontier.sequence
-            for row in rows.values()
-        ):
-            return None
-    scope = current_plan_scope(state.plans, state.coverage_gaps)
-    if not scope.has_plan or scope.effective_obligation_refs is None:
-        return None
-    selected = {
-        ref
-        for _, row in effective_claim_items(state)
-        if row.payload is not None and row.payload.claim_kind is ClaimKind.COMPLETION
-        for ref in row.payload.obligation_refs
-    }
-    selected.update(
-        key
-        for key, row in state.obligations.items()
-        if row.payload is not None and row.payload.status.value == "resolved"
+    return (
+        finding.origin is FindingOrigin.DETERMINISTIC
+        and finding.kind is FindingKind.ACTION_WITHOUT_RESULT
+        and (finding.policy_id, finding.policy_version) in _ACTION_WITHOUT_RESULT_POLICIES
+        and len(finding.subject_refs) == 1
+        and bool(set(check.coverage.known_gaps) & _ACTION_LINK_TOLERATED_GAPS)
     )
-    selected.intersection_update(scope.effective_obligation_refs)
-    if any(key not in state.obligations for key in selected):
-        return None
-    commands = {
-        key
-        for key in selected
-        if (payload := state.obligations[key].payload) is not None
-        and any(item.item_kind is RequestedItemKind.COMMAND for item in payload.requested_items)
-    }
-    if not commands:
-        return None  # No bounded producer for the recorded command gap.
-    actions = [
-        row for row in state.actions.values() if row.source_event_id == finding.subject_refs[0]
-    ]
-    if len(actions) != 1 or (action := actions[0].payload) is None or not action.obligation_refs:
-        return None
-    if any(ref not in state.obligations for ref in action.obligation_refs):
-        return None
-    if not any(
-        row.payload is not None and row.payload.action_id == action.action_id
+
+
+def _action_result_link_proven(
+    finding: Finding, check: CheckRecordedPayload, state: ProjectionState | None
+) -> bool:
+    """Whether the tested state holds a readable result naming this finding's readable action.
+
+    The subject is the event that recorded the action; the link is a result whose payload
+    ``action_id`` is that action's id, both recorded no later than the frontier the check tested.
+    Anything unreadable, or a state older than that frontier, proves nothing.
+    """
+
+    if state is None or not _action_link_candidate(finding, check):
+        return False
+    tested = check.subject_frontier.sequence
+    if state.frontier < tested:
+        return False
+    rows = [row for row in state.actions.values() if row.source_event_id == finding.subject_refs[0]]
+    if len(rows) != 1:
+        return False
+    action = rows[0]
+    if action.payload is None or action.redacted or action.source_frontier > tested:
+        return False
+    return any(
+        row.payload is not None
+        and not row.redacted
+        and row.source_frontier <= tested
+        and row.payload.action_id == action.payload.action_id
         for row in state.results.values()
-    ):
-        return None
-    related_through_action = set(commands.intersection(action.obligation_refs))
-    # command_attempts has a second explicit relation channel: a resolved command obligation can
-    # cite a result whose action is this very action. Treat that owner as overlapping too; otherwise
-    # an unknown command relation could be mislabeled independent merely because the action omitted
-    # the obligation from its direct refs.
-    related_through_result = {
-        key
-        for key in commands
-        if (
-            (payload := state.obligations[key].payload) is not None
-            and any(
-                ref.startswith("res_")
-                and (result := state.results.get(ResultId(ref))) is not None
-                and result.payload is not None
-                and result.payload.action_id == action.action_id
-                for ref in payload.resolution_evidence_refs
-            )
-        )
-    }
-    return tuple(sorted(related_through_action | related_through_result))
+    )
 
 
 def issue_key(finding: Finding) -> IssueKey:
@@ -1313,7 +1275,14 @@ def resolution_blockers(
                 COMPLETION_SCOPE_UNDECLARED_GAP
             }
             freshness_gaps = freshness_gaps - {COMPLETION_SCOPE_UNDECLARED_GAP}
-        if gaps & _COMMAND_GAPS and (
+        if gaps & _ACTION_LINK_TOLERATED_GAPS and _action_result_link_proven(
+            finding, check, proof_state
+        ):
+            # The agent linked a result to the action: the ledger relation decides the issue
+            # absent, and the command and capture limits stay disclosed on the receipt.
+            tolerated = tolerated | _ACTION_LINK_TOLERATED_GAPS
+            freshness_gaps = freshness_gaps - _ACTION_LINK_TOLERATED_GAPS
+        elif gaps & _COMMAND_GAPS and (
             finding.kind in _COMMAND_INDEPENDENT_KINDS
             or _requested_items_without_commands(finding, proof_state)
         ):
@@ -1323,47 +1292,11 @@ def resolution_blockers(
             tolerated = tolerated | _COMMAND_GAPS
             freshness_gaps = freshness_gaps - _COMMAND_GAPS
         elif gaps & _COMMAND_GAPS:
-            partition = _command_gap_partition(finding, check, proof_state)
-            if partition == ():
-                tolerated = tolerated | _COMMAND_GAPS
-                freshness_gaps = freshness_gaps - _COMMAND_GAPS
-            elif partition is not None:
-                reasons.append("command_relation_overlaps_obligation:" + ",".join(partition[:16]))
-                if len(partition) > 16:
-                    reasons.append("additional_command_obligations_omitted")
-            else:
-                reasons.append("command_relation_independence_unproven")
+            reasons.append("command_relation_independence_unproven")
         if not _deterministic_freshness_proven(finding, check, freshness_gaps):
             reasons.append("freshness_or_original_proof_unreadable")
     reasons.extend("coverage:" + gap for gap in sorted(gaps - tolerated))
     return tuple(reasons)
-
-
-def _command_partition_candidate(
-    finding: Finding,
-    finding_source_frontier: int,
-    check: CheckRecordedPayload,
-    returned_issue_keys: frozenset[IssueKey],
-) -> bool:
-    """Return whether replay could affect this explanation's command-gap result.
-
-    Keep the cheap shape and applicability guards ahead of historical replay. In particular, a
-    status page may contain many semantic findings that can never use the local command exception.
-    """
-    return (
-        bool(set(check.coverage.known_gaps) & _COMMAND_GAPS)
-        and finding.origin is FindingOrigin.DETERMINISTIC
-        and finding.kind is FindingKind.ACTION_WITHOUT_RESULT
-        and (finding.policy_id, finding.policy_version) in _ACTION_WITHOUT_RESULT_POLICIES
-        and finding_source_frontier <= check.subject_frontier.sequence
-        and issue_key(finding) not in returned_issue_keys
-        and check.suppressed_count == 0
-        and _policy_completed(check, finding)
-        and _scope_covers(check, finding)
-        and finding.coverage.ledger_freshness not in _UNPROVEN_FRESHNESS
-        and set(finding.coverage.known_gaps) <= _DETERMINISTIC_PROOF_TOLERATED_GAPS
-        and len(finding.subject_refs) == 1
-    )
 
 
 def _historical_proof_state(
@@ -1382,9 +1315,9 @@ def _historical_proof_state(
     if key in cache:
         return cache[key]
 
-    # Rebuild the projection immediately before the candidate check. The shared partition then
-    # applies its own frontier guards: newer plan/obligation/action/result/claim rows fail closed,
-    # while an observation/evidence/finding suffix that the reducer permits remains equivalent.
+    # Rebuild the projection immediately before the candidate check. The proofs that read it apply
+    # their own frontier guards: a row recorded after the tested frontier never counts, while an
+    # observation/evidence/finding suffix that the reducer permits remains equivalent.
     proof_state: ProjectionState | None = None
     pre_check = tuple(row for row in records if row.ledger.ingestion_sequence < candidate_sequence)
     if len(pre_check) == candidate_sequence - 1:
@@ -1788,7 +1721,7 @@ def _resolution_attempt(
     proof_state = None
     if (
         finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
-        or _command_partition_candidate(finding, finding_record.source_frontier, check, keys)
+        or _action_link_candidate(finding, check)
         or (
             finding.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
             and bool(set(check.coverage.known_gaps) & _COMMAND_GAPS)

@@ -685,6 +685,82 @@ def test_action_without_result_requires_later_disjoint_work() -> None:
     assert FindingKind.ACTION_WITHOUT_RESULT not in _kinds(latest_only)
 
 
+def _subsequent_work(case: DeterministicCase) -> tuple[tuple[str, ...], ...]:
+    result = run_deterministic_policies(case, WORK_INTEGRITY_POLICY_PACK)
+    return tuple(
+        tuple(str(ref) for ref in fact.subject_refs)
+        for assessment in result.assessments
+        if assessment.candidate.kind is FindingKind.ACTION_WITHOUT_RESULT
+        for fact in assessment.basis.observed_facts
+        if fact.fact_code == "subsequent_unrelated_work_present"
+    )
+
+
+def test_a_sibling_action_of_the_same_batch_is_not_later_work() -> None:
+    """tb4n5 medical S L95 (owner decision 2026-10-13): one ``publish_work`` batch recorded an
+    edit action, a command action and evidence; the next check raised ``action_without_result``
+    on the edit only because its sibling had a later sequence. 8 of 15 tb4n5 findings were this
+    shape. A sibling in the same batch is never "subsequent unrelated work"."""
+
+    batch = make_case(
+        actions={act(1): record(_action(1, 1), 1), act(2): record(_action(2, 2), 2)},
+        results={res(2): record(_result(2, 2, ResultOutcome.SUCCESS), 3)},
+    )
+    assert FindingKind.ACTION_WITHOUT_RESULT in _kinds(batch)  # separate batches: the old rule
+    same = replace(batch, action_batches=((evt(1), evt(2)),))
+    assert FindingKind.ACTION_WITHOUT_RESULT not in _kinds(same)
+
+
+def test_an_unaccounted_action_is_still_raised_once_a_later_batch_moves_on() -> None:
+    """The negative: the result is still owed. The next batch's unrelated work raises it, and
+    the sibling is never named as that later work."""
+
+    case = make_case(
+        actions={
+            act(1): record(_action(1, 1), 1),
+            act(2): record(_action(2, 2), 2),
+            act(3): record(_action(3, 3), 4),
+        },
+        results={
+            res(2): record(_result(2, 2, ResultOutcome.SUCCESS), 3),
+            res(3): record(_result(3, 3, ResultOutcome.SUCCESS), 5),
+        },
+        extra_refs=(evt(4),),
+    )
+    batched = replace(case, action_batches=((evt(1), evt(2)),))
+    assert _subsequent_work(batched) == ((str(act(1)), str(act(3))),)
+    # Both siblings unpaired: each is raised by the later batch, never by the other.
+    unpaired = make_case(
+        actions={
+            act(1): record(_action(1, 1), 1),
+            act(2): record(_action(2, 2), 2),
+            act(3): record(_action(3, 3), 4),
+        },
+        results={res(3): record(_result(3, 3, ResultOutcome.SUCCESS), 5)},
+    )
+    assert _subsequent_work(replace(unpaired, action_batches=((evt(1), evt(2)),))) == (
+        (str(act(1)), str(act(3))),
+        (str(act(2)), str(act(3))),
+    )
+
+
+def test_an_unrelated_result_in_the_batch_never_counts_as_the_actions_outcome() -> None:
+    """Evidence, a decision or another action's result in the same batch says nothing about
+    this action: only a result whose ``action_id`` names it links it."""
+
+    case = make_case(
+        actions={
+            act(1): record(_action(1, 1), 1),
+            act(2): record(_action(2, 2), 2),
+            act(3): record(_action(3, 3), 6),
+        },
+        results={res(2): record(_result(2, 2, ResultOutcome.SUCCESS), 3)},
+        evidence={evd(1): evidence_record(_evidence(1, None), 4)},
+    )
+    batched = replace(case, action_batches=((evt(1), evt(2)),))
+    assert FindingKind.ACTION_WITHOUT_RESULT in _kinds(batched)
+
+
 @pytest.mark.parametrize(
     ("left_obligations", "left_items", "right_obligations", "right_items", "expected"),
     [
