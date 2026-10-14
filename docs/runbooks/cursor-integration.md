@@ -2145,3 +2145,30 @@ and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the 
 through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
 the tb4n4 exports themselves were not replayed, and a live Cursor transcript on macOS, Linux and
 WSL 2 is not recorded for this change.
+
+## Per-task review mode and agent opt-in (ADR-049)
+
+**Decision for Cursor: supported, the same MCP path as every host.** A task starts with local
+checks under the owner's recommended setting (`conversation_review = local_agent_opt_in`); the agent
+turns on AI-powered review for its own task with one `publish_work` draft, `decision_recorded`
+version `1.1.0` with `review_mode: "ai_powered"` (`"local"` turns it back off), and then checks
+without `mode`. `check` and `status` carry `review_mode`; the receipt names each switch. Guidance:
+`finishup://guidance/review.md` (when to turn it on, when to stay local, the exact draft). Nothing
+Cursor-specific is involved: no hook, skill or registration field changes.
+
+- **Owner setting.** `finishup privacy conversations agent-opt-in|owner-approval|local-only|ai-powered|status`
+  for the current repository; first-run setup records it from its three answers. Owner approval
+  makes each review the agent turns on wait for `finishup privacy decide-disclosure`, the same
+  `awaiting_human` path as **Ask every time**.
+- **Route.** Every interactive setup answer now registers the policy route. A registration made by
+  an earlier local-only setup is on the strict route: an opted-in task there runs local with
+  `route_local_only`, and the check names the fix, `finishup setup run --host cursor-ide --route-profile policy` (`--host cursor-cli` for the Agent CLI`, then a fresh Cursor session.
+  Non-interactive setup keeps the strict default for a fresh registration.
+- **Not set up.** Where no reviewer or repository policy exists, an opted-in task runs local with
+  `ai_review_not_set_up` and the one-time owner commands (`finishup --set`, or
+  `finishup provider codex-subscription setup`, then `finishup --privacy`).
+- **Host auto-review.** A local-only owner on the policy route sends nothing, but `check` is still
+  advertised as open-world; an automatic reviewer that holds every `check` (see the host admission
+  section) holds these too until the owner grants admission or re-registers on the strict route.
+- **Upgrade.** A policy approved before the setting existed keeps its behaviour, and its checks and
+  receipts are unchanged, until the owner chooses a setting or an agent switches a task.

@@ -81,7 +81,16 @@ that check's findings, the receipt notes that the check is current as of an earl
 note alone does not keep it from a clean conclusion. The receipt leads with its scope,
 review status and material limitations, followed by the finding count and frozen check totals.
 
-Omit `mode` to retain the configured verification default. Use `semantic_if_configured` only when
+**A task in local mode.** Where your setting starts tasks local (the recommended setup answer),
+a task that has not turned on AI-powered review checks with local checks only on a route that did
+not require review, so its receipt reaches a clean local conclusion and says that AI-powered review
+was not requested. The check, `status` and the receipt say which mode the task was in. When the
+task turned AI-powered review on or off, the receipt's limitations section ends with one sentence
+naming each switch (its ledger sequence, its event id and who recorded it) and the mode the
+applicable check ran in; a task that never switched has no such sentence.
+
+Omit `mode` to run in the task's review mode (the configured default where the task's mode was not
+recorded). Use `semantic_if_configured` only when
 review is known to be optional. If the user, policy, or acceptance requires AI-powered review,
 select `semantic_required` for the final check and subsequent final rechecks. Reserve
 `deterministic_only` for explicitly local or structural checks, or a user-authorized deliberate

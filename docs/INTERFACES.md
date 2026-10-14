@@ -1388,6 +1388,47 @@ unless the check asked for it; a strict process with Codex registration drift (#
 policy (issue #1021, ADR-040). Writers emit it only as `false`; a requiring route omits it, so those checks and
 every check an older build wrote keep their bytes and the blocking default.
 
+**Per-task review mode (ADR-049).** A task (a "conversation" in the code: one task and its
+sessions) switches between local checks only and AI-powered review with one
+`decision_recorded` **1.1.0** draft carrying the required `review_mode: "local" | "ai_powered"`
+(`ReviewMode`, `DECISION_REVIEW_MODE_SCHEMA_VERSION`); 1.0.0 refuses the field, and a decision
+rides 1.1.0 iff it carries it, so plain decisions keep their 1.0.0 bytes. Ordinary
+`cooperative_mcp|local_cli` `publish_work` admits it (event-draft 1.2.0). The owner's setting is
+`PrivacyPolicy.conversation_review` (`ConversationReview`: `local_only`, `local_owner_approval`,
+`local_agent_opt_in`, `ai_powered`; privacy-policy wire 1.2.0, written only when set, so every
+existing policy, meet and receipt digest is unchanged; `effective_conversation_review` reads an
+unset field as `ai_powered` where the inference channel is on and `local_only` where it is off).
+The diff vocabulary gains `("global", "conversation_review")`, rendered "Tasks and AI-powered
+review" in the Authorization group, ordered after `channel.preview_required`; a wider value is a
+widening, a narrower one a tightening. Composition: the repository row's explicit value decides,
+the installation value is only the default, any narrower composition keeps the setting that needs
+more of the owner. `local_owner_approval` makes every LLM-inference dispatch under that policy
+preview-required (`awaiting_human`, the `decide-disclosure` continuation).
+`kernel/review_mode.py` owns `ReviewModeSwitch(event_id, sequence, mode, authority)`,
+`review_mode_switches(projection)` (unredacted, unsuperseded, ledger order),
+`ConversationReviewContext(setting, ai_review_available, setting_explicit)`,
+`conversation_review_mode(...)` / `conversation_review_mode_from_switches(...)` →
+`ConversationReviewMode(mode, requested, setting, switches, local_reason)` with `local_reason` in
+`conversation_default`, `switched_to_local`, `owner_local_only`, `route_local_only`,
+`ai_review_not_set_up`. `Application.conversation_review_reader` /
+`ServiceReadyContext.conversation_review_context` supply the context (`None` in embedded and test
+compositions: checks keep the released behaviour). `check_recorded` 1.4.0 and `check-result`
+1.4.0 carry optional `review_mode` (`CheckReviewMode`: `mode`; `source` =
+`conversation_default` | `conversation_switch` | `check_request`; optional `local_reason` =
+`owner_local_only` | `route_local_only` | `ai_review_not_set_up`, only on `mode: local`;
+`switch_event_id` exactly when `source` is `conversation_switch`). It is absent where the setting
+could not be read, and where the owner's policy predates the setting and the task recorded no
+switch (the upgrade rule: those checks keep their released behaviour and bytes). A local task's
+check that names no mode runs `deterministic_only` and records `semantic_route_required: false`.
+`status-result` 1.4.0 carries optional `review_mode` (`mode`, `requested`, `setting`,
+`ai_review_available`, optional `local_reason`, `switch_event_id`, `switch_sequence`), read from
+the head projection on the serving route. The receipt's `limitations_and_coverage` body ends with
+one sentence ("Review mode switches recorded for this task: ...") only when the task recorded a
+switch. Renderings share `domain/review_mode_render.py`. CLI: `finishup privacy conversations
+agent-opt-in | owner-approval | local-only | ai-powered | status` (repository scope; widening needs
+the trusted terminal decision). First-run answers (`cli/setup.py` `ReviewChoice`):
+`agent_opt_in`, `local_only`, `ai_powered`, all on the `policy` route.
+
 A `deterministic_only` check that follows a blocked or unavailable review carries that earlier
 code forward alongside `semantic_review_not_requested`. The stop-rules make a blocked review a
 coverage gap rather than a retry, so the fallback check is the expected next step; without the

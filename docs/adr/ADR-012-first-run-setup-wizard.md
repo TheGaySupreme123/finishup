@@ -69,7 +69,18 @@ exactly those contracts and connects the steps without weakening any existing tr
    recommended or named recipe before rendering the exact candidate; it changes no other recipe
    field, creates no authority itself, and never bypasses candidate confirmation or the existing
    trusted service decision ceremony. Declining produces the genuine zero-network `private`
-   candidate rather than silently restoring the recipe default.
+   candidate rather than silently restoring the recipe default. **Amendment (ADR-049, issue #1073,
+   2026-10-14): the review-mode recommendation.** The first-run question now has three answers,
+   and the recommended, pre-selected one is "FinishUP (recommended): local checks; your agent can
+   turn on AI-powered review for a task when it helps", which leads to the reviewer setup and a
+   privacy policy carrying `conversation_review = local_agent_opt_in`; choosing it is the owner's
+   standing permission for an agent to turn AI-powered review on for one task. The other answers
+   are "FinishUP, local only (agents may not opt in)" (the Private recipe with an explicit
+   `local_only`) and "AI-powered review on every task". All three register the `policy` MCP route;
+   the route is no longer derived from the answer, and the earlier "AI-powered review
+   (recommended)" wording and its provider/API-key and update-check text are retired. The terminal
+   interface asks the same three answers. Non-interactive setup is unchanged (decision 10 of
+   ADR-049).
 
    Repository scope comes only from the service's trusted locator path. CLI and TUI supply their
    actual working directory; MCP supplies its configured/session working directory. The service

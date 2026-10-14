@@ -50,6 +50,22 @@ unreleased above reverse-chronological released versions.
 
 ### Added
 
+- **Every task starts local, and your agent turns on AI-powered review when it helps.** A task
+  runs FinishUP's local checks until the agent records one `decision_recorded` 1.1.0 switch with
+  `review_mode: "ai_powered"` (and `"local"` to turn it back off); later checks that omit `mode`
+  then run AI-powered review within your privacy policy, and other tasks are unaffected. Your
+  setting decides who may switch: agent opt-in (the new recommended first-run answer), owner
+  approval (each review waits for you), local only (agents may not opt in), or every task.
+  `finishup privacy conversations agent-opt-in|owner-approval|local-only|ai-powered|status` changes
+  and shows it per repository; widening it needs the trusted local approval, narrowing applies at
+  once. `check` and `status` carry `review_mode` (the mode, why, and the switch), the CLI, terminal
+  interface and MCP text say "Review mode: local (FinishUP)" or "Review mode: AI-powered review"
+  with the reason, and a task that asked and still runs local gets the exact command to run (one-time
+  reviewer setup, the owner's local-only choice, or re-registering a local-only host connection).
+  A receipt names each switch by sequence, event id and who recorded it, only for a task that
+  switched. A switch is a request, never a grant. Guidance `review.md` says when to turn it on and
+  when to stay local, with the exact draft; the startup card points at it. Same MCP path on Codex,
+  Claude Code and Cursor (#1073, ADR-049).
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap
   in FinishUP's own observation), what the host's hooks observed since the last check, and whether each
@@ -260,6 +276,17 @@ unreleased above reverse-chronological released versions.
   cost (#915).
 
 ### Changed
+
+- **First-run setup asks three review answers, all on the policy route.** "FinishUP
+  (recommended): local checks; your agent can turn on AI-powered review for a task when it
+  helps", "FinishUP, local only (agents may not opt in)", or "AI-powered review on every task".
+  Every answer registers the policy MCP route, so you can allow agent opt-in later without
+  reconnecting; the privacy policy alone decides what may be sent. The prompt wizard, the
+  host-connection path and the terminal interface ask the same question; non-interactive setup
+  keeps the strict default for a fresh registration. Abandoning AI-powered review setup in the
+  terminal interface now finishes as local only without re-registering. Installations set up
+  earlier keep their behaviour, checks and receipts until their owner chooses a setting (#1073,
+  ADR-049).
 
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
   a data table) now stops closure instead of being only disclosed: the Stop hook continues the agent
