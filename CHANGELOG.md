@@ -8,6 +8,18 @@ reverse-chronological released versions.
 
 ### Fixed
 
+- The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
+  in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find
+  bubblewrap on PATH" warning is admitted the same way as its user-namespace warning: the reviewer
+  runs no commands and writes no files, so the sandbox confines nothing there. The fact is
+  disclosed, not hidden. `status`, `setup` and `repair` report `codex_sandbox_unavailable: true`
+  with the new `codex_sandbox_unavailable_reason` (`bubblewrap_missing` or
+  `user_namespaces_unavailable`), and the terminal interface says the evaluator runs without
+  Codex's verified Linux sandbox. Only reviewed Codex releases are admitted; others are refused
+  as `codex_sandbox_unavailable_unreviewed_runtime`. Every other warning, including Codex's WSL1
+  one, still stops setup. Approved network-denied checks still need a usable `bwrap`.
+  Receipts do not carry this fact yet.
+
 - MCP input schemas now target 4,800 bytes per tool so Codex does not apply its size-triggered
   schema rewrite. Required fields, enums and event envelopes stay inline; full payload examples
   and variant rules are available through `read_guidance` in request templates. Claude Code and

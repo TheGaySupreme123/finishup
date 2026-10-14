@@ -634,8 +634,9 @@ pre-disclosure gate refused every warning, so the capability check and each atte
    - an optional integer `emittedAtMs`.
 
    Every other `configWarning` still fails closed as `codex_app_server_predisclosure_event_forbidden`.
-   That includes the missing-bubblewrap and WSL1 warnings, any detail, path or range, and the same
-   text sent through `warning`. Admission applies to the capability check, the readiness and
+   That includes the WSL1 warning, any detail, path or range, and the same text sent through
+   `warning`. (The missing-bubblewrap warning was refused here too until the owner decision recorded
+   below, which admits it under the same rules.) Admission applies to the capability check, the readiness and
    login probes, and every attempt.
 
    **Bound to reviewed releases.** Point 1 was verified against one release's source and cannot be
@@ -664,6 +665,44 @@ pre-disclosure gate refused every warning, so the capability check and each atte
 4. **Re-review trigger.** Each new Codex release is outside the reviewed set until its source is
    re-checked: no command-running tool for this config, patch rejection under read-only and
    `never`, and the code-mode host outside bubblewrap. A new text or shape fails closed regardless.
+
+**Amendment (2026-10-14 evening, owner decision: missing system bubblewrap).** Benchmark task
+containers must stay exactly as the official harness ships them, so the distribution `bubblewrap`
+package is not installed there. With no system `bwrap` on the evaluator's fixed `PATH`
+(`/usr/bin:/bin`), Codex 0.162.1 skips its user-namespace probe and writes one different
+`configWarning` before any content (`codex-rs/sandboxing/src/bwrap.rs` `MISSING_BWRAP_WARNING`,
+also byte-identical in the shipped linux-x64 binary, sha256 `628e3548…`):
+`{"summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package
+manager. See the sandbox prerequisites:
+https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled
+bubblewrap in the meantime.", "details": null}` with an integer `emittedAtMs`. A live probe on
+2026-10-14 (Codex 0.162.1 app-server, Yoetz's exact launch argv and environment, a
+`python:3.12-slim-bookworm` container on a Boat Docker host with no `bwrap`) received exactly that
+envelope after `initialize` and before the barrier reply. Codex writes at most one of the
+missing-bubblewrap, WSL1 and user-namespace warnings.
+
+1. **Same reasoning.** Point 1 above does not depend on which sandbox Codex has: no
+   command-running tool is registered, every patch is rejected before it runs, and the code-mode
+   host is not under bubblewrap. Without a system `bwrap`, Codex attempts its bundled copy when
+   that resource is present; Yoetz does not retain it (#874), and the warning itself proves
+   neither a usable sandbox nor user-namespace access, so its Linux sandbox is unverified. That
+   widens nothing a review can do.
+2. **Same narrow admission.** The warning is admitted only with the closed shape of point 2 and
+   that summary byte for byte. It is admitted only from `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES`
+   (`{0.162.1}`); any other release sending it fails closed with
+   `codex_sandbox_unavailable_unreviewed_runtime`, as before. Look-alikes (a detail, a path or
+   range, a missing `details`, trailing bytes, the same text through `warning`) and the WSL1
+   warning stay refused as `codex_app_server_predisclosure_event_forbidden`.
+3. **Disclosed with its reason.** The probe result carries `sandbox_unavailable_reason`
+   (`user_namespaces_unavailable|bubblewrap_missing`). `provider codex-subscription status`,
+   `setup` and `repair` report `codex_sandbox_unavailable: true` with
+   `codex_sandbox_unavailable_reason`, which `yoetz setup` keeps. For `bubblewrap_missing` the
+   terminal interface says the evaluator runs without Codex's verified Linux sandbox and why
+   reviews are unaffected. Receipts' `runtime_evidence` still does not carry the fact (the same
+   schema follow-up as point 3 above); the diagnostic surfaces are the disclosure until then.
+4. **Not a general bubblewrap waiver.** This admits only the Codex evaluator's warning. Approved
+   external-command checks still need a usable system `bwrap` on Linux and keep failing closed
+   without it (`bwrap_missing`).
 
 ## Fallback endpoint amendment (2026-09-04, issue #582)
 

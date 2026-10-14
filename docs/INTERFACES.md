@@ -6440,8 +6440,10 @@ A Codex-subscription endpoint (primary or fallback) adds `review_budgets`. It is
 `{"routine"|"final": {"reasoning_effort", "output_limit", "effort_source"}}`, where
 `effort_source` is `configured` or `legacy_single_effort`. `yoetz provider codex-subscription
 status` (`yoetz.codex-subscription-status/1`) carries the same object, plus
-`codex_sandbox_unavailable` (`true` when Codex reported, through the one admitted
-`configWarning`, that its Linux sandbox cannot create user namespaces; ADR-006, 2026-10-14).
+`codex_sandbox_unavailable` (`true` when Codex reported, through one of the two admitted
+`configWarning`s, that its Linux sandbox cannot create user namespaces or that no system
+bubblewrap is installed; ADR-006, 2026-10-14) and `codex_sandbox_unavailable_reason`
+(`user_namespaces_unavailable|bubblewrap_missing|null`).
 `repository_grant_state` and `repository_migration_state` expose the separate repository-authority
 inputs without inventing another readiness verdict. `agent_route_semantic_ready` is
 `semantic_ready` **and** one exclusive observed owner (`external|plugin`) with

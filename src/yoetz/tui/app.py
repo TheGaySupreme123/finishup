@@ -157,6 +157,12 @@ def codex_sandbox_lines(status: Mapping[str, object]) -> tuple[str, ...]:
 
     if status.get("codex_sandbox_unavailable") is not True:
         return ()
+    if status.get("codex_sandbox_unavailable_reason") == "bubblewrap_missing":
+        return (
+            "Codex sandbox: no system bubblewrap here, so the evaluator runs without Codex's "
+            "verified Linux sandbox; it runs no commands and writes no files, so reviews are "
+            "unaffected",
+        )
     return (
         "Codex sandbox: unavailable here (no user namespaces); the evaluator runs no commands "
         "and writes no files, so reviews are unaffected",
