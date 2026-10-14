@@ -348,7 +348,8 @@ def test_disagreeing_codex_readings_cannot_grant_without_a_selector(
     )
     code, out, err = _run(monkeypatch, tmp_path, "codex", "admission", "preview")
     assert code == 1
-    assert "host_admission_route_unobserved" in err
+    assert "host_admission_codex_binary_inconsistent" in err
+    assert "host_admission_route_unobserved" not in err
     assert "--codex-path <exact-codex-executable>" in err
     assert str(tmp_path) not in out + err
     assert not (tmp_path / ".codex").exists()

@@ -401,7 +401,7 @@ async def run_host_admission_command(
             _emit(body, json_output=json_output)
             return 0
         if action is HostAdmissionAction.GRANT and facts.codex_binary_selection == "inconsistent":
-            raise HostAdmissionError(HostAdmissionReason.ROUTE_UNOBSERVED)
+            raise HostAdmissionError(HostAdmissionReason.CODEX_BINARY_INCONSISTENT)
         preview = preview_host_admission(
             host,
             root,

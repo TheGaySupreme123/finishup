@@ -133,7 +133,8 @@ Codex runtime first when discoverable, otherwise the newest reported release; th
 not prove which executable a host session launched. Disagreeing or failed readings require
 `--codex-path <exact-executable>` and retain the selected home, launcher and isolation root in the
 continuation. `integrate codex admission status|preview|grant|revoke` accepts both `--codex-path`
-and `--codex-home`; preview/grant refuse disagreement, and revoke remains available. Admission
+and `--codex-home`; preview/grant refuse disagreement with `host_admission_codex_binary_inconsistent`,
+and revoke remains available. Admission
 output uses path-free placeholders for these selectors; repeat the exact values from your preview.
 
 ## 2. Prerequisites and exact supported scope

@@ -6353,8 +6353,8 @@ status` body carries `state` and `route_profile`.
 **Host admission port (`adapters/integrations/host_admission.py`, issue #467).** `HostAdmissionState`
 is `absent|present|partial|foreign|unknown`; `HostAdmissionAction` is `grant|revoke|noop`;
 `HostAdmissionReason` is `confirmation_required|preview_stale|foreign_entry_present|
-entry_unreadable|route_not_policy|route_unobserved|grant_not_permitting|grant_unverifiable|
-owner_required|target_unsafe|write_failed|host_invalid`. `observe_host_admission` reads only the
+entry_unreadable|route_not_policy|route_unobserved|codex_binary_inconsistent|grant_not_permitting|
+grant_unverifiable|owner_required|target_unsafe|write_failed|host_invalid`. `observe_host_admission` reads only the
 host's project-scoped surfaces and classifies by exact entry: Claude `mcp__yoetz__check` for an
 external registration or `mcp__plugin_yoetz_yoetz__check` for the plugin-owned route in
 `permissions.allow` (detail `allow`) or `ask` (detail `ask`);
@@ -6425,7 +6425,7 @@ registration readings against one selected home. Read order prefers the configur
 when discoverable, otherwise the newest reported version; `selected_codex_version` names its
 version without a path. This does not attest the executable a host session launched. Disagreement
 or a failed reading reports `binary_selection: inconsistent`, blocks agent readiness and admission
-grants, and offers an explicit selector. If no executable can read the registration, selection is
+grants (refused as `host_admission_codex_binary_inconsistent`), and offers an explicit selector. If no executable can read the registration, selection is
 `multiple`. `provider status` reports the closed `codex_binary_selection` blocker and a quoted
 continuation retaining the invoking launcher, isolation root and inspected Codex home. Codex
 admission commands accept `--codex-path` and `--codex-home` too; their path-free next commands

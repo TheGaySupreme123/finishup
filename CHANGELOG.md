@@ -17,7 +17,7 @@ reverse-chronological released versions.
 
 - Codex admission commands accept `--codex-path` and `--codex-home`. Multiple installed versions
   can read an agreeing registration without manual selection; disagreement has an explicit
-  continuation and cannot grant admission.
+  continuation and cannot grant admission; the refusal is `host_admission_codex_binary_inconsistent`.
 
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap

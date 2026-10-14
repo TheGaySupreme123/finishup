@@ -171,8 +171,10 @@ addressable by its own schema version.
 The owner's request to keep older versions working acknowledges the storage and packaging audit
 gate. This is a bounded commit-pair probe, not a new supported-old-release cell. The old wheel was
 built from `0291f441d355ac9b740da3b37efc239337e3011a` in an external scratch clone; the candidate
-was `5926ff47885d974ede5b5de8debc4f0251a685cd`, containing the changes through integration base
-`0a4d4e8b7`. Both are package version `0.3.0`, with separate ADR-028 disposable instances.
+was `3e37fce639a70d6deb1e883757356a8271ad7b03` on integration base `0a4d4e8b7`, measured as its
+installed wheel (SHA-256
+`dc742ff57ea138a14c70de1d2fcfe384e3f1de70a8473389869ff0d66792413f`). Both are package version
+`0.3.0`, with separate ADR-028 disposable instances.
 
 - The old application wrote a synthetic 13-event SQLite ledger containing a plan, obligation,
   evidence, completion claim, hook observations, check and receipts in all three formats. A
@@ -186,7 +188,7 @@ was `5926ff47885d974ede5b5de8debc4f0251a685cd`, containing the changes through i
   digest was `sha256:2322a2455459c3ca7687efe1c009b5a27c6e3a1e8c619d41adb5195c27073244`. The
   candidate's status refused it as `service_incompatible`; the candidate's absolute launcher
   then ran `service restart`. The old daemon exited 0, the successor stamped the candidate's
-  schema digest, and replacement completed in 8.27 seconds. The successor was stopped through
+  schema digest, and replacement completed in 15.041 seconds. The successor was stopped through
   that same launcher.
 - The backward-read/resource-manifest conformance, withdrawn-field decoder and closure-shape
   slices passed 27 tests locally. No additional product incompatibility was found in these
