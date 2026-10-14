@@ -283,3 +283,37 @@ def test_the_status_note_names_the_flagged_reread_and_the_line_that_answers_it()
     )
     assert legacy is not None
     assert "the acceptance criteria of your resolved obligations" in legacy
+
+
+def test_the_status_note_names_the_line_only_where_the_host_can_deliver_it() -> None:
+    """#1050 follow-up: Cursor's Stop receives no final message, so its note never names the
+    `yoetz-acceptance` line; a host-unknown surface names which hosts read it; Codex and Claude
+    Code (and the MCP summaries, which never serve Cursor) keep the line unchanged."""
+
+    rechecks = {
+        "rechecks": [
+            {
+                "kind": "acceptance",
+                "key": "accept:00000000",
+                "rule": "resolved_obligations_acceptance_risk",
+            }
+        ]
+    }
+    default = recheck_note(rechecks)
+    assert default is not None
+    for host in ("codex", "claude"):
+        assert recheck_note(rechecks, host=host) == default
+    cursor = recheck_note(rechecks, host="cursor")
+    assert cursor is not None
+    assert "yoetz-acceptance" not in cursor
+    assert "Cursor passes Yoetz no final answer" in cursor
+    assert "the resolved obligations Yoetz flags" in cursor
+    generic = recheck_note(rechecks, host="generic")
+    assert generic is not None
+    assert "on Codex and Claude Code a line `yoetz-acceptance:<obligation id>:met`" in generic
+    assert "Cursor passes no final answer" in generic
+    # An older service's unflagged re-read names no line on any host.
+    legacy = {
+        "rechecks": [{"kind": "acceptance", "rule": "resolved_obligations_acceptance_reread"}]
+    }
+    assert recheck_note(legacy, host="cursor") == recheck_note(legacy)

@@ -235,8 +235,10 @@ Closure is a checklist. `closure_readiness.state` names the next move:
   evidence), an obligation you acknowledged as not done, a recorded blocker, a premise dispute. A
   Stop asks nothing that list does not name. Once you have read a flagged obligation's
   `acceptance_criteria` against your output and it is met, a line
-  `yoetz-acceptance:<obligation id>:met` in your final answer answers its re-read; if it is not met,
-  republish it `acknowledged_not_done` instead.) Every remaining condition is a
+  `yoetz-acceptance:<obligation id>:met` in your final answer answers its re-read on Codex and
+  Claude Code; Cursor passes Yoetz no final answer, so there it is asked once and saying the
+  criteria are met in your final answer ends it. If it is not met, republish it
+  `acknowledged_not_done` instead.) Every remaining condition is a
   `standing_limitations` code this host, profile or privacy policy always has (or a disclosure
   you recorded, such as `assumption_disclosed`), or an item in `acknowledged_not_done` (a finding
   or an obligation you recorded as not done). Request

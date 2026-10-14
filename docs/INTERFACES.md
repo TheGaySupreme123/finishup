@@ -7321,7 +7321,11 @@ the basis could not be read):
   source actions are resolved once per call (`source_cache`) and deduplicated by action id, and an
   identical call is answered from a one-entry memo (Stop's status deadline is 4,000 ms). The status
   directive's re-check note names the flagged set and the `yoetz-acceptance:<obligation id>:met`
-  line that answers it. `receipt_blocking_finding_count` keeps its wire name and means
+  line that answers it. `recheck_note(readiness, *, host=None)` is host-aware (#1050 follow-up):
+  `None`, `codex` and `claude` name the line; `cursor` (no final message at Stop) names the
+  confirmation that ends the once-asked re-read instead; `generic` (the CLI and TUI, which do not
+  know the agent's host) names which hosts read the line. `prepare_closure(..., host="generic")`
+  passes it; the MCP bridge passes its host profile. `receipt_blocking_finding_count` keeps its wire name and means
   `finding_counts.to_do + finding_counts.unmet`.
 - `status view=findings` rows: `closure_class`, `closure_basis`, `next_actions`;
   `view=obligations` rows: `closure_class`, `closure_basis`.
@@ -9955,7 +9959,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   required close instruction asks for the `check` with the cell's deadline pragma,
   `readiness_text.CODEX_CHECK_CELL_PRAGMA` (`// @exec: {"yield_time_ms": 300000}`, the bridge's
   `check` deadline), because a yielded check cell lands after its check and makes it stale; Claude
-  Code and Cursor run a tool call to completion and keep the unchanged sentence.
+  Code and Cursor run a tool call to completion and keep the unchanged sentence. On `cursor` the
+  acceptance re-read never names the `yoetz-acceptance` line (Cursor's `stop` carries no final
+  message): it says a met criterion stays resolved and is confirmed in the final answer, and that
+  the re-read is not asked again for the set (#1050 follow-up); Codex and Claude Code keep the line.
   `readiness_text.check_cause_sentence` repeats the same pragma when the cause's `tool` is `exec`
   (a Codex code-mode cell), in both its full and short forms.
   `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status (one read;

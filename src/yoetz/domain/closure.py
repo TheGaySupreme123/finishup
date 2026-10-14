@@ -133,12 +133,15 @@ async def prepare_closure(
     client_kind: str = "yoetz_cli",
     integration: str = "local_cli",
     scope_to_selection: bool = False,
+    host: str = "generic",
 ) -> dict[str, JsonValue]:
     """Pin and exhaust every input view, then produce at most one non-evidential request.
 
     ``scope_to_selection`` limits a draft phase's echoed inventory to the selected rows (the MCP
     path; the CLI keeps the complete inventory for its local ``--output`` file). Validation always
-    runs against the complete pinned inventory.
+    runs against the complete pinned inventory. ``host`` is the MCP bridge's host profile (the
+    CLI's ``generic``); it only decides how the re-check note says an acceptance re-read is
+    answered (``recheck_note``).
     """
 
     base = _base(
@@ -214,7 +217,7 @@ async def prepare_closure(
             "GitHub workflow evidence uses the API run id, never run_number; this tool does not manufacture it.",
         ],
     }
-    announced = recheck_note(compact.closure_readiness)
+    announced = recheck_note(compact.closure_readiness, host=host)
     if announced is not None:
         cast(list[str], output["notes"]).append(announced)
     # The same predicted receipt conclusion every surface prints (owner decision Q1), appended

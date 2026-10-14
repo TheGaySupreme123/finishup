@@ -412,6 +412,13 @@ reverse-chronological released versions.
 
 ### Fixed
 
+- On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
+  a `yoetz-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so
+  that line could never answer it there. Cursor agents are told instead to confirm a met criterion
+  in the final answer and stop, which ends the re-read (it is asked once per flagged set), both in
+  the Stop text and in the `closure_prepare` notes. The CLI and terminal interface say which hosts
+  read the line. Codex and Claude Code text is unchanged (#1050).
+
 - In a repository holding another Git repository inside it (an `api` directory with its own
   `.git`), Yoetz's local, names-only read of what changed no longer fails: it reads the nested
   repository the same way the change shown to the reviewer does. So the check again tells whether

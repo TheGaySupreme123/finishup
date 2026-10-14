@@ -23,7 +23,9 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
   after that invite answers it and is never challenged by the acknowledgement re-check. Since
   tb4n5 (#1050) readiness announces it only for the resolved obligations the ledger flags, and a
   ``yoetz-acceptance:<obligation id>:met`` line in the host's final message answers it for that
-  obligation (``unattested_acceptance``);
+  obligation (``unattested_acceptance``). Cursor's ``stop`` carries no final message, so on
+  Cursor the text never names that line: a confirmation in the final answer ends the re-read,
+  which is asked once per flagged set;
 * an obligation a recorded blocker decision names (authority, consent, credentials, an
   unobtainable dependency) is a standing disclosure in readiness. Yoetz cannot verify the claim,
   so a Stop that finds a blocker the agent has not been asked about continues the agent once
@@ -341,6 +343,15 @@ _ACCEPTANCE_ATTEST_TEXT: Final = (
     " If it is met, end your final answer with the line `yoetz-acceptance:<obligation id>:met`"
     " for it."
 )
+# Cursor's ``stop`` payload carries no final message (status and ``loop_count`` only), and its
+# ``afterAgentResponse`` is not dispatched by the Cursor CLI or Cloud Agents and has no documented
+# order against ``stop``, so no answer line can reach the gate there (#1050 follow-up). The text a
+# Cursor agent sees names the path that does work on that host: the re-read is asked once per
+# flagged set and key, so a confirmation in the final answer ends it.
+_ACCEPTANCE_ATTEST_TEXT_CURSOR: Final = (
+    " If it is met, keep it resolved and say so in your final answer: Cursor passes Yoetz no final"
+    " answer, so no answer line is read, and this re-read is not asked again for this set."
+)
 # #1050 item 2: a pure "criteria confirmed" answer is the end of the re-read. Said only where the
 # re-read rides alone (no item asks for a check in the same text).
 _ACCEPTANCE_CONFIRMED_TEXT: Final = (
@@ -394,8 +405,15 @@ def unattested_acceptance(recheck: _Recheck, final_message: str | None) -> tuple
     )
 
 
-def _acceptance_sentence(recheck: _Recheck, named: tuple[str, ...] | None) -> str:
-    """The re-read for the obligations still to read: named, flagged when the service flagged."""
+def _acceptance_sentence(
+    recheck: _Recheck, named: tuple[str, ...] | None, host: str | None = None
+) -> str:
+    """The re-read for the obligations still to read: named, flagged when the service flagged.
+
+    The answer it names is host-aware: Codex and Claude Code pass the final message, so the
+    ``yoetz-acceptance:<obligation id>:met`` line answers it; Cursor passes none, so its text
+    never asks for a line the gate cannot read.
+    """
 
     ids_source = named if named is not None else recheck.subjects
     if not ids_source:
@@ -409,7 +427,8 @@ def _acceptance_sentence(recheck: _Recheck, named: tuple[str, ...] | None) -> st
         if recheck.rule == _ACCEPTANCE_RISK_RULE
         else _ACCEPTANCE_NAMED_HEAD
     )
-    return head.format(ids=ids) + " " + _ACCEPTANCE_TAIL + _ACCEPTANCE_ATTEST_TEXT
+    attest = _ACCEPTANCE_ATTEST_TEXT_CURSOR if host == "cursor" else _ACCEPTANCE_ATTEST_TEXT
+    return head.format(ids=ids) + " " + _ACCEPTANCE_TAIL + attest
 
 
 _BLOCKER_OFFER_TEXT: Final = (
@@ -1006,7 +1025,8 @@ def closure_gate_from_readiness(
     """Decide the gate from one ``closure_readiness`` object; ``None`` means let the agent stop.
 
     ``host`` is the hook host (``codex``, ``claude`` or ``cursor``). On ``codex`` the close
-    instruction repeats the `check` cell's ``yield_time_ms`` deadline (tb4n5).
+    instruction repeats the `check` cell's ``yield_time_ms`` deadline (tb4n5). On ``cursor`` the
+    acceptance re-read never names the ``yoetz-acceptance`` line, which Cursor cannot deliver.
 
     ``final_message`` (#1050) is the agent's last message when the host passed one. The acceptance
     re-read names the obligations readiness announced (since tb4n5 only the resolved obligations
@@ -1125,7 +1145,7 @@ def closure_gate_from_readiness(
         )
         blocker = _blocker_text(rows) if rows else ""
         accept_sentence = (
-            _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named)
+            _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host)
             + " "
             + _ACCEPTANCE_CONFIRMED_TEXT
             if accept_allowed
@@ -1230,7 +1250,9 @@ def closure_gate_from_readiness(
     )
     why_text = _awaiting_clause(readiness) if FINDING_REJECTION_AWAITING_RULING_GAP in items else ""
     accept_text = (
-        _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named) if accept_allowed else ""
+        _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host)
+        if accept_allowed
+        else ""
     )
     # `self_verified` is offered only when `respond` would accept it for some finding; an older
     # service sends no counts and keeps the offer.
