@@ -25,6 +25,7 @@ from yoetz.adapters.integrations.codex_mcp import (
 )
 from yoetz.adapters.integrations.codex_skill import CodexSkillIntegration
 from yoetz.adapters.integrations.host_discovery import HostInstallation
+from yoetz.adapters.integrations.host_projects import same_directory
 from yoetz.application.harness_mcp import (
     HarnessMcpService,
     McpRegistrationConfirmation,
@@ -393,7 +394,8 @@ def _other_projects_needing_transport(
     found: list[JsonValue] = []
     for candidate in inspected:
         root = Path(candidate)
-        if not root.is_dir():
+        if not root.is_dir() or same_directory(root, project):
+            # An old or symlinked path to this same project is this project, not another one.
             continue
         dependence = project_transport_dependence(root, after_sweep=False)
         if dependence == "none":

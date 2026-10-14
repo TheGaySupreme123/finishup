@@ -615,3 +615,22 @@ def test_detaching_disconnect_keeps_the_shared_mcp_registration(
     assert status["mcp_removal"] is None
     assert status["enabled"] is False
     assert cleanup == ["skill"]
+
+
+def test_an_alias_of_the_same_project_does_not_hold_the_registration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Found natively: a moved project's old trusted path is this project, not another one."""
+
+    home, project, installation = _layout(tmp_path)
+    _grant(project)
+    alias = tmp_path / "old-path"
+    alias.symlink_to(project, target_is_directory=True)
+    (home / "config.toml").write_text(f'[projects."{alias}"]\ntrust_level = "trusted"\n')
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+
+    plan = _plan(installation, project)
+
+    assert "remove_mcp_registration" in _items(plan.body["changes"])
+    assert "admission_other_projects" not in plan.disclosure
