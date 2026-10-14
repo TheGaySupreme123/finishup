@@ -14,6 +14,7 @@ const PALETTE = {
 
 const HERO_WORDS = ["work", "code", "research", "science", "writing", "reviews"];
 const HERO_SECONDS = 3.2;
+const SCENE_OFFSETS = new Map([["alone", -0.08], ["swarm", -0.08], ["robot", -0.12], ["sun", -0.1]]);
 // once the reader starts scrolling, the hero keeps the word it was showing
 const HERO_HOLD_AT = 0.56;
 
@@ -51,7 +52,9 @@ export function mountParticles(canvas, options = {}) {
   const reduced = !!options.reducedMotion;
   const N = Math.max(800, Math.min(9000, options.count || 9000));
   const sun = options.sun || "#E9B200";
-  const scores = options.scores || ["60", "70", "80"];
+  // Scores are evidence supplied by the caller, never an artwork default.
+  const scores = options.scores || [];
+  const drawTier = options.drawTier !== false;
   const plan = options.plan && options.plan.length ? options.plan : PLAN;
 
   const pos = new Float32Array(N * 3);
@@ -121,7 +124,8 @@ export function mountParticles(canvas, options = {}) {
   let anchorN = { x: 0.32, y: 0.52 };
   let tierPx = null; // the slot in the copy where the tier word is drawn in dots
   let narrowLayout = false; // phone: artwork up top, score above the sun
-  let tierN = { x: 0.9, y: 0.55, w: 0.7, h: 0.3 };
+  const defaultTier = { x: 0.9, y: 0.55, w: 0.7, h: 0.3 };
+  let tierN = defaultTier;
   let tilt = 0;
   let ox = 0;
   let orb = 0;
@@ -130,9 +134,12 @@ export function mountParticles(canvas, options = {}) {
   let mx = 0;
   let smx = 0;
   let heroWord = 0;
-  let visible = true;
+  let visible = typeof IntersectionObserver === "undefined";
+  let destroyed = false;
+  let dirty = true;
   let raf = 0;
-  const t0 = performance.now();
+  let elapsed = 0;
+  let lastTime = null;
 
   const set = (i, x, y, z, c) => {
     tgt[i * 3] = x;
@@ -383,7 +390,7 @@ export function mountParticles(canvas, options = {}) {
   function build(name, t, phase, idx) {
     // orbit: how far the camera has turned with the scroll; still: the scene holds
     // perfectly still once formed (the closing lockup)
-    const spec = { tilt: 0, ox: 0, yawAmp: 0.26, orbit: 0, mouse: true, still: false, turn: true };
+    const spec = { tilt: 0, ox: SCENE_OFFSETS.get(name) || 0, yawAmp: 0.26, orbit: 0, mouse: true, still: false, turn: true };
     let pts, i, f, k, a;
     switch (name) {
       case "logo":
@@ -406,7 +413,6 @@ export function mountParticles(canvas, options = {}) {
       case "alone": {
         // the clock's hands follow the scroll: an hour and a half passes in this scene
         pts = figureSet();
-        spec.ox = -0.08;
         const hA = -1.5708 + phase * 0.9;
         const mA = -1.5708 + phase * 9.4248;
         for (i = 0; i < N; i++) {
@@ -421,7 +427,6 @@ export function mountParticles(canvas, options = {}) {
         // the clock, shrunk, now races: six turns of the minute hand across the scene
         pts = figureSet();
         const bots = robotSet();
-        spec.ox = -0.08;
         const hA = -1.5708 + 0.9 + phase * 3;
         const mA = -1.5708 + 9.4248 + phase * 37.7;
         for (i = 0; i < N; i++) {
@@ -441,7 +446,6 @@ export function mountParticles(canvas, options = {}) {
         // One scene over three beats: the agent fades, FinishUP's check arrives, the agent
         // comes back greener than it started.
         pts = robotSet();
-        spec.ox = -0.12;
         spec.yawAmp = 0.2;
         // a little faded on arrival, more so by the first stop, then steadily clearer
         // through the check, and greener at the end
@@ -476,7 +480,6 @@ export function mountParticles(canvas, options = {}) {
         // The figures and tier words are drawn flat and the camera holds square, so they
         // stay readable and land in the slot the copy leaves for them.
         spec.yawAmp = 0.05;
-        spec.ox = -0.1;
         spec.turn = false;
         const y0 = 0.8;
         const sy = 0.6 - phase * 1.0; // already half-risen when the scene opens
@@ -485,10 +488,10 @@ export function mountParticles(canvas, options = {}) {
         // the score counts up from the first figure to the last as the sun crosses the middle
         const lo = parseFloat(scores[0]), hi = parseFloat(scores[scores.length - 1]);
         const shown = isFinite(lo) && isFinite(hi) ? String(Math.round(lo + (hi - lo) * smooth((phase - 0.42) / 0.16))) : scores[Math.min(scores.length - 1, stop)] || "";
-        const digits = wordSet(shown + "%");
+        const digits = shown ? wordSet(shown + "%") : null;
         // the tier word, drawn densely in dots where the copy leaves room for it, its dots
         // sized to the word so it reads at every width
-        const tier = stop === 1 ? wordSet("AI-powered", true) : null;
+        const tier = stop === 1 && drawTier ? wordSet("AI-powered", true) : null;
         const tsc = tier ? Math.min(tierN.w / tier.width, tierN.h / 0.42) : 0;
         // flush with the copy: right-aligned on wide screens, left-aligned on phones
         const tierX = narrowLayout ? tierN.x - tierN.w / 2 + (tier ? tier.width * tsc : 0) / 2 : tierN.x + tierN.w / 2 - (tier ? tier.width * tsc : 0) / 2;
@@ -506,7 +509,7 @@ export function mountParticles(canvas, options = {}) {
             } else sphere(i, 0, sy, 0, 0.17, 2);
             continue;
           }
-          if (f >= 0.37) {
+          if (f >= 0.37 && digits) {
             // the benchmark score, rising with the sun: one figure per stop
             if (narrowLayout) fromSet(i, digits, 0.5, 0.02, Math.max(-0.75, Math.min(-0.2, sy - 0.5)), 0.1, 0, true);
             else fromSet(i, digits, 0.6, -0.66, Math.max(-0.2, Math.min(0, sy)), 0.1, 0, true);
@@ -546,7 +549,7 @@ export function mountParticles(canvas, options = {}) {
     return spec;
   }
 
-  function frame() {
+  function frame(t) {
     const dpr = Math.min(2, window.devicePixelRatio || 1);
     const cw = canvas.clientWidth;
     const ch = canvas.clientHeight;
@@ -555,17 +558,22 @@ export function mountParticles(canvas, options = {}) {
       canvas.width = Math.round(cw * dpr);
       canvas.height = Math.round(ch * dpr);
     }
-    const t = (performance.now() - t0) / 1000;
     const S = cw < 720 ? cw * 0.42 : Math.min(cw, ch) * 0.46;
     scaleS = S;
     const nrw = cw < 720;
     narrowLayout = nrw;
+    const tl = scroll != null ? timeline(scroll, plan) : null;
+    if (reduced) {
+      // Pixel anchors must use the camera that this stable frame will draw with.
+      ox = SCENE_OFFSETS.get(tl ? tl.a : scene.form) || 0;
+      if (tl && tl.b && tl.u > 0) ox += ((SCENE_OFFSETS.get(tl.b) || 0) - ox) * tl.u;
+    }
     const cxo = cw / 2 + (nrw ? ox * 0.4 : ox) * cw, cyo = nrw ? ch * 0.36 : ch / 2;
     if (anchor) anchorN = { x: (anchor.x - cxo) / S, y: (anchor.y - cyo) / S };
     if (tierPx) tierN = { x: (tierPx.x - cxo) / S, y: (tierPx.y - cyo) / S, w: tierPx.w / S, h: tierPx.h / S };
+    else tierN = defaultTier;
     let spec;
-    if (scroll != null) {
-      const tl = timeline(scroll, plan);
+    if (tl) {
       spec = build(tl.a, t, tl.pa, tl.ia);
       if (tl.b && tl.u > 0) {
         tgtA.set(tgt);
@@ -595,27 +603,38 @@ export function mountParticles(canvas, options = {}) {
     } else {
       spec = build(scene.form, t, clamp01(scene.phase || 0), 0);
     }
-    // each dot is a damped spring on its target: it arrives with a little inertia
-    for (let i = 0; i < N; i++) {
-      const ks = 0.006 + R[i * 6 + 4] * 0.006;
-      const j = i * 3;
-      const dx = tgt[j] - pos[j];
-      const dy = tgt[j + 1] - pos[j + 1];
-      const dz = tgt[j + 2] - pos[j + 2];
-      vel[j] = (vel[j] + dx * ks) * 0.88;
-      vel[j + 1] = (vel[j + 1] + dy * ks) * 0.88;
-      vel[j + 2] = (vel[j + 2] + dz * ks) * 0.88;
-      pos[j] += vel[j];
-      pos[j + 1] += vel[j + 1];
-      pos[j + 2] += vel[j + 2];
-      if (dx * dx + dy * dy + dz * dz < 0.02) col[i] = tcol[i];
-      big[i] += (tbig[i] - big[i]) * 0.08;
+    if (reduced) {
+      // One stable rendering per state change, with no spring or camera settling.
+      pos.set(tgt);
+      vel.fill(0);
+      col.set(tcol);
+      big.set(tbig);
+      tilt = 0;
+      ox = spec.ox;
+      orb = jit = smx = 0;
+    } else {
+      // Each dot is a damped spring on its target: it arrives with a little inertia.
+      for (let i = 0; i < N; i++) {
+        const ks = 0.006 + R[i * 6 + 4] * 0.006;
+        const j = i * 3;
+        const dx = tgt[j] - pos[j];
+        const dy = tgt[j + 1] - pos[j + 1];
+        const dz = tgt[j + 2] - pos[j + 2];
+        vel[j] = (vel[j] + dx * ks) * 0.88;
+        vel[j + 1] = (vel[j + 1] + dy * ks) * 0.88;
+        vel[j + 2] = (vel[j + 2] + dz * ks) * 0.88;
+        pos[j] += vel[j];
+        pos[j + 1] += vel[j + 1];
+        pos[j + 2] += vel[j + 2];
+        if (dx * dx + dy * dy + dz * dz < 0.02) col[i] = tcol[i];
+        big[i] += (tbig[i] - big[i]) * 0.08;
+      }
+      tilt += (spec.tilt - tilt) * 0.04;
+      ox += (spec.ox - ox) * 0.04;
+      orb += (spec.orbit - orb) * 0.06;
+      jit += ((spec.still ? 0 : 0.5) - jit) * 0.05;
+      smx += ((spec.mouse ? mx : 0) - smx) * 0.05;
     }
-    tilt += ((reduced ? 0 : spec.tilt) - tilt) * 0.04;
-    ox += (spec.ox - ox) * 0.04;
-    orb += ((reduced ? 0 : spec.orbit) - orb) * 0.06;
-    jit += ((reduced || spec.still ? 0 : 0.5) - jit) * 0.05;
-    smx += ((spec.mouse ? mx : 0) - smx) * 0.05;
     const yaw = reduced ? 0 : Math.sin(t * 0.12) * spec.yawAmp + orb + smx * 0.3;
     const cy0 = Math.cos(yaw), sy0 = Math.sin(yaw), ct = Math.cos(tilt), st = Math.sin(tilt);
     const narrow = cw < 720;
@@ -671,14 +690,49 @@ export function mountParticles(canvas, options = {}) {
     ctx.globalAlpha = 1;
   }
 
+  const canRender = () => !destroyed && visible && !document.hidden;
+  function schedule() {
+    if (!raf && canRender() && (!reduced || dirty)) raf = requestAnimationFrame(loop);
+  }
+  function invalidate() {
+    if (destroyed) return;
+    dirty = true;
+    schedule();
+  }
+  function syncActivity() {
+    if (destroyed) return;
+    if (canRender()) invalidate();
+    else {
+      cancelAnimationFrame(raf);
+      raf = 0;
+      lastTime = null;
+    }
+  }
+  function loop(now) {
+    raf = 0;
+    if (!canRender()) return;
+    if (!reduced) {
+      if (lastTime !== null) elapsed += Math.max(0, (now - lastTime) / 1000);
+      lastTime = now;
+    }
+    if (!reduced || dirty) {
+      dirty = false;
+      frame(reduced ? 0 : elapsed);
+    }
+    schedule();
+  }
   const onMove = (e) => {
     mx = e.clientX / Math.max(1, window.innerWidth) - 0.5;
   };
-  window.addEventListener("pointermove", onMove, { passive: true });
+  if (!reduced) window.addEventListener("pointermove", onMove, { passive: true });
+  window.addEventListener("resize", invalidate);
+  document.addEventListener("visibilitychange", syncActivity);
   let io = null;
   if (typeof IntersectionObserver !== "undefined") {
     io = new IntersectionObserver((en) => {
+      if (destroyed) return;
       visible = !!(en[0] && en[0].isIntersecting);
+      syncActivity();
     });
     io.observe(canvas);
   }
@@ -686,36 +740,47 @@ export function mountParticles(canvas, options = {}) {
     document.fonts
       .load('600 120px "Geist"')
       .then(() => {
+        if (destroyed) return;
         cache = {};
+        invalidate();
       })
       .catch(() => {});
   }
-  const loop = () => {
-    raf = requestAnimationFrame(loop);
-    if (visible) frame();
-  };
-  loop();
+  schedule();
 
   return {
     setScene(form, phase) {
+      if (scroll === null && scene.form === form && scene.phase === phase) return;
       scroll = null;
       scene = { form, phase };
+      invalidate();
     },
     // screens scrolled into the story; the engine picks and blends the scenes itself
     setScroll(screens) {
+      if (scroll === screens) return;
       scroll = screens;
+      invalidate();
     },
     // x, y in canvas pixels; null to fall back to the default spot.
     setAnchor(x, y) {
+      if (x == null ? anchor === null : anchor && anchor.x === x && anchor.y === y) return;
       anchor = x == null ? null : { x, y };
+      invalidate();
     },
     // the slot (canvas pixels: centre and size) where "AI-powered" is drawn in dots
     setTier(x, y, w, h) {
+      if (x == null ? tierPx === null : tierPx && tierPx.x === x && tierPx.y === y && tierPx.w === w && tierPx.h === h) return;
       tierPx = x == null ? null : { x, y, w, h };
+      invalidate();
     },
     destroy() {
+      if (destroyed) return;
+      destroyed = true;
       cancelAnimationFrame(raf);
+      raf = 0;
       window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("resize", invalidate);
+      document.removeEventListener("visibilitychange", syncActivity);
       if (io) io.disconnect();
     },
   };
