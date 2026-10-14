@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
@@ -58,8 +59,10 @@ def _run(
     cwd: Path | None = None,
     timeout: int = 600,
 ) -> subprocess.CompletedProcess[bytes]:
+    # umask 022 so a runtime or interpreter uv creates here is never group/world-writable,
+    # whatever the operator's umask (Ubuntu and Fedora default to 0002).
     return subprocess.run(  # noqa: S603 - fixed argv assembled from validated inputs
-        args, capture_output=True, env=env, cwd=cwd, timeout=timeout, check=False
+        args, capture_output=True, env=env, cwd=cwd, timeout=timeout, check=False, umask=0o022
     )
 
 
@@ -178,7 +181,25 @@ def _install_runtime(runtime: Path, wheel: Path, python: str, env: dict[str, str
     launcher = runtime / "bin" / "yoetz"
     if not launcher.is_file():
         raise _fail("runtime_launcher_missing")
+    _remove_foreign_write(runtime)
     return launcher
+
+
+def _remove_foreign_write(runtime: Path) -> None:
+    """Clear group/other write on the runtime this script just created.
+
+    uv may hard-link package files from a cache written under a looser umask; the runtime
+    refuses anything another account can write, so the copy is made owner-writable only.
+    Links are never followed: the base interpreter is the operator's to repair.
+    """
+
+    for path in (runtime, *runtime.rglob("*")):
+        facts = path.lstat()
+        if stat.S_ISLNK(facts.st_mode):
+            continue
+        mode = stat.S_IMODE(facts.st_mode)
+        if mode & 0o022:
+            path.chmod(mode & ~0o022)
 
 
 def _snapshot_command(launcher: Path, args: list[str], env: dict[str, str]) -> dict[str, object]:

@@ -23,6 +23,8 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Final, Literal, cast
 
+from yoetz.config.foreign_write import foreign_write
+
 _MARKER: Final = "yoetz-release-runtime.json"
 _SCHEMA: Final = "yoetz.release-runtime/1"
 _LEASE: Final = ".in-use"
@@ -36,6 +38,24 @@ _original_interpreter: str | None = None
 
 class ReleaseRuntimeError(ValueError):
     """A bounded refusal, never an installation path or package-manager output."""
+
+    def __init__(
+        self, token: str, *, area: Literal["environment", "interpreter"] | None = None
+    ) -> None:
+        super().__init__(token)
+        # Which tree another account can write: the installed environment, or the base
+        # interpreter its ``bin/python`` resolves to. A closed label, never a path.
+        self.area = area
+
+
+def _refuse_foreign_write(
+    facts: os.stat_result, *, area: Literal["environment", "interpreter"]
+) -> None:
+    """Refuse a runtime object another account can write; the owner's private group is fine."""
+
+    kind = foreign_write(facts)
+    if kind is not None:
+        raise ReleaseRuntimeError(f"release_runtime_{kind}_writable", area=area)
 
 
 class ReleaseRuntimeIOError(OSError):
@@ -101,8 +121,9 @@ def _read_regular(path: Path, *, limit: int) -> bytes:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > limit or info.st_mode & 0o022:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
             raise ReleaseRuntimeError("release_runtime_unsafe")
+        _refuse_foreign_write(info, area="environment")
         with os.fdopen(fd, "rb", closefd=False) as stream:
             result = stream.read(limit + 1)
         if len(result) > limit:
@@ -134,6 +155,8 @@ def _members(prefix: Path) -> tuple[tuple[Path, tuple[int, int, int, int]], ...]
     """Enumerate only the environment, refusing mutable external package links."""
 
     members: list[tuple[Path, tuple[int, int, int, int]]] = []
+    # Another account able to write the prefix itself could swap a whole subtree.
+    _refuse_foreign_write(prefix.lstat(), area="environment")
     roots = [prefix / "bin", prefix / "lib", prefix / "pyvenv.cfg"]
     roots.extend(prefix / name for name in ("include", "share") if (prefix / name).exists())
     if (prefix / _PIN).exists():
@@ -145,6 +168,7 @@ def _members(prefix: Path) -> tuple[tuple[Path, tuple[int, int, int, int]], ...]
         relative = path.relative_to(prefix)
         if path.name == "__pycache__" or path.suffix in {".pyc", ".pyo"}:
             continue
+        area: Literal["environment", "interpreter"] = "environment"
         if stat.S_ISLNK(info.st_mode):
             # Python executables are normally links to the package-manager/system interpreter.
             # Retain the resolved base-interpreter path; a copied ELF interpreter may have
@@ -152,8 +176,12 @@ def _members(prefix: Path) -> tuple[tuple[Path, tuple[int, int, int, int]], ...]
             if relative.parts[0] != "bin" or not re.fullmatch(r"python(?:3(?:\.\d+)?)?", path.name):
                 raise ReleaseRuntimeError("release_runtime_external_link")
             info = path.stat()
-        if info.st_mode & 0o022:
-            raise ReleaseRuntimeError("release_runtime_unsafe")
+            area = "interpreter"
+            # Whoever can write the interpreter's directories can swap the file between runs.
+            target = path.resolve(strict=True)
+            for directory in (target.parent, target.parent.parent):
+                _refuse_foreign_write(directory.stat(), area=area)
+        _refuse_foreign_write(info, area=area)
         if stat.S_ISDIR(info.st_mode):
             pending.extend(path.iterdir())
         elif stat.S_ISREG(info.st_mode):
@@ -394,6 +422,36 @@ def installation_prefix() -> Path:
     prefix = Path(sys.prefix)
     marker = _marker(prefix)
     return prefix if marker is None else Path(marker["origin"])
+
+
+FOREIGN_WRITE_TOKENS: Final = frozenset(
+    {"release_runtime_group_writable", "release_runtime_world_writable"}
+)
+
+
+def installed_runtime_refusal() -> ReleaseRuntimeError | None:
+    """Read-only: the foreign-write refusal a serving process of this install would hit.
+
+    ``None`` for a source checkout, a runtime that verifies, or any other condition (those are
+    reported where the runtime is entered). Never takes the manager lock or creates a copy.
+    """
+
+    try:
+        prefix = Path(sys.prefix)
+        marker = _marker(prefix)
+        if marker is not None:
+            prefix = Path(marker["origin"])
+        elif sys.prefix == sys.base_prefix or not Path(__file__).resolve().is_relative_to(
+            prefix.resolve()
+        ):
+            return None
+        _release_key(prefix)
+        _members(prefix)
+    except ReleaseRuntimeError as error:
+        return error if str(error) in FOREIGN_WRITE_TOKENS else None
+    except OSError, ValueError:
+        return None
+    return None
 
 
 def enter_release_runtime(arguments: list[str]) -> None:

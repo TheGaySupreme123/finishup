@@ -79,9 +79,12 @@ def execute_package_upgrade() -> str:
             if command is None:
                 return "refused_custom_uv_installation"
             # Never capture arbitrary package-manager output or copy it to structural errors.
+            # umask 022: the replacement must not be writable by anyone but its owner, whatever
+            # the invoking shell's umask (Ubuntu and Fedora default to 0002).
             result = subprocess.run(  # noqa: S603 - closed argv, same supported carrier
                 command,
                 check=False,
+                umask=0o022,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

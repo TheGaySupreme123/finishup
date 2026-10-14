@@ -137,6 +137,39 @@ exception_local_control_transport_error; runtime_directory_unsafe; at …)`. A s
 live one is not a failure: on-demand start connects to the holder. The bridge stops waiting as
 soon as its spawned service exits with a record, instead of spending its 30-second start budget.
 
+## Umask 0002 and user-private groups
+
+Ubuntu, Debian, Fedora and RHEL create normal accounts with a user-private group
+(`USERGROUPS_ENAB yes`) and umask 0002 through `pam_umask`; WSL's Ubuntu inherits the same
+defaults. Every file such an account creates, including `uv tool install`'s environment and uv's
+managed interpreter under `~/.local/share/uv/python`, is group-writable by a group of one.
+Yoetz treats that group write as owner-only (ADR-007, 2026-10-14 amendment): the group must be
+the owner's primary group, named like the owner, with no other member and no other enumerated
+account using it as its primary group. World write, and group write through any other group, are
+refused everywhere Yoetz checks who can write (installed runtime, launcher, host configuration
+roots, workspace and Git capture).
+
+A refused runtime stops `yoetz service run`, `yoetz mcp serve`, `yoetz upgrade` and every hook
+with `release_runtime_group_writable` or `release_runtime_world_writable` (exit 20). Terminal
+commands print the exact repair for that installation, for example
+`chmod -R go-w /home/alice/.local/share/uv/tools/yoetz
+/home/alice/.local/share/uv/python/cpython-3.14.6-linux-x86_64-gnu`; hooks print the token
+without paths and point at `yoetz service run`. A service started on demand records the token as
+its startup failure (`stage: import; …; release_runtime_group_writable`), and CLI
+`service_unavailable` results, `yoetz service status` and `yoetz setup` print the same refusal.
+`yoetz upgrade --accept`, `npx yoetz` and `scripts/provision_test_instance.py` install under umask
+022; the provisioner also clears group/other write on the runtime it creates.
+
+Evidence (2026-10-14, Boat Ubuntu 24.04, fresh normal account, `umask` 0002 from `pam_umask`):
+`uv tool install` produced a 775/664 environment and a 775 managed interpreter; `service run`,
+`mcp serve` (initialize, tools/list), Codex, Claude Code and Cursor hooks (exit 0), `state capture`
+on a 775 repository, and `setup run` previews for Codex, Claude Code (user-owned executable) and
+Cursor Agent CLI all succeeded. The previous release refused every one of them. Moving the
+runtime to a group shared with a second account produced the token on each surface. Not covered:
+directory-service (LDAP/SSSD) accounts that are not enumerated, and a root-owned Claude Code
+executable, which the separate executable-ownership rule refuses as `target_unsafe` regardless
+of umask.
+
 ## Approved-check sandbox
 
 Network-denied approved checks run only under an enforcing sandbox: Seatbelt (`sandbox-exec`,

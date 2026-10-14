@@ -178,6 +178,52 @@ and downgrade prevention. It does not certify native Codex/Claude/Cursor session
 release's storage coexistence. Package, service, migration and host activation remain separate
 reported facts.
 
+## Amendment — "writable by another account", not a mode bit (2026-10-14, owner decision)
+
+The owner explicitly requested this fix after a Linux compatibility run (release/packaging design
+gate acknowledged). Since the 2026-09-24 amendment, every installed service, MCP bridge and hook
+refused a runtime with any group-write bit (`release_runtime_unsafe`, shown only as "could not be
+verified"). Ubuntu, Debian, Fedora and RHEL give normal accounts umask 0002 with a user-private
+group (`USERGROUPS_ENAB yes`), so `uv tool install` there makes every runtime file and uv's
+managed interpreter group-writable by a group of one, and Yoetz never started. The same mode-only
+rule refused such users' repositories (`unsafe_root`), workspace locators, Codex launchers and
+host configuration roots (`target_unsafe`).
+
+1. **One rule.** An object is unsafe when an account other than its owner can write it. World
+   write always qualifies. Group write qualifies unless the group is the owner's user-private
+   group: the owner's primary group, named like the owner, with no supplementary member other
+   than the owner and no other enumerated account using it as its primary group. A missing
+   account or group, a name mismatch, or an account database that cannot be enumerated counts as
+   shared. Accounts a directory service does not enumerate cannot be seen; giving one of them
+   another user's private group as its primary group is outside the rule. Answers are cached for
+   five seconds so a long-lived service notices membership changes. `yoetz.config.foreign_write`
+   owns the rule; every former `mode & 0o022` owner-write check uses it (release runtime, runtime
+   pin, workspace binding, structural and check-time Git capture, Codex launcher, and the Codex,
+   Claude Code, Cursor and portable plugin targets). Owner-only `0o077` checks on material Yoetz
+   creates itself are unchanged.
+2. **The runtime check covers what it follows.** The retained-runtime walk also checks the
+   environment prefix itself and, for a `bin/python` link, the resolved interpreter, its
+   directory and that directory's parent. A refusal is `release_runtime_group_writable` or
+   `release_runtime_world_writable`, never the generic message. Terminal commands (`service
+   run`, `mcp serve`, `upgrade`) print the exact repair, `chmod -R go-w <environment>
+   <interpreter tree when owned by this account>`, and suggest `umask 022` before reinstalling.
+   Hooks keep the existing non-blocking exit 20 with no stdout decision and print the token
+   without local paths. A spawned `service run` records the token as its startup failure, so
+   the command that started it names it; every CLI `service_unavailable` and `setup` probe the
+   installed runtime read-only and print the same refusal instead of a supervisor hint.
+3. **Our own installs are owner-only.** `yoetz upgrade --accept` runs `uv tool install` under
+   umask 022, the npm launcher installs under umask 022, and the test-instance provisioner runs
+   uv under umask 022 and clears group/other write on the runtime it created (uv can hard-link
+   files from a cache written under a looser umask). A runtime already shared through a group is
+   refused rather than silently tightened: tightening cannot undo a write another account made.
+
+Verification: unit tests with synthetic account databases (private group accepted; supplementary
+member, foreign primary, differently named group, unknown or unenumerable databases refused) and
+per-site umask 0002 tests; a real Ubuntu 24.04 normal account with umask 0002 ran `uv tool
+install`, `service run`, `mcp serve`, Codex/Claude Code/Cursor hooks, `state capture` and the
+three host setup previews; adding a second account to the runtime's group produced
+`release_runtime_group_writable` on each surface until the printed `chmod` was run.
+
 ## Implementation-lock identities
 
 The 2026-07-17 implementation lock freezes the direct dependency declarations below. All are

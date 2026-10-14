@@ -286,6 +286,25 @@ def _unsupported_platform_exit(arguments: list[str], *, os_name: str | None = No
     return _UNSUPPORTED_PLATFORM_EXIT
 
 
+def _record_spawned_service_refusal(argv: list[str], error: BaseException, token: str) -> None:
+    """Let a client that spawned ``service run`` name the refusal instead of timing out."""
+
+    if argv[:2] != ["service", "run"]:
+        return
+    try:
+        index = argv.index("--startup-correlation-id")
+        correlation_id = argv[index + 1]
+        from yoetz.protocol.ids import IdKind, validate_id
+        from yoetz.service.startup_failure import record_startup_failure
+
+        validate_id(IdKind.CORRELATION, correlation_id)
+        record_startup_failure(
+            error, stage="import", correlation_id=correlation_id, reason_code=token
+        )
+    except Exception:  # noqa: BLE001 - the stderr line above still names the refusal
+        return
+
+
 def _run_full_cli() -> None:
     """Load the typer graph and dispatch; split out so tests can prove it never loads on Windows."""
 
@@ -318,6 +337,7 @@ def main() -> None:
         and "--prune-runtimes" not in argv
     ):
         from yoetz.adapters.release_runtime import (
+            FOREIGN_WRITE_TOKENS,
             ReleaseRuntimeError,
             ReleaseRuntimeIOError,
             enter_release_runtime,
@@ -326,12 +346,19 @@ def main() -> None:
         try:
             enter_release_runtime(argv)
         except ReleaseRuntimeError as error:
+            token = str(error)
+            if token in FOREIGN_WRITE_TOKENS:
+                from yoetz.cli.runtime_refusal import foreign_write_refusal
+
+                _record_spawned_service_refusal(argv, error, token)
+                sys.stderr.write(foreign_write_refusal(token, hook=argv[:1] == ["hooks"]))
+                raise SystemExit(20) from None
             message = {
                 "release_runtime_busy": "A package update is running. Retry after it finishes.",
                 "release_runtime_changed_retry": "The package changed during startup. Retry from the installed launcher.",
                 "release_runtime_external_link": "This runtime links to editable or external package files. Use a regular installed Yoetz package.",
             }.get(
-                str(error),
+                token,
                 "The retained runtime could not be verified. Repair this Yoetz installation.",
             )
             sys.stderr.write(f"release_runtime_unavailable: {message}\n")

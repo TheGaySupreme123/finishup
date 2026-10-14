@@ -27,6 +27,7 @@ from typing import Final, Literal, Protocol, cast
 from yoetz import __version__
 from yoetz.adapters.integrations.launcher import resolve_yoetz_launcher, valid_launcher
 from yoetz.adapters.integrations.portable_plugin import PackagedPortableResources
+from yoetz.config.foreign_write import writable_by_others
 from yoetz.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
@@ -975,7 +976,7 @@ def _safe_existing_ancestor(path: Path) -> Path:
     if current.is_symlink() or not current.is_dir():
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
     facts = current.stat()
-    if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or facts.st_mode & 0o022:
+    if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or writable_by_others(facts):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
     if any(item.name in {"", ".", ".."} for item in missing):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
@@ -1002,7 +1003,7 @@ def _validate_target(target: ClaudeCodePluginTarget) -> str:
     if executable.is_symlink() or not executable.is_file() or not os.access(executable, os.X_OK):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
     facts = executable.stat()
-    if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or facts.st_mode & 0o022:
+    if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or writable_by_others(facts):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
     if _digest_file(executable) != target.identity.executable_digest:
         raise _error(PluginArtifactReason.PREVIEW_STALE)
@@ -1940,7 +1941,7 @@ def _ensure_private_parent(path: Path) -> None:
         current = current / part
         current.mkdir(mode=0o700, exist_ok=True)
         facts = current.stat()
-        if current.is_symlink() or not current.is_dir() or facts.st_mode & 0o022:
+        if current.is_symlink() or not current.is_dir() or writable_by_others(facts):
             raise _error(PluginArtifactReason.TARGET_UNSAFE)
 
 

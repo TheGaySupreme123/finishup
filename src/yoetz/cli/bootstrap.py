@@ -539,6 +539,25 @@ def control_failure(
                 payload["holder"] = holder
             stdout_writer(payload)
         return exit_code_for(code)
+    if code is PublicErrorCode.SERVICE_UNAVAILABLE:
+        from yoetz.cli.runtime_refusal import installed_runtime_refusal_text
+
+        refusal = installed_runtime_refusal_text()
+        if refusal is not None:
+            # No service of this installation can start: name why and the repair, not a
+            # supervisor hint that would fail the same way.
+            token, text = refusal
+            stderr_writer(text.rstrip("\n"))
+            if json_output:
+                stdout_writer(
+                    {
+                        "ok": False,
+                        "public_code": code.value,
+                        "reason": token,
+                        "retryable": False,
+                    }
+                )
+            return exit_code_for(code)
     if code is PublicErrorCode.SERVICE_UNAVAILABLE and accepted_but_unresponsive(error):
         stderr_writer(
             _with_holder_pid(

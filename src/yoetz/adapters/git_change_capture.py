@@ -46,6 +46,7 @@ from yoetz.adapters.git_subject_state import (
     run_read_only_git,
 )
 from yoetz.adapters.git_version import GIT_VERSION_UNSUPPORTED, git_version, git_version_supported
+from yoetz.config.foreign_write import owner_private_group
 from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.change_capture import (
     MAX_BASELINE_UNTRACKED_FILES,
@@ -222,9 +223,9 @@ _WITHHELD_COUNTS: Final[frozenset[_OmitReason]] = frozenset(
 # remount or a second name does not change the file's bytes.
 _BASELINE_FIELDS: Final = (0, 2, 3, 4, 5)
 # (mode, device, inode, size, mtime ns, ctime ns, link count, owner) of one path, never followed.
-type _Identity = tuple[int, int, int, int, int, int, int, int]
+type _Identity = tuple[int, int, int, int, int, int, int, int, int]
 # A path reachable only through a link or a non-directory component.
-_BLOCKED: Final[_Identity] = (0, 0, 0, 0, 0, 0, 0, 0)
+_BLOCKED: Final[_Identity] = (0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 
 class _ChangedDuringCapture(Exception):
@@ -4169,6 +4170,7 @@ def _identity(facts: os.stat_result) -> _Identity:
         facts.st_ctime_ns,
         facts.st_nlink,
         facts.st_uid,
+        facts.st_gid,
     )
 
 
@@ -4257,8 +4259,10 @@ def _owner_only(identity: _Identity) -> bool:
     """A file of the service user that no other user may write."""
 
     expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
-    mode, _, _, _, _, _, _, owner = identity
-    return owner == expected_uid and not stat.S_IMODE(mode) & 0o022
+    mode, _, _, _, _, _, _, owner, group = identity
+    if owner != expected_uid or stat.S_IMODE(mode) & stat.S_IWOTH:
+        return False
+    return not stat.S_IMODE(mode) & stat.S_IWGRP or owner_private_group(owner, group)
 
 
 def _verify_loose_object(
@@ -4329,7 +4333,7 @@ def _worktree_side_safe(entry: _RawEntry, identity: _Identity | None) -> bool:
     if identity is None:
         return False
     expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
-    mode, _, _, _, _, _, links, owner = identity
+    mode, _, _, _, _, _, links, owner, _group = identity
     return stat.S_ISREG(mode) and links == 1 and owner == expected_uid
 
 

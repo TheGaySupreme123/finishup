@@ -1929,6 +1929,12 @@ async def _service_reachability(*, start_if_absent: bool = False) -> dict[str, J
         startup_line = spawned_startup_failure_line(error)
         if startup_line is not None:
             typer.echo(startup_line, err=True)
+        else:
+            from yoetz.cli.runtime_refusal import installed_runtime_refusal_text
+
+            refusal = installed_runtime_refusal_text()
+            if refusal is not None:
+                typer.echo(refusal[1].rstrip("\n"), err=True)
         return {"reachable": False, "state": None, "vault_mode": None}
     vault_mode = getattr(status, "vault_mode", None)
     state = getattr(getattr(status, "state", None), "value", getattr(status, "state", None))

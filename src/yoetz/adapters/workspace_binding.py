@@ -19,6 +19,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, cast
 
+from yoetz.config.foreign_write import writable_by_others
+
 __all__ = [
     "MAX_WORKSPACE_LOCATOR_BYTES",
     "canonical_workspace_locator",
@@ -130,7 +132,7 @@ def _candidate_path(raw: object, *, cwd: Path, home: Path) -> Path | None:
         stat.S_ISLNK(facts.st_mode)
         or not stat.S_ISDIR(facts.st_mode)
         or (hasattr(os, "geteuid") and facts.st_uid != os.geteuid())
-        or bool(facts.st_mode & 0o022)
+        or writable_by_others(facts)
     ):
         return None
     return path
@@ -153,7 +155,7 @@ def _git_marker(path: Path) -> bool | None:
     if stat.S_ISLNK(facts.st_mode):
         return None
     if stat.S_ISDIR(facts.st_mode) or stat.S_ISREG(facts.st_mode):
-        if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or facts.st_mode & 0o022:
+        if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or writable_by_others(facts):
             return None
         return True
     return None
@@ -203,7 +205,7 @@ def _canonical_selected_workspace(selected: Path, *, home: Path) -> str | None:
         stat.S_ISLNK(facts.st_mode)
         or not stat.S_ISDIR(facts.st_mode)
         or (hasattr(os, "geteuid") and facts.st_uid != os.geteuid())
-        or bool(facts.st_mode & 0o022)
+        or writable_by_others(facts)
     ):
         return None
     return os.fspath(root)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import pytest
@@ -147,10 +147,90 @@ def test_manager_lock_refuses_a_second_writer_with_bounded_wait(prefix: Path) ->
                 pytest.fail("second writer entered")
 
 
-def test_group_writable_runtime_is_refused(prefix: Path) -> None:
+def _group_is_private(monkeypatch: pytest.MonkeyPatch, private: bool) -> None:
+    from yoetz.config import foreign_write
+
+    monkeypatch.setattr(foreign_write, "owner_private_group", _private_group_is(private))
+
+
+def test_world_writable_runtime_is_refused_with_its_own_token(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _group_is_private(monkeypatch, True)
     (prefix / "pyvenv.cfg").chmod(0o666)
-    with pytest.raises(runtimes.ReleaseRuntimeError, match="release_runtime_unsafe"):
+    with pytest.raises(
+        runtimes.ReleaseRuntimeError, match="release_runtime_world_writable"
+    ) as error:
         runtimes.prepare_release_runtime(prefix)
+    assert error.value.area == "environment"
+
+
+@pytest.mark.parametrize("member", ["pyvenv.cfg", "lib/python3.14/site-packages/dependency"])
+def test_shared_group_writable_runtime_is_refused(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, member: str
+) -> None:
+    _group_is_private(monkeypatch, False)
+    (prefix / member).chmod(0o775 if (prefix / member).is_dir() else 0o664)
+    with pytest.raises(
+        runtimes.ReleaseRuntimeError, match="release_runtime_group_writable"
+    ) as error:
+        runtimes.prepare_release_runtime(prefix)
+    assert error.value.area == "environment"
+
+
+def test_shared_group_writable_prefix_itself_is_refused(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Whoever can write the prefix can swap bin/ or lib/ for a tree of their own.
+    _group_is_private(monkeypatch, False)
+    prefix.chmod(0o775)
+    with pytest.raises(runtimes.ReleaseRuntimeError, match="release_runtime_group_writable"):
+        runtimes.prepare_release_runtime(prefix)
+
+
+def test_umask_0002_runtime_of_a_user_private_group_is_accepted_and_sealed(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Ubuntu/Fedora default: every file is g+w for a group of one; Yoetz must run."""
+
+    _group_is_private(monkeypatch, True)
+    base = tmp_path / "cpython-3.14.6"
+    (base / "bin").mkdir(parents=True)
+    binary = base / "bin/python3.14"
+    binary.write_bytes(b"managed interpreter")
+    for path in (base, base / "bin"):
+        path.chmod(0o775)
+    binary.chmod(0o775)
+    (prefix / "bin/python").unlink()
+    (prefix / "bin/python").symlink_to(binary)
+    for path in (prefix, *prefix.rglob("*")):
+        if not path.is_symlink():
+            path.chmod(0o775 if path.is_dir() else 0o664)
+    target = runtimes.prepare_release_runtime(prefix)
+    assert target.stat().st_mode & 0o077 == 0
+    for path in target.rglob("*"):
+        if not path.is_symlink():
+            assert path.stat().st_mode & 0o022 == 0
+
+
+@pytest.mark.parametrize("writable", ["binary", "bin", "root"])
+def test_shared_group_writable_interpreter_chain_is_refused(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, writable: str
+) -> None:
+    _group_is_private(monkeypatch, False)
+    base = tmp_path / "cpython"
+    (base / "bin").mkdir(parents=True)
+    binary = base / "bin/python3.14"
+    binary.write_bytes(b"interpreter")
+    binary.chmod(0o755)
+    (prefix / "bin/python").unlink()
+    (prefix / "bin/python").symlink_to(binary)
+    {"binary": binary, "bin": base / "bin", "root": base}[writable].chmod(0o775)
+    with pytest.raises(
+        runtimes.ReleaseRuntimeError, match="release_runtime_group_writable"
+    ) as error:
+        runtimes.prepare_release_runtime(prefix)
+    assert error.value.area == "interpreter"
 
 
 def test_unrelated_completed_runtime_directory_is_not_removed(prefix: Path) -> None:
@@ -262,3 +342,42 @@ def test_writable_published_root_is_not_reused_as_a_sealed_generation(prefix: Pa
     assert runtimes.prune_release_runtimes(prefix) == (1, 0)
     repaired = runtimes.prepare_release_runtime(prefix)
     assert not repaired.stat().st_mode & 0o222
+
+
+def _private_group_is(value: bool) -> Callable[[int, int], bool]:
+    def answer(_uid: int, _gid: int) -> bool:
+        return value
+
+    return answer
+
+
+def _as_installed(monkeypatch: pytest.MonkeyPatch, prefix: Path) -> None:
+    package = prefix / "lib/python3.14/site-packages/yoetz/adapters/release_runtime.py"
+    package.parent.mkdir(parents=True, exist_ok=True)
+    package.write_text("")
+    monkeypatch.setattr(runtimes.sys, "prefix", str(prefix))
+    monkeypatch.setattr(runtimes.sys, "base_prefix", "/base")
+    monkeypatch.setattr(runtimes, "__file__", str(package))
+
+
+def test_installed_runtime_probe_reports_foreign_write_without_creating_a_copy(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _as_installed(monkeypatch, prefix)
+    _group_is_private(monkeypatch, False)
+    assert runtimes.installed_runtime_refusal() is None
+    (prefix / "pyvenv.cfg").chmod(0o664)
+    refusal = runtimes.installed_runtime_refusal()
+    assert refusal is not None and str(refusal) == "release_runtime_group_writable"
+    assert not (prefix.parent / f".{prefix.name}-releases").exists()
+    (prefix / "pyvenv.cfg").chmod(0o666)
+    refusal = runtimes.installed_runtime_refusal()
+    assert refusal is not None and str(refusal) == "release_runtime_world_writable"
+
+
+def test_installed_runtime_probe_ignores_other_refusals(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _as_installed(monkeypatch, prefix)
+    (prefix / "lib/external.pth").write_text(str(tmp_path))
+    assert runtimes.installed_runtime_refusal() is None

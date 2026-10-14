@@ -412,6 +412,19 @@ reverse-chronological released versions.
 
 ### Fixed
 
+- Yoetz runs for normal accounts on Ubuntu, Debian, Fedora and RHEL. Their default umask `0002`
+  makes every installed file writable by the account's own private group, and with the retained
+  release runtime the service, the agent connection (MCP) and every hook refused to start on
+  Codex, Claude Code and Cursor with only "The retained runtime could not be verified". The same rule refused such
+  users' repositories (`unsafe_root`), Codex launchers and host settings folders
+  (`target_unsafe`). Group write now counts as owner-only when the group is the owner's own
+  private group with no other member; world write, or group write through a group someone else
+  is in, is still refused, now as `release_runtime_group_writable` or
+  `release_runtime_world_writable` with the exact `chmod -R go-w …` repair on `yoetz service run`,
+  `yoetz mcp serve` and `yoetz upgrade`, on `yoetz service status` and other commands that find
+  no service, and in `yoetz setup`; hooks name the token without local paths and still make no
+  decision. `yoetz upgrade --accept` and `npx yoetz` install under umask `022` (ADR-007).
+
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `yoetz-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so
   that line could never answer it there. Cursor agents are told instead to confirm a met criterion

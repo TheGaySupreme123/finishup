@@ -70,11 +70,20 @@ function main() {
   // still performs the provenance-carrying install from PyPI; this launcher
   // bundles and downloads nothing. `--python 3.14` lets uv fetch the runtime
   // when no suitable interpreter is present, whatever other Pythons exist.
-  const install = spawnSync(
-    "uv",
-    ["tool", "install", "--quiet", "--python", "3.14", `yoetz==${version}`],
-    { stdio: "inherit", shell: false },
-  );
+  // The install runs under umask 022: Yoetz refuses a runtime another account
+  // can write, and a umask 0002 shell would otherwise make every installed file
+  // group-writable (harmless only for a user-private group). Restored after.
+  const previousUmask = process.umask(0o022);
+  let install;
+  try {
+    install = spawnSync(
+      "uv",
+      ["tool", "install", "--quiet", "--python", "3.14", `yoetz==${version}`],
+      { stdio: "inherit", shell: false },
+    );
+  } finally {
+    process.umask(previousUmask);
+  }
   if (install.error || install.status !== 0) {
     const reported = install.error
       ? install.error.message

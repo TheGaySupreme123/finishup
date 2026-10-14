@@ -187,6 +187,8 @@ def test_package_execution_binds_invoking_uv_tool(
             return SimpleNamespace(returncode=0, stdout=b"99.0.0\n")
         assert argv == package_adapter.PACKAGE_UPGRADE_ARGV
         assert kwargs["stdout"] == subprocess.DEVNULL
+        # A umask 0002 shell must not leave the replacement writable by the group.
+        assert kwargs["umask"] == 0o022
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(package_adapter.subprocess, "run", run)
