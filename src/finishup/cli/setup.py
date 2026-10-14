@@ -54,7 +54,10 @@ from finishup.application.harness_mcp import (
     McpRegistrationConfirmation,
     mcp_removal_report,
 )
-from finishup.application.observation_check_policy import load_observation_check_policy
+from finishup.application.observation_check_policy import (
+    ObservationCheckPolicyAmbiguous,
+    load_observation_check_policy,
+)
 from finishup.cli.agent_start import AGENT_START_HANDOFF
 from finishup.config.load import load_config
 from finishup.config.models import ConfigError
@@ -97,6 +100,7 @@ __all__ = [
     "write_setup_marker",
 ]
 
+# Frozen legacy identifier (ADR-048): stored marker and released report/status tags.
 SETUP_MARKER_SCHEMA: Final = "yoetz.setup-wizard-marker/1"
 _REPORT_SCHEMA: Final = "yoetz.setup-wizard-report/1"
 _STATUS_SCHEMA: Final = "yoetz.setup-status/2"
@@ -788,12 +792,28 @@ def _grant_observation_consent(workspace: Path | None = None) -> dict[str, JsonV
         }
 
 
+# Fixed words for an ambiguous approved-check policy (ADR-048); no repository content is echoed.
+_POLICY_AMBIGUOUS_TEXT: Final = (
+    "both .finishup/checks.toml and the earlier .yoetz/checks.toml exist; neither is used "
+    "until you remove one"
+)
+
+
 def _check_policy_preview(workspace: Path | None = None) -> dict[str, JsonValue]:
     """Return a path-free exact-byte policy preview; repository bytes grant no authority."""
 
     root = _canonical_setup_workspace(workspace)
     try:
         policy, _raw = load_observation_check_policy(root)
+    except ObservationCheckPolicyAmbiguous:
+        # Both `.finishup/checks.toml` and the legacy `.yoetz/checks.toml` exist (ADR-048).
+        # Neither is proposed, and the owner is told why rather than shown "absent".
+        return {
+            "outcome": "ambiguous",
+            "reason": "policy_ambiguous",
+            "policy_digest": None,
+            "check_ids": (),
+        }
     except Exception:
         return {"outcome": "absent", "policy_digest": None, "check_ids": ()}
     return {
@@ -846,6 +866,7 @@ def _emit_registration_preview(
     typer.echo("  2. Install structural plugin / hook sources under .agents/plugins/finishup")
     typer.echo("  3. Register the FinishUP MCP server with Codex")
     typer.echo("  MCP server name: finishup")
+    _emit_legacy_registration(getattr(mcp_preview, "legacy_registration", "none"))
     serve_command = getattr(mcp_preview, "serve_command", ())
     typer.echo(f"  Command: {shlex.join(serve_command)}")
     isolated_root = getattr(mcp_preview, "isolated_root", None)
@@ -889,6 +910,11 @@ def _emit_registration_preview(
                 typer.echo(f"    {line}")
         else:
             typer.echo("    (no byte change; already active)")
+        _emit_legacy_activation(
+            activation_preview.legacy_removed_block,
+            activation_preview.legacy_cache_versions,
+            plugin_tree_planned=activation_preview.legacy_plugin_tree_planned,
+        )
         typer.echo(f"  Plugin source-tree digest: {activation_preview.plugin_source_digest}")
         typer.echo(f"  Selected activation executable: {activation_preview.executable_path}")
         typer.echo(f"  Activation executable digest: {activation_preview.executable_digest}")
@@ -920,6 +946,8 @@ def _emit_registration_preview(
             "sessions using this exact Codex home until you disable or remove it."
         )
     digest = None if policy_preview is None else policy_preview.get("policy_digest")
+    if policy_preview is not None and policy_preview.get("outcome") == "ambiguous":
+        typer.echo(f"  Approved-check policy: ambiguous ({_POLICY_AMBIGUOUS_TEXT})")
     if type(digest) is str:
         typer.echo(f"  Approved-check policy digest: {digest}")
         check_ids = policy_preview.get("check_ids") if policy_preview is not None else None
@@ -929,11 +957,58 @@ def _emit_registration_preview(
         typer.echo("  the exact digest above. Any byte change suspends execution.")
 
 
+def _emit_legacy_registration(legacy_registration: object) -> None:
+    """Name what the approval does with an entry under the pre-rename key (ADR-048)."""
+
+    if legacy_registration in {"legacy_only", "duplicate"}:
+        typer.echo(
+            "  Legacy MCP server name: yoetz (FinishUP-owned from an earlier install; "
+            "this change removes it)"
+        )
+    elif legacy_registration == "foreign":
+        typer.echo("  Legacy MCP server name: yoetz (not provably FinishUP's; left unchanged)")
+
+
+def _emit_legacy_activation(
+    removed_block: str, cache_versions: tuple[str, ...], *, plugin_tree_planned: bool = False
+) -> None:
+    """Show the exact Yoetz-era activation bytes an approval also removes (ADR-048)."""
+
+    if not removed_block and not cache_versions and not plugin_tree_planned:
+        return
+    typer.echo("  Earlier Yoetz activation removed by this change:")
+    for line in removed_block.splitlines():
+        typer.echo(f"    {line}")
+    if cache_versions:
+        typer.echo(f"    plugin cache versions: {', '.join(cache_versions)}")
+    if plugin_tree_planned:
+        typer.echo(
+            "    plugin source tree: .agents/plugins/yoetz (FinishUP-managed; deleted last, "
+            "once nothing activated here reads it)"
+        )
+
+
+def _emit_legacy_plugin_tree(notes: tuple[str, ...], *, removal_planned: bool) -> None:
+    """Say what happens to a Yoetz-era plugin tree beside the FinishUP one (ADR-048)."""
+
+    if "legacy_plugin_tree_present" in notes and not removal_planned:
+        typer.echo(
+            "  Earlier Yoetz plugin sources (.agents/plugins/yoetz): kept; only an approved "
+            "Codex plugin activation removes them"
+        )
+    elif "legacy_plugin_tree_retained" in notes:
+        typer.echo(
+            "  Earlier Yoetz plugin directory (.agents/plugins/yoetz): not provably "
+            "FinishUP's; left unchanged"
+        )
+
+
 def _emit_unregistration_preview(mcp_preview: object) -> None:
     """Show every approval-relevant removal field before interactive consent."""
 
     typer.echo("Proposed change: remove the FinishUP-owned Codex MCP registration")
     typer.echo("  MCP server name: finishup")
+    _emit_legacy_registration(getattr(mcp_preview, "legacy_registration", "none"))
     typer.echo(f"  Action: {getattr(mcp_preview, 'action').value}")
     typer.echo(f"  State before: {getattr(mcp_preview, 'state_before').value}")
     serve_command = getattr(mcp_preview, "serve_command", ())
@@ -1091,9 +1166,19 @@ def _installed_hooks_declare_workspace_binding(workspace: Path | None = None) ->
     hooks_path = root / ".agents" / "plugins" / "finishup" / "hooks" / "hooks.json"
     try:
         raw = hooks_path.read_bytes()
+    except FileNotFoundError:
+        # Frozen legacy identifier (ADR-048): a Yoetz-era plugin tree an upgrade has not yet
+        # migrated still binds the workspace through the deprecated ``yoetz`` alias. Only a
+        # missing FinishUP file falls back; an unreadable one never reads as bound.
+        try:
+            raw = (root / ".agents" / "plugins" / "yoetz" / "hooks" / "hooks.json").read_bytes()
+        except OSError:
+            return False
     except OSError:
         return False
-    return b"--workspace ." in raw and b"finishup hooks observe" in raw
+    return b"--workspace ." in raw and (
+        b"finishup hooks observe" in raw or b"yoetz hooks observe" in raw
+    )
 
 
 def _observation_hook_probe(*, workspace: Path | None = None) -> dict[str, JsonValue]:
@@ -1170,6 +1255,7 @@ def _readiness_layers(
     activation: dict[str, JsonValue] = {
         "codex_home": None,
         "config_path": None,
+        "legacy_activation": None,
         "marketplace_registered": None,
         "plugin_enabled": None,
         "state": "unknown",
@@ -1188,6 +1274,9 @@ def _readiness_layers(
             activation["marketplace_registered"] = inspected.marketplace_registered
             activation["plugin_enabled"] = inspected.plugin_enabled
             activation["state"] = inspected.state.value
+            # An owned Yoetz-era activation of this project is still present; integrate
+            # migrates it and removal deactivates it (ADR-048).
+            activation["legacy_activation"] = inspected.legacy_activation
         except IntegrationError as error:
             activation["reason"] = error.reason.value
         except (OSError, TypeError, ValueError) as error:
@@ -1356,7 +1445,11 @@ async def _codex_integration_step(
     # matches the previewing route, ``reregister`` means it is the other one.
     route_profile_before: Literal["policy", "strict"] | None = None
     if mcp_preview.state_before is McpRegistrationState.FINISHUP_OWNED:
-        if mcp_preview.action is McpRegistrationAction.REREGISTER:
+        if mcp_preview.route_profile_before is not None:
+            # The adapter observed it: a re-registration that only migrates a legacy key,
+            # launcher, or isolation binding keeps the route (ADR-048).
+            route_profile_before = mcp_preview.route_profile_before
+        elif mcp_preview.action is McpRegistrationAction.REREGISTER:
             route_profile_before = "policy" if mcp_preview.route_profile == "strict" else "strict"
         else:
             route_profile_before = mcp_preview.route_profile
@@ -1491,6 +1584,11 @@ async def _codex_integration_step(
             f"  Plugin presence before apply: {plugin_preview.presence_before.value} "
             f"({plugin_preview.planned_file_count} managed files)"
         )
+        _emit_legacy_plugin_tree(
+            plugin_preview.notes,
+            removal_planned=activation_plan is not None
+            and activation_plan.legacy_plugin_tree_planned,
+        )
         if already_registered:
             typer.echo("  MCP is already registered; setup will still install/verify the plugin.")
         accepted = _confirm_project_setup(
@@ -1618,6 +1716,7 @@ async def _codex_integration_step(
         activation_report: dict[str, JsonValue] = {
             "codex_home": str(selected_codex_home),
             "config_path": str(selected_codex_home / "config.toml"),
+            "legacy_activation": activated.legacy_activation,
             "marketplace_registered": activated.marketplace_registered,
             "outcome": "active",
             "plugin_enabled": activated.plugin_enabled,
@@ -1643,6 +1742,8 @@ async def _codex_integration_step(
             ),
             "codex_home": str(selected_codex_home),
             "config_path": str(selected_codex_home / "config.toml"),
+            # A Yoetz-era activation stays live until this skipped step runs (ADR-048).
+            "legacy_activation": activation_plan.inspection.legacy_activation,
             "marketplace_registered": activation_plan.inspection.marketplace_registered,
             "outcome": "skipped",
             "plugin_enabled": activation_plan.inspection.plugin_enabled,
@@ -1897,12 +1998,40 @@ def _credential_store_unavailable_line() -> str:
     )
 
 
-async def _service_reachability(*, start_if_absent: bool = False) -> dict[str, JsonValue]:
+def _report_folder_refusal(reason: str) -> int:
+    """Name a folder refusal on stderr: token, remedy, and continuation (ADR-048).
+
+    stdout is never written, so a ``--json`` report keeps its released shape. Returns the exit
+    code the refusal carries (unsafe storage: 20).
+    """
+
+    from finishup.cli.service_installation import path_refusal_failure
+
+    return path_refusal_failure(
+        reason,
+        json_output=False,
+        stderr_writer=lambda text: typer.echo(text, err=True),
+        stdout_writer=lambda _value: None,
+    )
+
+
+async def _service_reachability_observed(
+    *, start_if_absent: bool = False
+) -> tuple[dict[str, JsonValue], str | None]:
+    """Probe the service; also return the folder-refusal token when the connect was refused.
+
+    A refusal because FinishUP's local folders cannot be used safely (data under both product
+    names, an unusable isolation root) happens before any endpoint is touched. It is not an
+    absent service, so the token comes back for the caller to name instead of being folded into
+    ``reachable: false``.
+    """
+
     from finishup.cli.app import build_service_client
     from finishup.cli.bootstrap import spawned_startup_failure_line
     from finishup.ports.control import ControlClientKind, ControlError
-    from finishup.service.client import connect_service_on_demand
+    from finishup.service.client import connect_service_on_demand, path_refusal_reason
 
+    unreachable: dict[str, JsonValue] = {"reachable": False, "state": None, "vault_mode": None}
     try:
         client = (
             await connect_service_on_demand(ControlClientKind.CLI)
@@ -1914,19 +2043,31 @@ async def _service_reachability(*, start_if_absent: bool = False) -> dict[str, J
         finally:
             await client.close()
     except ControlError as error:
+        refusal = path_refusal_reason(error)
+        if refusal is not None:
+            return unreachable, refusal
         # The service this command started exited while starting: name its stage and record
         # (#1040) before the caller reports the service as unreachable.
         startup_line = spawned_startup_failure_line(error)
         if startup_line is not None:
             typer.echo(startup_line, err=True)
-        return {"reachable": False, "state": None, "vault_mode": None}
+        return unreachable, None
     vault_mode = getattr(status, "vault_mode", None)
     state = getattr(getattr(status, "state", None), "value", getattr(status, "state", None))
     return {
         "reachable": True,
         "state": state if type(state) is str else None,
         "vault_mode": vault_mode if type(vault_mode) is str else None,
-    }
+    }, None
+
+
+async def _service_reachability(*, start_if_absent: bool = False) -> dict[str, JsonValue]:
+    """Probe the service; a folder refusal is named on stderr, never only as unreachable."""
+
+    service, refusal = await _service_reachability_observed(start_if_absent=start_if_absent)
+    if refusal is not None:
+        _report_folder_refusal(refusal)
+    return service
 
 
 # A draining service unlinks its endpoints and releases singleton authority before the
@@ -3046,6 +3187,10 @@ def _emit_human_report(report: dict[str, JsonValue]) -> None:
                 f"{activation.get('state') or 'unknown'} "
                 f"(outcome={activation.get('outcome') or 'observed'})"
             )
+            if activation.get("legacy_activation") is True:
+                typer.echo(
+                    "  Earlier Yoetz plugin activation: still present (integrate migrates it)"
+                )
             if type(activation.get("next_command")) is str:
                 typer.echo(f"  Next: {activation['next_command']}")
             config_path = activation.get("config_path")
@@ -3101,7 +3246,11 @@ def _emit_human_report(report: dict[str, JsonValue]) -> None:
                 typer.echo(f"  Observation consent: {outcome}")
         check_policy = registration.get("check_policy")
         if isinstance(check_policy, dict):
-            typer.echo(f"  Approved-check policy: {check_policy.get('outcome') or 'absent'}")
+            policy_outcome = check_policy.get("outcome") or "absent"
+            if policy_outcome == "ambiguous":
+                typer.echo(f"  Approved-check policy: ambiguous ({_POLICY_AMBIGUOUS_TEXT})")
+            else:
+                typer.echo(f"  Approved-check policy: {policy_outcome}")
             digest = check_policy.get("policy_digest")
             if type(digest) is str:
                 typer.echo(f"  Approved-check policy digest: {digest}")
@@ -3198,6 +3347,7 @@ async def setup_status(*, json_output: bool) -> int:
             row["registered_route_profile"] = None
             row["registration_error"] = error.reason.value
         rows.append(row)
+    service, folder_refusal = await _service_reachability_observed()
     report: dict[str, JsonValue] = {
         "discovered": rows,
         "hosts": installation_rows(),
@@ -3205,9 +3355,13 @@ async def setup_status(*, json_output: bool) -> int:
         "marker_present": setup_marker_present(),
         "platform": _platform_diagnostics(),
         "schema": _STATUS_SCHEMA,
-        "service": await _service_reachability(),
+        "service": service,
     }
     _emit(report, json_output=json_output)
+    if folder_refusal is not None:
+        # The released report (setup status 2.0.0) has no field for this, so stdout keeps its
+        # shape and the refusal goes to stderr with the exit code it carries (ADR-048).
+        return _report_folder_refusal(folder_refusal)
     return 0
 
 
@@ -3321,6 +3475,8 @@ async def integrate_mcp(
                     "harness": harness,
                     "inspected_codex_home": str(selected_home),
                     "isolation_binding": observation.isolation_binding,
+                    # ``legacy_only`` reads as owned but outdated; integrate migrates it (ADR-048).
+                    "legacy_registration": observation.legacy_registration,
                     "route_profile": observation.route_profile,
                     "state": observation.state.value,
                     "registered_profile": _registered_profile,
@@ -3340,6 +3496,7 @@ async def integrate_mcp(
                         "harness": harness,
                         "inspected_codex_home": str(selected_home),
                         "isolated_root": preview.isolated_root,
+                        "legacy_registration": preview.legacy_registration,
                         "preview_digest": preview.preview_digest,
                         "route_profile": preview.route_profile,
                         "serve_command": list(preview.serve_command),
@@ -3411,7 +3568,11 @@ async def integrate_mcp(
             # observed profile: ``noop``/register match the previewing route,
             # ``reregister`` means the entry carries the other one.
             route_profile_before = (
-                ("policy" if preview.route_profile == "strict" else "strict")
+                # Observed by the adapter when it can be: a legacy-key, launcher, or isolation
+                # re-registration keeps the route (ADR-048).
+                preview.route_profile_before
+                if preview.route_profile_before is not None
+                else ("policy" if preview.route_profile == "strict" else "strict")
                 if preview.action is McpRegistrationAction.REREGISTER
                 else preview.route_profile
             )
@@ -3438,6 +3599,7 @@ async def integrate_mcp(
                     "harness": harness,
                     "inspected_codex_home": str(selected_home),
                     "isolated_root": preview.isolated_root,
+                    "legacy_registration": preview.legacy_registration,
                     "preview_digest": preview.preview_digest,
                     "route_profile": preview.route_profile,
                     "route_profile_before": route_profile_before,

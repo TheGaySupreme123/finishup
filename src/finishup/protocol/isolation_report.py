@@ -29,6 +29,7 @@ __all__ = [
     "PresentContentObservation",
 ]
 
+# Frozen legacy identifier (ADR-048): the protocol 0.1 tag namespace.
 ISOLATION_REPORT_SCHEMA: Literal["yoetz.isolation-report/1"] = "yoetz.isolation-report/1"
 # Upper bound on bytes one content observation reads; a larger file is reported ``oversized``.
 CONTENT_OBSERVATION_BYTE_LIMIT = 16_777_216

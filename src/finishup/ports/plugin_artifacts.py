@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Literal, Protocol, cast
+from typing import Final, Literal, Protocol, cast
 
 from finishup.domain.values import JsonObject, RequestId, request_id, validate_sha256_digest
 from finishup.protocol.canonical import JsonValue, canonical_encode
@@ -15,7 +15,9 @@ from finishup.protocol.errors import ProtocolValueError
 __all__ = [
     "ArtifactAuthority",
     "ArtifactTarget",
+    "LEGACY_INSTALLATIONS",
     "HostSurface",
+    "LegacyInstallation",
     "ManagedPluginFile",
     "McpOwnership",
     "McpOwnershipState",
@@ -41,6 +43,16 @@ _PATH_RE = re.compile(r"^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$", re.ASCII)
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:+/-]{0,127}$", re.ASCII)
 _MAX_FILES = 64
 _MAX_ROOT = 4_096
+
+# What a host holds under the pre-rename ``yoetz`` plugin name (ADR-048): ``none`` (nothing),
+# ``legacy_only`` (the only FinishUP-owned install still uses the old name: owned but outdated),
+# ``duplicate`` (owned installs under both names), or ``foreign`` (an old-name install FinishUP
+# cannot prove is its own; it is reported and never touched). The same tokens name a legacy MCP
+# registration key in ``finishup.ports.harness_mcp``.
+type LegacyInstallation = Literal["none", "legacy_only", "duplicate", "foreign"]
+LEGACY_INSTALLATIONS: Final[frozenset[str]] = frozenset(
+    {"none", "legacy_only", "duplicate", "foreign"}
+)
 
 
 class PluginFormatProfile(str, Enum):  # noqa: UP042 - exact public enum
@@ -364,9 +376,12 @@ class PluginArtifactStatus:
     managed_marker_valid: bool
     rollback_available: bool
     proof: tuple[PluginProofStatus, ...]
+    legacy_installation: LegacyInstallation = "none"
 
     def __post_init__(self) -> None:
         if type(self.state) is not PluginArtifactState:
+            raise ValueError("plugin_status_invalid")
+        if self.legacy_installation not in LEGACY_INSTALLATIONS:
             raise ValueError("plugin_status_invalid")
         if type(self.operation_state) is not PluginOperationState:
             raise ValueError("plugin_status_invalid")

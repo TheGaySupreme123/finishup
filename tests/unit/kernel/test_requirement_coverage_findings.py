@@ -240,6 +240,20 @@ def test_a_no_material_work_decision_answers_the_empty_scope_unless_work_was_edi
     assert build_task_statement_unmapped_assessment(prose_only, **unchanged) is not None
 
 
+@pytest.mark.parametrize("marker", ("yoetz-no-material-work", "finishup-no-material-work"))
+def test_a_no_material_work_decision_answers_the_empty_scope_under_either_spelling(
+    marker: str,
+) -> None:
+    """ADR-048: decision statements recorded before the rename keep the ``yoetz`` spelling."""
+
+    decided = _with_decision(
+        _with_completion(_statement_case(empty_reason=True)),
+        f"No material work.\n{marker}:{_STATEMENT_EVENT}",
+    )
+
+    assert build_task_statement_unmapped_assessment(decided, workspace_changed=False) is None
+
+
 def test_a_no_material_work_decision_does_not_survive_shell_only_file_changes() -> None:
     """Shell writes are command actions, so the check-time capture must witness no change."""
 

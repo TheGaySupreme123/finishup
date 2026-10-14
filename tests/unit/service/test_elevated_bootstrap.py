@@ -13,6 +13,7 @@ from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 from tests.builders.privacy_policies import (
     INSTALLATION_ID,
     local_only_policy,
@@ -22,7 +23,8 @@ from tests.builders.privacy_policies import (
 import finishup.service.elevated_bootstrap as elevated_bootstrap
 from finishup.cli.privacy_setup import build_candidate_policy, recipe_answers
 from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, ProviderBinding
-from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.canonical import JsonValue, canonical_digest
+from finishup.protocol.consent import AgentSafePendingModel
 from finishup.protocol.schemas import validate_schema_instance
 from finishup.service.elevated_bootstrap import (
     ElevatedBootstrapError,
@@ -150,14 +152,18 @@ def test_prepare_projection_contains_only_agent_safe_review_fields(tmp_path: Pat
         "repository_privacy_recipe",
         "repository_privacy_preview",
         "authorize_command",
+        "coordination_binding",
         "review_command",
         "risk_class",
         "schema",
         "target_digest",
     }
-    assert projection["schema"] == "yoetz.consent.pending-agent/6"
+    # New output is the current /7 contract, which names the current launcher (ADR-048).
+    assert projection["schema"] == "yoetz.consent.pending-agent/7"
+    assert projection["coordination_binding"] is None
     assert projection["review_command"] == ["finishup", "consent", "review"]
     assert projection["authorize_command"] == ["finishup", "consent", "authorize"]
+    validate_schema_instance("pending-agent", "7.0.0", projection)
     assert projection["repository_privacy_recipe"] is None
     assert projection["repository_privacy_preview"] is None
     assert projection["import_publication_preview"] is None
@@ -387,7 +393,7 @@ def test_legacy_pending_record_is_invalidated_not_migrated(tmp_path: Path, versi
     path.write_text(
         json.dumps(
             {
-                "schema": f"finishup.elevated-bootstrap.pending/{version}",
+                "schema": f"yoetz.elevated-bootstrap.pending/{version}",
                 "confirmation_phrase": "reusable value",
             }
         )
@@ -414,7 +420,7 @@ def test_legacy_claim_marker_remains_owned_and_blocks_replacement(
     marker.write_text(
         json.dumps(
             {
-                "schema": f"finishup.elevated-bootstrap.pending/{version}",
+                "schema": f"yoetz.elevated-bootstrap.pending/{version}",
                 "pending_id": "possibly-live-owner",
             }
         )
@@ -426,6 +432,152 @@ def test_legacy_claim_marker_remains_owned_and_blocks_replacement(
     assert replacement.value.reason == "review_in_progress"
     assert marker.is_file()
     assert not (root / "elevated-bootstrap-audit.jsonl").exists()
+
+
+_PRE_RENAME_DANGER_OPERATIONS = (
+    "provider_credential_set",
+    "provider_credential_rotate",
+    "repository_privacy_grant",
+)
+_LEGACY_DANGER_TEXTS = elevated_bootstrap._LEGACY_DANGER_TEXTS  # pyright: ignore[reportPrivateUsage]
+_danger_digest = elevated_bootstrap._danger_digest  # pyright: ignore[reportPrivateUsage]
+
+
+def _prepare_pre_rename_pending(
+    tmp_path: Path, operation: str, *, danger_text: str | None = None
+) -> dict[str, Any]:
+    """Rewrite a fresh pending as a pre-rename service recorded it: its danger text, its digest."""
+
+    if operation == "repository_privacy_grant":
+        grant = _grant_binding()
+        prepare_pending(
+            "repository_privacy_grant",
+            target_digest=grant_target_digest(grant),
+            grant_binding=grant,
+            _state=tmp_path,
+        )
+    else:
+        prepare_pending(
+            cast(Any, operation), target_digest=_TARGET, provider_binding=_BINDING, _state=tmp_path
+        )
+    path = tmp_path / "elevated-bootstrap" / "elevated-bootstrap-pending.json"
+    payload = cast(dict[str, Any], json.loads(path.read_text()))
+    payload["danger_text"] = _LEGACY_DANGER_TEXTS[operation] if danger_text is None else danger_text
+    payload["danger_digest"] = _danger_digest(
+        operation=payload["operation"],
+        risk_class=payload["risk_class"],
+        danger_text=payload["danger_text"],
+        target_digest=payload["target_digest"],
+        pending_id=payload["pending_id"],
+        expires_at_unix=payload["expires_at_unix"],
+        provider_binding=payload.get("provider_binding"),
+        grant_binding=payload.get("grant_binding"),
+    )
+    path.write_text(json.dumps(payload))
+    return payload
+
+
+def test_pre_rename_danger_texts_are_the_released_texts_spelled_before_the_rename() -> None:
+    """Only operations whose text changed are listed, each differing only by product spelling."""
+
+    for operation, legacy in _LEGACY_DANGER_TEXTS.items():
+        current = elevated_bootstrap.operation_spec(operation).danger_text
+        assert legacy != current
+        assert "finishup" not in legacy.lower()
+        assert (
+            legacy.replace("`yoetz ", "`finishup ").replace("Yoetz cannot", "FinishUP cannot")
+            == current
+        )
+    assert set(_LEGACY_DANGER_TEXTS) == set(_PRE_RENAME_DANGER_OPERATIONS)
+
+
+@pytest.mark.parametrize("operation", _PRE_RENAME_DANGER_OPERATIONS)
+def test_pre_rename_pending_expires_and_does_not_block_a_new_prepare(
+    tmp_path: Path, operation: str
+) -> None:
+    with patch("finishup.service.elevated_bootstrap.time.time", return_value=1_000):
+        recorded = _prepare_pre_rename_pending(tmp_path, operation)
+        pending = load_pending(_state=tmp_path)
+        assert pending is not None
+        assert pending.danger_text == _LEGACY_DANGER_TEXTS[operation]
+        projection = cast(dict[str, Any], projection_for_status(pending))
+        validate_schema_instance("pending-agent", "7.0.0", projection)
+        with pytest.raises(ElevatedBootstrapError) as active:
+            prepare_pending("vault_initialize", target_digest=_TARGET, _state=tmp_path)
+        assert active.value.reason == "pending_already_active"
+
+    with patch("finishup.service.elevated_bootstrap.time.time", return_value=1_901):
+        status = cast(dict[str, Any], status_payload(_state=tmp_path))
+        assert status["pending"] is None
+        replacement = prepare_pending("vault_initialize", target_digest=_TARGET, _state=tmp_path)
+    assert replacement.operation == "vault_initialize"
+    audit = (tmp_path / "elevated-bootstrap" / "elevated-bootstrap-audit.jsonl").read_text()
+    assert (
+        f'"event":"expire","operation":"{operation}","pending_id":"{recorded["pending_id"]}"'
+        in (audit)
+    )
+
+
+@pytest.mark.parametrize("operation", _PRE_RENAME_DANGER_OPERATIONS)
+def test_pre_rename_pending_reviews_and_clears_with_the_text_its_owner_was_shown(
+    tmp_path: Path, operation: str
+) -> None:
+    _prepare_pre_rename_pending(tmp_path, operation)
+    claimed = claim_pending_for_review(_state=tmp_path)
+    assert claimed.danger_text == _LEGACY_DANGER_TEXTS[operation]
+    complete_review(claimed, outcome="denied", _state=tmp_path)
+    assert load_pending(_state=tmp_path) is None
+
+    _prepare_pre_rename_pending(tmp_path, operation)
+    clear_pending(_state=tmp_path)
+    assert load_pending(_state=tmp_path) is None
+    prepare_pending("vault_initialize", target_digest=_TARGET, _state=tmp_path)
+
+
+def test_a_modified_or_misplaced_pre_rename_danger_text_still_reads_as_tampering(
+    tmp_path: Path,
+) -> None:
+    legacy = _LEGACY_DANGER_TEXTS
+    for operation, text in (
+        # One character changed, digest recomputed over the changed text.
+        ("provider_credential_set", legacy["provider_credential_set"].replace("vault", "vau1t")),
+        # Another operation's pre-rename text.
+        ("provider_credential_set", legacy["provider_credential_rotate"]),
+        # A pre-rename text on an operation whose text never changed.
+        ("vault_initialize", legacy["provider_credential_set"]),
+    ):
+        if operation == "vault_initialize":
+            prepare_pending("vault_initialize", target_digest=_TARGET, _state=tmp_path)
+            path = tmp_path / "elevated-bootstrap" / "elevated-bootstrap-pending.json"
+            payload = cast(dict[str, Any], json.loads(path.read_text()))
+            payload["danger_text"] = text
+            payload["danger_digest"] = _danger_digest(
+                operation=payload["operation"],
+                risk_class=payload["risk_class"],
+                danger_text=text,
+                target_digest=payload["target_digest"],
+                pending_id=payload["pending_id"],
+                expires_at_unix=payload["expires_at_unix"],
+                provider_binding=None,
+            )
+            path.write_text(json.dumps(payload))
+        else:
+            _prepare_pre_rename_pending(tmp_path, operation, danger_text=text)
+        with pytest.raises(ElevatedBootstrapError) as tampered:
+            load_pending(_state=tmp_path)
+        assert tampered.value.reason == "pending_tampered"
+        clear_pending(_state=tmp_path)
+
+    # The exact pre-rename text under a digest that does not cover it is still tampering.
+    _prepare_pre_rename_pending(tmp_path, "provider_credential_rotate")
+    path = tmp_path / "elevated-bootstrap" / "elevated-bootstrap-pending.json"
+    payload = cast(dict[str, Any], json.loads(path.read_text()))
+    payload["danger_digest"] = "sha256:" + ("0" * 64)
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ElevatedBootstrapError) as stale:
+        load_pending(_state=tmp_path)
+    assert stale.value.reason == "pending_tampered"
+    assert path.is_file()
 
 
 def test_expiry_consumes_before_review(tmp_path: Path) -> None:
@@ -659,3 +811,58 @@ def test_status_contains_nullable_pending_and_catalog(tmp_path: Path) -> None:
     validate_schema_instance("catalog", "7.0.0", prepared["consent_catalog"])
     validate_schema_instance("pending-agent", "7.0.0", prepared["pending"])
     validate_schema_instance("status", "7.0.0", prepared)
+
+
+def test_status_and_catalog_name_the_deprecated_alias_when_asked(tmp_path: Path) -> None:
+    """A run through the deprecated alias names the one launcher that install has (ADR-048)."""
+
+    prepare_pending(
+        "provider_credential_set", target_digest=_TARGET, provider_binding=_BINDING, _state=tmp_path
+    )
+    status = cast(dict[str, Any], status_payload(command_head="yoetz", _state=tmp_path))
+    assert status["pending"]["schema"] == "yoetz.consent.pending-agent/7"
+    assert status["pending"]["review_command"] == ["yoetz", "consent", "review"]
+    assert status["pending"]["authorize_command"] == ["yoetz", "consent", "authorize"]
+    hints = [entry["prepare_hint"] for entry in status["consent_catalog"]["operations"]]
+    assert hints and all(hint.startswith("yoetz ") for hint in hints)
+    validate_schema_instance("status", "7.0.0", status)
+    current = cast(dict[str, Any], catalog_payload())
+    assert all(entry["prepare_hint"].startswith("finishup ") for entry in current["operations"])
+
+
+def test_pending_projection_names_the_launcher_its_version_binds(tmp_path: Path) -> None:
+    """pending-agent/6 keeps the released legacy head; /7 names the current launcher (ADR-048)."""
+
+    pending = prepare_pending(
+        "provider_credential_set", target_digest=_TARGET, provider_binding=_BINDING, _state=tmp_path
+    )
+    legacy = cast(dict[str, Any], projection_for_status(pending, _version="6"))
+    current = cast(dict[str, Any], projection_for_status(pending, _version="7"))
+
+    assert legacy["schema"] == "yoetz.consent.pending-agent/6"
+    assert current["schema"] == "yoetz.consent.pending-agent/7"
+    assert legacy["review_command"][0] == legacy["authorize_command"][0] == "yoetz"
+    assert current["review_command"][0] == current["authorize_command"][0] == "finishup"
+    validate_schema_instance("pending-agent", "6.0.0", legacy)
+    validate_schema_instance("pending-agent", "7.0.0", current)
+    # A /7 projection a pre-rename development service emitted still validates and parses.
+    pre_rename = {
+        **current,
+        "review_command": ["yoetz", "consent", "review"],
+        "authorize_command": ["yoetz", "consent", "authorize"],
+    }
+    validate_schema_instance("pending-agent", "7.0.0", cast(JsonValue, pre_rename))
+    assert AgentSafePendingModel.model_validate(pre_rename).review_command[0] == "yoetz"
+    # The released /6 contract never names the current launcher, and one projection never mixes.
+    with pytest.raises(ValidationError):
+        AgentSafePendingModel.model_validate(
+            {
+                **legacy,
+                "review_command": ["finishup", "consent", "review"],
+                "authorize_command": ["finishup", "consent", "authorize"],
+            }
+        )
+    with pytest.raises(ValidationError):
+        AgentSafePendingModel.model_validate(
+            {**current, "authorize_command": ["yoetz", "consent", "authorize"]}
+        )

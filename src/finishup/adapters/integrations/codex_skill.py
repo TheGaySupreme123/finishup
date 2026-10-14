@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Final, Literal, Protocol, cast
 
 from finishup.domain.values import JsonObject
 from finishup.ports.integrations import (
@@ -55,8 +55,16 @@ __all__ = [
 ]
 
 _ADAPTER_VERSION = "codex-skill/0.1.0"
+# Frozen legacy identifier (ADR-048): the marker name and schema are read by every runtime that
+# validates an installed skill, in legacy and renamed directories alike.
 _MARKER_NAME = ".yoetz-install.json"
 _MARKER_SCHEMA = "yoetz.codex-skill-install/1"
+_SKILL_DIRECTORY: Final = "finishup"
+# Frozen legacy identifier (ADR-048): the skill directory Yoetz 0.1-0.2 installed. A tree there
+# that matches its own install marker is migrated (removed) by install and remove; any other
+# content under that name is owner content and stays.
+_LEGACY_SKILL_DIRECTORY: Final = "yoetz"
+_MAX_LEGACY_MEMBERS: Final = 64
 _RESOURCE_MANIFEST_LIMIT = 1_048_576
 _SOURCE_FILE_LIMIT = 262_144
 _EXPECTED_PACKAGE_PATHS: Mapping[str, str] = {
@@ -109,6 +117,12 @@ class _SourceBundle:
     members: Mapping[str, bytes]
 
 
+# The Yoetz-era skill tree beside FinishUP's (ADR-048): ``absent``, ``owned`` (consistent with
+# its own install marker, so install and remove take it), or ``retained`` (anything else; never
+# touched).
+type LegacySkillTree = Literal["absent", "owned", "retained"]
+
+
 @dataclass(frozen=True, slots=True, repr=False)
 class DestinationInspection:
     target: IntegrationTarget
@@ -119,6 +133,8 @@ class DestinationInspection:
     managed_marker_valid: bool
     target_identity: str
     parent_identity: str
+    legacy_tree: LegacySkillTree = "absent"
+    legacy_digest: str | None = None
 
     def __repr__(self) -> str:
         return (
@@ -495,16 +511,88 @@ def _file_state(path: Path, expected: IntegrationFile) -> JsonObject:
     )
 
 
+def _marker_consistent(members: Mapping[str, bytes]) -> bool:
+    """True when a tree byte-matches the inventory of its own valid skill install marker."""
+
+    marker_raw = members.get(_MARKER_NAME)
+    if marker_raw is None:
+        return False
+    try:
+        parsed = strict_json_parse(marker_raw)
+    except ProtocolValueError:
+        return False
+    if not isinstance(parsed, Mapping):
+        return False
+    marker = cast(Mapping[str, JsonValue], parsed)
+    if marker.get("schema") != _MARKER_SCHEMA:
+        return False
+    body = {name: value for name, value in marker.items() if name != "marker_digest"}
+    if marker.get("marker_digest") != canonical_digest(body):
+        return False
+    rows = marker.get("managed_files")
+    if type(rows) is not list:
+        return False
+    inventory: dict[str, tuple[str, int]] = {}
+    for raw_row in rows:
+        if not isinstance(raw_row, Mapping):
+            return False
+        row = cast(Mapping[str, JsonValue], raw_row)
+        relative_path, digest, size = row.get("relative_path"), row.get("sha256"), row.get("size")
+        if type(relative_path) is not str or type(digest) is not str or type(size) is not int:
+            return False
+        if relative_path in inventory or relative_path == _MARKER_NAME:
+            return False
+        inventory[relative_path] = (digest, size)
+    actual = {
+        path: (_sha(data), len(data)) for path, data in members.items() if path != _MARKER_NAME
+    }
+    return inventory == actual
+
+
+def _legacy_tree(parent: Path) -> tuple[LegacySkillTree, str | None]:
+    """Classify the Yoetz-era skill tree beside FinishUP's without following links (ADR-048)."""
+
+    legacy = parent / _LEGACY_SKILL_DIRECTORY
+    if not legacy.exists() and not legacy.is_symlink():
+        return "absent", None
+    if legacy.is_symlink() or not legacy.is_dir():
+        return "retained", None
+    members: dict[str, bytes] = {}
+    try:
+        for path in legacy.rglob("*"):
+            if path.is_symlink():
+                return "retained", None
+            if path.is_dir():
+                continue
+            facts = path.lstat()
+            if (
+                not stat.S_ISREG(facts.st_mode)
+                or facts.st_nlink != 1
+                or facts.st_size > _SOURCE_FILE_LIMIT
+                or len(members) >= _MAX_LEGACY_MEMBERS
+            ):
+                return "retained", None
+            members[path.relative_to(legacy).as_posix()] = path.read_bytes()
+    except OSError:
+        return "retained", None
+    if not _marker_consistent(members):
+        return "retained", None
+    return "owned", canonical_digest(
+        {"files": [{"path": path, "digest": _sha(data)} for path, data in sorted(members.items())]}
+    )
+
+
 def inspect_destination(target: IntegrationTarget, source: SkillSource) -> DestinationInspection:
     """Classify only the profile-fixed destination without mutating it."""
 
     root, target_identity = _validated_project(target)
     parent = validated_managed_parent(root, (".agents", "skills"), create=False)
     parent_identity = _skill_parent_identity(root)
-    destination = parent / "finishup"
+    destination = parent / _SKILL_DIRECTORY
     if destination.is_symlink():
         raise _error(IntegrationReason.TARGET_UNSAFE)
     siblings = destination.parent
+    # Frozen legacy identifier (ADR-048): crash-residue prefixes any runtime may have left.
     if siblings.exists() and any(
         child.name.startswith((".yoetz.stage-", ".yoetz.rollback-", ".yoetz.remove-"))
         for child in siblings.iterdir()
@@ -551,6 +639,7 @@ def inspect_destination(target: IntegrationTarget, source: SkillSource) -> Desti
                 "marker_valid": marker_valid,
             }
         )
+    legacy_tree, legacy_digest = _legacy_tree(parent)
     return DestinationInspection(
         target,
         destination,
@@ -560,6 +649,8 @@ def inspect_destination(target: IntegrationTarget, source: SkillSource) -> Desti
         marker_valid,
         target_identity,
         parent_identity,
+        legacy_tree,
+        legacy_digest,
     )
 
 
@@ -611,22 +702,28 @@ def _preview(
     command: SkillPreviewCommand,
 ) -> IntegrationPreview:
     compatibility = "supported" if source.harness_tested_set else "unsupported"
-    warnings = () if compatibility == "supported" else ("unprofiled_harness",)
+    warnings: tuple[str, ...] = () if compatibility == "supported" else ("unprofiled_harness",)
+    if inspection.legacy_tree != "absent":
+        # ``legacy_skill_tree_owned``: this approval also removes the Yoetz-era tree;
+        # ``legacy_skill_tree_retained``: it is not provably FinishUP's and stays (ADR-048).
+        warnings = tuple(sorted((*warnings, f"legacy_skill_tree_{inspection.legacy_tree}")))
     changes = _changes(inspection, source, command.requested_action)
-    digest = canonical_digest(
-        {
-            "action": command.requested_action.value,
-            "compatibility": compatibility,
-            "current_files": [dict(row) for row in inspection.file_states],
-            "installed_digest": inspection.installed_digest,
-            "replace_modified": command.replace_modified,
-            "scope": command.target.scope.value,
-            "source_digest": source.resource_set_digest,
-            "target_identity": inspection.target_identity,
-            "parent_identity": inspection.parent_identity,
-            "warnings": list(warnings),
-        }
-    )
+    digest_input: dict[str, JsonValue] = {
+        "action": command.requested_action.value,
+        "compatibility": compatibility,
+        "current_files": [dict(row) for row in inspection.file_states],
+        "installed_digest": inspection.installed_digest,
+        "replace_modified": command.replace_modified,
+        "scope": command.target.scope.value,
+        "source_digest": source.resource_set_digest,
+        "target_identity": inspection.target_identity,
+        "parent_identity": inspection.parent_identity,
+        "warnings": cast(list[JsonValue], list(warnings)),
+    }
+    if inspection.legacy_tree != "absent":
+        digest_input["legacy_tree"] = inspection.legacy_tree
+        digest_input["legacy_digest"] = inspection.legacy_digest
+    digest = canonical_digest(digest_input)
     return IntegrationPreview(
         command.requested_action,
         inspection.state,
@@ -744,6 +841,31 @@ def _remove_tree_fd(parent_fd: int, name: str, *, depth: int = 0) -> None:
     finally:
         os.close(directory_fd)
     os.rmdir(name, dir_fd=parent_fd)
+
+
+def _check_legacy_tree(inspection: DestinationInspection, reason: IntegrationReason) -> None:
+    """Refuse unless the Yoetz-era tree is still exactly the owned tree the preview named."""
+
+    state, digest = _legacy_tree(inspection.destination.parent)
+    if state != "owned" or digest != inspection.legacy_digest:
+        raise _error(reason)
+
+
+def _remove_legacy_tree_fd(
+    parent_fd: int, inspection: DestinationInspection, request_id: str
+) -> None:
+    """Remove the approved Yoetz-era skill tree through the retained parent (ADR-048)."""
+
+    # Frozen legacy identifier (ADR-048): the ``.yoetz.remove-`` residue prefix marks the
+    # destination partial until the next run, exactly like FinishUP's own removal.
+    staging_name = f".yoetz.remove-legacy-{request_id}"
+    if staging_name in os.listdir(parent_fd):
+        raise _error(IntegrationReason.WRITE_FAILED)
+    _check_legacy_tree(inspection, IntegrationReason.WRITE_FAILED)
+    os.rename(_LEGACY_SKILL_DIRECTORY, staging_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+    _fsync_fd(parent_fd)
+    _remove_tree_fd(parent_fd, staging_name)
+    _fsync_fd(parent_fd)
 
 
 def _open_skill_parent_fd(
@@ -891,9 +1013,38 @@ class CodexSkillIntegration(IntegrationsPort):
             raise _error(IntegrationReason.CONFIRMATION_REQUIRED)
         if command.preview_digest != current.preview_digest:
             raise _error(IntegrationReason.PREVIEW_STALE)
-        if inspection.state is IntegrationState.INSTALLED_EXACT:
+        legacy_owned = inspection.legacy_tree == "owned"
+        if inspection.state is IntegrationState.INSTALLED_EXACT and not legacy_owned:
             return IntegrationResult(
                 IntegrationAction.NOOP,
+                inspection.state,
+                inspection.state,
+                bundle.source.resource_set_digest,
+                inspection.installed_digest,
+                (),
+                current.preview_digest,
+            )
+        if legacy_owned:
+            _check_legacy_tree(inspection, IntegrationReason.PREVIEW_STALE)
+        if inspection.state is IntegrationState.INSTALLED_EXACT:
+            # Only the Yoetz-era tree beside an exact install remains to migrate (ADR-048).
+            root, _target_identity = _validated_project(command.target)
+            parent_fd = _open_skill_parent_fd(
+                root,
+                create=False,
+                target_identity=inspection.target_identity,
+                parent_identity=inspection.parent_identity,
+            )
+            try:
+                _remove_legacy_tree_fd(parent_fd, inspection, str(command.request_id))
+            except IntegrationError:
+                raise
+            except OSError as exc:
+                raise _error(IntegrationReason.WRITE_FAILED) from exc
+            finally:
+                os.close(parent_fd)
+            return IntegrationResult(
+                command.requested_action,
                 inspection.state,
                 inspection.state,
                 bundle.source.resource_set_digest,
@@ -918,9 +1069,10 @@ class CodexSkillIntegration(IntegrationsPort):
             target_identity=inspection.target_identity,
             parent_identity=inspection.parent_identity,
         )
+        # Frozen legacy identifier (ADR-048): crash-residue prefixes shared with older runtimes.
         stage_name = f".yoetz.stage-{command.request_id}"
         rollback_name = f".yoetz.rollback-{command.request_id}"
-        destination_name = "finishup"
+        destination_name = _SKILL_DIRECTORY
         try:
             existing_names = set(os.listdir(parent_fd))
             if stage_name in existing_names or rollback_name in existing_names:
@@ -949,6 +1101,9 @@ class CodexSkillIntegration(IntegrationsPort):
             if rollback_name in os.listdir(parent_fd):
                 _remove_tree_fd(parent_fd, rollback_name)
                 _fsync_fd(parent_fd)
+            if legacy_owned:
+                # FinishUP's tree is in place first, so the agent never loses its guidance.
+                _remove_legacy_tree_fd(parent_fd, inspection, str(command.request_id))
         except IntegrationError:
             raise
         except OSError as exc:
@@ -983,12 +1138,19 @@ class CodexSkillIntegration(IntegrationsPort):
                 command.request_id, command.target, IntegrationAction.REMOVE, False
             ),
         )
+        legacy_owned = inspection.legacy_tree == "owned"
         if (
             not command.explicitly_accepted
             or command.preview_digest != current.preview_digest
-            or inspection.state is not IntegrationState.INSTALLED_EXACT
+            or not (
+                inspection.state is IntegrationState.INSTALLED_EXACT
+                # A Yoetz-era tree alone is removable too (ADR-048).
+                or (inspection.state is IntegrationState.ABSENT and legacy_owned)
+            )
         ):
             raise _error(IntegrationReason.REMOVE_REFUSED)
+        if legacy_owned:
+            _check_legacy_tree(inspection, IntegrationReason.PREVIEW_STALE)
         root, _target_identity = _validated_project(command.target)
         parent_fd = _open_skill_parent_fd(
             root,
@@ -996,14 +1158,20 @@ class CodexSkillIntegration(IntegrationsPort):
             target_identity=inspection.target_identity,
             parent_identity=inspection.parent_identity,
         )
+        # Frozen legacy identifier (ADR-048): crash-residue prefix shared with older runtimes.
         staging_name = f".yoetz.remove-{command.request_id}"
         try:
-            if staging_name in os.listdir(parent_fd):
-                raise _error(IntegrationReason.PREVIEW_STALE)
-            os.rename("finishup", staging_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-            _fsync_fd(parent_fd)
-            _remove_tree_fd(parent_fd, staging_name)
-            _fsync_fd(parent_fd)
+            if inspection.state is IntegrationState.INSTALLED_EXACT:
+                if staging_name in os.listdir(parent_fd):
+                    raise _error(IntegrationReason.PREVIEW_STALE)
+                os.rename(
+                    _SKILL_DIRECTORY, staging_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd
+                )
+                _fsync_fd(parent_fd)
+                _remove_tree_fd(parent_fd, staging_name)
+                _fsync_fd(parent_fd)
+            if legacy_owned:
+                _remove_legacy_tree_fd(parent_fd, inspection, str(command.request_id))
         except IntegrationError:
             raise
         except OSError as exc:

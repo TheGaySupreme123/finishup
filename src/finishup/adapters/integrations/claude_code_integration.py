@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import os
 import platform
 import re
@@ -26,6 +27,7 @@ from typing import Final, Literal, Protocol, cast
 
 from finishup import __version__
 from finishup.adapters.integrations.launcher import resolve_finishup_launcher, valid_launcher
+from finishup.adapters.integrations.legacy_launchers import launcher_aliases, recorded_launcher
 from finishup.adapters.integrations.portable_plugin import PackagedPortableResources
 from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
@@ -33,6 +35,7 @@ from finishup.domain.observation_profiles import (
 )
 from finishup.domain.values import JsonObject, RequestId
 from finishup.domain.values import request_id as validate_request_id
+from finishup.legacy_names import LAUNCHER_NAMES, LEGACY_MCP_SERVER_NAME, MCP_SERVER_NAME
 from finishup.ports.integrations import (
     FINISHUP_WORKFLOW_TOOL_NAMES,
     HarnessHookProfile,
@@ -40,7 +43,9 @@ from finishup.ports.integrations import (
     HarnessProfile,
 )
 from finishup.ports.plugin_artifacts import (
+    LEGACY_INSTALLATIONS,
     ArtifactAuthority,
+    LegacyInstallation,
     ManagedPluginFile,
     McpOwnership,
     McpOwnershipState,
@@ -151,6 +156,27 @@ CLAUDE_CODE_HARNESS_PROFILE: Final = HarnessProfile(
 
 _MARKETPLACE_NAME: Final = "finishup-local"
 _PLUGIN_ID: Final = f"finishup@{_MARKETPLACE_NAME}"
+# The private marketplace and plugin Yoetz 0.1-0.2 installs registered with Claude Code
+# (ADR-048). The legacy tree is looked for only beside the owner-named managed root -- the
+# guided connection's ``<config>/plugins/marketplaces/yoetz-local`` -- never at a path a project
+# file names. A project that references it there, over a marker-valid tree, holds an owned legacy
+# install: connect, install, and update retire it in the same approval and remove takes it too.
+# The tree and Claude's user-level registration of it are shared by every project of the Claude
+# config root, so retiring one project's install uninstalls the plugin for that project and drops
+# that project's own declaration, never the shared tree or registration. Anything else under these
+# names is reported and never touched.
+_LEGACY_MARKETPLACE_NAME: Final = "yoetz-local"
+_LEGACY_PLUGIN_NAME: Final = "yoetz"
+_LEGACY_PLUGIN_ID: Final = f"{_LEGACY_PLUGIN_NAME}@{_LEGACY_MARKETPLACE_NAME}"
+# The entries a Yoetz-era ``--scope project`` marketplace add and plugin install/enable left in the
+# project's ``.claude/settings.json``: this project's declaration of the legacy install (ADR-048).
+_LEGACY_DECLARATION: Final = (
+    ("enabledPlugins", _LEGACY_PLUGIN_ID),
+    ("extraKnownMarketplaces", _LEGACY_MARKETPLACE_NAME),
+)
+_SETTINGS_STAGE_PREFIX: Final = ".finishup-claude-settings-"
+# Frozen legacy identifier (ADR-048): status and remove find ownership through these exact marker
+# names and schemas, written unchanged in both the renamed and the legacy marketplace directory.
 _MARKER_NAME: Final = ".yoetz-claude-marketplace-install.json"
 _MARKER_SCHEMA: Final = "yoetz.claude-code-marketplace-install/2"
 # Version 1 markers predate launcher binding; they remain readable (status/remove) but are
@@ -159,6 +185,7 @@ _LEGACY_MARKER_SCHEMAS: Final = frozenset({"yoetz.claude-code-marketplace-instal
 _EXPORT_MARKER_NAME: Final = ".yoetz-claude-plugin-export.json"
 _EXPORT_MARKER_SCHEMA: Final = "yoetz.claude-code-plugin-export/1"
 _RENDERER_VERSION: Final = "claude-code-plugin/0.4.0"
+# Frozen legacy identifier (ADR-048): crash-recovery residue the next run finds by name/prefix.
 _STAGE_PREFIX: Final = ".yoetz-claude-marketplace-stage-"
 _ROLLBACK_NAME: Final = ".yoetz-claude-marketplace-rollback"
 _MAX_FILE_BYTES: Final = 262_144
@@ -180,8 +207,9 @@ _FINISHUP_SCOPED_TOOL_MATCHER: Final = (
 )
 # Only the AI-powered ``check`` is routed through a host's automatic reviewer (issue #467); the
 # denial hook is scoped to its external and plugin-owned callable names so a held check is the only
-# thing it can ever report.
-_FINISHUP_CHECK_TOOL_MATCHER: Final = "^mcp__(finishup|plugin_finishup_finishup)__check$"
+# thing it can ever report. An owner-written registration still under the legacy ``yoetz`` key
+# exposes ``mcp__yoetz__check`` until the owner renames it (ADR-048).
+_FINISHUP_CHECK_TOOL_MATCHER: Final = "^mcp__(finishup|yoetz|plugin_finishup_finishup)__check$"
 _VERSION_RE: Final = re.compile(r"^(\d+)\.(\d+)\.(\d+)$", re.ASCII)
 
 
@@ -317,9 +345,13 @@ class ClaudeCodeMcpObservation:
     # policy/strict for admission, but has no host identity and therefore receives the generic
     # guidance body rather than Claude's compact body.
     host_profile: Literal["generic", "claude"] | None = None
+    # What the legacy ``yoetz`` registration key holds across the observed sources (ADR-048).
+    legacy_registration: LegacyInstallation = "none"
 
     def __post_init__(self) -> None:
         if type(self.ownership_state) is not McpOwnershipState:
+            raise ValueError("claude_code_mcp_observation_invalid")
+        if self.legacy_registration not in LEGACY_INSTALLATIONS:
             raise ValueError("claude_code_mcp_observation_invalid")
         if self.winning_source is not None and type(self.winning_source) is not ClaudeCodeMcpSource:
             raise ValueError("claude_code_mcp_observation_invalid")
@@ -376,12 +408,16 @@ class ClaudeCodePluginStatus:
     # Whether the target host version is an exactly proven cell (``tested``) or a compatible
     # release admitted on the floor alone (``untested``); ``None`` when below the floor (#656).
     version_provenance: ClaudeCodeVersionProvenance | None = None
+    # What the legacy ``yoetz-local`` marketplace holds for this project (ADR-048).
+    legacy_installation: LegacyInstallation = "none"
 
     def __post_init__(self) -> None:
         if (
             type(self.state) is not PluginArtifactState
             or type(self.operation_state) is not PluginOperationState
         ):
+            raise ValueError("claude_code_status_invalid")
+        if self.legacy_installation not in LEGACY_INSTALLATIONS:
             raise ValueError("claude_code_status_invalid")
         if self.version_provenance not in {None, "tested", "untested"}:
             raise ValueError("claude_code_status_invalid")
@@ -431,6 +467,8 @@ class ClaudeCodePluginPreview:
     # Admission provenance of the previewed host version (#656). A preview never exists for a
     # version below the floor, so this is never ``None`` on a constructed preview.
     version_provenance: ClaudeCodeVersionProvenance = "untested"
+    # The legacy ``yoetz-local`` marketplace this action migrates or removes (ADR-048).
+    legacy_installation: LegacyInstallation = "none"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "request_id", validate_request_id(self.request_id))
@@ -438,6 +476,8 @@ class ClaudeCodePluginPreview:
             type(self.action) is not ClaudeCodePluginAction
             or type(self.state_before) is not PluginArtifactState
         ):
+            raise ValueError("claude_code_preview_invalid")
+        if self.legacy_installation not in LEGACY_INSTALLATIONS:
             raise ValueError("claude_code_preview_invalid")
         if self.version_provenance not in {"tested", "untested"}:
             raise ValueError("claude_code_preview_invalid")
@@ -841,15 +881,24 @@ def _required_startup_hooks(hooks: dict[str, JsonValue], launcher: str) -> dict[
 def installed_claude_startup_mode(
     target: ClaudeCodePluginTarget,
 ) -> Literal["optional", "required"] | None:
-    """Inspect marker-verified source bytes, including older owned versions."""
+    """Inspect marker-verified source bytes, including older owned versions.
+
+    Without a managed tree, a marker-valid legacy ``yoetz-local`` tree at the accepted location
+    supplies the mode so a migration keeps the startup mode the owner chose (ADR-048).
+    """
     _validate_target(target)
     root = Path(target.marketplace_root)
     if not root.exists():
-        return "optional"
+        legacy_root = _legacy_location(target)
+        if _legacy_tree(legacy_root)[0] != "legacy":
+            return "optional"
+        root = legacy_root
     files = _safe_tree(root)
     if not _valid_source_marker(files)[0]:
         return None
-    hooks = files.get("plugins/finishup/hooks/hooks.json", b"")
+    hooks = files.get("plugins/finishup/hooks/hooks.json") or files.get(
+        f"plugins/{_LEGACY_PLUGIN_NAME}/hooks/hooks.json", b""
+    )
     return "required" if b" hooks startup-gate --host claude " in hooks else "optional"
 
 
@@ -866,7 +915,7 @@ def render_claude_code_plugin(
 ) -> ClaudeCodePluginArtifact:
     """Render Claude-native bytes from canonical packaged guidance.
 
-    ``yoetz_launcher`` binds hooks and the plugin-owned MCP entry to one exact installation
+    ``finishup_launcher`` binds hooks and the plugin-owned MCP entry to one exact installation
     (the invoking console script or ``python -m finishup``); ``None`` resolves ``finishup`` on PATH
     to its absolute executable. ``development_enabled`` renders the ``claude --plugin-dir``
     development carrier (``defaultEnabled:true``), which export writes and preview refuses.
@@ -1086,6 +1135,7 @@ def _marker(artifact: ClaudeCodePluginArtifact) -> bytes:
         "mcp_route_profile": artifact.plan.mcp_route_profile,
         "renderer_version": artifact.plan.renderer_version,
         "schema": _MARKER_SCHEMA,
+        # Frozen legacy identifier (ADR-048): marker keys every release reads by name.
         "yoetz_launcher": list(artifact.finishup_launcher),
         "yoetz_version": artifact.plan.version,
     }
@@ -1112,6 +1162,7 @@ def _valid_source_marker(files: Mapping[str, bytes]) -> tuple[bool, str | None]:
     body = {key: value for key, value in marker.items() if key != "marker_digest"}
     if type(digest) is not str or digest != canonical_digest(body):
         return False, None
+    # Frozen legacy identifier (ADR-048): the marker's launcher key.
     launcher = marker.get("yoetz_launcher")
     if marker.get("schema") == _MARKER_SCHEMA and (
         type(launcher) is not list or not valid_launcher(tuple(cast(list[object], launcher)))
@@ -1239,50 +1290,91 @@ def _host_state_digest(target: ClaudeCodePluginTarget) -> str:
     return canonical_digest(cast(JsonValue, {"files": rows}))
 
 
-def _config_entry(
-    raw: object, finishup_launcher: tuple[str, ...] | None = None
-) -> tuple[str | None, Mapping[str, JsonValue] | None, bool]:
+@dataclass(frozen=True, slots=True)
+class _ConfigEntries:
+    """One configuration source's FinishUP-relevant MCP entries (ADR-048 splits the legacy key).
+
+    ``current`` is the ``finishup`` entry or the one other-named exact route; ``legacy`` is an
+    exact route under the legacy ``yoetz`` key, and ``legacy_foreign`` records a legacy-key entry
+    FinishUP cannot prove is its own. ``observed`` is False when the source is unreadable.
+    """
+
+    current: tuple[str, Mapping[str, JsonValue]] | None = None
+    legacy: tuple[str, Mapping[str, JsonValue]] | None = None
+    legacy_foreign: bool = False
+    observed: bool = True
+
+
+_UNREADABLE: Final = _ConfigEntries(observed=False)
+
+
+def _config_entries(raw: object, launchers: tuple[tuple[str, ...], ...] = ()) -> _ConfigEntries:
     if raw is None:
-        return None, None, True
+        return _ConfigEntries()
     if not isinstance(raw, Mapping):
-        return None, None, False
+        return _UNREADABLE
     config = cast(Mapping[str, JsonValue], raw)
     servers = config.get("mcpServers")
     if servers is None:
-        return None, None, True
+        return _ConfigEntries()
     if not isinstance(servers, Mapping):
-        return None, None, False
+        return _UNREADABLE
     typed_servers = cast(Mapping[str, JsonValue], servers)
     relevant: list[tuple[str, Mapping[str, JsonValue]]] = []
+    legacy: tuple[str, Mapping[str, JsonValue]] | None = None
+    legacy_foreign = False
     for name, raw_entry in typed_servers.items():
-        if name == "finishup":
+        if name == MCP_SERVER_NAME:
             if not isinstance(raw_entry, Mapping):
-                return None, None, False
+                return _UNREADABLE
             relevant.append((name, cast(Mapping[str, JsonValue], raw_entry)))
+        elif name == LEGACY_MCP_SERVER_NAME:
+            # The pre-rename key (ADR-048): an exact route there is FinishUP's own but outdated;
+            # anything else no longer shares FinishUP's name and is only reported.
+            if (
+                isinstance(raw_entry, Mapping)
+                and _route_profile(cast(Mapping[str, JsonValue], raw_entry), launchers) is not None
+            ):
+                legacy = (name, cast(Mapping[str, JsonValue], raw_entry))
+            else:
+                legacy_foreign = True
         elif (
             isinstance(raw_entry, Mapping)
-            and _route_profile(cast(Mapping[str, JsonValue], raw_entry), finishup_launcher)
-            is not None
+            and _route_profile(cast(Mapping[str, JsonValue], raw_entry), launchers) is not None
         ):
             relevant.append((name, cast(Mapping[str, JsonValue], raw_entry)))
-    if not relevant:
-        return None, None, True
-    if len(relevant) != 1:
-        return None, None, False
-    name, entry = relevant[0]
-    return name, entry, True
+    if len(relevant) > 1:
+        return _UNREADABLE
+    return _ConfigEntries(relevant[0] if relevant else None, legacy, legacy_foreign)
+
+
+def _launcher_prefix(
+    command: object, launchers: tuple[tuple[str, ...], ...]
+) -> tuple[str, ...] | None:
+    """The fixed arguments of the launcher ``command`` names, or ``None`` when it names none.
+
+    A bare console script under either spelling (the deprecated ``yoetz`` alias, ADR-048) takes
+    no fixed arguments; an absolute command must be one of ``launchers`` exactly.
+    """
+
+    if command in LAUNCHER_NAMES:
+        return ()
+    for launcher in launchers:
+        if command == launcher[0]:
+            return launcher[1:]
+    return None
 
 
 def _route_profile(
-    entry: Mapping[str, JsonValue] | None, finishup_launcher: tuple[str, ...] | None = None
+    entry: Mapping[str, JsonValue] | None, launchers: tuple[tuple[str, ...], ...] = ()
 ) -> Literal["strict", "policy"] | None:
     """Classify one MCP entry as an exact FinishUP route, else ``None``.
 
     An exact route launches either a bare ``finishup`` console script (external registrations
-    the owner wrote by hand) or this artifact's exact bound launcher (plugin-owned entries and
-    launcher-bound external registrations), followed by the exact Claude ``mcp serve`` arguments.
-    The pre-host-identity bare forms remain readable for an upgrade/remove transition but are
-    never emitted by the renderer.
+    the owner wrote by hand) or one of ``launchers`` — this artifact's exact bound launcher, its
+    deprecated ``yoetz`` alias, or a launcher a managed marker recorded — followed by the exact
+    Claude ``mcp serve`` arguments. The pre-host-identity bare forms remain readable for an
+    upgrade/remove transition but are never emitted by the renderer.
     """
 
     if entry is None or set(entry) != {"args", "command", "type"}:
@@ -1293,14 +1385,8 @@ def _route_profile(
     if not isinstance(raw_args, (list, tuple)):
         return None
     args = tuple(cast(Sequence[object], raw_args))
-    command = entry.get("command")
-    if command == "finishup":
-        prefix: tuple[str, ...] = ()
-    elif finishup_launcher is not None and command == finishup_launcher[0]:
-        prefix = finishup_launcher[1:]
-    else:
-        return None
-    if args[: len(prefix)] != prefix:
+    prefix = _launcher_prefix(entry.get("command"), launchers)
+    if prefix is None or args[: len(prefix)] != prefix:
         return None
     rest = args[len(prefix) :]
     if rest in {
@@ -1317,7 +1403,7 @@ def _route_profile(
 
 
 def _initialize_host_profile(
-    entry: Mapping[str, JsonValue], finishup_launcher: tuple[str, ...] | None = None
+    entry: Mapping[str, JsonValue], launchers: tuple[tuple[str, ...], ...] = ()
 ) -> Literal["generic", "claude"]:
     """Classify the initialize body for an already recognized FinishUP route.
 
@@ -1328,22 +1414,32 @@ def _initialize_host_profile(
     """
 
     raw_args = entry.get("args")
-    command = entry.get("command")
     if not isinstance(raw_args, (list, tuple)):
         raise ValueError("claude_code_mcp_observation_invalid")
     args = tuple(cast(Sequence[object], raw_args))
-    if command == "finishup":
-        prefix: tuple[str, ...] = ()
-    elif finishup_launcher is not None and command == finishup_launcher[0]:
-        prefix = finishup_launcher[1:]
-    else:
-        raise ValueError("claude_code_mcp_observation_invalid")
-    if args[: len(prefix)] != prefix:
+    prefix = _launcher_prefix(entry.get("command"), launchers)
+    if prefix is None or args[: len(prefix)] != prefix:
         raise ValueError("claude_code_mcp_observation_invalid")
     rest = args[len(prefix) :]
     if tuple(rest[:4]) == ("mcp", "serve", "--host", "claude"):
         return "claude"
     return "generic"
+
+
+def _route_launchers(
+    finishup_launcher: tuple[str, ...] | None, known_launchers: Sequence[tuple[str, ...]]
+) -> tuple[tuple[str, ...], ...]:
+    """The bound launcher, its deprecated alias, and marker-recorded launchers (ADR-048)."""
+
+    candidates: list[tuple[str, ...]] = []
+    if finishup_launcher is not None:
+        candidates.extend(
+            launcher_aliases(finishup_launcher)
+            if valid_launcher(finishup_launcher)
+            else (finishup_launcher,)
+        )
+    candidates.extend(known_launchers)
+    return tuple(dict.fromkeys(candidates))
 
 
 def observe_claude_code_mcp(
@@ -1354,17 +1450,39 @@ def observe_claude_code_mcp(
     connector_entry: Mapping[str, JsonValue] | None = None,
     finishup_launcher: tuple[str, ...] | None = None,
     claude_json: Path | None = None,
+    known_launchers: Sequence[tuple[str, ...]] = (),
 ) -> ClaudeCodeMcpObservation:
     """Observe all reachable sources without treating Claude precedence as ownership.
 
-    ``yoetz_launcher`` is the artifact's exact bound launcher; entries that launch it with the
-    exact ``mcp serve`` arguments are FinishUP routes just like a bare ``finishup`` console script.
-    ``claude_json`` names the user configuration file when it does not sit inside
-    ``claude_config_root``; the default keeps the plugin status path's exact location.
+    ``finishup_launcher`` is the artifact's exact bound launcher; entries that launch it (or its
+    deprecated ``yoetz`` alias) with the exact ``mcp serve`` arguments are FinishUP routes just
+    like a bare ``finishup`` console script. ``known_launchers`` adds launchers a managed marker
+    recorded, such as a pre-rename installation's (ADR-048). ``claude_json`` names the user
+    configuration file when it does not sit inside ``claude_config_root``; the default keeps the
+    plugin status path's exact location.
+
+    Entries under the legacy ``yoetz`` key are reported through ``legacy_registration``
+    (ADR-048). An owned one is a live FinishUP route: alone it stands in for the registration,
+    and beside a current entry the pair reads ``DUAL`` or ``AMBIGUOUS``.
     """
 
+    launchers = _route_launchers(finishup_launcher, known_launchers)
     candidates: list[tuple[ClaudeCodeMcpSource, str | None, Mapping[str, JsonValue]]] = []
+    legacy_candidates: list[tuple[ClaudeCodeMcpSource, str, Mapping[str, JsonValue]]] = []
+    legacy_foreign = False
     uncertain: list[ClaudeCodeMcpSource] = []
+
+    def collect(source: ClaudeCodeMcpSource, entries: _ConfigEntries) -> None:
+        nonlocal legacy_foreign
+        if not entries.observed:
+            uncertain.append(source)
+            return
+        if entries.current is not None:
+            candidates.append((source, *entries.current))
+        if entries.legacy is not None:
+            legacy_candidates.append((source, *entries.legacy))
+        legacy_foreign = legacy_foreign or entries.legacy_foreign
+
     config, config_observed = _json_file(
         claude_config_root / ".claude.json" if claude_json is None else claude_json
     )
@@ -1373,32 +1491,23 @@ def observe_claude_code_mcp(
     elif config is not None:
         projects = config.get("projects")
         local_raw = projects.get(str(project_root)) if isinstance(projects, Mapping) else None
-        local_name, local_entry, local_observed = _config_entry(local_raw, finishup_launcher)
-        if not local_observed:
-            uncertain.append(ClaudeCodeMcpSource.LOCAL)
-        elif local_entry is not None:
-            candidates.append((ClaudeCodeMcpSource.LOCAL, local_name, local_entry))
-        user_name, user_entry, user_observed = _config_entry(config, finishup_launcher)
-        if not user_observed:
-            uncertain.append(ClaudeCodeMcpSource.USER)
-        elif user_entry is not None:
-            candidates.append((ClaudeCodeMcpSource.USER, user_name, user_entry))
+        collect(ClaudeCodeMcpSource.LOCAL, _config_entries(local_raw, launchers))
+        collect(ClaudeCodeMcpSource.USER, _config_entries(config, launchers))
     project, project_observed = _json_file(project_root / ".mcp.json")
-    project_name, project_entry, project_shape_observed = _config_entry(project, finishup_launcher)
-    if not project_observed or not project_shape_observed:
-        uncertain.append(ClaudeCodeMcpSource.PROJECT)
-    elif project_entry is not None:
-        candidates.append((ClaudeCodeMcpSource.PROJECT, project_name, project_entry))
+    collect(
+        ClaudeCodeMcpSource.PROJECT,
+        _config_entries(project, launchers) if project_observed else _UNREADABLE,
+    )
     plugin, plugin_observed = _json_file(plugin_root / ".mcp.json")
-    plugin_name, plugin_entry, plugin_shape_observed = _config_entry(plugin, finishup_launcher)
-    if not plugin_observed or not plugin_shape_observed:
-        uncertain.append(ClaudeCodeMcpSource.PLUGIN)
-    elif plugin_entry is not None:
-        candidates.append((ClaudeCodeMcpSource.PLUGIN, plugin_name, plugin_entry))
+    collect(
+        ClaudeCodeMcpSource.PLUGIN,
+        _config_entries(plugin, launchers) if plugin_observed else _UNREADABLE,
+    )
     if connector_entry is not None:
         candidates.append((ClaudeCodeMcpSource.CLAUDE_AI_CONNECTOR, None, connector_entry))
     order = {source: index for index, source in enumerate(ClaudeCodeMcpSource)}
     candidates.sort(key=lambda item: order[item[0]])
+    legacy_candidates.sort(key=lambda item: order[item[0]])
     if uncertain:
         present = tuple(source for source, _name, _entry in candidates)
         combined = tuple(
@@ -1415,17 +1524,47 @@ def observe_claude_code_mcp(
             False,
             False,
         )
-    if not candidates:
-        return ClaudeCodeMcpObservation(McpOwnershipState.ABSENT, None, None, (), True, False)
     profiles = [
-        (source, name, entry, _route_profile(entry, finishup_launcher))
+        (source, name, entry, _route_profile(entry, launchers))
         for source, name, entry in candidates
     ]
-    present = tuple(source for source, _name, _entry, _profile in profiles)
+    legacy: LegacyInstallation = (
+        "none"
+        if not legacy_candidates and not legacy_foreign
+        else "foreign"
+        if not legacy_candidates
+        else "duplicate"
+        if profiles and all(profile is not None for *_rest, profile in profiles)
+        else "legacy_only"
+    )
+    if not profiles and not legacy_candidates:
+        return ClaudeCodeMcpObservation(
+            McpOwnershipState.ABSENT, None, None, (), True, False, legacy_registration=legacy
+        )
+    # An owned legacy-key route is a live FinishUP server: alone it is the registration, owned
+    # but outdated; beside a current entry the pair reads dual or ambiguous exactly as the same
+    # pair under one name would, never as one admissible route.
+    profiles = sorted(
+        (
+            *profiles,
+            *(
+                (source, name, entry, _route_profile(entry, launchers))
+                for source, name, entry in legacy_candidates
+            ),
+        ),
+        key=lambda item: order[item[0]],
+    )
+    present = tuple(dict.fromkeys(source for source, _name, _entry, _profile in profiles))
     if any(profile is None for _source, _name, _entry, profile in profiles):
         source = next(source for source, _name, _entry, profile in profiles if profile is None)
         return ClaudeCodeMcpObservation(
-            McpOwnershipState.FOREIGN, source, None, present, True, False
+            McpOwnershipState.FOREIGN,
+            source,
+            None,
+            present,
+            True,
+            False,
+            legacy_registration=legacy,
         )
     plugin_profiles = [
         profile
@@ -1439,11 +1578,23 @@ def observe_claude_code_mcp(
     ]
     if plugin_profiles and external_profiles:
         return ClaudeCodeMcpObservation(
-            McpOwnershipState.DUAL, present[0], None, present, True, False
+            McpOwnershipState.DUAL,
+            present[0],
+            None,
+            present,
+            True,
+            False,
+            legacy_registration=legacy,
         )
     if len(profiles) > 1:
         return ClaudeCodeMcpObservation(
-            McpOwnershipState.AMBIGUOUS, present[0], None, present, True, False
+            McpOwnershipState.AMBIGUOUS,
+            present[0],
+            None,
+            present,
+            True,
+            False,
+            legacy_registration=legacy,
         )
     source, name, entry, profile = profiles[0]
     assert profile is not None
@@ -1458,9 +1609,11 @@ def observe_claude_code_mcp(
         # Name-mappability only, deliberately independent of the route profile: it says whether
         # the observed server key maps to the fixed permission-rule names admission can write
         # (docs/INTERFACES.md). The policy-route requirement is enforced separately at grant,
-        # which refuses `route_not_policy` for any non-policy route (host_admission.py).
-        name == "finishup" and source is not ClaudeCodeMcpSource.CLAUDE_AI_CONNECTOR,
-        _initialize_host_profile(entry, finishup_launcher),
+        # which refuses `route_not_policy` for any non-policy route (host_admission.py). A
+        # legacy-key route maps to no admission rule name (ADR-048).
+        name == MCP_SERVER_NAME and source is not ClaudeCodeMcpSource.CLAUDE_AI_CONNECTOR,
+        _initialize_host_profile(entry, launchers),
+        legacy,
     )
 
 
@@ -1612,6 +1765,272 @@ def _proof(
     )
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class _LegacyMarketplace:
+    """The Yoetz-era ``yoetz-local`` marketplace for this project (ADR-048).
+
+    ``owned`` requires a marker-valid tree that names the legacy marketplace; its digest, the
+    host registration, discovery, and enablement are what a preview binds and a migration undoes.
+    """
+
+    state: Literal["absent", "owned", "foreign"]
+    root: Path | None = None
+    # This project's own settings register the legacy marketplace.
+    registered: bool = False
+    discovered: bool = False
+    enabled: bool | None = None
+    digest: str | None = None
+    launcher: tuple[str, ...] | None = None
+    # A marker-valid legacy tree stays beside the managed root whatever this project does: other
+    # projects of the same Claude config root may still load it, so FinishUP never deletes it or
+    # Claude's user-level registration of it.
+    retained: bool = False
+    # Claude lists the legacy plugin for another project or scope too.
+    shared: bool = False
+    # This project's own declaration entries (settings key, entry digest) that a migration drops.
+    declaration: tuple[tuple[str, str], ...] = ()
+    # Claude's user-level ``known_marketplaces.json`` registers the legacy marketplace.
+    known: bool = False
+
+    def installation(self, current: PluginArtifactState) -> LegacyInstallation:
+        if self.state == "absent":
+            return "none"
+        if self.state == "foreign":
+            return "foreign"
+        return "legacy_only" if current is PluginArtifactState.ABSENT else "duplicate"
+
+    def binding(self) -> dict[str, JsonValue]:
+        return {
+            "digest": self.digest,
+            "discovered": self.discovered,
+            "enabled": self.enabled,
+            "registered": self.registered,
+            "retained": self.retained,
+            "declaration": dict(self.declaration),
+            "known": self.known,
+            "root": None if self.root is None else str(self.root),
+            "shared": self.shared,
+            "state": self.state,
+        }
+
+
+_NO_LEGACY: Final = _LegacyMarketplace("absent")
+
+
+def _directory_source(entry: object) -> Path | None:
+    """The absolute directory a marketplace registration names, else ``None``."""
+
+    if not isinstance(entry, Mapping):
+        return None
+    source = cast(Mapping[str, JsonValue], entry).get("source")
+    if not isinstance(source, Mapping):
+        return None
+    path = cast(Mapping[str, JsonValue], source).get("path")
+    if source.get("source") != "directory" or type(path) is not str:
+        return None
+    candidate = Path(path)
+    if not candidate.is_absolute() or any(ord(char) < 32 or ord(char) == 127 for char in path):
+        return None
+    return candidate
+
+
+def _legacy_location(target: ClaudeCodePluginTarget) -> Path:
+    """The one directory FinishUP accepts as the legacy marketplace (ADR-048).
+
+    Yoetz's guided connection wrote ``<config>/plugins/marketplaces/yoetz-local``, the sibling of
+    the managed ``finishup-local`` root FinishUP's connection names; an explicit command names
+    its managed root, or the old directory itself. Both come from the owner, never from a file a
+    repository can commit, so a project setting can only confirm this location, never move it.
+    """
+
+    managed = Path(target.marketplace_root)
+    if managed.name == _LEGACY_MARKETPLACE_NAME:
+        return managed
+    return managed.parent / _LEGACY_MARKETPLACE_NAME
+
+
+def _legacy_registration(
+    target: ClaudeCodePluginTarget, location: Path
+) -> tuple[bool, bool, bool, bool]:
+    """Return ``(registered here, readable, elsewhere, known)`` for the legacy marketplace.
+
+    ``registered here`` is this project's ``extraKnownMarketplaces`` entry and ``known`` Claude's
+    user-level ``known_marketplaces.json`` entry. ``elsewhere`` is set when either names any
+    directory but ``location``: that marketplace is not one FinishUP wrote.
+    """
+
+    registered = False
+    readable = True
+    elsewhere = False
+    known = False
+    for path, key in (
+        (Path(target.project_root) / ".claude" / "settings.json", "extraKnownMarketplaces"),
+        (Path(target.claude_config_root) / "plugins" / "known_marketplaces.json", None),
+    ):
+        document, observed = _json_file(path)
+        if not observed:
+            readable = False
+            continue
+        if document is None:
+            continue
+        container = document.get(key) if key is not None else document
+        if container is None:
+            continue
+        if not isinstance(container, Mapping):
+            readable = False
+            continue
+        entry = cast(Mapping[str, JsonValue], container).get(_LEGACY_MARKETPLACE_NAME)
+        if entry is None:
+            continue
+        if key is not None:
+            registered = True
+        else:
+            known = True
+        directory = _directory_source(entry)
+        if directory is None:
+            readable = False
+        elif directory != location:
+            elsewhere = True
+    return registered, readable, elsewhere, known
+
+
+def _legacy_declaration(target: ClaudeCodePluginTarget) -> tuple[tuple[str, str], ...] | None:
+    """This project's legacy declaration entries and their digests, or ``None`` when unreadable.
+
+    A symlinked ``.claude`` directory reads as unreadable: the migration's settings edit refuses
+    it (``_drop_legacy_declaration``), so a preview must never promise that edit over it.
+    """
+
+    settings = Path(target.project_root) / ".claude" / "settings.json"
+    try:
+        if settings.parent.is_symlink():
+            return None
+    except OSError:
+        return None
+    document, observed = _json_file(settings)
+    if not observed:
+        return None
+    found: list[tuple[str, str]] = []
+    for container_key, key in _LEGACY_DECLARATION:
+        container = None if document is None else document.get(container_key)
+        if container is None:
+            continue
+        if not isinstance(container, Mapping):
+            return None
+        entries = cast(Mapping[str, JsonValue], container)
+        if key in entries:
+            found.append((container_key, canonical_digest(entries[key])))
+    return tuple(found)
+
+
+def _legacy_tree(
+    root: Path,
+) -> tuple[Literal["missing", "legacy", "current", "other"], str | None, tuple[str, ...] | None]:
+    """Classify one marketplace directory by its marker's marketplace name (ADR-048)."""
+
+    if not root.exists() and not root.is_symlink():
+        return "missing", None, None
+    try:
+        _safe_existing_ancestor(root)
+        if any(item.is_symlink() for item in (root, *root.parents)) or not root.is_dir():
+            return "other", None, None
+        if any(item.name.startswith(_STAGE_PREFIX) for item in root.parent.iterdir()) or (
+            (root.parent / _ROLLBACK_NAME).exists()
+        ):
+            # Interrupted residue beside it: never classify it as safe to remove.
+            return "other", None, None
+        files = _safe_tree(root)
+    except ClaudeCodeIntegrationError, OSError:
+        return "other", None, None
+    if not _valid_source_marker(files)[0]:
+        return "other", None, None
+    marker = _load_object(files[_MARKER_NAME])
+    assert marker is not None
+    name = marker.get("marketplace_name")
+    if name == _MARKETPLACE_NAME:
+        return "current", None, None
+    if name != _LEGACY_MARKETPLACE_NAME:
+        return "other", None, None
+    # Frozen legacy identifier (ADR-048): the marker's launcher key.
+    return "legacy", _tree_digest(files), recorded_launcher(marker.get("yoetz_launcher"))
+
+
+def _inspect_legacy(
+    target: ClaudeCodePluginTarget,
+    rows: Sequence[Mapping[str, JsonValue]] | None,
+) -> _LegacyMarketplace:
+    """Classify this project's Yoetz-era install against the one accepted location (ADR-048).
+
+    ``rows`` is the observed ``plugin list`` output, or ``None`` when it was not read; status
+    treats an unreadable list as unproven ownership. The install is this project's only when its
+    settings register the legacy marketplace or Claude lists the legacy plugin for it; a legacy
+    tree no project here references is only reported as retained.
+    """
+
+    location = _legacy_location(target)
+    registered, readable, elsewhere, known = _legacy_registration(target, location)
+    discovered = False
+    enabled: bool | None = None
+    shared = False
+    if rows is not None:
+        matches = [row for row in rows if row.get("id") == _LEGACY_PLUGIN_ID]
+        exact = [
+            row
+            for row in matches
+            if row.get("scope") == "project" and row.get("projectPath") == target.project_root
+        ]
+        shared = len(exact) != len(matches)
+        if len(exact) > 1:
+            readable = False
+        elif exact:
+            discovered = True
+            value = exact[0].get("enabled")
+            enabled = value if type(value) is bool else None
+    tree, digest, launcher = _legacy_tree(location)
+    retained = tree == "legacy" and location != Path(target.marketplace_root)
+    if not registered and not discovered:
+        # Nothing in this project uses the legacy marketplace. A tree there belongs to other
+        # projects of this config root (or to none any more) and is left where it is.
+        return _LegacyMarketplace("absent", retained=retained, shared=shared)
+    declaration = _legacy_declaration(target)
+    if tree != "legacy" or not readable or elsewhere or declaration is None:
+        # Registered or listed here, but not over a tree FinishUP wrote at the accepted location:
+        # never trusted, never touched.
+        return _LegacyMarketplace(
+            "foreign", None, registered, discovered, enabled, retained=retained, shared=shared
+        )
+    return _LegacyMarketplace(
+        "owned",
+        location,
+        registered,
+        discovered,
+        enabled,
+        digest,
+        launcher,
+        retained=retained,
+        shared=shared,
+        declaration=declaration,
+        known=known,
+    )
+
+
+def _unregisters_legacy_marketplace(
+    target: ClaudeCodePluginTarget, legacy: _LegacyMarketplace
+) -> bool:
+    """Whether a migration runs Claude's unscoped ``plugin marketplace remove yoetz-local``.
+
+    Only an in-place migration, whose managed root is the owned legacy directory itself, runs it,
+    and only while this project or Claude's user-level file still registers that directory. The
+    preview's ``legacy_marketplace_replaced`` warning and ``_remove_legacy`` share this one fact.
+    """
+
+    return (
+        legacy.state == "owned"
+        and legacy.root == Path(target.marketplace_root)
+        and (legacy.registered or legacy.known)
+    )
+
+
 def status_claude_code_plugin(
     target: ClaudeCodePluginTarget,
     artifact: ClaudeCodePluginArtifact,
@@ -1620,10 +2039,32 @@ def status_claude_code_plugin(
     connector_entry: Mapping[str, JsonValue] | None = None,
     session_observation: ClaudeCodeSessionObservation | None = None,
 ) -> ClaudeCodePluginStatus:
+    return _status_with_legacy(
+        target,
+        artifact,
+        commands=commands,
+        connector_entry=connector_entry,
+        session_observation=session_observation,
+    )[0]
+
+
+def _status_with_legacy(
+    target: ClaudeCodePluginTarget,
+    artifact: ClaudeCodePluginArtifact,
+    *,
+    commands: ClaudeCodeCommandPort | None = None,
+    connector_entry: Mapping[str, JsonValue] | None = None,
+    session_observation: ClaudeCodeSessionObservation | None = None,
+) -> tuple[ClaudeCodePluginStatus, _LegacyMarketplace]:
     _validate_target(target)
     source = _inspect_source(target, artifact)
     command_port = SubprocessClaudeCodeCommands() if commands is None else commands
     rows, list_observed = _list_plugins(target, command_port)
+    legacy = _inspect_legacy(target, rows if list_observed else None)
+    if not list_observed and legacy.state == "owned":
+        legacy = _LegacyMarketplace(
+            "foreign", None, legacy.registered, retained=legacy.retained, shared=legacy.shared
+        )
     row = _exact_plugin_entry(target, rows) if list_observed else None
     installed_digest, installed_version, cache_observed = _cache_digest(target, artifact, row)
     installed_exact = (
@@ -1635,17 +2076,15 @@ def status_claude_code_plugin(
     enabled_raw = None if row is None else row.get("enabled")
     enabled = enabled_raw if type(enabled_raw) is bool else None
     discovered = row is not None
-    plugin_root = (
-        Path(target.marketplace_root) / "plugins" / "finishup"
-        if source.state is not PluginArtifactState.ABSENT
-        else Path(target.marketplace_root) / "plugins" / "finishup"
-    )
+    plugin_root = Path(target.marketplace_root) / "plugins" / "finishup"
     mcp = observe_claude_code_mcp(
         plugin_root=plugin_root,
         project_root=Path(target.project_root),
         claude_config_root=Path(target.claude_config_root),
         finishup_launcher=artifact.finishup_launcher,
         connector_entry=connector_entry,
+        # A registration an earlier install wrote names the launcher its marker recorded.
+        known_launchers=() if legacy.launcher is None else (legacy.launcher,),
     )
     if source.state is PluginArtifactState.RECOVERY_REQUIRED:
         state = PluginArtifactState.RECOVERY_REQUIRED
@@ -1675,11 +2114,12 @@ def status_claude_code_plugin(
                 "enabled_state_does_not_prove_loaded_session",
                 "marketplace_project_scope_only",
                 "model_use_not_observed",
+                *(("legacy_marketplace_retained",) if legacy.retained else ()),
             },
             key=str.encode,
         )
     )
-    return ClaudeCodePluginStatus(
+    status = ClaudeCodePluginStatus(
         state,
         operation,
         artifact.artifact_digest,
@@ -1704,7 +2144,9 @@ def status_claude_code_plugin(
         ),
         notes,
         claude_code_version_provenance(target.identity.version),
+        legacy.installation(state),
     )
+    return status, legacy
 
 
 def observe_claude_code_session_init(
@@ -1787,6 +2229,12 @@ def observe_claude_code_session_init(
     )
 
 
+# Actions that never retire a legacy install, even beside an owned one (ADR-048).
+_NON_MIGRATING_ACTIONS: Final = frozenset(
+    {ClaudeCodePluginAction.ENABLE, ClaudeCodePluginAction.DISABLE, ClaudeCodePluginAction.NOOP}
+)
+
+
 def _admissible_owner_states(artifact: ClaudeCodePluginArtifact) -> set[McpOwnershipState]:
     if artifact.plan.mcp_ownership is McpOwnership.PLUGIN_MANAGED:
         return {McpOwnershipState.ABSENT, McpOwnershipState.PLUGIN}
@@ -1802,6 +2250,20 @@ def preview_claude_code_plugin(
     commands: ClaudeCodeCommandPort | None = None,
     connector_entry: Mapping[str, JsonValue] | None = None,
 ) -> ClaudeCodePluginPreview:
+    return _preview_with_legacy(
+        request, target, action, artifact, commands=commands, connector_entry=connector_entry
+    )[0]
+
+
+def _preview_with_legacy(
+    request: RequestId,
+    target: ClaudeCodePluginTarget,
+    action: ClaudeCodePluginAction,
+    artifact: ClaudeCodePluginArtifact,
+    *,
+    commands: ClaudeCodeCommandPort | None = None,
+    connector_entry: Mapping[str, JsonValue] | None = None,
+) -> tuple[ClaudeCodePluginPreview, ClaudeCodePluginStatus, _LegacyMarketplace]:
     request = validate_request_id(request)
     if type(action) is not ClaudeCodePluginAction or action is ClaudeCodePluginAction.NOOP:
         raise _error(PluginArtifactReason.SOURCE_INVALID)
@@ -1822,13 +2284,17 @@ def preview_claude_code_plugin(
             },
         )
     target_identity = _validate_target(target)
-    status = status_claude_code_plugin(
+    status, legacy = _status_with_legacy(
         target, artifact, commands=commands, connector_entry=connector_entry
     )
     if status.state is PluginArtifactState.RECOVERY_REQUIRED:
         # Interrupted stage/rollback material must be resolved before any new
         # mutation may even be previewed, let alone consume authority.
         raise _error(PluginArtifactReason.RECOVERY_REQUIRED)
+    # An owned legacy marketplace is migrated by every installing action and removed by remove,
+    # in the same approval, so its presence is never a no-op (ADR-048).
+    legacy_owned = legacy.state == "owned"
+    in_place = legacy_owned and legacy.root == Path(target.marketplace_root)
     if action is ClaudeCodePluginAction.CONNECT:
         if status.state is not PluginArtifactState.ABSENT:
             if not status.marker_valid or status.state not in {
@@ -1836,7 +2302,11 @@ def preview_claude_code_plugin(
                 PluginArtifactState.PARTIAL,
             }:
                 raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
-            if status.installed_digest == artifact.artifact_digest and status.enabled is True:
+            if (
+                status.installed_digest == artifact.artifact_digest
+                and status.enabled is True
+                and not legacy_owned
+            ):
                 action = ClaudeCodePluginAction.NOOP
     elif (
         action is ClaudeCodePluginAction.INSTALL and status.state is not PluginArtifactState.ABSENT
@@ -1844,12 +2314,18 @@ def preview_claude_code_plugin(
         if (
             status.state is PluginArtifactState.NATIVE_MANAGED
             and status.installed_digest == artifact.artifact_digest
+            and not legacy_owned
         ):
             action = ClaudeCodePluginAction.NOOP
         else:
             raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
     elif action is ClaudeCodePluginAction.UPDATE and (
-        not status.marker_valid or not status.discovered
+        # Updating a legacy-only install migrates it; a present renamed tree must still be ours.
+        (
+            not status.marker_valid
+            and not (legacy_owned and status.state is PluginArtifactState.ABSENT)
+        )
+        or (not status.discovered and not legacy_owned)
     ):
         raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
     elif action is ClaudeCodePluginAction.ENABLE and status.enabled is not False:
@@ -1862,10 +2338,26 @@ def preview_claude_code_plugin(
             action = ClaudeCodePluginAction.NOOP
         else:
             raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
-    elif action is ClaudeCodePluginAction.REMOVE and (
-        not status.marker_valid or status.state is PluginArtifactState.ABSENT
+    elif (
+        action is ClaudeCodePluginAction.REMOVE
+        and (not status.marker_valid or status.state is PluginArtifactState.ABSENT)
+        # An owned legacy marketplace alone is still FinishUP's to remove (ADR-048).
+        and not (legacy_owned and status.state is PluginArtifactState.ABSENT)
     ):
         raise _error(PluginArtifactReason.REMOVE_REFUSED)
+    if (
+        in_place
+        and legacy.shared
+        and action
+        not in {
+            ClaudeCodePluginAction.ENABLE,
+            ClaudeCodePluginAction.DISABLE,
+            ClaudeCodePluginAction.NOOP,
+        }
+    ):
+        # The managed root named is the shared legacy directory itself, and Claude still lists
+        # the legacy plugin elsewhere: rewriting or deleting it would break those installs.
+        raise _error(PluginArtifactReason.DESTINATION_CONFLICT, {"legacy_marketplace_shared": True})
     if action not in {
         ClaudeCodePluginAction.REMOVE,
         ClaudeCodePluginAction.DISABLE,
@@ -1873,21 +2365,30 @@ def preview_claude_code_plugin(
     } and status.mcp_observation.ownership_state not in _admissible_owner_states(artifact):
         raise _error(
             PluginArtifactReason.MCP_OWNERSHIP_CONFLICT,
-            {"mcp_ownership_state": status.mcp_observation.ownership_state.value},
+            {
+                "mcp_ownership_state": status.mcp_observation.ownership_state.value,
+                **(
+                    {}
+                    if status.mcp_observation.legacy_registration == "none"
+                    else {"legacy_registration": status.mcp_observation.legacy_registration}
+                ),
+            },
         )
-    current_state_digest = canonical_digest(
-        {
-            "discovered": status.discovered,
-            "enabled": status.enabled,
-            "installed_digest": status.installed_digest,
-            "installed_version": status.installed_version,
-            "marketplace_registered": status.marketplace_registered,
-            "mcp_ownership_state": status.mcp_observation.ownership_state.value,
-            "observed_host_state_digest": status.host_state_digest,
-            "source_digest": status.source_digest,
-            "state": status.state.value,
-        }
-    )
+    current_state: dict[str, JsonValue] = {
+        "discovered": status.discovered,
+        "enabled": status.enabled,
+        "installed_digest": status.installed_digest,
+        "installed_version": status.installed_version,
+        "marketplace_registered": status.marketplace_registered,
+        "mcp_ownership_state": status.mcp_observation.ownership_state.value,
+        "observed_host_state_digest": status.host_state_digest,
+        "source_digest": status.source_digest,
+        "state": status.state.value,
+    }
+    if legacy.state != "absent":
+        # Bind the exact legacy marketplace this approval migrates or removes (ADR-048).
+        current_state["legacy_marketplace"] = legacy.binding()
+    current_state_digest = canonical_digest(current_state)
     preview_digest = canonical_digest(
         {
             "action": action.value,
@@ -1917,11 +2418,32 @@ def preview_claude_code_plugin(
                 "claude_desktop_cloud_sdk_not_covered",
                 "observation_requires_separate_consent",
                 "plugin_data_does_not_hold_finishup_state",
+                *(
+                    ("legacy_installation_owned",)
+                    if legacy_owned
+                    else ("legacy_installation_foreign",)
+                    if legacy.state == "foreign"
+                    else ()
+                ),
+                *(("legacy_marketplace_retained",) if legacy.retained else ()),
+                # Exactly what retiring this project's legacy install takes (ADR-048).
+                *(
+                    (
+                        *(("legacy_project_registration_removed",) if legacy.declaration else ()),
+                        *(
+                            ("legacy_marketplace_replaced",)
+                            if _unregisters_legacy_marketplace(target, legacy)
+                            else ()
+                        ),
+                    )
+                    if legacy_owned and action not in _NON_MIGRATING_ACTIONS
+                    else ()
+                ),
             },
             key=str.encode,
         )
     )
-    return ClaudeCodePluginPreview(
+    preview = ClaudeCodePluginPreview(
         request,
         action,
         status.state,
@@ -1935,7 +2457,9 @@ def preview_claude_code_plugin(
         artifact.plan.mcp_route_profile,
         warnings,
         version_provenance,
+        status.legacy_installation,
     )
+    return preview, status, legacy
 
 
 def _ensure_private_parent(path: Path) -> None:
@@ -2046,6 +2570,7 @@ def _export_marker(artifact: ClaudeCodePluginArtifact) -> bytes:
         "mcp_route_profile": artifact.plan.mcp_route_profile,
         "renderer_version": artifact.plan.renderer_version,
         "schema": _EXPORT_MARKER_SCHEMA,
+        # Frozen legacy identifier (ADR-048): marker keys every release reads by name.
         "yoetz_launcher": list(artifact.finishup_launcher),
         "yoetz_version": artifact.plan.version,
     }
@@ -2124,8 +2649,9 @@ def _run_mutation(
     return commands.run(target, arguments).returncode == 0
 
 
-def _remove_source(target: ClaudeCodePluginTarget) -> tuple[str, ...]:
-    root = Path(target.marketplace_root)
+def _remove_source(root: Path, expected_digest: str | None = None) -> tuple[str, ...]:
+    """Remove one marker-valid marketplace tree; ``expected_digest`` pins the exact bytes."""
+
     rollback = root.parent / _ROLLBACK_NAME
     if rollback.exists() or rollback.is_symlink():
         raise _error(PluginArtifactReason.RECOVERY_REQUIRED)
@@ -2147,7 +2673,9 @@ def _remove_source(target: ClaudeCodePluginTarget) -> tuple[str, ...]:
         if rollback.is_symlink() or not rollback.is_dir():
             raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
         displaced = _safe_tree(rollback)
-        if not _valid_source_marker(displaced)[0]:
+        if not _valid_source_marker(displaced)[0] or (
+            expected_digest is not None and _tree_digest(displaced) != expected_digest
+        ):
             raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
         files = tuple(sorted(displaced, key=str.encode))
         shutil.rmtree(rollback)
@@ -2161,6 +2689,104 @@ def _remove_source(target: ClaudeCodePluginTarget) -> tuple[str, ...]:
     except OSError as exc:
         raise _error(PluginArtifactReason.WRITE_FAILED) from exc
     return files
+
+
+def _drop_legacy_declaration(
+    target: ClaudeCodePluginTarget, declaration: tuple[tuple[str, str], ...]
+) -> bool:
+    """Drop this project's legacy declaration entries from its ``.claude/settings.json``.
+
+    Only the entries the preview bound are removed, and only while each still holds the bound
+    value; an entry already gone (Claude's project-scoped uninstall drops ``enabledPlugins``) is
+    not an error. Every other key keeps its value and position. The file is re-read immediately
+    before an atomic replacement and left alone if it changed; this narrows, but cannot close,
+    the window against a non-cooperating writer.
+    """
+
+    path = Path(target.project_root) / ".claude" / "settings.json"
+    bound = dict(declaration)
+    try:
+        if path.parent.is_symlink() or path.is_symlink():
+            return False
+        if not path.exists():
+            return True
+        facts = path.stat()
+        if not path.is_file() or facts.st_size > _MAX_FILE_BYTES:
+            return False
+        raw = path.read_bytes()
+        parsed = strict_json_parse(raw)
+    except OSError, ProtocolValueError, UnicodeError:
+        return False
+    if not isinstance(parsed, Mapping):
+        return False
+    document = dict(cast(Mapping[str, JsonValue], parsed))
+    changed = False
+    for container_key, key in _LEGACY_DECLARATION:
+        container = document.get(container_key)
+        if container is None:
+            continue
+        if not isinstance(container, Mapping):
+            return False
+        entries = cast(Mapping[str, JsonValue], container)
+        if key not in entries:
+            continue
+        if canonical_digest(entries[key]) != bound.get(container_key):
+            # Not the entry the owner approved removing: leave the file untouched.
+            return False
+        remaining = {name: value for name, value in entries.items() if name != key}
+        if remaining:
+            document[container_key] = remaining
+        else:
+            del document[container_key]
+        changed = True
+    if not changed:
+        return True
+    replacement = (json.dumps(document, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    temporary = path.parent / f"{_SETTINGS_STAGE_PREFIX}{os.urandom(8).hex()}"
+    try:
+        _write_file(temporary, replacement)
+        os.chmod(temporary, facts.st_mode & 0o777)
+        if path.is_symlink() or path.read_bytes() != raw:
+            return False
+        os.replace(temporary, path)
+        _fsync_dir(path.parent)
+    except OSError:
+        return False
+    finally:
+        with contextlib.suppress(OSError):
+            temporary.unlink(missing_ok=True)
+    return True
+
+
+def _remove_legacy(
+    target: ClaudeCodePluginTarget,
+    legacy: _LegacyMarketplace,
+    commands: ClaudeCodeCommandPort,
+) -> bool:
+    """Retire this project's legacy install: its plugin and its own declaration (ADR-048).
+
+    Each step runs only for what the preview observed. Claude's unscoped ``plugin marketplace
+    remove`` would also delete the shared tree, Claude's user-level registration, and every other
+    project's ``yoetz@yoetz-local`` install, so it is never run for a tree beside the managed root:
+    that tree and registration stay for the projects still loading them. Only an owner-named
+    in-place update, whose directory the renamed tree replaces anyway and which the preview
+    refuses while Claude lists the legacy plugin elsewhere, unregisters it first.
+    """
+
+    ok = True
+    if legacy.discovered:
+        ok = _run_mutation(
+            target,
+            commands,
+            ("plugin", "uninstall", _LEGACY_PLUGIN_ID, "--scope", "project", "--keep-data"),
+        )
+    if ok and _unregisters_legacy_marketplace(target, legacy):
+        ok = _run_mutation(
+            target, commands, ("plugin", "marketplace", "remove", _LEGACY_MARKETPLACE_NAME)
+        )
+    if ok and legacy.declaration:
+        ok = _drop_legacy_declaration(target, legacy.declaration)
+    return ok
 
 
 def apply_claude_code_plugin(
@@ -2178,7 +2804,9 @@ def apply_claude_code_plugin(
 
     _validate_digest(accepted_preview_digest)
     command_port = SubprocessClaudeCodeCommands() if commands is None else commands
-    preview = preview_claude_code_plugin(request, target, action, artifact, commands=command_port)
+    preview, status_before, legacy = _preview_with_legacy(
+        request, target, action, artifact, commands=command_port
+    )
     if preview.preview_digest != accepted_preview_digest:
         raise _error(PluginArtifactReason.PREVIEW_STALE)
     if preview.action is ClaudeCodePluginAction.NOOP:
@@ -2198,12 +2826,28 @@ def apply_claude_code_plugin(
     _consume_authority(review, authority, accepted_preview_digest)
     changed: tuple[str, ...] = ()
     command_ok = True
-    if action is ClaudeCodePluginAction.CONNECT:
+    migrate = legacy.state == "owned" and action not in {
+        ClaudeCodePluginAction.ENABLE,
+        ClaudeCodePluginAction.DISABLE,
+    }
+    if migrate:
+        # Retire this project's legacy plugin and registration first, before any renamed source
+        # is written over a legacy tree at the managed root itself (ADR-048).
+        command_ok = _remove_legacy(target, legacy, command_port)
+    if not command_ok:
+        # A failed legacy step stops here; read-back below reports the unknown outcome and the
+        # remaining legacy state stays visible for a fresh preview.
+        pass
+    elif action is ClaudeCodePluginAction.CONNECT or (
+        action is ClaudeCodePluginAction.UPDATE and migrate and not status_before.discovered
+    ):
         # One reviewed operation covers source, marketplace, installation and enablement.
         # Read-back determines the remaining stages after an interrupted connection.
         before = status_claude_code_plugin(target, artifact, commands=command_port)
-        if before.source_digest != artifact.artifact_digest:
-            changed = _write_source(target, artifact, preview.request_id)
+        # A legacy tree at the managed root itself always gives way to the renamed layout.
+        in_place = migrate and legacy.root == Path(target.marketplace_root)
+        if before.source_digest != artifact.artifact_digest or in_place:
+            changed = (*changed, *_write_source(target, artifact, preview.request_id))
         if before.marketplace_registered is not True:
             command_ok = _run_mutation(
                 target,
@@ -2222,12 +2866,14 @@ def apply_claude_code_plugin(
                     "project",
                 ),
             )
-        if command_ok and before.enabled is not True:
+        # Updating a legacy-only install keeps its enablement; connect always enables.
+        wants_enabled = action is ClaudeCodePluginAction.CONNECT or legacy.enabled is True
+        if command_ok and wants_enabled and before.enabled is not True:
             command_ok = _run_mutation(
                 target, command_port, ("plugin", "enable", _PLUGIN_ID, "--scope", "project")
             )
     elif action is ClaudeCodePluginAction.INSTALL:
-        changed = _write_source(target, artifact, preview.request_id)
+        changed = (*changed, *_write_source(target, artifact, preview.request_id))
         command_ok = _run_mutation(
             target,
             command_port,
@@ -2240,7 +2886,7 @@ def apply_claude_code_plugin(
                 ("plugin", "install", _PLUGIN_ID, "--scope", "project"),
             )
     elif action is ClaudeCodePluginAction.UPDATE:
-        changed = _write_source(target, artifact, preview.request_id)
+        changed = (*changed, *_write_source(target, artifact, preview.request_id))
         command_ok = _run_mutation(
             target, command_port, ("plugin", "marketplace", "update", _MARKETPLACE_NAME)
         )
@@ -2258,21 +2904,26 @@ def apply_claude_code_plugin(
         command_ok = _run_mutation(
             target, command_port, ("plugin", "disable", _PLUGIN_ID, "--scope", "project")
         )
-    elif action is ClaudeCodePluginAction.REMOVE:
-        command_ok = _run_mutation(
-            target,
-            command_port,
-            ("plugin", "uninstall", _PLUGIN_ID, "--scope", "project", "--keep-data"),
-        )
-        if command_ok:
+    elif action is ClaudeCodePluginAction.REMOVE and (
+        # A legacy-only removal has no renamed plugin to uninstall (ADR-048).
+        status_before.state is not PluginArtifactState.ABSENT
+    ):
+        if not migrate or status_before.discovered:
+            command_ok = _run_mutation(
+                target,
+                command_port,
+                ("plugin", "uninstall", _PLUGIN_ID, "--scope", "project", "--keep-data"),
+            )
+        if command_ok and (not migrate or status_before.marketplace_registered is not False):
             command_ok = _run_mutation(
                 target,
                 command_port,
                 ("plugin", "marketplace", "remove", _MARKETPLACE_NAME),
             )
         if command_ok:
-            changed = _remove_source(target)
-    after = status_claude_code_plugin(target, artifact, commands=command_port)
+            changed = (*changed, *_remove_source(Path(target.marketplace_root)))
+    after, legacy_after = _status_with_legacy(target, artifact, commands=command_port)
+    changed = tuple(sorted(set(changed), key=str.encode))
     reached = (
         after.state is PluginArtifactState.NATIVE_MANAGED
         and after.installed_digest == artifact.artifact_digest
@@ -2290,7 +2941,7 @@ def apply_claude_code_plugin(
         else after.enabled is False
         if action is ClaudeCodePluginAction.DISABLE
         else after.state is PluginArtifactState.ABSENT
-    )
+    ) and (not migrate or legacy_after.state == "absent")
     # Every branch above has already crossed a mutation boundary (source write,
     # host command, or removal). REFUSED describes a safe pre-mutation
     # rejection only, so any unreached post-mutation state is OUTCOME_UNKNOWN
@@ -2431,7 +3082,9 @@ def observe_claude_code_activation_cues(
     """Observe the activation cues one Claude Code installation carries for ``project_root``.
 
     ``marketplace_root`` defaults to the managed ``finishup-local`` marketplace under the config
-    root, the same location the guided connection renders into. ``yoetz_launcher`` is the exact
+    root, the same location the guided connection renders into; when only the legacy
+    ``yoetz-local`` marketplace exists there, its plugin is read instead (ADR-048).
+    ``finishup_launcher`` is the exact
     launcher that classifies a launcher-bound external registration as a FinishUP route; without it,
     only a bare ``finishup`` console-script entry is recognized and a launcher-bound entry reads as
     ``foreign``. ``home`` and ``environ`` locate Claude's user configuration file exactly as
@@ -2439,17 +3092,27 @@ def observe_claude_code_activation_cues(
     """
 
     root = (
-        claude_config_root / "plugins" / "marketplaces" / "finishup-local"
+        claude_config_root / "plugins" / "marketplaces" / _MARKETPLACE_NAME
         if marketplace_root is None
         else marketplace_root
     )
     plugin_root = root / "plugins" / "finishup"
+    known_launchers: tuple[tuple[str, ...], ...] = ()
+    legacy_root = root.parent / _LEGACY_MARKETPLACE_NAME
+    if marketplace_root is None and not root.exists():
+        tree, _digest, legacy_launcher = _legacy_tree(legacy_root)
+        if tree == "legacy":
+            # An installation not yet migrated still carries its cues in the legacy
+            # ``yoetz-local`` marketplace (ADR-048).
+            plugin_root = legacy_root / "plugins" / _LEGACY_PLUGIN_NAME
+            known_launchers = () if legacy_launcher is None else (legacy_launcher,)
     mcp = observe_claude_code_mcp(
         plugin_root=plugin_root,
         project_root=project_root,
         claude_config_root=claude_config_root,
         finishup_launcher=finishup_launcher,
         claude_json=_user_config_file(claude_config_root, home=home, environ=environ),
+        known_launchers=known_launchers,
     )
     sources: list[str] = []
     unobserved = False

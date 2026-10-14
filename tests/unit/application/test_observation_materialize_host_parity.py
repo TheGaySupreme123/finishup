@@ -47,7 +47,9 @@ _CLAUDE_POSTS: tuple[tuple[str, dict[str, Any], str | None], ...] = (
             "permission_mode": "bypassPermissions",
             "session_id": "7c1e2f4a-claude-session",
             "tool_input": {"dry_run": True},
-            "tool_name": "mcp__plugin_finishup_finishup__publish_work",
+            # Frozen legacy identifier (ADR-048): the recorded pre-rename spelling, so the pinned
+            # digest also proves a legacy plugin's calls still materialize byte for byte.
+            "tool_name": "mcp__plugin_yoetz_yoetz__publish_work",
             "tool_response": {"content": [{"text": "published", "type": "text"}]},
             "tool_use_id": "toolu_01PublishWork",
             "transcript_path": "/private/transcript.jsonl",
@@ -63,7 +65,9 @@ _CLAUDE_POSTS: tuple[tuple[str, dict[str, Any], str | None], ...] = (
             "permission_mode": "default",
             "session_id": "7c1e2f4a-claude-session",
             "tool_input": {},
-            "tool_name": "mcp__plugin_finishup_finishup__check",
+            # Frozen legacy identifier (ADR-048): the recorded pre-rename spelling, so the pinned
+            # digest also proves a legacy plugin's calls still materialize byte for byte.
+            "tool_name": "mcp__plugin_yoetz_yoetz__check",
             "tool_response": {"content": [{"text": "verdict", "type": "text"}]},
             "tool_use_id": "toolu_01Check",
             "transcript_path": "/private/transcript.jsonl",

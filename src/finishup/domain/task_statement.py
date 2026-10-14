@@ -43,7 +43,9 @@ __all__ = [
     "TASK_STATEMENT_NOT_SUPPLIED_GAP",
     "TASK_STATEMENT_UNAVAILABLE_GAP",
     "TASK_STATEMENT_SECTION",
+    "LEGACY_NO_MATERIAL_WORK_MARKER",
     "NO_MATERIAL_WORK_MARKER",
+    "NO_MATERIAL_WORK_MARKERS",
     "RecordedTaskStatement",
     "SpecificationPreflight",
     "TASK_STATEMENT_FINDING_SUMMARIES",
@@ -113,8 +115,13 @@ TASK_STATEMENT_FINDING_SUMMARIES: Final = frozenset(
 )
 # A ``decision_recorded`` statement line ``finishup-no-material-work:<statement event id>`` is the
 # agent's recorded, justified decision that the user's request asks for no material work. It is
-# read only as that exact line; it counts only while the task records no edit action.
+# read only as that exact line; it counts only while the task records no edit action. Teaching
+# text names the new spelling; the reader accepts both, permanently (ADR-048).
 NO_MATERIAL_WORK_MARKER: Final = "finishup-no-material-work"
+# Frozen legacy identifier (ADR-048): decision statements recorded before the rename carry this
+# spelling and are re-parsed on every projection rebuild.
+LEGACY_NO_MATERIAL_WORK_MARKER: Final = "yoetz-no-material-work"
+NO_MATERIAL_WORK_MARKERS: Final = (NO_MATERIAL_WORK_MARKER, LEGACY_NO_MATERIAL_WORK_MARKER)
 
 
 class TaskStatementSource(str, Enum):  # noqa: UP042 - exact wire enum base

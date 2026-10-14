@@ -55,6 +55,7 @@ OBSERVATION_ADVICE_FACT_CODES: Final = frozenset(
         "semantic_claim_without_attempt",
         # Runtime facts the hook classified at the host boundary (#977). Advice only: they are
         # recorded history the receipt discloses through the matching standing task-fact gap.
+        # Frozen legacy identifier (ADR-048): recorded advice token.
         "install_into_yoetz_runtime",
         "install_into_private_env",
         "write_outside_workspace",
@@ -86,6 +87,7 @@ type AdviceNextAction = Literal[
     "connect_provider",
     "renew_provider_sign_in",
     "repair_semantic_provider",
+    # Frozen legacy identifier (ADR-048): recorded advice token.
     "update_yoetz",
     "attempt_semantic_dispatch",
     "reground_status",
@@ -796,6 +798,7 @@ _ATTENTION_NEXT_ACTIONS: Final[Mapping[str, AdviceNextAction]] = {
     "access_denied": "repair_semantic_provider",
     "quota_exhausted": "repair_semantic_provider",
     "model_unavailable": "repair_semantic_provider",
+    # Frozen legacy identifier (ADR-048): recorded advice token.
     "runtime_update_required": "update_yoetz",
 }
 
@@ -858,6 +861,7 @@ def _semantic_without_attempt(
 
 
 _RUNTIME_ADVICE_RULES: Final = (
+    # Frozen legacy identifier (ADR-048): recorded advice token.
     ("install_target", "yoetz_runtime", "install_into_yoetz_runtime"),
     ("install_target", "private_env", "install_into_private_env"),
     ("write_scope", "outside_workspace", "write_outside_workspace"),

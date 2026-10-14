@@ -365,9 +365,10 @@ def test_native_projection_uses_claude_skill_and_shared_guidance_components() ->
     assert tuple(sorted(hooks)) == CLAUDE_CODE_HOOK_EVENTS
     assert "PermissionRequest" not in hooks
     # The denial hook is scoped to the one tool a host reviewer holds (issue #467); it fires
-    # after the denial and can allow nothing.
+    # after the denial and can allow nothing. An owner-written registration still under the
+    # legacy ``yoetz`` key keeps its held check visible (ADR-048).
     assert hooks["PermissionDenied"][0]["matcher"] == (
-        "^mcp__(finishup|plugin_finishup_finishup)__check$"
+        "^mcp__(finishup|yoetz|plugin_finishup_finishup)__check$"
     )
     assert hooks["PostToolUse"][0]["matcher"] == (
         "^mcp__plugin_finishup_finishup__(start|publish_work|check|respond|status|receipt|read_guidance)$"
@@ -1129,7 +1130,7 @@ def test_destructive_paths_revalidate_the_displaced_tree_before_deleting(
     victim.write_text("irreplaceable", encoding="utf-8")
 
     with pytest.raises(ClaudeCodeIntegrationError) as removal:
-        module._remove_source(target)  # pyright: ignore[reportPrivateUsage]
+        module._remove_source(root)  # pyright: ignore[reportPrivateUsage]
     assert removal.value.reason is PluginArtifactReason.DESTINATION_CONFLICT
     assert victim.read_text(encoding="utf-8") == "irreplaceable"
     assert not (root.parent / module._ROLLBACK_NAME).exists()  # pyright: ignore[reportPrivateUsage]

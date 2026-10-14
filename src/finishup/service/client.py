@@ -20,8 +20,9 @@ from finishup.adapters.control.unix_socket import (
     LocalControlTransportError,
     connect_control,
 )
+from finishup.config.env import canonical_env_name
 from finishup.config.paths import (
-    ISOLATED_ROOT_ENV,
+    ISOLATED_ROOT_ENV_NAMES,
     PathSafetyError,
     ensure_owner_only_dir,
     isolated_root,
@@ -121,6 +122,7 @@ __all__ = [
     "connect_service",
     "connect_service_on_demand",
     "holder_version_order",
+    "path_refusal_reason",
     "prepare_project_request",
     "service_holder_identity",
     "supersede_incompatible_service",
@@ -181,6 +183,17 @@ _SERVICE_CONFIG_ENV_NAMES: Final = frozenset(
 )
 
 
+def _forwarded_to_service(name: str) -> bool:
+    """Whether one inherited variable may reach the detached service process.
+
+    A product variable is forwarded under whichever spelling it arrived in: the service reads the
+    legacy ``YOETZ_`` spelling of an allowlisted name too, and refuses two that disagree (ADR-048).
+    """
+
+    canonical = canonical_env_name(name)
+    return canonical is None or canonical in _SERVICE_CONFIG_ENV_NAMES
+
+
 def _service_environment() -> dict[str, str]:
     """Return inherited nonsecret process context for the detached service.
 
@@ -193,17 +206,19 @@ def _service_environment() -> dict[str, str]:
         name: value
         for name, value in os.environ.items()
         if not any(marker in name.upper() for marker in _SECRET_ENV_MARKERS)
-        and (not name.startswith("FINISHUP_") or name in _SERVICE_CONFIG_ENV_NAMES)
+        and _forwarded_to_service(name)
     }
     # A runtime pin resolves the root without the variable (issue #604). The detached service
     # runs the same interpreter and would resolve the same pin, but forwarding the resolved root
-    # explicitly keeps the chain visible and identical to the environment-selected case.
+    # explicitly keeps the chain visible and identical to the environment-selected case. Both
+    # spellings carry it (ADR-048), so the child agrees with itself under either name.
     try:
         root = isolated_root()
     except PathSafetyError:
         root = None
     if root is not None:
-        environment[ISOLATED_ROOT_ENV] = str(root)
+        for name in ISOLATED_ROOT_ENV_NAMES:
+            environment[name] = str(root)
     return environment
 
 
@@ -502,6 +517,8 @@ class _ReceiptCommon(TypedDict):
 
 
 def _transport_error(error: LocalControlTransportError) -> ControlError:
+    if error.path_reason is not None:
+        return _EndpointRootRefused(error.path_reason)
     if error.reason == "peer_untrusted":
         return ControlError("peer_untrusted")
     if error.reason == "endpoint_unsafe":
@@ -1398,6 +1415,37 @@ class _AcceptedServiceUnresponsive(ControlError):
         super().__init__("service_unavailable", retryable=True)
 
 
+class _EndpointRootRefused(ControlError):
+    """FinishUP's local folders cannot be used safely, so no service is reachable or startable.
+
+    Raised before any socket is touched: the isolation root is set but unusable, the ambient
+    roots exist under both the FinishUP and the legacy Yoetz names (ADR-048), or a folder the
+    successor would log under fails a path-safety check. The condition does not heal on retry
+    and a spawned service would die on it, so the control reason is the non-retryable
+    ``endpoint_unsafe`` and the closed path-safety token rides alongside.
+    """
+
+    __slots__ = ("path_reason",)
+
+    path_reason: str
+
+    def __init__(self, path_reason: str) -> None:
+        super().__init__("endpoint_unsafe")
+        self.path_reason = path_reason
+
+
+def path_refusal_reason(error: BaseException) -> str | None:
+    """The closed path-safety token that refused this connection before any endpoint, or None.
+
+    ``installation_root_ambiguous``, ``isolation_root_env_conflict`` and the other
+    ``PathSafetyError`` tokens arrive here as the wire-visible ``endpoint_unsafe``; a renderer
+    that can name the exact condition and its remedy asks for it here, like
+    ``accepted_but_unresponsive``. Only the client that observed the refusal can tell.
+    """
+
+    return error.path_reason if type(error) is _EndpointRootRefused else None
+
+
 def accepted_but_unresponsive(error: BaseException) -> bool:
     """True when a fixed endpoint accepted this connection and never completed its handshake.
 
@@ -1766,6 +1814,11 @@ async def connect_service_on_demand(
     if holder is None:
         try:
             spawned = _spawn_service_process()
+        except PathSafetyError as exc:
+            # The successor's log root failed a path-safety check (its root could not be
+            # resolved, or a folder on the way is unsafe). A spawn cannot repair either, so name
+            # the closed token instead of spending the start budget.
+            raise _EndpointRootRefused(exc.reason_code) from exc
         except OSError as exc:
             raise ControlError("service_unavailable", retryable=True) from exc
 

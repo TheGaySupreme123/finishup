@@ -1,4 +1,14 @@
-"""Consent-gated Codex marketplace registration and plugin activation."""
+"""Consent-gated Codex marketplace registration and plugin activation.
+
+A Yoetz 0.1-0.2 activation of the same project (``[marketplaces.yoetz]``,
+``[plugins."yoetz@yoetz"]``, the ``yoetz`` repository marketplace document and the
+``plugins/cache/yoetz/yoetz`` cache) is migrated in the same approved preview: activation strips
+the byte-identical legacy tables, replaces the exact legacy marketplace document, deletes the
+marker-validated legacy cache, and then deletes the marker-consistent ``.agents/plugins/yoetz``
+source tree that activation read. Removal deactivates it alongside the FinishUP one and, like
+FinishUP's own source tree, retains the legacy source tree (ADR-048). A legacy table that is not
+byte-identical is a conflict; another project's legacy activation is left alone.
+"""
 
 from __future__ import annotations
 
@@ -14,7 +24,7 @@ import tempfile
 import time
 import tomllib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Final, Never, cast
@@ -23,7 +33,9 @@ from finishup import __version__
 from finishup.adapters.integrations.codex_plugin import (
     PluginHookPresence,
     inspect_plugin,
+    legacy_plugin_tree_digest,
     plugin_tree_matches_marker,
+    remove_legacy_plugin_tree,
     render_plugin_install_tree,
 )
 from finishup.adapters.integrations.codex_session_stream import resolve_codex_home
@@ -83,6 +95,7 @@ _MAX_MANAGED_CACHE_DEPTH: Final = 16
 _MAX_MANAGED_CACHE_RELATIVE_PATH_BYTES: Final = 4_096
 _MAX_MANAGED_CACHE_MEMBER_BYTES: Final = 262_144
 _MAX_MANAGED_CACHE_TREE_BYTES: Final = 4 * 1024 * 1024
+# Frozen legacy identifier (ADR-048): old and new CLIs must serialize on the same lock file.
 _ACTIVATION_LOCK: Final = ".yoetz-marketplace-activation.lock"
 _PLUGIN_ADD_COMMAND: Final = ("plugin", "add", _PLUGIN_ID, "--json")
 _PLUGIN_LIST_COMMAND: Final = ("plugin", "list", "--marketplace", _MARKETPLACE_NAME, "--json")
@@ -95,6 +108,13 @@ _MARKETPLACE_REMOVE_COMMAND: Final = (
     "--json",
 )
 _PLUGIN_TABLE: Final = f'[plugins."{_PLUGIN_ID}"]\nenabled = true\n'
+# Frozen legacy identifier (ADR-048): the Yoetz 0.1-0.2 Codex marketplace name, plugin id, plugin
+# source path, and plugin cache root. Recognized, migrated, and removed; never written.
+_LEGACY_MARKETPLACE_NAME: Final = "yoetz"
+_LEGACY_PLUGIN_ID: Final = "yoetz@yoetz"
+_LEGACY_PLUGIN_RELATIVE_PATH: Final = "./.agents/plugins/yoetz"
+_LEGACY_PLUGIN_TABLE: Final = f'[plugins."{_LEGACY_PLUGIN_ID}"]\nenabled = true\n'
+_LEGACY_CACHE_RELATIVE_ROOT: Final = Path("plugins/cache/yoetz/yoetz")
 _VERSION_RE: Final = re.compile(
     r"\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)\b", re.ASCII
 )
@@ -116,6 +136,9 @@ class ActivationInspection:
     state: ActivationState
     plugin_cached: bool = False
     inventory_verified: bool = True
+    # A Yoetz-era activation of this project is still present and owned (ADR-048): integrate
+    # migrates it and remove deactivates it.
+    legacy_activation: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +164,11 @@ class ActivationPreview:
     marketplace_preimage_digest: str
     config_preimage_digest: str
     cache_mutation_planned: bool
+    # The exact legacy tables this approval strips and the legacy cache versions it deletes.
+    legacy_removed_block: str = ""
+    legacy_cache_versions: tuple[str, ...] = ()
+    # The marker-consistent ``.agents/plugins/yoetz`` source tree this approval deletes last.
+    legacy_plugin_tree_planned: bool = False
 
 
 class RemovalOutcome(str, Enum):  # noqa: UP042 - exact structural enum
@@ -175,6 +203,10 @@ class RemovalPreview:
     marketplace_preimage_digest: str
     config_preimage_digest: str
     config_toml_block: str
+    # The legacy Yoetz activation this removal also deactivates (ADR-048).
+    legacy_removed_block: str = ""
+    legacy_cache_versions: tuple[str, ...] = ()
+    legacy_marketplace_json_planned: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +228,7 @@ class _ActivationPlan:
     cache_members: Mapping[str, bytes]
     cache_before: str | None
     binary: _CodexBinaryProbe
+    legacy: _LegacyActivation
 
 
 @dataclass(frozen=True, slots=True)
@@ -620,6 +653,209 @@ def _config_state(config: Mapping[str, object], project: Path) -> tuple[bool, bo
     return configured, enabled, False
 
 
+@dataclass(frozen=True, slots=True)
+class _LegacyActivation:
+    """The owned pieces of a Yoetz 0.1-0.2 activation of this project (ADR-048)."""
+
+    marketplace_json: bool = False
+    marketplace_table: bool = False
+    plugin_table: bool = False
+    cache_digests: tuple[tuple[str, str], ...] = ()
+    # Activation only: the marker-consistent legacy source tree it deletes once nothing in the
+    # activated project reads it. Removal retains source trees, so it never sets this.
+    plugin_tree_digest: str | None = None
+
+    @property
+    def present(self) -> bool:
+        return (
+            self.marketplace_json
+            or self.marketplace_table
+            or self.plugin_table
+            or bool(self.cache_digests)
+            or self.plugin_tree_digest is not None
+        )
+
+    @property
+    def cache_versions(self) -> tuple[str, ...]:
+        return tuple(version for version, _digest in self.cache_digests)
+
+    def removed_block(self, project: Path) -> str:
+        blocks: list[str] = []
+        if self.marketplace_table:
+            blocks.append(_legacy_marketplace_table(project))
+        if self.plugin_table:
+            blocks.append(_LEGACY_PLUGIN_TABLE)
+        return "\n".join(blocks)
+
+    def digest_suffix(self, project: Path) -> bytes:
+        """Bind the legacy migration into a preview digest; empty when nothing is legacy."""
+
+        if not self.present:
+            return b""
+        suffix = (
+            b"\0legacy\0"
+            + (b"1" if self.marketplace_json else b"0")
+            + b"\0"
+            + self.removed_block(project).encode("utf-8")
+            + b"\0"
+            + canonical_encode(
+                [{"version": version, "digest": digest} for version, digest in self.cache_digests]
+            )
+        )
+        if self.plugin_tree_digest is not None:
+            suffix += b"\0legacy-plugin-tree\0" + self.plugin_tree_digest.encode("ascii")
+        return suffix
+
+
+def _legacy_marketplace_bytes() -> bytes:
+    """The exact repository marketplace document a Yoetz 0.1-0.2 activation wrote."""
+
+    document: dict[str, JsonValue] = {
+        "name": _LEGACY_MARKETPLACE_NAME,
+        "plugins": [
+            {
+                "name": _LEGACY_MARKETPLACE_NAME,
+                "source": {"source": "local", "path": _LEGACY_PLUGIN_RELATIVE_PATH},
+            }
+        ],
+    }
+    return canonical_encode(cast(JsonValue, document)) + b"\n"
+
+
+def _references_legacy_plugin_tree(marketplace_bytes: bytes) -> bool:
+    """Whether a repository marketplace document may still name the legacy plugin source tree.
+
+    Fails closed: only a document whose every plugin row is FinishUP's row with its exact source
+    provably leaves ``.agents/plugins/yoetz`` unreferenced. Any other row (whatever its name,
+    source form or path spelling) may resolve to the legacy tree, so the tree is kept.
+    """
+
+    document = cast(Mapping[str, object], strict_json_parse(marketplace_bytes))
+    plugins = document.get("plugins")
+    if type(plugins) is not list:
+        return True
+    for raw in cast(list[object], plugins):
+        if not isinstance(raw, Mapping):
+            return True
+        row = cast(Mapping[str, object], raw)
+        if row.get("name") != "finishup" or row.get("source") != _expected_source():
+            return True
+    return False
+
+
+def _legacy_marketplace_table(project: Path) -> str:
+    return (
+        f"[marketplaces.{_LEGACY_MARKETPLACE_NAME}]\n"
+        f'source_type = "local"\nsource = {_toml_string(str(project))}\n'
+    )
+
+
+def _legacy_config_plan(
+    raw: bytes, config: Mapping[str, object], project: Path
+) -> tuple[bool, bool, bytes]:
+    """Return ``(marketplace_table_owned, plugin_table_owned, config_after)`` for legacy tables.
+
+    Only a legacy marketplace table that names this project is this activation's; another
+    project's legacy activation (or any other table under the old name) is left untouched along
+    with the global ``[plugins."yoetz@yoetz"]`` table it enables. A legacy table for this project
+    that is not byte-identical to the Yoetz render is a conflict, never rewritten (ADR-048).
+    """
+
+    marketplaces = _table(config, "marketplaces")
+    marketplace = None if marketplaces is None else marketplaces.get(_LEGACY_MARKETPLACE_NAME)
+    if marketplace is None or not isinstance(marketplace, Mapping):
+        return False, False, raw
+    row = cast(Mapping[str, object], marketplace)
+    if row.get("source") != str(project):
+        return False, False, raw
+    marketplace_table = _legacy_marketplace_table(project)
+    if (
+        dict(row) != {"source_type": "local", "source": str(project)}
+        or exact_table_span(raw, marketplace_table) is None
+    ):
+        _refuse_conflict("legacy_config_marketplace")
+    plugins = _table(config, "plugins")
+    plugin = None if plugins is None else plugins.get(_LEGACY_PLUGIN_ID)
+    plugin_owned = plugin is not None
+    if plugin_owned and (
+        not isinstance(plugin, Mapping)
+        or dict(cast(Mapping[str, object], plugin)) != {"enabled": True}
+        or exact_table_span(raw, _LEGACY_PLUGIN_TABLE) is None
+    ):
+        _refuse_conflict("legacy_config_plugin")
+    after = strip_exact_table(raw, marketplace_table)
+    if plugin_owned:
+        after = strip_exact_table(after, _LEGACY_PLUGIN_TABLE)
+    try:
+        parsed = cast(Mapping[str, object], tomllib.loads(after.decode("utf-8") if after else ""))
+    except (UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise _error(IntegrationReason.WRITE_FAILED) from exc
+    remaining_marketplaces = _table(parsed, "marketplaces")
+    remaining_plugins = _table(parsed, "plugins")
+    if (
+        remaining_marketplaces is not None and _LEGACY_MARKETPLACE_NAME in remaining_marketplaces
+    ) or (
+        plugin_owned and remaining_plugins is not None and _LEGACY_PLUGIN_ID in remaining_plugins
+    ):
+        raise _error(IntegrationReason.WRITE_FAILED)
+    return True, plugin_owned, after
+
+
+def _legacy_cache_digests(home: Path, expected: Mapping[str, bytes]) -> tuple[tuple[str, str], ...]:
+    """Marker-validated legacy cache versions; any other content leaves the cache untouched."""
+
+    _validate_descendant_ancestors(home, _LEGACY_CACHE_RELATIVE_ROOT)
+    try:
+        return _managed_cache_versions(
+            home / _LEGACY_CACHE_RELATIVE_ROOT,
+            expected,
+            include_all_managed=True,
+            anchor_root=home,
+        )
+    except IntegrationError as exc:
+        if exc.reason in {
+            IntegrationReason.REMOVE_REFUSED,
+            IntegrationReason.DESTINATION_CONFLICT,
+            IntegrationReason.PREVIEW_STALE,
+            IntegrationReason.TARGET_UNSAFE,
+        }:
+            # Not provably a Yoetz render: never deleted. Codex stops loading it once the
+            # legacy tables are gone, so leaving it is residue, not an active plugin.
+            return ()
+        raise
+
+
+def _legacy_activation(
+    project: Path,
+    home: Path,
+    marketplace_raw: bytes | None,
+    config_raw: bytes,
+    config: Mapping[str, object],
+    cache_members: Mapping[str, bytes],
+) -> tuple[_LegacyActivation, bytes]:
+    """Plan the legacy migration; returns the plan and the config bytes with legacy tables gone."""
+
+    marketplace_table, plugin_table, config_after = _legacy_config_plan(config_raw, config, project)
+    # The legacy cache belongs to whichever activation the legacy marketplace table names. It is
+    # this project's when that table is ours, and orphaned residue when no table remains (for
+    # example after an interrupted migration); another project's activation keeps it.
+    marketplaces = _table(config, "marketplaces")
+    other_project = (
+        not marketplace_table
+        and marketplaces is not None
+        and _LEGACY_MARKETPLACE_NAME in marketplaces
+    )
+    return (
+        _LegacyActivation(
+            marketplace_json=marketplace_raw == _legacy_marketplace_bytes(),
+            marketplace_table=marketplace_table,
+            plugin_table=plugin_table,
+            cache_digests=() if other_project else _legacy_cache_digests(home, cache_members),
+        ),
+        config_after,
+    )
+
+
 def _paths(
     target: IntegrationTarget, codex_home: Path | str | None
 ) -> tuple[Path, Path, Path, Path]:
@@ -957,7 +1193,10 @@ def inspect_activation(
                 raise
     repo_snapshot = _load_marketplace(marketplace_path)
     repo_document = None if repo_snapshot is None else repo_snapshot[1]
-    repo_registered, repo_foreign = _classify_manifest(repo_document)
+    # The exact Yoetz-era document is this project's own legacy activation (ADR-048), replaced
+    # on activation and removed on removal, never a foreign marketplace.
+    legacy_json = repo_snapshot is not None and repo_snapshot[0] == _legacy_marketplace_bytes()
+    repo_registered, repo_foreign = _classify_manifest(None if legacy_json else repo_document)
 
     # A same-named personal marketplace entry is ambiguous with the repository-scoped source.
     personal_path = home / _MARKETPLACE_RELATIVE_PATH
@@ -965,13 +1204,25 @@ def inspect_activation(
     if personal_path != marketplace_path:
         personal_snapshot = _load_marketplace(personal_path)
         personal_document = None if personal_snapshot is None else personal_snapshot[1]
-    _raw, config = _load_config(config_path)
+    config_raw, config = _load_config(config_path)
     config_registered, plugin_enabled, config_foreign = _config_state(config, project)
+    legacy_foreign = False
+    legacy_tables = False
+    try:
+        legacy_marketplace_table, legacy_plugin_table, _after = _legacy_config_plan(
+            config_raw, config, project
+        )
+        legacy_tables = legacy_marketplace_table or legacy_plugin_table
+    except IntegrationError as exc:
+        if exc.reason is not IntegrationReason.REMOVE_REFUSED:
+            raise
+        legacy_foreign = True
     foreign = (
         repo_foreign
         or _personal_manifest_conflicts(personal_document)
         or config_foreign
         or cache_foreign
+        or legacy_foreign
     )
     marketplace_registered = repo_registered and config_registered
     if foreign:
@@ -988,6 +1239,7 @@ def inspect_activation(
         state,
         plugin_cached,
         _canonical_inventory,
+        legacy_json or legacy_tables,
     )
 
 
@@ -1073,17 +1325,38 @@ def _activation_plan(
     marketplace_snapshot = _load_marketplace(marketplace_path)
     marketplace_before = None if marketplace_snapshot is None else marketplace_snapshot[0]
     marketplace_document = None if marketplace_snapshot is None else marketplace_snapshot[1]
-    marketplace_bytes = _merged_marketplace_bytes(marketplace_document)
     config_bytes, config = _load_config(config_path)
     config_before = config_bytes if config_path.exists() else None
-    block = _activation_block(project, config)
     plugin_source_digest = _plugin_source_digest(codex_version=binary.codex_version)
     cache_members = _source_cache_members(target, codex_version=binary.codex_version)
+    # Migrate a Yoetz-era activation of this project in the same approval (ADR-048): its exact
+    # marketplace document is replaced and its exact tables are stripped before the FinishUP
+    # blocks are appended.
+    legacy, legacy_config_after = _legacy_activation(
+        project, home, marketplace_before, config_bytes, config, cache_members
+    )
+    if legacy.cache_digests:
+        _require_safe_cache_removal_primitives()
+    marketplace_bytes = _merged_marketplace_bytes(
+        None if legacy.marketplace_json else marketplace_document
+    )
+    if not _references_legacy_plugin_tree(marketplace_bytes):
+        # The legacy source tree goes only with this approval, once the activated marketplace
+        # document no longer names it; plugin install alone never deletes it (ADR-048).
+        legacy = replace(legacy, plugin_tree_digest=legacy_plugin_tree_digest(target))
+    activation_raw = legacy_config_after
+    activation_config = (
+        config
+        if activation_raw == config_bytes
+        else cast(Mapping[str, object], tomllib.loads(activation_raw.decode("utf-8")))
+    )
+    block = _activation_block(project, activation_config)
     plugin_install_digest = _members_digest(cache_members)
     plugin_cache_root = _cache_root(home)
     plugin_install_path = _cache_version_path(plugin_cache_root, __version__)
     cache_before = _installed_cache_digest_anchored(home, __version__, cache_members)
     digest_body = (
+        # Frozen legacy identifier (ADR-048): preview digest domain in the shared tag family.
         b"yoetz.codex-marketplace-activation/2\0"
         + str(home).encode("utf-8")
         + b"\0"
@@ -1124,6 +1397,7 @@ def _activation_plan(
         + canonical_encode(list(_PLUGIN_LIST_COMMAND))
         + b"\0"
         + canonical_encode(list(_PLUGIN_ADD_COMMAND))
+        + legacy.digest_suffix(project)
     )
     preview = ActivationPreview(
         marketplace_bytes,
@@ -1145,8 +1419,11 @@ def _activation_plan(
         _sha(b"" if marketplace_before is None else marketplace_before),
         _sha(config_bytes),
         cache_before != plugin_install_digest,
+        legacy.removed_block(project),
+        legacy.cache_versions,
+        legacy.plugin_tree_digest is not None,
     )
-    config_after = _activated_config_bytes(config_bytes, config, project)
+    config_after = _activated_config_bytes(activation_raw, activation_config, project)
     return _ActivationPlan(
         preview,
         marketplace_before,
@@ -1155,6 +1432,7 @@ def _activation_plan(
         cache_members,
         cache_before,
         binary,
+        legacy,
     )
 
 
@@ -1280,6 +1558,7 @@ def _replace_cache_tree(
 
     parent = path.parent
     _safe_parent(parent)
+    # Frozen legacy identifier (ADR-048): crash-residue prefixes shared with older runtimes.
     stage = parent / f".yoetz-cache-stage-{os.urandom(6).hex()}"
     rollback = parent / f".yoetz-cache-rollback-{os.urandom(6).hex()}"
     destination_moved = False
@@ -1331,6 +1610,7 @@ def _replace_cache_tree_anchored(
     except ValueError as exc:
         raise _error(IntegrationReason.TARGET_UNSAFE) from exc
     parent_fd = _open_anchored_directory(anchor_root, relative_parent)
+    # Frozen legacy identifier (ADR-048): crash-residue prefixes shared with older runtimes.
     stage = f".yoetz-cache-stage-{os.urandom(6).hex()}"
     rollback = f".yoetz-cache-rollback-{os.urandom(6).hex()}"
     stage_fd: int | None = None
@@ -1670,6 +1950,21 @@ def apply_activation(
                         != preview.plugin_install_digest
                     ):
                         raise _error(IntegrationReason.WRITE_FAILED)
+            if plan.legacy.cache_digests:
+                # Last, so an interrupted run leaves the legacy cache as orphaned residue that
+                # the next preview still plans to delete (ADR-048).
+                _delete_managed_cache_versions(
+                    binary.codex_home / _LEGACY_CACHE_RELATIVE_ROOT,
+                    plan.legacy.cache_digests,
+                    plan.cache_members,
+                    anchor_root=binary.codex_home,
+                    missing_ok_after_prior_mutation=True,
+                )
+            if plan.legacy.plugin_tree_digest is not None:
+                # After the legacy tables and document are gone, so no activation of this
+                # project still reads the tree; an interrupted run leaves it for the next
+                # preview to plan again (ADR-048).
+                remove_legacy_plugin_tree(target, plan.legacy.plugin_tree_digest)
             _assert_snapshot(config_path, plan.config_after)
             _assert_snapshot(marketplace_path, preview.marketplace_bytes)
             _assert_plugin_source(
@@ -1702,6 +1997,7 @@ class _RemovalPlan:
     cache_members: Mapping[str, bytes]
     cache_digests: tuple[tuple[str, str], ...]
     binary: _CodexBinaryProbe
+    legacy: _LegacyActivation
 
 
 def _refuse_conflict(candidate: str) -> Never:
@@ -1780,11 +2076,21 @@ def _config_table_plan(
     return plugin_owned, marketplace_owned, after
 
 
+def _parsed_config(raw: bytes) -> Mapping[str, object]:
+    try:
+        return cast(Mapping[str, object], tomllib.loads(raw.decode("utf-8") if raw else ""))
+    except (UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise _error(IntegrationReason.WRITE_FAILED) from exc
+
+
 def _marketplace_json_owned(path: Path) -> bool:
     snapshot = _load_marketplace(path)
     if snapshot is None:
         return False
     raw, document = snapshot
+    if raw == _legacy_marketplace_bytes():
+        # The exact Yoetz-era document is planned by the legacy removal (ADR-048).
+        return False
     registered, foreign = _classify_manifest(document)
     if foreign or (registered and raw != _canonical_marketplace_bytes()):
         _refuse_conflict("repository_marketplace")
@@ -1946,7 +2252,13 @@ def _removal_plan(
         include_all_managed=purge_cache,
         anchor_root=home,
     )
-    if cache_digests:
+    # Deactivate a Yoetz-era activation of this project alongside the FinishUP one (ADR-048).
+    legacy, _legacy_after = _legacy_activation(
+        project, home, marketplace_before, config_bytes, config, cache_members
+    )
+    if legacy.marketplace_table:
+        config_after = _legacy_config_plan(config_after, _parsed_config(config_after), project)[2]
+    if cache_digests or legacy.cache_digests:
         _require_safe_cache_removal_primitives()
     cache_versions = tuple(version for version, _digest in cache_digests)
     inventory_owned = _inventory_owned(binary, project, _run=_run)
@@ -1962,9 +2274,11 @@ def _removal_plan(
         or marketplace_table_owned
         or marketplace_json_planned
         or bool(cache_versions)
+        or legacy.present
     )
     outcome = RemovalOutcome.REMOVE if planned else RemovalOutcome.ALREADY_ABSENT
     digest_body = (
+        # Frozen legacy identifier (ADR-048): preview digest domain in the shared tag family.
         b"yoetz.codex-marketplace-removal/1\0"
         + str(project).encode("utf-8")
         + b"\0"
@@ -2011,6 +2325,7 @@ def _removal_plan(
         + canonical_encode(list(_PLUGIN_REMOVE_COMMAND))
         + b"\0"
         + canonical_encode(list(_MARKETPLACE_REMOVE_COMMAND))
+        + legacy.digest_suffix(project)
     )
     preview = RemovalPreview(
         _sha(digest_body),
@@ -2036,6 +2351,9 @@ def _removal_plan(
         _sha(b"" if marketplace_before is None else marketplace_before),
         _sha(config_bytes),
         _removed_tables_block(plugin_table_owned, marketplace_table_owned, project),
+        legacy.removed_block(project),
+        legacy.cache_versions,
+        legacy.marketplace_json,
     )
     return _RemovalPlan(
         preview,
@@ -2045,6 +2363,7 @@ def _removal_plan(
         cache_members,
         cache_digests,
         binary,
+        legacy,
     )
 
 
@@ -2396,6 +2715,7 @@ def _remove_exact_managed_file(
         if not _same_inode(opened, current):
             raise _error(mismatch_reason)
 
+        # Frozen legacy identifier (ADR-048): crash-residue prefix shared with older runtimes.
         quarantine = f".yoetz-file-remove-{os.urandom(8).hex()}"
         try:
             os.stat(quarantine, dir_fd=parent_fd, follow_symlinks=False)
@@ -2639,6 +2959,7 @@ def _delete_managed_cache_versions(
                 if cache_mutation_started:
                     raise _error(IntegrationReason.WRITE_FAILED)
                 raise _error(IntegrationReason.PREVIEW_STALE)
+            # Frozen legacy identifier (ADR-048): crash-residue prefix shared with older runtimes.
             quarantine = f".yoetz-cache-remove-{os.urandom(8).hex()}"
             try:
                 os.rename(
@@ -2822,6 +3143,16 @@ def apply_removal(
                 cast(Mapping[str, object], parsed_config),
                 project,
             )
+            if plan.legacy.marketplace_table:
+                legacy_marketplace, legacy_plugin, stripped = _legacy_config_plan(
+                    stripped, _parsed_config(stripped), project
+                )
+                if (legacy_marketplace, legacy_plugin) != (True, plan.legacy.plugin_table):
+                    raise _error(
+                        IntegrationReason.WRITE_FAILED
+                        if mutation_started
+                        else IntegrationReason.PREVIEW_STALE
+                    )
         except IntegrationError as exc:
             if mutation_started:
                 # A conflict discovered after the host removal subprocesses have already
@@ -2872,10 +3203,38 @@ def apply_removal(
                     ) from exc
                 raise
             mutation_started = True
+        if preview.legacy_marketplace_json_planned:
+            try:
+                _remove_exact_managed_file(
+                    marketplace_path,
+                    _legacy_marketplace_bytes(),
+                    mismatch_reason=(
+                        IntegrationReason.WRITE_FAILED
+                        if mutation_started
+                        else IntegrationReason.PREVIEW_STALE
+                    ),
+                    anchor_root=project,
+                )
+            except IntegrationError as exc:
+                if mutation_started or exc.reason is IntegrationReason.WRITE_FAILED:
+                    raise _error(
+                        IntegrationReason.WRITE_FAILED,
+                        {"conflict": "repository_marketplace"},
+                    ) from exc
+                raise
+            mutation_started = True
         try:
             cache_mutated = _delete_managed_cache_versions(
                 _cache_root(home),
                 plan.cache_digests,
+                plan.cache_members,
+                anchor_root=home,
+                missing_ok_after_prior_mutation=mutation_started,
+            )
+            mutation_started = mutation_started or cache_mutated
+            cache_mutated = _delete_managed_cache_versions(
+                home / _LEGACY_CACHE_RELATIVE_ROOT,
+                plan.legacy.cache_digests,
                 plan.cache_members,
                 anchor_root=home,
                 missing_ok_after_prior_mutation=mutation_started,
@@ -2890,7 +3249,9 @@ def apply_removal(
             if installed:
                 raise _error(IntegrationReason.WRITE_FAILED)
             _assert_finishup_tables_absent(config_path, project)
-            if preview.marketplace_json_planned and marketplace_path.exists():
+            if (
+                preview.marketplace_json_planned or preview.legacy_marketplace_json_planned
+            ) and marketplace_path.exists():
                 raise _error(IntegrationReason.WRITE_FAILED)
             inspection = inspect_activation(
                 target,
@@ -2900,7 +3261,7 @@ def apply_removal(
             )
             if inspection.state is ActivationState.ACTIVE:
                 raise _error(IntegrationReason.WRITE_FAILED)
-            if inspection.state is ActivationState.FOREIGN:
+            if inspection.state is ActivationState.FOREIGN or inspection.legacy_activation:
                 raise _error(IntegrationReason.WRITE_FAILED)
             skill_state = skill_tree_state(target)
             if skill_state != preview.skill_tree_state:

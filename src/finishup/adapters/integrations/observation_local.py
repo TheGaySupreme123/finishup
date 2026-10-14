@@ -41,6 +41,11 @@ from finishup.adapters.integrations.observation_admission import (
     plan_admission,
 )
 from finishup.config.paths import PathSafetyError, ensure_owner_only_dir, state_dir
+from finishup.domain.finishup_tools import (
+    FINISHUP_PREFIXED_TOOL_PREFIXES,
+    FINISHUP_SCOPED_TOOL_PREFIXES,
+    FINISHUP_TOOL_SERVER_NAMES,
+)
 from finishup.domain.observation import (
     CAPTURE_HANDOFF_RECONCILE_AGE_MS,
     OBSERVATION_BACKPRESSURE_REASON,
@@ -324,21 +329,23 @@ _STATE_HEADROOM_DIVISOR: Final = 8
 _OVER_TARGET_ACCOUNTING_RESERVE_BYTES: Final = _DEFAULT_STATE_BYTES // _STATE_HEADROOM_DIVISOR
 
 # FinishUP's own MCP tools as Codex spells them (bare registry name or the
-# ``mcp__finishup__`` server prefix). Derived from the one registry tuple so this
-# set cannot drift from the tools the bridge actually serves (#564 found the
-# hand-written predecessor missing ``read_guidance``).
+# ``mcp__finishup__`` server prefix, or the legacy ``mcp__yoetz__`` one a 0.1-0.2.5
+# registration and its recorded observations carry, ADR-048). Derived from the one
+# registry tuple so this set cannot drift from the tools the bridge actually serves
+# (#564 found the hand-written predecessor missing ``read_guidance``).
 FINISHUP_TOOL_NAMES: Final = frozenset(
-    f"{prefix}{name}" for prefix in ("", "mcp__finishup__") for name in FINISHUP_WORKFLOW_TOOL_NAMES
+    f"{prefix}{name}"
+    for prefix in ("", *(f"mcp__{server}__" for server in FINISHUP_TOOL_SERVER_NAMES))
+    for name in FINISHUP_WORKFLOW_TOOL_NAMES
 )
 # Every host spelling of a FinishUP-owned tool: Codex ``mcp__finishup__``, Claude
 # Code's plugin scope ``mcp__plugin_finishup_finishup__`` (host_admission), and the
-# Cursor ``server:tool`` forms for the external and plugin-bundled server names.
+# Cursor ``server:tool`` forms for the external and plugin-bundled server names, each
+# under the current and the legacy server name (ADR-048).
 _FINISHUP_TOOL_PREFIXES: Final = (
     "",
-    "mcp__finishup__",
-    "mcp__plugin_finishup_finishup__",
-    "finishup:",
-    "plugin-finishup-finishup:",
+    *FINISHUP_SCOPED_TOOL_PREFIXES,
+    *FINISHUP_PREFIXED_TOOL_PREFIXES,
 )
 FINISHUP_OWNED_TOOL_NAMES: Final = frozenset(
     f"{prefix}{name}" for prefix in _FINISHUP_TOOL_PREFIXES for name in FINISHUP_WORKFLOW_TOOL_NAMES
@@ -1295,6 +1302,8 @@ class _CodeModeCell:
     output_local: bool | None
     touched: int
     session: str | None = None
+    # Frozen legacy identifier (ADR-048): the persisted per-cell mark value for a cell whose
+    # nested tool calls were all FinishUP's own; stored states keep it, so it stays spelled so.
     nested: Literal["yoetz", "other"] | None = None
 
 
@@ -1566,6 +1575,7 @@ def _code_mode_cells_from_json(raw: object) -> dict[str, _CodeModeCell]:
             local,
             touched,
             session=cast(str, session) if _pending_rollout_item_token(session) else None,
+            # Frozen legacy identifier (ADR-048): the stored nested-cell mark value.
             nested=nested if nested in ("yoetz", "other") else None,
         )
     return dict(
@@ -6287,6 +6297,7 @@ class LocalObservationStore:
                 for key, cell in state.code_mode_cells.items()
                 if cell.session == session_commitment and cell.output_local is None
             ]
+            # Frozen legacy identifier (ADR-048): the persisted nested-cell mark value.
             mark: Literal["yoetz", "other"] = (
                 "yoetz" if finishup_owned and len(open_cells) == 1 else "other"
             )
@@ -6324,6 +6335,7 @@ class LocalObservationStore:
             if current.output_local is not None:
                 return current.output_local
             entry = (state.codex_tool_hooks or {}).get(session_commitment)
+            # Frozen legacy identifier (ADR-048): the persisted nested-cell mark value.
             local = current.nested == "yoetz" or (
                 entry is not None and entry.settled > current.hook_clock_at_start
             )

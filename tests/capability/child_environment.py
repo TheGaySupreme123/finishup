@@ -18,13 +18,21 @@ def child_environment(tmp_path: Path) -> dict[str, str]:
     ensure_owner_only_dir(home)
     for directory in ("cache", "config", "data", "runtime", "state", "finishup/state"):
         ensure_owner_only_dir(home / directory)
+    root = str(home / "finishup" / "state")
     return {
-        **{name: value for name, value in os.environ.items() if not name.startswith("FINISHUP_")},
+        # Neither product variable namespace is inherited (ADR-048).
+        **{
+            name: value
+            for name, value in os.environ.items()
+            if not name.startswith(("FINISHUP_", "YOETZ_"))
+        },
         "HOME": str(home),
         "XDG_CACHE_HOME": str(home / "cache"),
         "XDG_CONFIG_HOME": str(home / "config"),
         "XDG_DATA_HOME": str(home / "data"),
         "XDG_RUNTIME_DIR": str(home / "runtime"),
         "XDG_STATE_HOME": str(home / "state"),
-        "FINISHUP_ISOLATED_ROOT": str(home / "finishup" / "state"),
+        # Both spellings with one value, so a pre-rename candidate isolates too (ADR-048).
+        "FINISHUP_ISOLATED_ROOT": root,
+        "YOETZ_ISOLATED_ROOT": root,
     }

@@ -86,7 +86,11 @@ def _entry(
         "args": args,
     }
     if isolation_root is not None:
-        result["env"] = {"FINISHUP_ISOLATED_ROOT": isolation_root}
+        # Both spellings with one value while the deprecated alias ships (ADR-048).
+        result["env"] = {
+            "FINISHUP_ISOLATED_ROOT": isolation_root,
+            "YOETZ_ISOLATED_ROOT": isolation_root,
+        }
     return result
 
 

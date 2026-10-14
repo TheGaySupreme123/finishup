@@ -26,6 +26,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
+from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME, MCP_SERVER_NAME
 from finishup.tui.models import (
     CheckMode,
     Detection,
@@ -62,8 +63,51 @@ __all__ = [
     "project_detection",
 ]
 
-_MCP_SERVER_NAME: Final = "finishup"
+_MCP_SERVER_NAME: Final = MCP_SERVER_NAME
+# Frozen legacy identifier (ADR-048): the released registration-state wire value for an owned
+# MCP registration, whichever key (``finishup`` or the legacy ``yoetz``) holds it.
+_OWNED: Final = "yoetz_owned"
 _HARNESS: Final = "codex"
+# What an entry or install under the pre-rename name means for the owner (ADR-048), keyed by the
+# ``legacy_registration`` / ``legacy_installation`` vocabulary; ``none`` says nothing.
+_LEGACY_REGISTRATION_TEXT: Final = {
+    "legacy_only": "registered under the earlier name yoetz (connecting migrates it)",
+    "duplicate": "also registered under the earlier name yoetz (connecting removes it)",
+    "foreign": "the earlier name yoetz holds an entry FinishUP cannot prove is its own (kept)",
+}
+# A Cursor project registration whose earlier-name entry lives outside the project's own file,
+# or beside another source: connect refuses rather than migrating it (ADR-048).
+_PROJECT_MCP_REFUSED_STATES: Final = frozenset({"external_source", "multiple_sources"})
+_LEGACY_REGISTRATION_REFUSED_TEXT: Final = (
+    "the earlier name yoetz is registered where connecting will not edit it; FinishUP leaves it "
+    "alone, so migrate or remove that entry yourself first"
+)
+# Both the FinishUP and the earlier Yoetz check policy exist (``policy_ambiguous``, ADR-048).
+_POLICY_AMBIGUOUS_TEXT: Final = (
+    "both .finishup/checks.toml and the earlier .yoetz/checks.toml exist; neither is used until "
+    "you remove one"
+)
+_LEGACY_INSTALLATION_TEXT: Final = {
+    "legacy_only": "installed under the earlier name yoetz (connecting migrates it)",
+    "duplicate": "also installed under the earlier name yoetz (connecting removes it)",
+    "foreign": "the earlier name yoetz holds an install FinishUP cannot prove is its own (kept)",
+}
+
+
+def _project_legacy_registration_text(project_mcp: Mapping[str, object]) -> str | None:
+    """Words for a project MCP status's earlier-name entry, matched to what connect will do.
+
+    An owned ``yoetz`` entry in the project's own file is migrated or removed on connect. When
+    the status reads ``external_source`` or ``multiple_sources`` connect refuses instead, so the
+    text must not promise a migration.
+    """
+
+    legacy = str(project_mcp.get("legacy_registration"))
+    if legacy in {"legacy_only", "duplicate"} and (
+        project_mcp.get("state") in _PROJECT_MCP_REFUSED_STATES
+    ):
+        return _LEGACY_REGISTRATION_REFUSED_TEXT
+    return _LEGACY_REGISTRATION_TEXT.get(legacy)
 
 
 def _agent_route_detail(provider: ProviderPosture) -> str:
@@ -415,6 +459,52 @@ def _host_entries() -> tuple[DoctorEntry, ...]:
     return (platform_entry, sandbox_entry, storage_entry)
 
 
+def _path_refusal_entry(reason: str) -> DoctorEntry:
+    """The blocked folders entry for a closed path-safety token, with its remedy."""
+
+    from finishup.cli.exits import remediation_message
+
+    return DoctorEntry(
+        "installation_folders",
+        "Installation folders",
+        LayerState.BLOCKED,
+        detail=reason,
+        remediation=remediation_message(reason) or "",
+    )
+
+
+def _installation_folders_entry() -> DoctorEntry:
+    """Which folders hold this installation's data, named so none is mistaken for a leftover.
+
+    An installation first made as Yoetz is used in place (ADR-048); saying so keeps someone from
+    deleting the folder that holds the vault after the rename.
+    """
+
+    from finishup.cli.exits import UPGRADING_FROM_YOETZ_GUIDE
+    from finishup.cli.service_installation import installation_folders
+    from finishup.config.paths import PathSafetyError
+
+    label = "Installation folders"
+    try:
+        folders = installation_folders()
+    except PathSafetyError as error:
+        return _path_refusal_entry(error.reason_code)
+    if folders == "legacy_yoetz":
+        return DoctorEntry(
+            "installation_folders",
+            label,
+            LayerState.VERIFIED,
+            detail="Yoetz-era folders, used in place",
+            remediation=(
+                "nothing to do: this install still uses its Yoetz-era folders in place and nothing "
+                "was moved. They hold your FinishUP data, so keep them. Read more: "
+                + UPGRADING_FROM_YOETZ_GUIDE
+            ),
+        )
+    detail = "isolated root" if folders == "isolated" else "FinishUP folders"
+    return DoctorEntry("installation_folders", label, LayerState.VERIFIED, detail=detail)
+
+
 # ---------------------------------------------------------------------------
 # Runtime
 # ---------------------------------------------------------------------------
@@ -498,7 +588,7 @@ class FinishUpRuntime:
         connected = False
         for harness in harnesses:
             try:
-                if await self.mcp_state(harness) == "yoetz_owned":
+                if await self.mcp_state(harness) == _OWNED:
                     connected = True
                     break
             except RuntimeError_:
@@ -532,7 +622,7 @@ class FinishUpRuntime:
                 ready = status.get("installed") is True and status.get("configured") is True
                 if option.host == "claude":
                     ready = ready and status.get("enabled") is True
-                return "yoetz_owned" if ready else "absent"
+                return _OWNED if ready else "absent"
             except CONNECTION_ERRORS:
                 return "unknown"
         from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter
@@ -545,6 +635,26 @@ class FinishUpRuntime:
         except McpRegistrationError as error:
             raise RuntimeError_(error.reason.value, "the Codex registration could not be read")
         return str(state.value)
+
+    async def mcp_registration(self, option: HarnessOption) -> tuple[str, str]:
+        """The registration state and what the pre-rename ``yoetz`` key holds (ADR-048).
+
+        Only Codex registrations carry a legacy key FinishUP reads here; another host's Yoetz-era
+        install is reported with its plugin layer instead, so its legacy value is ``none``.
+        """
+
+        if option.host != "codex":
+            return await self.mcp_state(option), "none"
+        from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter
+        from finishup.application.harness_mcp import HarnessMcpService
+        from finishup.ports.harness_mcp import McpRegistrationError
+
+        service = HarnessMcpService(CodexMcpAdapter())
+        try:
+            observation = await service.observe(self._binary_for(option))
+        except McpRegistrationError as error:
+            raise RuntimeError_(error.reason.value, "the Codex registration could not be read")
+        return str(observation.state.value), str(observation.legacy_registration)
 
     async def _host_connection_status(self, option: HarnessOption) -> dict[str, object]:
         from anyio.to_thread import run_sync
@@ -574,6 +684,7 @@ class FinishUpRuntime:
     async def _host_plugin_layers(self, option: HarnessOption) -> tuple[ReadinessLayer, ...]:
         from finishup.cli.host_connection import CONNECTION_ERRORS
 
+        detail = option.label
         try:
             status = await self._host_connection_status(option)
         except CONNECTION_ERRORS:
@@ -584,8 +695,21 @@ class FinishUpRuntime:
                 if status.get("installed") is True
                 else LayerState.NOT_CONFIGURED
             )
+            # A Yoetz-era install or project entry still present beside (or instead of) the
+            # FinishUP one (ADR-048).
+            project_mcp = _mapping(status.get("project_mcp"))
+            legacy = [
+                text
+                for text in (
+                    _LEGACY_INSTALLATION_TEXT.get(str(status.get("legacy_installation"))),
+                    _project_legacy_registration_text(project_mcp),
+                )
+                if text is not None
+            ]
+            if legacy:
+                detail = "; ".join((option.label, *legacy))
         return (
-            ReadinessLayer("plugin_installed", "Guidance installed", state, option.label),
+            ReadinessLayer("plugin_installed", "Guidance installed", state, detail),
             ReadinessLayer(
                 "hooks_installed",
                 "Structural hooks installed",
@@ -704,6 +828,7 @@ class FinishUpRuntime:
         )
         from finishup.ports.harness_mcp import (
             MCP_SERVE_COMMAND,
+            McpRegistrationAction,
             McpRegistrationError,
             McpRegistrationState,
         )
@@ -735,6 +860,37 @@ class FinishUpRuntime:
         policy = check_policy_preview(root)
         digest = policy.get("policy_digest")
         checks = policy.get("check_ids")
+        owned = mcp_preview.state_before is McpRegistrationState.FINISHUP_OWNED
+        # The registration state in words: the route the owned entry serves now, when the adapter
+        # observed it, and what the pre-rename ``yoetz`` key holds (ADR-048). A re-registration
+        # can keep the route (a legacy key, launcher, or isolation change), so the action alone
+        # never names the route before.
+        state_words = [str(mcp_preview.state_before.value)]
+        # The same rule ``finishup setup`` applies: prefer the route the adapter observed; only
+        # when it observed none does a re-registration imply the other of the two routes.
+        route_before: Literal["policy", "strict"] | None = None
+        if owned:
+            if mcp_preview.route_profile_before is not None:
+                route_before = mcp_preview.route_profile_before
+            elif mcp_preview.action is McpRegistrationAction.REREGISTER:
+                route_before = "policy" if route == "strict" else "strict"
+            else:
+                route_before = route
+        if route_before is not None and route_before != route:
+            state_words.append(f"route {route_before} -> {route}")
+        legacy_text = _LEGACY_REGISTRATION_TEXT.get(mcp_preview.legacy_registration)
+        if legacy_text is not None:
+            state_words.append(legacy_text)
+        managed_paths = [
+            str(root / ".agents" / "skills" / "finishup"),
+            str(root / ".agents" / "plugins" / "finishup"),
+        ]
+        # Yoetz-era trees this same approval removes (ADR-048).
+        legacy_skill_tree_planned = "legacy_skill_tree_owned" in skill_preview.warnings
+        if legacy_skill_tree_planned:
+            managed_paths.append(str(root / ".agents" / "skills" / "yoetz"))
+        if activation_preview.legacy_plugin_tree_planned:
+            managed_paths.append(str(root / ".agents" / "plugins" / "yoetz"))
         return IntegrationPlan(
             harness_label=option.label,
             executable_path=option.executable_path,
@@ -752,12 +908,11 @@ class FinishUpRuntime:
                 int(getattr(plugin_preview, "planned_file_count", 0))
                 + len(skill_preview.file_changes)
             ),
-            managed_paths=(
-                str(root / ".agents" / "skills" / "finishup"),
-                str(root / ".agents" / "plugins" / "finishup"),
-            ),
-            state_before=str(mcp_preview.state_before.value),
-            already_registered=mcp_preview.state_before is McpRegistrationState.FINISHUP_OWNED,
+            managed_paths=tuple(managed_paths),
+            state_before="; ".join(state_words),
+            # Only an exact owned entry is verified and left alone; a re-registration (route,
+            # launcher, isolation, or legacy key) replaces it under this approval.
+            already_registered=owned and mcp_preview.action is McpRegistrationAction.NOOP,
             foreign_entry=mcp_preview.state_before is McpRegistrationState.FOREIGN_PRESENT,
             preview_digest=str(mcp_preview.preview_digest),
             skill_preview_digest=skill_preview.preview_digest,
@@ -782,6 +937,13 @@ class FinishUpRuntime:
             activation_cache_mutation_planned=activation_preview.cache_mutation_planned,
             activation_mcp_command=MCP_SERVE_COMMAND,
             mcp_isolated_root=mcp_preview.isolated_root,
+            route_profile_before=route_before,
+            legacy_registration=mcp_preview.legacy_registration,
+            activation_legacy_removed_block=activation_preview.legacy_removed_block,
+            activation_legacy_cache_versions=tuple(activation_preview.legacy_cache_versions),
+            activation_legacy_plugin_tree_planned=activation_preview.legacy_plugin_tree_planned,
+            legacy_skill_tree_planned=legacy_skill_tree_planned,
+            policy_ambiguous=policy.get("outcome") == "ambiguous",
         )
 
     async def apply_integration(
@@ -820,8 +982,10 @@ class FinishUpRuntime:
         consent_map = _mapping(report.get("observation_consent"))
         policy_map = _mapping(report.get("check_policy"))
 
-        registered = outcome in {"registered", "already_registered"}
-        verified = registered and report.get("state") == "yoetz_owned"
+        # ``reregistered`` is a success too: a route change, or a Yoetz-era ``yoetz`` key moved
+        # to ``finishup`` (ADR-048). The same set ``finishup setup`` reports as registered.
+        registered = outcome in {"registered", "reregistered", "already_registered"}
+        verified = registered and report.get("state") == _OWNED
         plugin_installed = plugin_map.get("presence") == "installed"
         consent_active = consent_map.get("outcome") == "granted"
         kept_profiles = consent_map.get("content_capture_profiles")
@@ -832,7 +996,14 @@ class FinishUpRuntime:
             else ""
         )
         policy_trusted = policy_map.get("outcome") == "trusted"
+        policy_ambiguous = policy_map.get("outcome") == "ambiguous"
         policy_absent = policy_map.get("outcome") == "absent" or not policy_map
+        if policy_trusted or policy_absent:
+            policy_detail = ""
+        elif policy_ambiguous:
+            policy_detail = _POLICY_AMBIGUOUS_TEXT
+        else:
+            policy_detail = str(policy_map.get("outcome") or "")
 
         layers = (
             ReadinessLayer(
@@ -867,11 +1038,9 @@ class FinishUpRuntime:
                 "policy_digest_trusted",
                 "Approved-check policy trusted",
                 LayerState.NOT_CONFIGURED
-                if policy_absent
+                if policy_absent or policy_ambiguous
                 else (LayerState.VERIFIED if policy_trusted else LayerState.UNPROVEN),
-                detail=""
-                if policy_trusted or policy_absent
-                else str(policy_map.get("outcome") or ""),
+                detail=policy_detail,
             ),
         )
         return IntegrationOutcome(
@@ -1065,7 +1234,7 @@ class FinishUpRuntime:
                 workspace_locator=WorkspaceLocator(str(self._cwd.resolve(strict=True))),
             )
         except ControlError as error:
-            raise RuntimeError_(error.reason, "the local FinishUP service is not reachable")
+            raise _connect_failure(error) from error
         try:
             yield client
         finally:
@@ -1583,9 +1752,10 @@ class FinishUpRuntime:
         )
 
         mcp_state: str | None = None
+        mcp_legacy = "none"
         if detected:
             try:
-                mcp_state = await self.mcp_state(harnesses[0])
+                mcp_state, mcp_legacy = await self.mcp_registration(harnesses[0])
             except RuntimeError_ as error:
                 mcp_state = None
                 layers.append(
@@ -1594,13 +1764,14 @@ class FinishUpRuntime:
                     )
                 )
         if mcp_state is not None:
-            registered = mcp_state in {"yoetz_owned", "foreign_present"}
+            registered = mcp_state in {_OWNED, "foreign_present"}
+            legacy_text = _LEGACY_REGISTRATION_TEXT.get(mcp_legacy)
             layers.append(
                 ReadinessLayer(
                     "mcp_registered",
                     "MCP registered",
                     LayerState.VERIFIED if registered else LayerState.NOT_CONFIGURED,
-                    detail=mcp_state,
+                    detail=mcp_state if legacy_text is None else f"{mcp_state}, {legacy_text}",
                 )
             )
             layers.append(
@@ -1608,7 +1779,7 @@ class FinishUpRuntime:
                     "mcp_verified",
                     "MCP verified",
                     LayerState.VERIFIED
-                    if mcp_state == "yoetz_owned"
+                    if mcp_state == _OWNED
                     else (
                         LayerState.BLOCKED
                         if mcp_state == "foreign_present"
@@ -1740,6 +1911,15 @@ class FinishUpRuntime:
         from finishup.cli.setup import check_policy_preview
 
         preview = check_policy_preview(root)
+        if preview.get("outcome") == "ambiguous":
+            # Neither policy is proposed or trusted while both exist; "declares no approved
+            # checks" would hide the one action that fixes it.
+            return ReadinessLayer(
+                "policy_digest_trusted",
+                "Approved-check policy trusted",
+                LayerState.NOT_CONFIGURED,
+                detail=_POLICY_AMBIGUOUS_TEXT,
+            )
         digest = preview.get("policy_digest")
         if not isinstance(digest, str):
             return ReadinessLayer(
@@ -2125,6 +2305,7 @@ class FinishUpRuntime:
             "protocol_version": "0.1",
             "schema_version": "1.0.0",
             "request_id": self._request_id(),
+            # Frozen legacy identifier (ADR-048): a recorded actor id and a released client kind.
             "actor": {"actor_id": "yoetz:tui", "actor_type": "human"},
             "client": {"kind": "yoetz_cli", "version": __version__, "integration": "local_cli"},
         }
@@ -2167,7 +2348,12 @@ class FinishUpRuntime:
         """Bounded read-only diagnosis. Never mutates installation state."""
 
         from finishup import __version__
+        from finishup.config.paths import PathSafetyError
 
+        # First: when the installation's folders cannot be chosen (ADR-048), nothing that reads
+        # configuration or the service can answer, so only the host facts are gathered.
+        folders = _installation_folders_entry()
+        folders_blocked = folders.state is LayerState.BLOCKED
         entries: list[DoctorEntry] = []
         supported = (3, 14) <= sys.version_info[:2] < (3, 15)
         entries.append(
@@ -2185,13 +2371,20 @@ class FinishUpRuntime:
         package_state = LayerState.VERIFIED
         package_remediation = ""
         try:
-            advisory = await self.package_update_advisory(allow_network=True)
+            advisory = (
+                None if folders_blocked else await self.package_update_advisory(allow_network=True)
+            )
         except Exception:
             advisory = None
         if advisory is not None and advisory.is_newer and advisory.latest_version is not None:
             package_state = LayerState.UNPROVEN
             package_detail = f"{advisory.installed_version} (available {advisory.latest_version})"
-            package_remediation = f"{advisory.upgrade_command}  # then re-run finishup"
+            # Name the launcher this install has on PATH: the transitional ``yoetz``
+            # distribution links only ``yoetz`` (ADR-048).
+            launcher = (
+                LEGACY_LAUNCHER_NAME if advisory.package == LEGACY_LAUNCHER_NAME else LAUNCHER_NAME
+            )
+            package_remediation = f"{advisory.upgrade_command}  # then re-run {launcher}"
         elif advisory is not None and advisory.outcome == "skipped_unavailable":
             package_state = LayerState.UNPROVEN
             package_detail = f"{__version__} (could not check for updates)"
@@ -2205,7 +2398,18 @@ class FinishUpRuntime:
             )
         )
         entries.extend(_host_entries())
-        snapshot = await self.status_snapshot()
+        entries.append(folders)
+        if folders_blocked:
+            # The installation's folders cannot be chosen (ADR-048), so no readiness layer can
+            # be read: report what is known and the one next step, instead of failing outright.
+            return DoctorReport(entries=tuple(entries))
+        try:
+            snapshot = await self.status_snapshot()
+        except PathSafetyError as error:
+            # A folder failed a path-safety check while readiness was read; the folders entry
+            # names it instead of the earlier verdict.
+            entries[-1] = _path_refusal_entry(error.reason_code)
+            return DoctorReport(entries=tuple(entries))
         remediation = {
             "harness_detected": "install Codex, or use FinishUP locally with /check",
             "mcp_verified": "run /connect to inspect or repair the integration",
@@ -2229,6 +2433,31 @@ class FinishUpRuntime:
                 )
             )
         return DoctorReport(entries=tuple(entries))
+
+
+def _connect_failure(error: BaseException) -> RuntimeError_:
+    """The bounded TUI failure for a service connection that did not open.
+
+    When the client refused because FinishUP's local folders cannot be used safely (for example
+    data under both product names, ADR-048), the closed token and its remedy are the next step;
+    an absent service is not, and starting one cannot help.
+    """
+
+    from finishup.cli.exits import remediation_message
+    from finishup.service.client import path_refusal_reason
+
+    path_reason = path_refusal_reason(error)
+    if path_reason is not None:
+        remedy = remediation_message(path_reason)
+        return RuntimeError_(
+            path_reason,
+            "FinishUP's local folders cannot be used safely",
+            details=() if remedy is None else (remedy,),
+        )
+    return RuntimeError_(
+        str(getattr(error, "reason", "service_unavailable")),
+        "the local FinishUP service is not reachable",
+    )
 
 
 def _subscription_error(error: BaseException, message: str) -> RuntimeError_:

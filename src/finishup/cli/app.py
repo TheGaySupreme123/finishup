@@ -2002,6 +2002,11 @@ async def _service_call(method: str, json_output: bool) -> int:
         finally:
             await client.close()
         _human_or_json(result, json_output=json_output)
+        if method == "service_status" and not json_output:
+            from finishup.cli.service_installation import report_installation_naming
+
+            # A Yoetz-era install used in place is named on stderr; stdout is unchanged (ADR-048).
+            report_installation_naming(_stderr)
         return 0
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
@@ -3377,6 +3382,7 @@ async def _service_auto_unlock_status(json_output: bool) -> int:
     else:
         next_command = None
     report: JsonValue = {
+        # Frozen legacy identifier (ADR-048): machine-readable report tag agents parse.
         "schema": "yoetz.auto-unlock-status/2",
         "state": state,
         "slots": dict(slots),
@@ -3447,6 +3453,7 @@ async def _service_auto_unlock_repair(json_output: bool) -> int:
                 _stderr(f"auto_unlock_{error.reason}")
                 return 20
             report = {
+                # Frozen legacy identifier (ADR-048): machine-readable report tag agents parse.
                 "schema": "yoetz.auto-unlock-repair/1",
                 "outcome": "initialization_orphan_cleared",
                 "service_state": status.state.value,
@@ -3482,6 +3489,7 @@ async def _service_auto_unlock_repair(json_output: bool) -> int:
             return failure
         raise
     report: JsonValue = {
+        # Frozen legacy identifier (ADR-048): machine-readable report tag agents parse.
         "schema": "yoetz.auto-unlock-repair/1",
         "outcome": "repaired",
         "service_state": "ready",
@@ -3567,6 +3575,7 @@ async def _service_recovery_status(json_output: bool) -> int:
         auto_unlock_repairable=service_reason in {"auto_unlock_rejected", "auto_unlock_stale"},
     )
     report: JsonValue = {
+        # Frozen legacy identifier (ADR-048): machine-readable report tag agents parse.
         "schema": "yoetz.installation-recovery-status/1",
         "state": status.state.value,
         "reason": status.reason,
@@ -4519,6 +4528,7 @@ def provider_catalog(json_output: _JSON = False) -> None:
     ]
     _human_or_json(
         {
+            # Frozen legacy identifier (ADR-048): machine-readable report tag agents parse.
             "schema": "yoetz.provider-catalog/1",
             "presets": presets,
             "limitations": [
@@ -4704,7 +4714,9 @@ def privacy_export_desired(
             return _usage_failure()
         path = write_privacy_desired_toml(policy, output)
         _human_or_json(
-            {"path": str(path), "schema": "yoetz.privacy-desired/1"}, json_output=json_output
+            # Frozen legacy identifier (ADR-048): machine-readable report tag agents parse.
+            {"path": str(path), "schema": "yoetz.privacy-desired/1"},
+            json_output=json_output,
         )
         return 0
 
@@ -5455,6 +5467,7 @@ def elevated_authorize(
                     return 2
             payload = await authorize(
                 {
+                    # Frozen legacy identifier (ADR-048): attestation tag the service validates.
                     "schema": "yoetz.chat-user-attestation/1",
                     "channel": "agent_attested_chat_instruction",
                     "client_kind": client_kind,

@@ -17,6 +17,11 @@ holding that root's singleton, removes the root through ``finishup instance disp
 the runtime and wheel. Repeating ``dispose`` is a no-op. Nothing here touches the everyday install,
 host configuration, or vaults.
 
+An instance built from a revision before the FinishUP rename ships only the legacy ``yoetz``
+launcher and package and reads ``YOETZ_ISOLATED_ROOT`` (ADR-028 upgrade tests). Every command
+probes ``bin/finishup`` first, then ``bin/yoetz``, and drives whichever package that launcher
+belongs to; snapshot commands never inherit either variable prefix (ADR-048).
+
 This is contributor tooling; the shipped product surface is ``finishup instance``. Documented in
 ``docs/runbooks/test-instances.md``.
 """
@@ -37,10 +42,17 @@ from pathlib import Path
 from typing import Final, cast
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[1]
+# Frozen legacy identifier (ADR-048): existing instances' provenance.json carries this schema tag.
 _PROVENANCE_SCHEMA: Final = "yoetz.test-instance-provenance/1"
 _DEFAULT_BASE: Final = Path.home() / ".yz-instances"
 _TAG_ALPHABET: Final = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 _VCS_MARKERS: Final = (".git", ".hg", ".svn", ".jj")
+# Launcher name -> the package it runs, FinishUP first. A pre-rename runtime has only the legacy
+# ``yoetz`` launcher and package; a runtime that ships both resolves to FinishUP (ADR-048).
+_RUNTIME_LAUNCHERS: Final = (("finishup", "finishup"), ("yoetz", "yoetz"))
+# Product variable prefixes a snapshot command must not inherit: FinishUP and legacy (ADR-048).
+_ENV_PREFIXES: Final = ("FINISHUP_", "YOETZ_")
+_ISOLATED_ROOT_ENV_NAMES: Final = ("FINISHUP_ISOLATED_ROOT", "YOETZ_ISOLATED_ROOT")
 
 
 class ProvisionError(Exception):
@@ -64,12 +76,28 @@ def _run(
 
 
 def _clean_env(home: Path | None = None) -> dict[str, str]:
-    """The environment a snapshot command runs under: no FINISHUP_ variables leak in."""
+    """The environment a snapshot command runs under: no FINISHUP_ or YOETZ_ variables leak in."""
 
-    env = {name: value for name, value in os.environ.items() if not name.startswith("FINISHUP_")}
+    env = {name: value for name, value in os.environ.items() if not name.startswith(_ENV_PREFIXES)}
     if home is not None:
         env["HOME"] = str(home)
     return env
+
+
+def _runtime_launcher(runtime: Path) -> tuple[Path, str] | None:
+    """Return the runtime's launcher and its package: ``bin/finishup``, else ``bin/yoetz``."""
+
+    for name, package in _RUNTIME_LAUNCHERS:
+        launcher = runtime / "bin" / name
+        if launcher.is_file():
+            return launcher, package
+    return None
+
+
+def _environment_export(root: Path) -> str:
+    """Both isolation-root spellings with one value, so either launcher generation isolates."""
+
+    return " ".join(f"{name}={root}" for name in _ISOLATED_ROOT_ENV_NAMES)
 
 
 def _digest_bytes(path: Path) -> str:
@@ -175,10 +203,10 @@ def _install_runtime(runtime: Path, wheel: Path, python: str, env: dict[str, str
     if installed.returncode != 0:
         sys.stderr.write(installed.stderr.decode("utf-8", errors="replace"))
         raise _fail("runtime_install_failed")
-    launcher = runtime / "bin" / "finishup"
-    if not launcher.is_file():
+    found = _runtime_launcher(runtime)
+    if found is None:
         raise _fail("runtime_launcher_missing")
-    return launcher
+    return found[0]
 
 
 def _snapshot_command(launcher: Path, args: list[str], env: dict[str, str]) -> dict[str, object]:
@@ -186,7 +214,7 @@ def _snapshot_command(launcher: Path, args: list[str], env: dict[str, str]) -> d
     if result.returncode != 0:
         sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
         raise _fail(
-            f"snapshot_command_failed: finishup {' '.join(args)} exited {result.returncode}"
+            f"snapshot_command_failed: {launcher.name} {' '.join(args)} exited {result.returncode}"
         )
     parsed = json.loads(result.stdout)
     if not isinstance(parsed, dict):
@@ -284,17 +312,17 @@ def command_create(args: argparse.Namespace) -> dict[str, object]:
         **provenance,
         "launcher": str(launcher),
         "isolated_root": str(layout["state"]),
-        "environment_export": f"FINISHUP_ISOLATED_ROOT={layout['state']}",
+        "environment_export": _environment_export(layout["state"]),
     }
 
 
 def command_status(args: argparse.Namespace) -> dict[str, object]:
     layout = _layout(_validate_base(Path(args.base).expanduser()), _validate_tag(args.tag))
     provenance = _read_provenance(layout["provenance"])
-    launcher = layout["runtime"] / "bin" / "finishup"
-    if provenance is None or not launcher.is_file():
+    found = _runtime_launcher(layout["runtime"])
+    if provenance is None or found is None:
         return {"tag": args.tag, "state": "absent"}
-    status = _snapshot_command(launcher, ["instance", "status"], _clean_env())
+    status = _snapshot_command(found[0], ["instance", "status"], _clean_env())
     return {"tag": args.tag, "state": "present", "provenance": provenance, "instance": status}
 
 
@@ -302,8 +330,8 @@ def command_dispose(args: argparse.Namespace) -> dict[str, object]:
     layout = _layout(_validate_base(Path(args.base).expanduser()), _validate_tag(args.tag))
     if not layout["root"].exists():
         return {"tag": args.tag, "state": "absent", "disposed": False}
-    launcher = layout["runtime"] / "bin" / "finishup"
-    disposer = [str(launcher)] if launcher.is_file() else [sys.executable, "-m", "finishup"]
+    found = _runtime_launcher(layout["runtime"])
+    disposer = [str(found[0])] if found is not None else [sys.executable, "-m", "finishup"]
     dispose_args = [*disposer, "instance", "dispose", "--root", str(layout["state"]), "--json"]
     if args.retain_logs is not None:
         dispose_args += ["--retain-logs", str(Path(args.retain_logs).expanduser().resolve())]
@@ -321,9 +349,7 @@ def command_dispose(args: argparse.Namespace) -> dict[str, object]:
                 str(layout["runtime"] / "bin" / "python"),
                 "-I",
                 "-c",
-                "import json,sys; from pathlib import Path; "
-                "from finishup.adapters.release_runtime import prune_release_runtimes; "
-                "print(json.dumps(prune_release_runtimes(Path(sys.prefix), wait_seconds=5.0)))",
+                _prune_bootstrap("finishup" if found is None else found[1]),
             ],
             env=_clean_env(),
             timeout=60,
@@ -338,6 +364,16 @@ def command_dispose(args: argparse.Namespace) -> dict[str, object]:
             raise _fail("runtime_in_use: close this instance's host sessions and retry disposal")
     shutil.rmtree(layout["root"])
     return {"tag": args.tag, "state": "removed", "disposed": True, "instance": outcome}
+
+
+def _prune_bootstrap(package: str) -> str:
+    """The retained-runtime cleanup, run with the package the instance's runtime ships."""
+
+    return (
+        "import json,sys; from pathlib import Path; "
+        f"from {package}.adapters.release_runtime import prune_release_runtimes; "
+        "print(json.dumps(prune_release_runtimes(Path(sys.prefix), wait_seconds=5.0)))"
+    )
 
 
 def _parser() -> argparse.ArgumentParser:

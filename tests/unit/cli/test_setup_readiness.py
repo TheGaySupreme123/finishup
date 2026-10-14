@@ -18,6 +18,105 @@ from finishup.protocol.schemas import validate_schema_instance
 from finishup.protocol.setup_readiness import SetupReadiness
 
 
+@pytest.fixture(autouse=True)
+def _folders_resolve(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    # Hermetic: the up-front folder check never reads the real user directories here. The
+    # refusal tests below restore the real resolver against private XDG roots.
+    monkeypatch.setattr(module, "installation_folders", lambda: "finishup")
+
+
+def _private_xdg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    from finishup.cli.service_installation import installation_folders
+
+    monkeypatch.setattr(module, "installation_folders", installation_folders)
+    base = tmp_path / "xdg"
+    for name in ("data", "config", "cache", "state", "runtime"):
+        (base / name).mkdir(mode=0o700, parents=True)
+    for variable, name in (
+        ("XDG_DATA_HOME", "data"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+        ("XDG_RUNTIME_DIR", "runtime"),
+    ):
+        monkeypatch.setenv(variable, str(base / name))
+    monkeypatch.delenv("FINISHUP_ISOLATED_ROOT", raising=False)
+    monkeypatch.delenv("YOETZ_ISOLATED_ROOT", raising=False)
+    return base
+
+
+@pytest.mark.parametrize("operation", ["local", "review", "connection"])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_ambiguous_folders_name_the_token_instead_of_an_internal_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    operation: str,
+    json_output: bool,
+) -> None:
+    # The reviewed failure: a Yoetz-era catalog plus a hand-made FinishUP settings file.
+    base = _private_xdg(tmp_path, monkeypatch)
+    (base / "data" / "yoetz").mkdir(mode=0o700)
+    (base / "data" / "yoetz" / "catalog.sqlite3").write_bytes(b"")
+    (base / "config" / "finishup").mkdir(mode=0o700)
+    (base / "config" / "finishup" / "config.toml").write_bytes(b"")
+
+    async def forbidden(*_args: object) -> None:
+        raise AssertionError("no service probe once the folders are ambiguous")
+
+    monkeypatch.setattr(module, "installation_readiness", forbidden)
+
+    code = module.setup_next(
+        operation=operation,  # type: ignore[arg-type]
+        host=None,
+        executable=None,
+        config_root=None,
+        project=tmp_path,
+        route="strict",
+        json_output=json_output,
+    )
+
+    assert code == 20
+    captured = capsys.readouterr()
+    assert captured.err.startswith("installation_root_ambiguous: ")
+    assert "Continuation: local_state_repair" in captured.err
+    assert "internal_error" not in captured.err
+    assert str(tmp_path) not in captured.err
+    if json_output:
+        payload = json.loads(captured.out)
+        assert payload["reason"] == "installation_root_ambiguous"
+        assert payload["retryable"] is False
+    else:
+        assert captured.out == ""
+    assert sorted(path.name for path in (base / "state").iterdir()) == []
+
+
+def test_two_isolation_root_spellings_name_their_own_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _private_xdg(tmp_path, monkeypatch)
+    for name, leaf in (("FINISHUP_ISOLATED_ROOT", "ra"), ("YOETZ_ISOLATED_ROOT", "rb")):
+        (tmp_path / leaf).mkdir(mode=0o700)
+        monkeypatch.setenv(name, str(tmp_path / leaf))
+
+    code = module.setup_next(
+        operation="local",
+        host=None,
+        executable=None,
+        config_root=None,
+        project=tmp_path,
+        route="strict",
+        json_output=False,
+    )
+
+    assert code == 20
+    err = capsys.readouterr().err
+    assert err.startswith("isolation_root_env_conflict: ")
+    assert "Continuation: config_correction_required" in err
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "state,mode,reason,command",
@@ -123,6 +222,7 @@ def test_continuation_quotes_and_pins_runtime_project_and_isolation(
         "&&",
         "env",
         f"FINISHUP_ISOLATED_ROOT={root}",
+        f"YOETZ_ISOLATED_ROOT={root}",
         str(launcher.resolve()),
         "service",
         "unlock",
@@ -259,6 +359,29 @@ def test_module_continuation_preserves_venv_interpreter_spelling(
         interpreter,
         "-m",
         "finishup",
+        "setup",
+        "vault",
+    ]
+
+
+def test_alias_continuation_names_the_finishup_script_of_the_same_installation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run through the deprecated ``yoetz`` alias continues with ``finishup`` (ADR-048)."""
+
+    import sys
+
+    scripts = tmp_path / "tools" / "yoetz" / "bin"
+    scripts.mkdir(parents=True)
+    for name in ("yoetz", "finishup"):
+        (scripts / name).write_text("#!/bin/sh\n")
+        (scripts / name).chmod(0o700)
+    monkeypatch.setattr(sys, "argv", [str(scripts / "yoetz"), "setup"])
+    monkeypatch.setattr(module, "isolated_root", lambda: None)
+
+    assert shlex.split(module.continuation(["setup", "vault"])) == [
+        str((scripts / "finishup").resolve()),
         "setup",
         "vault",
     ]

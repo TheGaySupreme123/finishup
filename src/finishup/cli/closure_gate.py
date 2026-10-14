@@ -1328,6 +1328,7 @@ def _status_request(
         "schema_version": "1.0.0",
         "request_id": new_id(IdKind.REQUEST),
         "actor": {"actor_id": actor_id, "actor_type": "harness"},
+        # Frozen legacy identifier (ADR-048): client-info wire enum value.
         "client": {"kind": "yoetz_cli", "version": __version__, "integration": "local_cli"},
         "session_id": session_id,
         "writer_id": writer_id,

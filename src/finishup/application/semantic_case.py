@@ -144,6 +144,7 @@ from finishup.kernel.task_facts import (
     open_effective_obligations,
 )
 from finishup.kernel.test_edit_visibility import check_change_header_entries
+from finishup.legacy_names import LEGACY_PRODUCT_NAME, PRODUCT_NAME
 from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     MAX_TASK_INPUT_FILES,
@@ -256,6 +257,7 @@ SEMANTIC_REVIEW_PURPOSE: Final = "semantic-review"
 OVER_CASE_ITEM_LIMIT_REASON: Final = "over_case_item_limit"
 # Version 2 (issue #907) carries each item's recording order and excerpt freshness marks, and
 # lists items in case order (section, then recording order) instead of by opaque item id.
+# Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
 _PACKET_SCHEMA: Final = "yoetz.review-packet-case/2"
 # Packet omission-row reasons that the closed review-input section vocabulary spells differently.
 _SECTION_OMISSION_REASON_ALIASES: Final[Mapping[str, str]] = {
@@ -521,6 +523,7 @@ _SECTION_LABELS: Final[Mapping[str, str]] = {
     "goal": "agent plan (the agent's own summary)",
 }
 TASK_STATEMENT_ITEM_ID: Final = "task-statement"
+# Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
 _TASK_STATEMENT_CONTENT_SCHEMA: Final = "yoetz.task-statement/1"
 # One statement item is bounded like one excerpt: 16 KiB of canonical JSON. A longer statement
 # keeps its head and tail and marks what was elided in between.
@@ -539,6 +542,7 @@ type _OmissionReason = Literal[
 # to its own excerpt/item/total limits. Keeping this bound below the ordinary object-store limit
 # prevents a malformed captured-content wrapper from becoming an unbounded AI-powered review input.
 MAX_CAPTURED_SEMANTIC_CONTENT_BYTES: Final = 512 * 1024
+# Frozen legacy identifier (ADR-048): media type of stored observation content.
 _CAPTURED_CONTENT_MEDIA_TYPE: Final = "application/vnd.yoetz.observation-content+json"
 _CAPTURED_CONTENT_KINDS: Final = frozenset(
     {
@@ -884,6 +888,7 @@ _CHECK_TIME_CHANGE_BINARY: Final = re.compile(rb"^Binary files ", re.MULTILINE)
 _CHECK_TIME_CHANGE_DELETED: Final = re.compile(rb"^deleted file mode ", re.MULTILINE)
 _REDACTION_MARKER: Final = b"[REDACTED]"
 _CHECK_TIME_CHANGE_HUNK: Final = re.compile(rb"^@@ [^\n]*", re.MULTILINE)
+# Frozen legacy identifier (ADR-048): domain separator inside stored digests.
 _VIEW_DOMAIN: Final = b"yoetz/check-change-view/v1\x00"
 
 
@@ -1060,6 +1065,7 @@ def review_selection_digest(selection: ReviewSelectionPolicy) -> str:
                 "max_timeline_items": selection.max_timeline_items,
                 "max_total_excerpt_bytes": selection.max_total_excerpt_bytes,
                 "relevance": selection.relevance,
+                # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
                 "schema": "yoetz.review-selection/1",
                 "sections": list(selection.sections),
             },
@@ -1256,6 +1262,7 @@ def _bounded_json(value: Mapping[str, JsonValue]) -> tuple[str, _BoundedFit]:
         "content_digest": canonical_digest(cast(JsonValue, dict(value))),
         "original_bytes": len(encoded),
         "reason": OVER_CASE_ITEM_LIMIT_REASON,
+        # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
         "schema": "yoetz.bounded-content-omission/1",
     }
     return _structural_json(marker), "replaced"
@@ -1360,6 +1367,7 @@ def _task_statement_item(
 
 
 DECLARED_DELIVERABLES_ITEM_ID: Final = "declared-deliverables"
+# Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
 _DECLARED_DELIVERABLES_SCHEMA: Final = "yoetz.declared-deliverables/1"
 _MAX_DECLARED_DELIVERABLE_ROWS: Final = 32
 # The check's closed delivered-set facts the reviewer reads beside the declared deliverables
@@ -1511,7 +1519,9 @@ class LineageSemanticCapacityExceeded(SemanticCaseCapacityExceeded):
     """
 
 
+# Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
 _LINEAGE_INPUT_SCHEMA: Final = "yoetz.lineage-semantic-input/1"
+# Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
 _LINEAGE_INPUT_PART_SCHEMA: Final = "yoetz.lineage-semantic-input/2"
 # One part per timeline slot. Fan-out admission is also capped at 64 children.
 _MAX_LINEAGE_PARTS: Final = MAX_REVIEW_TIMELINE_ITEMS
@@ -2369,6 +2379,7 @@ def _captured_edit_paths(content: bytes) -> tuple[bool, tuple[str, ...]]:
                         paths.add(target)
     else:
         text = content.decode("utf-8", errors="replace")
+        # Frozen legacy identifier (ADR-048): header inside stored captures.
         failed = text.startswith("# yoetz edit outcome: failed")
         paths.update(_PATCH_FILE_LINE.findall(text))
         paths.update(_PATCH_MOVE_LINE.findall(text))
@@ -2502,22 +2513,41 @@ _OBSERVED_IMAGE_NOTICE_MARKER: Final = (
     "[FinishUP: an image was observed (evidence {ref}); "
     "it was not sent and its content is not assessable from this packet]\n"
 )
-_BINARY_RENDERING_MARKER: Final = "[FinishUP: agent-rendered text of {path} (evidence {ref}); the binary file itself is not sent]\n"
+_BINARY_RENDERING_MARKER: Final = (
+    "[FinishUP: agent-rendered text of {path} (evidence {ref}); the binary file itself is not"
+    " sent]\n"
+)
 MAX_BINARY_NOTICES: Final = 16
 _MAX_MARKER_PATH_CHARS: Final = 160
 # A path in a FinishUP label keeps only these characters; any other becomes ``_``, so an agent's
 # ``reference`` can never close the label or forge an evidence id inside it.
 _MARKER_PATH_UNSAFE: Final = re.compile(r"[^A-Za-z0-9._/+@~=, -]")
 # Agent-authored excerpt text never starts a line the way a FinishUP label does (issue #983): such a
-# line is prefixed, so only FinishUP writes a line that begins ``[FinishUP``.
+# line is prefixed, so only FinishUP writes a line that begins ``[FinishUP``. The fence covers the
+# legacy ``[Yoetz`` label prefix too, in any ASCII case (ADR-048): a reviewer that read labels under
+# either name must not be handed a forged one.
 _AGENT_TEXT_PREFIX: Final = "(agent text) "
-_FORGED_LABEL_LINE: Final = re.compile(r"^([ \t]*)(?=\[[Yy][Oo][Ee][Tt][Zz])", re.MULTILINE)
+_FORGED_LABEL_LINE: Final = re.compile(
+    rf"^([ \t]*)(?=\[(?i:{re.escape(PRODUCT_NAME)}|{re.escape(LEGACY_PRODUCT_NAME)}))",
+    re.MULTILINE | re.ASCII,
+)
+_LEADING_BLANKS: Final = re.compile(rb"[ \t]*")
+# A label prefix fits in this many bytes after a line's leading blanks.
+_LABEL_PROBE_BYTES: Final = 16
 
 
 def _neutralised_agent_text(text: str) -> str:
     """``text`` with every line that begins like a FinishUP label marked as the agent's own."""
 
     return _FORGED_LABEL_LINE.sub(lambda match: match.group(1) + _AGENT_TEXT_PREFIX, text)
+
+
+def _begins_like_label(content: bytes) -> bool:
+    """Whether ``content`` starts, after any blanks, the way a FinishUP or Yoetz label does."""
+
+    blanks = _LEADING_BLANKS.match(content)
+    probe = content[: (blanks.end() if blanks else 0) + _LABEL_PROBE_BYTES]
+    return _FORGED_LABEL_LINE.match(probe.decode("utf-8", errors="ignore")) is not None
 
 
 def _marker_path(reference: str) -> str:
@@ -2727,6 +2757,7 @@ def _evidence_candidates(
                     cast(
                         JsonValue,
                         {
+                            # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
                             "schema": "yoetz.evidence-digest-provenance/1",
                             "evidence_kind": payload.evidence_kind.value,
                             "strength": payload.strength.value,
@@ -2789,11 +2820,7 @@ def _evidence_candidates(
             remaining = encoded
             while remaining and len(parts) <= selection.max_excerpts:
                 # A part that would begin mid-line like a FinishUP label is marked as well.
-                prefix = (
-                    _AGENT_TEXT_PREFIX
-                    if _FORGED_LABEL_LINE.match(remaining[:16].decode("utf-8", errors="ignore"))
-                    else ""
-                )
+                prefix = _AGENT_TEXT_PREFIX if _begins_like_label(remaining) else ""
                 part = remaining[: part_limit - len(prefix)].decode("utf-8", errors="ignore")
                 if not part:
                     break
@@ -3433,6 +3460,7 @@ def _prior_finding_items(
         "recorded_after_finding": after[:_MAX_PRIOR_FINDING_LISTED_REFS],
         "recorded_after_finding_count": len(newer),
         "recorded_sequence": record.source_frontier,
+        # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
         "schema": "yoetz.prior-finding/1",
         "subject_ref_count": len(payload.subject_refs),
         "subject_refs": subjects[:_MAX_PRIOR_FINDING_LISTED_REFS],
@@ -3727,6 +3755,7 @@ def _settled_finding_items(
         "recorded_sequence": record.source_frontier,
         "response_sequence": order,
         "rulable": False,
+        # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
         "schema": "yoetz.settled-finding/1",
         "subject_ref_count": len(payload.subject_refs),
         "subject_refs": subjects[:_MAX_PRIOR_FINDING_LISTED_REFS],
@@ -3827,6 +3856,7 @@ def _local_answer_items(
         "recorded_sequence": record.source_frontier,
         "response_sequence": response.source_frontier,
         "rulable": False,
+        # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
         "schema": "yoetz.local-finding-answer/1",
     }
     if include_prose:
@@ -4241,6 +4271,7 @@ def _build_semantic_case_once(
         if disclosed is not None:
             # tb4n3 RC-1: recorded limitation decisions and the acknowledgement state sit beside
             # the obligation they cover, so the reviewer cannot read them as undisclosed.
+            # Frozen legacy identifier (ADR-048): packet key; the recorded manifest is re-verified.
             obligation_json["yoetz_already_disclosed"] = cast(JsonValue, disclosed)
         text, fit = _bounded_json(cast(Mapping[str, JsonValue], obligation_json))
         item = _content_item(
@@ -5505,6 +5536,7 @@ def _build_semantic_case_once(
                 "review_context_profile": review_context_profile.value,
                 "review_packet": _packet_to_json(packet),
                 "review_selection_digest": selection_digest,
+                # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
                 "schema": "yoetz.semantic-case/1",
                 "subject_frontier": dict(frozen_case.frontier.as_wire()),
                 "captured_content_gaps": list(capture_gaps),
@@ -5763,6 +5795,7 @@ def _manifest_digest(items: Sequence[SemanticCaseItem]) -> str | None:
                     }
                     for item in items
                 ],
+                # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
                 "schema": "yoetz.review-input-manifest-content/1",
             },
         )
@@ -6135,6 +6168,7 @@ def review_input_manifest(
         ),
     )
     return ReviewInputManifest(
+        # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
         schema="yoetz.review-input-manifest/1",
         specification=statement,
         current_diff=current_diff_section,
@@ -6671,6 +6705,7 @@ def _provider_bound_input_manifest(
     ]
     projected: dict[str, JsonValue] = {
         "phase": "provider_bound",
+        # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
         "schema": "yoetz.review-input-manifest/1",
     }
     if composed.get("review_phase") in {"routine", "final"}:
@@ -6761,6 +6796,7 @@ def _provider_bound_input_manifest(
                             for item_id in item_ids
                             for row in (carried_by_id[item_id],)
                         ],
+                        # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
                         "schema": "yoetz.review-input-manifest-content/1",
                     },
                 )
@@ -6977,6 +7013,7 @@ def _decode_review_input_manifest(
         return None
     schema = body.get("schema")
     phase = body.get("phase")
+    # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
     if schema != "yoetz.review-input-manifest/1" or phase != expected_phase:
         return None
 
@@ -7084,6 +7121,7 @@ def _decode_review_input_manifest(
         return None
     try:
         return ReviewInputManifest(
+            # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
             schema=cast(Literal["yoetz.review-input-manifest/1"], schema),
             specification=section_values["specification"],
             current_diff=section_values["current_diff"],
@@ -7312,6 +7350,7 @@ def review_packet_disclosure_result(prepared: bytes) -> ReviewPacketDisclosureRe
                 if type(frozen_provider) is not JsonObject:
                     failure = SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP
                 elif (
+                    # Frozen legacy identifier (ADR-048): protocol 0.1 tag, re-verified.
                     frozen_provider.get("schema") != "yoetz.review-input-manifest/1"
                     or frozen_provider.get("phase") != "provider_bound"
                 ):

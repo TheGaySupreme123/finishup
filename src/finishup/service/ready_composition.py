@@ -557,6 +557,7 @@ class _PrivacyContentObjectStore:
             len(source.data),
             commitment,
             digest,
+            # Frozen legacy identifier (ADR-048): the stored object format.
             "yoetz-object/1",
             "privacy-audit",
             metadata,
@@ -2551,6 +2552,7 @@ _LEGACY_AGENT_CONTEXT_DATA_CLASSES: Final = (DataClass.PUBLIC_STRUCTURAL,)
 # default mints a distinct `policy_digest` instead of two different payloads sharing one digest:
 # that digest is the CAS precondition for later tightenings and is exposed as `effective_digest`.
 # `None` reproduces the pre-ADR-009 payload and exists only to recognize an untouched old seed.
+# Frozen legacy identifier (ADR-048): the recorded bootstrap seed tag.
 _BOOTSTRAP_SEED_SCHEMA: Final = "yoetz.privacy-policy.bootstrap/1"
 # 2026-07-24: agent-context verification output. 2026-08-03: default-on structural update_checks.
 _BOOTSTRAP_DEFAULT_REVISION: Final = "2026-08-03-package-update-checks"
@@ -3591,6 +3593,7 @@ async def _read_semantic_execution(
         raise ValueError("semantic_execution_invalid")
     body = cast(dict[str, object], parsed)
     # Legacy pending cases have no frozen endpoint authority. Never retrofit today's pairing.
+    # Frozen legacy identifier (ADR-048): the stored semantic-case tags.
     if body.get("schema") not in {"yoetz.semantic-case/1", "yoetz.semantic-case/2"}:
         raise ValueError("semantic_execution_unavailable")
     case_id, case_digest = body.get("case_id"), body.get("case_digest")
@@ -3703,6 +3706,7 @@ async def _publish_semantic_case_object(
     check's first case digest and the round, for an in-check follow-up job (issue #1047).
     """
 
+    # Frozen legacy identifier (ADR-048): the stored semantic-case tag.
     body: dict[str, CanonicalJsonValue] = {
         "schema": "yoetz.semantic-case/2",
         "case_id": case_id,
@@ -3971,6 +3975,7 @@ async def _publish_semantic_response_object(
 ) -> ObjectRef:
     """Persist SEMANTIC_RESPONSE facts (full judgment + provenance; no raw provider text)."""
 
+    # Frozen legacy identifier (ADR-048): the stored semantic-response tag.
     body: dict[str, CanonicalJsonValue] = {
         "schema": "yoetz.semantic-response/1",
         "attempt_id": attempt_id,

@@ -80,7 +80,9 @@ def test_absolute_registration_is_owned(launcher: Path) -> None:
         "args": ["mcp", "serve", "--host", "codex"],
         "env": {"FINISHUP_ISOLATED_ROOT": str(launcher.parent)},
     }
-    adapter = CodexMcpAdapter(lambda _: CommandOutput(0, json.dumps(entry).encode()))
+    adapter = CodexMcpAdapter(
+        lambda argv: CommandOutput(0, b"[]" if argv[2] == "list" else json.dumps(entry).encode())
+    )
     observed = anyio.run(lambda: adapter.observe_registration(_BINARY))
     assert observed.state is McpRegistrationState.FINISHUP_OWNED
     assert observed.route_profile == "policy"
@@ -108,9 +110,13 @@ class Host:
             index = argv.index("--")
             entry: dict[str, object] = {"command": argv[index + 1], "args": list(argv[index + 2 :])}
             self.entry = entry
-            if "--env" in argv:
-                key, value = argv[argv.index("--env") + 1].split("=", 1)
-                self.entry["env"] = {key: value}
+            environment = dict(
+                argv[index + 1].split("=", 1)
+                for index, token in enumerate(argv[: argv.index("--")])
+                if token == "--env"
+            )
+            if environment:
+                self.entry["env"] = environment
         return CommandOutput(0, b"")
 
 

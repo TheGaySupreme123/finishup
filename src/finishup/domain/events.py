@@ -362,8 +362,10 @@ _SEMVER_RE: Final = re.compile(
     r"^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$",
     re.ASCII,
 )
+# Frozen legacy identifier (ADR-048): recorded payload media types keep the protocol 0.1
+# ``vnd.yoetz`` namespace, which sits inside every entry digest.
 _MEDIA_TYPE_RE: Final = re.compile(
-    r"^application/vnd\.finishup\.[a-z][a-z0-9_]{0,63}\+json$",
+    r"^application/vnd\.yoetz\.[a-z][a-z0-9_]{0,63}\+json$",
     re.ASCII,
 )
 

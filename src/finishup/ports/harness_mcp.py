@@ -10,14 +10,17 @@ from pathlib import PurePosixPath
 from typing import Final, Literal, Protocol, cast
 
 from finishup.domain.values import JsonObject, JsonValue, validate_sha256_digest
+from finishup.legacy_names import LAUNCHER_NAMES, LEGACY_MCP_SERVER_NAME
 from finishup.ports.integrations import HarnessId
 from finishup.protocol.canonical import canonical_encode
 from finishup.protocol.errors import PROTOCOL_REASON_CODES, ProtocolValueError
 
 __all__ = [
+    "MCP_LEGACY_SERVER_NAME",
     "MCP_SERVE_COMMAND",
     "MCP_STRICT_SERVE_COMMAND",
     "MCP_SERVER_NAME",
+    "LegacyRegistration",
     "HarnessBinary",
     "HarnessMcpPort",
     "McpRegistrationAction",
@@ -32,6 +35,9 @@ __all__ = [
 ]
 
 MCP_SERVER_NAME: Final = "finishup"
+# Registration key Yoetz 0.1-0.2 installs wrote (ADR-048). Read, migrated, and removed; never
+# written by a new preview or renderer.
+MCP_LEGACY_SERVER_NAME: Final = LEGACY_MCP_SERVER_NAME
 MCP_SERVE_COMMAND: Final = ("finishup", "mcp", "serve", "--host", "codex")
 MCP_STRICT_SERVE_COMMAND: Final = (*MCP_SERVE_COMMAND, "--semantic", "off")
 # Registrations created before host identity became explicit remain recognizable for a bounded
@@ -46,6 +52,12 @@ _TOKEN_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$", re.ASCII
 
 type Compatibility = Literal["supported", "untested"]
 type McpIsolationBinding = Literal["ambient", "isolated_exact", "missing", "different"]
+# What the host holds under the legacy ``yoetz`` registration key (ADR-048): ``none`` (nothing),
+# ``legacy_only`` (the only FinishUP-owned entry still uses the old key: owned but outdated),
+# ``duplicate`` (owned entries under both keys), ``foreign`` (an old-key entry FinishUP cannot
+# prove is its own; it is reported and never touched).
+type LegacyRegistration = Literal["none", "legacy_only", "duplicate", "foreign"]
+_LEGACY_REGISTRATIONS: Final = frozenset({"none", "legacy_only", "duplicate", "foreign"})
 
 
 def mcp_command_profile(command: tuple[str, ...]) -> Literal["policy", "strict"] | None:
@@ -54,7 +66,9 @@ def mcp_command_profile(command: tuple[str, ...]) -> Literal["policy", "strict"]
     if type(command) is not tuple or not command or any(type(x) is not str for x in command):
         return None
     launcher = command[0]
-    if launcher != "finishup" and (
+    # A bare launcher is either spelling: registrations written before the rename name the
+    # deprecated ``yoetz`` alias (ADR-048).
+    if launcher not in LAUNCHER_NAMES and (
         not launcher.startswith("/")
         or len(launcher) > _MAX_PATH_CHARS
         or str(PurePosixPath(launcher)) != launcher
@@ -81,8 +95,23 @@ def _port_error(reason: str) -> ProtocolValueError:
 
 class McpRegistrationState(str, Enum):  # noqa: UP042 - exact wire-valued Enum is required
     ABSENT = "absent"
+    # Frozen legacy identifier (ADR-048): ``yoetz_owned`` is a released wire enum value.
     FINISHUP_OWNED = "yoetz_owned"
     FOREIGN_PRESENT = "foreign_present"
+
+
+def _validate_legacy_registration(value: object, state: McpRegistrationState) -> None:
+    """An owned legacy entry implies a FinishUP registration the state must not deny (ADR-048).
+
+    ``duplicate`` means the new-key entry is owned too; ``legacy_only`` leaves the new key absent
+    (the registration reads as owned but outdated) or held by a foreign entry, which still wins.
+    """
+
+    if value not in _LEGACY_REGISTRATIONS or (
+        (value == "duplicate" and state is not McpRegistrationState.FINISHUP_OWNED)
+        or (value == "legacy_only" and state is McpRegistrationState.ABSENT)
+    ):
+        raise _port_error("integration_value_invalid")
 
 
 class McpRegistrationAction(str, Enum):  # noqa: UP042 - exact wire-valued Enum is required
@@ -152,6 +181,11 @@ class McpRegistrationPreview:
     serve_command: tuple[str, ...] = MCP_SERVE_COMMAND
     route_profile: Literal["policy", "strict"] = "policy"
     isolated_root: str | None = None
+    legacy_registration: LegacyRegistration = "none"
+    # The route the owned entry serves now, when the adapter observed one. A re-registration can
+    # keep the route (a legacy key, launcher, or isolation change), so the action alone does not
+    # name it.
+    route_profile_before: Literal["policy", "strict"] | None = None
 
     def __post_init__(self) -> None:
         if type(self.harness_id) is not HarnessId:
@@ -160,6 +194,12 @@ class McpRegistrationPreview:
             raise _port_error("integration_action_invalid")
         if type(self.state_before) is not McpRegistrationState:
             raise _port_error("integration_state_invalid")
+        _validate_legacy_registration(self.legacy_registration, self.state_before)
+        if self.route_profile_before is not None and (
+            self.route_profile_before not in {"policy", "strict"}
+            or self.state_before is not McpRegistrationState.FINISHUP_OWNED
+        ):
+            raise _port_error("integration_value_invalid")
         if type(self.warnings) is not tuple or len(self.warnings) > _MAX_WARNINGS:
             raise _port_error("integration_value_invalid")
         previous: str | None = None
@@ -198,12 +238,14 @@ class McpRegistrationObservation:
     route_profile: Literal["policy", "strict"] | None
     isolation_binding: McpIsolationBinding | None = None
     serve_command: tuple[str, ...] | None = None
+    legacy_registration: LegacyRegistration = "none"
 
     def __post_init__(self) -> None:
         if type(self.harness_id) is not HarnessId:
             raise _port_error("integration_harness_invalid")
         if type(self.state) is not McpRegistrationState:
             raise _port_error("integration_state_invalid")
+        _validate_legacy_registration(self.legacy_registration, self.state)
         if self.serve_command is not None and (
             self.state is not McpRegistrationState.FINISHUP_OWNED
             or self.route_profile is None

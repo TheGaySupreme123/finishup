@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Annotated, Final, Literal, Self, cast
 
 from pydantic import (
@@ -15,6 +17,7 @@ from pydantic import (
 from pydantic_core.core_schema import SerializerFunctionWrapHandler
 
 from finishup.domain.privacy import PrivacyPolicyChange, PrivacyPolicyChangeValue, ProviderBinding
+from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from finishup.protocol.models import (
     CanonicalPositiveUInt64Wire,
@@ -23,10 +26,12 @@ from finishup.protocol.models import (
 )
 
 __all__ = [
+    "CONSENT_COMMAND_HEADS",
     "CONSENT_PENDING_TTL_SECONDS",
     "AgentSafePendingModel",
     "ConsentCatalogModel",
     "ConsentCatalogOperationModel",
+    "ConsentCommandHead",
     "ConsentPrepareResultModel",
     "ConsentProjectCoordinationGrantResultModel",
     "ConsentReviewResultModel",
@@ -81,6 +86,8 @@ type RepositoryPrivacyRecipe = Literal[
 _CLOSED_CONFIG = ConfigDict(extra="forbid", frozen=True, strict=True, validate_default=True)
 
 
+# Frozen legacy identifier (ADR-048): every ``yoetz.*`` schema tag below is a released or recorded
+# tag of the protocol 0.1 namespace and stays spelled as shipped.
 class _ClosedModel(BaseModel):
     model_config = _CLOSED_CONFIG
 
@@ -281,6 +288,15 @@ class CoordinationBindingModel(_ClosedModel):
 ProjectCoordinationGrantBindingModel = CoordinationBindingModel
 
 
+# The first argv element of a consent command: the current launcher, or the pre-rename launcher
+# the released pending-agent/6 contract names. New output is /7; /6 and pre-rename /7 projections
+# are still read (ADR-048).
+ConsentCommandHead = Literal["finishup", "yoetz"]
+CONSENT_COMMAND_HEADS: Final[Mapping[Literal["6", "7"], ConsentCommandHead]] = MappingProxyType(
+    {"6": LEGACY_LAUNCHER_NAME, "7": LAUNCHER_NAME}
+)
+
+
 class AgentSafePendingModel(_ClosedModel):
     model_config = ConfigDict(
         extra="forbid",
@@ -344,13 +360,28 @@ class AgentSafePendingModel(_ClosedModel):
     repository_privacy_preview: RepositoryPrivacyGrantPreviewModel | None
     import_publication_preview: ImportPublicationPreviewModel | None
     coordination_binding: CoordinationBindingModel | None = None
-    review_command: tuple[Literal["finishup"], Literal["consent"], Literal["review"]]
-    authorize_command: tuple[Literal["finishup"], Literal["consent"], Literal["authorize"]] | None
+    # The released pending-agent/6 (and every earlier version) fixed the command head to the
+    # pre-rename launcher; /7 names the current launcher and also admits the legacy head a
+    # pre-rename development service projected (ADR-048).
+    review_command: tuple[ConsentCommandHead, Literal["consent"], Literal["review"]]
+    authorize_command: tuple[ConsentCommandHead, Literal["consent"], Literal["authorize"]] | None
 
     @field_validator("review_command", "authorize_command", mode="before")
     @classmethod
     def _adapt_commands(cls, value: object) -> object:
         return tuple(cast(list[object], value)) if type(value) is list else value
+
+    @model_validator(mode="after")
+    def _bind_command_head_to_version(self) -> Self:
+        heads = {self.review_command[0]}
+        if self.authorize_command is not None:
+            heads.add(self.authorize_command[0])
+        if len(heads) != 1:
+            raise ValueError("consent_command_head_mixed")
+        # Frozen legacy identifier (ADR-048): the released pending-agent/6 const.
+        if self.schema_ == "yoetz.consent.pending-agent/6" and heads != {LEGACY_LAUNCHER_NAME}:
+            raise ValueError("consent_command_head_invalid")
+        return self
 
     @model_validator(mode="after")
     def _bind_operation_preview(self) -> Self:

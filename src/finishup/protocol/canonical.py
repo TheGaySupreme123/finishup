@@ -298,6 +298,7 @@ def entry_digest(preimage: JsonValue) -> str:
     except Exception as exc:
         raise ProtocolValueError("not_an_accepted_envelope") from exc
 
+    # Frozen legacy identifier (ADR-048): the recorded event envelope protocol tag.
     if type(protocol) is not str or protocol != "yoetz.event":
         raise ProtocolValueError("not_an_accepted_envelope")
 

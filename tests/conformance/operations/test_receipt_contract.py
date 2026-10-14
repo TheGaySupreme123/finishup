@@ -676,7 +676,12 @@ def test_reviewed_receipt_vectors_match_exact_document_and_compact_bytes(
     assert canonical_encode(cast(JsonValue, encoded)) == canonical_encode(cast(JsonValue, wire))
     assert canonical_digest(cast(JsonValue, encoded)) == expected_digest
     compact = render_receipt_compact(document)
-    assert compact == expected_compact
+    # The reviewed vectors are pre-rename receipts (``package_name: yoetz``) with their pre-rename
+    # rendering. The stored document is unchanged; only the product name the renderer prints is
+    # the current one (ADR-048).
+    assert compact == expected_compact.replace(
+        "Yoetz receipt at frontier ", "FinishUP receipt at frontier ", 1
+    )
 
 
 def test_wrapper_that_upgrades_receipt_conclusion_fails() -> None:

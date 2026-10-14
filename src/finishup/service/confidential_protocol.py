@@ -106,6 +106,8 @@ __all__ = [
     "validate_provider_credential_buffer",
 ]
 
+# Frozen legacy identifier (ADR-048): an older running service and a newer client exchange these
+# brand-derived frame magics, so both stay byte-identical across the rename.
 HUMAN_PROTOCOL_MAGIC: Final = b"YZH1"
 HUMAN_PROTOCOL_VERSION: Final = 1
 MAX_HUMAN_CONTROL_FRAME_BYTES: Final = 65_536

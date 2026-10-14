@@ -37,9 +37,10 @@ from finishup.domain.observation_budget import (
 )
 from finishup.domain.observation_capacity_policy import (
     WORKSPACE_PLACEHOLDER,
-    is_safe_command,
+    canonical_safe_command,
     render_capacity_disclosure_lines,
 )
+from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
 from finishup.tui.commands import SLASH_COMMANDS, command_named
 from finishup.tui.events import HistoryEvent, Transcript
 from finishup.tui.models import (
@@ -116,6 +117,16 @@ _PROFILE_FOR_RECIPE: Final[dict[str, str]] = {
 }
 
 
+def relaunch_command(package: str) -> str:
+    """The launcher an upgraded install has on PATH, for "then re-run <launcher>" (ADR-048).
+
+    The transitional ``yoetz`` distribution links only ``yoetz``, so naming ``finishup`` there
+    would send the user to a command that does not exist.
+    """
+
+    return LEGACY_LAUNCHER_NAME if package == LEGACY_LAUNCHER_NAME else LAUNCHER_NAME
+
+
 def _progress_lines(lines: Sequence[str]) -> tuple[str, ...]:
     """Keep only the structural review-progress lines of a rendered operation page."""
 
@@ -185,10 +196,13 @@ def _selection_capacity_phrase(
 
 
 def _disclosure_command(disclosure: Mapping[str, object], key: str, fallback: str) -> str:
-    """Return a disclosure command when it is a safe placeholder command, else ``fallback``."""
+    """Return a disclosure command when it is a safe placeholder command, else ``fallback``.
 
-    value = disclosure.get(key)
-    return value if is_safe_command(value) else fallback
+    A record written before the rename is rendered with the current launcher (ADR-048).
+    """
+
+    command = canonical_safe_command(disclosure.get(key))
+    return fallback if command is None else command
 
 
 def _capacity_request_for(choice: str) -> CapacityRequest | None:
@@ -1363,11 +1377,12 @@ class FinishUpTui(App[int]):
             )
 
     def _say_capacity_unavailable(self, unavailable: ObservationCapacityUnavailable) -> None:
+        command = canonical_safe_command(unavailable.alternative_command)
         alternative = (
-            f"Alternative: choose Largest ({_MAX_QUEUE_ROWS:,} rows) in /observe, or run: "
-            f"{unavailable.alternative_command}"
-            if is_safe_command(unavailable.alternative_command)
-            else f"Alternative: choose Largest ({_MAX_QUEUE_ROWS:,} rows) in /observe."
+            f"Alternative: choose Largest ({_MAX_QUEUE_ROWS:,} rows) in /observe."
+            if command is None
+            else f"Alternative: choose Largest ({_MAX_QUEUE_ROWS:,} rows) in /observe, or run: "
+            f"{command}"
         )
         self.say(
             Level.OPTIONAL,
@@ -1696,7 +1711,7 @@ class FinishUpTui(App[int]):
         if choice == "upgrade":
             self.say(
                 Level.ACTIVE,
-                "Upgrade the package, then re-run finishup",
+                f"Upgrade the package, then re-run {relaunch_command(advisory.package)}",
                 (
                     f"Installed: {advisory.installed_version}",
                     f"Available: {advisory.latest_version}",

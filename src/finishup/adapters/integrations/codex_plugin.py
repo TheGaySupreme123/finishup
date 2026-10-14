@@ -45,15 +45,26 @@ __all__ = [
     "codex_supports_async_hooks",
     "inspect_plugin",
     "install_plugin",
+    "legacy_plugin_tree_digest",
     "plugin_tree_matches_marker",
+    "remove_legacy_plugin_tree",
     "render_plugin_install_tree",
     "render_plugin_tree",
 ]
 
 _ADAPTER_VERSION: Final = "codex-plugin/0.1.0"
+# Frozen legacy identifier (ADR-048): the marker name and schema are read by every runtime that
+# validates an installed tree, in legacy and renamed directories alike.
 _MARKER_NAME: Final = ".yoetz-plugin-install.json"
 _MARKER_SCHEMA: Final = "yoetz.codex-plugin-install/1"
 _PLUGIN_ROOT: Final = ".agents/plugins/finishup"
+_PLUGIN_DIRECTORY: Final = "finishup"
+# Frozen legacy identifier (ADR-048): the plugin directory Yoetz 0.1-0.2 installed. A
+# marker-consistent tree there is removed only by the approved activation migration, after no
+# Codex activation of this project still reads it; any other content stays.
+_LEGACY_PLUGIN_DIRECTORY: Final = "yoetz"
+_LEGACY_TREE_NOTE: Final = "legacy_plugin_tree_present"
+_LEGACY_TREE_RETAINED_NOTE: Final = "legacy_plugin_tree_retained"
 PLUGIN_ROOT: Final = _PLUGIN_ROOT
 _SOURCE_FILE_LIMIT: Final = 262_144
 # openai/codex#37533 first shipped in this prerelease. Unknown or malformed
@@ -224,7 +235,9 @@ def _hooks_json(*, codex_version: str | None = None) -> bytes:
             ],
             "PostToolUse": [
                 {
-                    "matcher": "^mcp__finishup__start$",
+                    # A registration still under the legacy ``yoetz`` key names its tools
+                    # ``mcp__yoetz__*`` until integrate migrates it (ADR-048).
+                    "matcher": "^mcp__(?:finishup|yoetz)__start$",
                     "hooks": [
                         {
                             "type": "command",
@@ -424,25 +437,41 @@ def plugin_tree_matches_marker(members: Mapping[str, bytes]) -> bool:
     return inventory == actual
 
 
-def _is_prior_managed_render(destination: Path) -> bool:
-    """True when the installed tree is exactly one marker-consistent prior render."""
+def _prior_managed_members(destination: Path) -> dict[str, bytes] | None:
+    """The tree's members when it is exactly one marker-consistent prior render, else None."""
 
+    if destination.is_symlink() or not destination.is_dir():
+        return None
     members: dict[str, bytes] = {}
     try:
         for candidate in destination.rglob("*"):
             if candidate.is_symlink():
-                return False
+                return None
             if candidate.is_dir():
                 continue
             if not candidate.is_file():
-                return False
+                return None
             data = candidate.read_bytes()
             if len(data) > _SOURCE_FILE_LIMIT:
-                return False
+                return None
             members[candidate.relative_to(destination).as_posix()] = data
     except OSError:
-        return False
-    return plugin_tree_matches_marker(members)
+        return None
+    return members if plugin_tree_matches_marker(members) else None
+
+
+def _is_prior_managed_render(destination: Path) -> bool:
+    """True when the installed tree is exactly one marker-consistent prior render."""
+
+    return _prior_managed_members(destination) is not None
+
+
+def _tree_digest(members: Mapping[str, bytes]) -> str:
+    rows = [
+        {"path": path, "digest": _sha(data), "size": len(data)}
+        for path, data in sorted(members.items(), key=lambda item: item[0].encode("utf-8"))
+    ]
+    return _sha(canonical_encode(cast(JsonValue, {"managed_files": rows})))
 
 
 def _build_marker(members: Mapping[str, bytes]) -> bytes:
@@ -460,6 +489,7 @@ def _build_marker(members: Mapping[str, bytes]) -> bytes:
         "managed_files": cast(JsonValue, managed),
         "schema": _MARKER_SCHEMA,
         "scope": IntegrationScope.TRUSTED_PROJECT.value,
+        # Frozen legacy identifier (ADR-048): marker key read by every runtime.
         "yoetz_version": __version__,
     }
     body["marker_digest"] = canonical_digest(body)
@@ -508,7 +538,7 @@ def install_plugin(
         raise _error(IntegrationReason.VERSION_INCOMPATIBLE)
     root = _validated_project(target)
     parent = _validated_plugin_parent(root, create=True)
-    destination = parent / "finishup"
+    destination = parent / _PLUGIN_DIRECTORY
     members = render_plugin_tree(
         resource_source=resource_source,
         codex_version=codex_version,
@@ -553,6 +583,7 @@ def install_plugin(
                 IntegrationReason.MODIFIED_COPY,
                 {"relative_path": _MARKER_NAME, "replace_modified": True},
             )
+    # Frozen legacy identifier (ADR-048): crash-residue prefixes shared with older runtimes.
     stage = parent / f".yoetz.plugin-stage-{os.urandom(6).hex()}"
     rollback = parent / f".yoetz.plugin-rollback-{os.urandom(6).hex()}"
     destination_moved = False
@@ -578,11 +609,52 @@ def install_plugin(
     finally:
         if stage.exists():
             shutil.rmtree(stage, ignore_errors=True)
+    # A Yoetz-era tree beside this one is left in place: a legacy Codex activation may still
+    # read it, so only the approved activation migration removes it (ADR-048).
     return inspect_plugin(
         target,
         resource_source=resource_source,
         codex_version=codex_version,
     )
+
+
+def legacy_plugin_tree_digest(target: IntegrationTarget) -> str | None:
+    """Digest of this project's marker-consistent Yoetz-era plugin tree, else None (ADR-048).
+
+    Only a tree that byte-matches its own valid install marker is FinishUP-managed; anything
+    else under the legacy name is owner content and reads as None, so nothing ever plans its
+    removal. The marker is checked for internal consistency, the same trust level as the prior
+    render rule (ADR-023); it is not compared with any released Yoetz bytes.
+    """
+
+    parent = _validated_plugin_parent(_validated_project(target), create=False)
+    members = _prior_managed_members(parent / _LEGACY_PLUGIN_DIRECTORY)
+    return None if members is None else _tree_digest(members)
+
+
+def remove_legacy_plugin_tree(target: IntegrationTarget, expected_digest: str) -> None:
+    """Remove the exact legacy plugin tree an approved activation preview bound (ADR-048).
+
+    The tree is re-read immediately before removal and anything other than the approved bytes
+    is stale. It is renamed out of the way before deletion so a partial delete never leaves a
+    half tree under the name a legacy activation might still read. An already absent tree is
+    the outcome of an earlier interrupted run and needs nothing.
+    """
+
+    parent = _validated_plugin_parent(_validated_project(target), create=False)
+    legacy = parent / _LEGACY_PLUGIN_DIRECTORY
+    if not legacy.exists() and not legacy.is_symlink():
+        return
+    members = _prior_managed_members(legacy)
+    if members is None or _tree_digest(members) != expected_digest:
+        raise _error(IntegrationReason.PREVIEW_STALE)
+    # Frozen legacy identifier (ADR-048): crash-residue prefix shared with older runtimes.
+    quarantine = parent / f".yoetz.plugin-remove-{os.urandom(6).hex()}"
+    try:
+        os.replace(legacy, quarantine)
+        shutil.rmtree(quarantine)
+    except OSError as exc:
+        raise _error(IntegrationReason.WRITE_FAILED) from exc
 
 
 def inspect_plugin(
@@ -612,9 +684,17 @@ def inspect_plugin(
             None,
             (trust_note, "destination_unsafe"),
         )
-    destination = parent / "finishup"
+    destination = parent / _PLUGIN_DIRECTORY
+    legacy = parent / _LEGACY_PLUGIN_DIRECTORY
+    if legacy.exists() or legacy.is_symlink():
+        # A Yoetz-era tree is reported, never folded into FinishUP's presence (ADR-048).
+        legacy_notes = (
+            _LEGACY_TREE_NOTE if _is_prior_managed_render(legacy) else _LEGACY_TREE_RETAINED_NOTE,
+        )
+    else:
+        legacy_notes = ()
     if not destination.exists():
-        return PluginInspection(PluginHookPresence.ABSENT, False, None, (trust_note,))
+        return PluginInspection(PluginHookPresence.ABSENT, False, None, (trust_note, *legacy_notes))
     if destination.is_symlink() or not destination.is_dir():
         return PluginInspection(
             PluginHookPresence.INSTALLED_UNTRUSTED_UNKNOWN,
@@ -650,13 +730,13 @@ def inspect_plugin(
             PluginHookPresence.INSTALLED,
             False,
             digest,
-            (trust_note,),
+            (trust_note, *legacy_notes),
         )
     return PluginInspection(
         PluginHookPresence.INSTALLED_UNTRUSTED_UNKNOWN,
         False,
         digest,
-        (trust_note,),
+        (trust_note, *legacy_notes),
     )
 
 

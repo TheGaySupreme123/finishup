@@ -68,6 +68,34 @@ def _variant(file_name: str, variant_name: str) -> dict[str, Any]:
     raise AssertionError(f"unknown fixture variant: {file_name}/{variant_name}")
 
 
+def _rendered_with_current_product_name(expected: str) -> str:
+    """The fixtures record pre-rename receipts and their pre-rename rendering (ADR-048).
+
+    The stored receipt document is unchanged and still loads; only the product name the renderer
+    prints is the current one.
+    """
+
+    return expected.replace("Yoetz receipt at frontier ", "FinishUP receipt at frontier ", 1)
+
+
+def test_receipt_package_name_admits_the_current_and_the_legacy_distribution() -> None:
+    """Receipts issued before the rename name ``yoetz``; new ones name ``finishup`` (ADR-048)."""
+
+    legacy = _variant("deterministic-current.case.json", "current_complete")
+    assert legacy["versions"]["package_name"] == "yoetz"
+    current = deepcopy(legacy)
+    current["versions"]["package_name"] = "finishup"
+    for wire in (legacy, current):
+        document = receipt_document_from_json(wire)
+        assert receipt_document_to_json(document) == wire
+        assert render_receipt_compact(document).startswith("FinishUP receipt at frontier 12:")
+    other = deepcopy(legacy)
+    other["versions"]["package_name"] = "other"
+    with pytest.raises(ProtocolValueError) as exc_info:
+        receipt_document_from_json(other)
+    _assert_reason(exc_info, "invalid_receipt_version_slice")
+
+
 def _assert_reason(exc_info: pytest.ExceptionInfo[ProtocolValueError], reason: str) -> None:
     assert exc_info.value.reason_code == reason
     assert exc_info.value.args == (reason,)
@@ -107,7 +135,7 @@ def test_render_receipt_compact_never_outruns_evidence(
 ) -> None:
     del file_name, variant_name
     rendered = render_receipt_compact(receipt_document_from_json(wire))
-    assert rendered == expected
+    assert rendered == _rendered_with_current_product_name(expected)
     assert "\n" not in rendered
     assert len(rendered) <= 32_768
     assert "fully verified" not in rendered.lower()

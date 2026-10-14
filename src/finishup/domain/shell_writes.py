@@ -1001,6 +1001,7 @@ def shell_write_scope(
         return "workspace"
     # Only the agent's notes or FinishUP's own material: the same closed token an edit tool carries,
     # so a declared output of that kind keeps counting (``non_counting_edits_exempt``).
+    # Frozen legacy identifier (ADR-048): ``yoetz_owned`` is the recorded write-scope token.
     for scope in ("notes", "yoetz_owned"):
         if scope in classes:
             return scope

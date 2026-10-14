@@ -18,7 +18,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Final, Literal, cast
@@ -38,21 +38,25 @@ from finishup.adapters.integrations.launcher_probe import (
     OsLauncherProbe,
     compare_launcher_identity,
 )
+from finishup.adapters.integrations.legacy_launchers import launcher_aliases, recorded_launcher
 from finishup.adapters.integrations.portable_plugin import (
     PackagedPortableResources,
     RenderedPortablePlugin,
     build_portable_plugin_plan,
 )
-from finishup.config.paths import ISOLATED_ROOT_ENV, isolated_root
+from finishup.config.paths import ISOLATED_ROOT_ENV, LEGACY_ISOLATED_ROOT_ENV, isolated_root
 from finishup.domain.observation_profiles import (
     CURSOR_ORDINARY_HOOK_MAPPING_VERSION,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
 from finishup.domain.values import JsonObject, RequestId
 from finishup.domain.values import request_id as validate_request_id
+from finishup.legacy_names import LAUNCHER_NAMES, LEGACY_MCP_SERVER_NAME, MCP_SERVER_NAME
 from finishup.ports.integrations import HarnessHookProfile, HarnessId, HarnessProfile
 from finishup.ports.plugin_artifacts import (
+    LEGACY_INSTALLATIONS,
     ArtifactAuthority,
+    LegacyInstallation,
     ManagedPluginFile,
     McpOwnership,
     McpOwnershipState,
@@ -83,6 +87,7 @@ __all__ = [
     "CURSOR_ORDINARY_HOOK_MAPPING_VERSION",
     "CURSOR_ORDINARY_OBSERVATION_PROFILE_ID",
     "CURSOR_ORDINARY_HOOK_EVENTS",
+    "CURSOR_LEGACY_PLUGIN_RELATIVE_ROOT",
     "CURSOR_PLUGIN_RELATIVE_ROOT",
     "CURSOR_SDK_PROOF_LIMITS",
     "CursorArtifactIdentity",
@@ -114,6 +119,10 @@ __all__ = [
 ]
 
 CURSOR_PLUGIN_RELATIVE_ROOT: Final = "plugins/local/finishup"
+# The plugin directory Yoetz 0.1-0.2 installs wrote (ADR-048). A marker-valid tree there is
+# FinishUP's own: status reports it, install and replace migrate it in the same approval, and
+# remove takes it too. Anything else under that name is reported and never touched.
+CURSOR_LEGACY_PLUGIN_RELATIVE_ROOT: Final = "plugins/local/yoetz"
 CURSOR_NATIVE_PROFILE_ID: Final = "cursor-native-3.17"
 CURSOR_HOOK_MAPPING_VERSION: Final = "cursor-hooks-3.17-v1"
 CURSOR_SDK_BRIDGE_PROTOCOL: Final = "sdk.v1"
@@ -158,13 +167,20 @@ CURSOR_HARNESS_PROFILE: Final = HarnessProfile(
     },
 )
 
+# Frozen legacy identifier (ADR-048): status and remove find ownership through these exact marker
+# names and schemas, written unchanged inside both the renamed and the legacy plugin directory;
+# 0.3 runtimes in other installs read the same markers.
 _MARKER_NAME: Final = ".yoetz-cursor-plugin-install.json"
 _MARKER_SCHEMA_V1: Final = "yoetz.cursor-plugin-install/1"
 _MARKER_SCHEMA_V2: Final = "yoetz.cursor-plugin-install/2"
 _MARKER_SCHEMA_V3: Final = "yoetz.cursor-plugin-install/3"
 _RENDERER_VERSION: Final = "cursor-plugin/0.3.0"
+# Frozen legacy identifier (ADR-048): crash-recovery residue the next run finds by name/prefix.
 _ROLLBACK_NAME: Final = ".yoetz-cursor-plugin-rollback"
 _STAGE_PREFIX: Final = ".yoetz-cursor-plugin-stage-"
+# Both spellings of the isolation root a rendered entry or hook carries with one value while the
+# deprecated ``yoetz`` alias ships (ADR-048); either one alone, or both equal, is one binding.
+_ISOLATED_ROOT_ENV_NAMES: Final = (ISOLATED_ROOT_ENV, LEGACY_ISOLATED_ROOT_ENV)
 _MAX_FILE_BYTES: Final = 262_144
 _MAX_FILES: Final = 64
 _MAX_PATH: Final = 4_096
@@ -181,6 +197,7 @@ _DESCRIPTION: Final = (
     "against that record."
 )
 
+type Route = Literal["strict", "policy"]
 type CursorIsolationBindingState = Literal[
     "ambient", "isolated_exact", "missing", "different", "unobserved"
 ]
@@ -410,9 +427,13 @@ class CursorMcpObservation:
     route_profile: Literal["strict", "policy"] | None
     present_sources: tuple[CursorMcpSource, ...]
     observed: bool
+    # What the legacy ``yoetz`` key holds across the observed sources (ADR-048).
+    legacy_registration: LegacyInstallation = "none"
 
     def __post_init__(self) -> None:
         if type(self.ownership_state) is not McpOwnershipState:
+            raise ValueError("cursor_mcp_observation_invalid")
+        if self.legacy_registration not in LEGACY_INSTALLATIONS:
             raise ValueError("cursor_mcp_observation_invalid")
         if self.winning_source is not None and type(self.winning_source) is not CursorMcpSource:
             raise ValueError("cursor_mcp_observation_invalid")
@@ -441,10 +462,14 @@ class CursorPluginPreview:
     mcp_route_profile: Literal["strict", "policy"] | None
     isolation_root: str | None = field(repr=False)
     warnings: tuple[str, ...]
+    # The legacy ``plugins/local/yoetz`` tree this action migrates or removes (ADR-048).
+    legacy_installation: LegacyInstallation = "none"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "request_id", validate_request_id(self.request_id))
         if type(self.action) is not PluginArtifactAction:
+            raise ValueError("cursor_preview_invalid")
+        if self.legacy_installation not in LEGACY_INSTALLATIONS:
             raise ValueError("cursor_preview_invalid")
         if type(self.state_before) is not PluginArtifactState:
             raise ValueError("cursor_preview_invalid")
@@ -530,8 +555,12 @@ class CursorPluginStatus:
         )
     )
     isolation_binding: CursorIsolationBindingState = "unobserved"
+    # What the legacy ``plugins/local/yoetz`` directory holds (ADR-048).
+    legacy_installation: LegacyInstallation = "none"
 
     def __post_init__(self) -> None:
+        if self.legacy_installation not in LEGACY_INSTALLATIONS:
+            raise ValueError("cursor_status_invalid")
         if type(self.launcher) is not CursorLauncherStatus:
             raise ValueError("cursor_status_invalid")
         if (
@@ -633,6 +662,19 @@ class _Inspection:
     rollback_available: bool
     installed_launcher: tuple[str, ...] | None = None
     installed_isolation_root: str | None = None
+    # The legacy ``plugins/local/yoetz`` tree (ADR-048): ``owned`` only when marker-valid, with
+    # the exact digest a preview binds and the launcher its marker recorded.
+    legacy_state: Literal["absent", "owned", "foreign"] = "absent"
+    legacy_digest: str | None = None
+    legacy_launcher: tuple[str, ...] | None = None
+
+    @property
+    def legacy_installation(self) -> LegacyInstallation:
+        if self.legacy_state == "absent":
+            return "none"
+        if self.legacy_state == "foreign":
+            return "foreign"
+        return "legacy_only" if self.state is PluginArtifactState.ABSENT else "duplicate"
 
 
 def _error(
@@ -699,13 +741,25 @@ def _mcp_json(
         "type": "stdio",
     }
     if isolation_root is not None:
-        entry["env"] = {ISOLATED_ROOT_ENV: isolation_root}
+        entry["env"] = {name: isolation_root for name in _ISOLATED_ROOT_ENV_NAMES}
     return canonical_encode(
         cast(
             JsonValue,
-            {"mcpServers": {"finishup": entry}},
+            {"mcpServers": {MCP_SERVER_NAME: entry}},
         )
     )
+
+
+def _isolation_prefixes(isolation_root: str) -> tuple[str, ...]:
+    """Hook-command root prefixes, rendered form first (ADR-048).
+
+    A rendered hook exports both spellings with one value. A hook naming only the new or only
+    the legacy spelling binds the same root and still reads as that binding.
+    """
+
+    quoted = shlex.quote(isolation_root)
+    both = "".join(f"{name}={quoted} " for name in _ISOLATED_ROOT_ENV_NAMES)
+    return (both, *(f"{name}={quoted} " for name in _ISOLATED_ROOT_ENV_NAMES))
 
 
 def _valid_launcher(launcher: object) -> bool:
@@ -747,9 +801,7 @@ def _native_members(
     elif route_profile is not None:
         raise ValueError("cursor_mcp_route_forbidden")
     launcher = " ".join(shlex.quote(part) for part in finishup_launcher)
-    isolation_prefix = (
-        "" if isolation_root is None else f"{ISOLATED_ROOT_ENV}={shlex.quote(isolation_root)} "
-    )
+    isolation_prefix = "" if isolation_root is None else _isolation_prefixes(isolation_root)[0]
     hook_command = f"{isolation_prefix}{launcher} hooks cursor-observe --workspace ."
     hook_events = CURSOR_HOOK_EVENTS
     if observation_profile == "ordinary":
@@ -820,6 +872,11 @@ def installed_cursor_startup_mode(
     """Inspect marker-verified installed bytes without assuming this version's digest."""
     base, _identity = _target_path(target)
     root = base / CURSOR_PLUGIN_RELATIVE_ROOT
+    if not root.exists() and not root.is_symlink():
+        # A migration keeps the mode an owned legacy tree was installed with (ADR-048).
+        legacy = base / CURSOR_LEGACY_PLUGIN_RELATIVE_ROOT
+        if _inspect_legacy(base)[0] == "owned":
+            root = legacy
     if root.is_symlink():
         return None
     if not root.exists():
@@ -1038,6 +1095,7 @@ def _marker(artifact: CursorPluginArtifact) -> bytes:
             if artifact.plan.format_profile is PluginFormatProfile.CURSOR_PLUGIN_NATIVE
             else _MARKER_SCHEMA_V1
         ),
+        # Frozen legacy identifier (ADR-048): marker keys every release reads by name.
         "yoetz_version": artifact.plan.version,
     }
     if artifact.plan.format_profile is PluginFormatProfile.CURSOR_PLUGIN_NATIVE:
@@ -1072,6 +1130,7 @@ def _valid_marker(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
     }:
         return False, None, None
+    # Frozen legacy identifier (ADR-048): the marker's launcher key.
     launcher = marker.get("yoetz_launcher")
     isolation_root = marker.get("isolation_root")
     if schema in {_MARKER_SCHEMA_V2, _MARKER_SCHEMA_V3}:
@@ -1117,7 +1176,41 @@ def _valid_marker(
     return True, format_profile, artifact_digest if type(artifact_digest) is str else None
 
 
+def _inspect_legacy(
+    root: Path,
+) -> tuple[Literal["absent", "owned", "foreign"], str | None, tuple[str, ...] | None]:
+    """Classify the legacy plugin directory without ever writing it (ADR-048)."""
+
+    legacy = root / CURSOR_LEGACY_PLUGIN_RELATIVE_ROOT
+    if not legacy.exists() and not legacy.is_symlink():
+        return "absent", None, None
+    if legacy.is_symlink() or not legacy.is_dir():
+        return "foreign", None, None
+    try:
+        files = _safe_tree(legacy)
+    except CursorIntegrationError, OSError:
+        return "foreign", None, None
+    if not _valid_marker(files)[0]:
+        return "foreign", None, None
+    raw = files.get(_MARKER_NAME)
+    marker = None if raw is None else _load_object(raw)
+    # Frozen legacy identifier (ADR-048): the launcher key every release writes.
+    launcher = None if marker is None else recorded_launcher(marker.get("yoetz_launcher"))
+    return "owned", _tree_digest(files), launcher
+
+
 def _inspect(target: CursorPluginTarget, artifact: CursorPluginArtifact) -> _Inspection:
+    inspection = _inspect_current(target, artifact)
+    legacy_state, legacy_digest, legacy_launcher = _inspect_legacy(inspection.root)
+    return replace(
+        inspection,
+        legacy_state=legacy_state,
+        legacy_digest=legacy_digest,
+        legacy_launcher=legacy_launcher,
+    )
+
+
+def _inspect_current(target: CursorPluginTarget, artifact: CursorPluginArtifact) -> _Inspection:
     root, target_identity = _target_path(target)
     destination = root / CURSOR_PLUGIN_RELATIVE_ROOT
     rollback = destination.parent / _ROLLBACK_NAME
@@ -1218,6 +1311,7 @@ def _marker_launcher(files: Mapping[str, bytes]) -> tuple[str, ...] | None:
     marker = None if raw is None else _load_object(raw)
     if marker is None or marker.get("schema") not in {_MARKER_SCHEMA_V2, _MARKER_SCHEMA_V3}:
         return None
+    # Frozen legacy identifier (ADR-048): the marker's launcher key.
     launcher = marker.get("yoetz_launcher")
     if type(launcher) is not list:
         return None
@@ -1292,21 +1386,30 @@ def _preview_digest(
     current_state_digest: str,
     mcp_ownership_state: McpOwnershipState,
     target_identity: str,
+    legacy_digest: str | None = None,
 ) -> str:
-    return canonical_digest(
-        {
-            "action": effective.value,
-            "artifact_digest": artifact.artifact_digest,
-            "current_state_digest": current_state_digest,
-            "format_profile": artifact.plan.format_profile.value,
-            "mcp_ownership": artifact.plan.mcp_ownership.value,
-            "mcp_ownership_state": mcp_ownership_state.value,
-            "mcp_route_profile": artifact.plan.mcp_route_profile,
-            "isolation_root": artifact.isolation_root,
-            "request_id": request,
-            "target_identity": target_identity,
-        }
-    )
+    body: dict[str, JsonValue] = {
+        "action": effective.value,
+        "artifact_digest": artifact.artifact_digest,
+        "current_state_digest": current_state_digest,
+        "format_profile": artifact.plan.format_profile.value,
+        "mcp_ownership": artifact.plan.mcp_ownership.value,
+        "mcp_ownership_state": mcp_ownership_state.value,
+        "mcp_route_profile": artifact.plan.mcp_route_profile,
+        "isolation_root": artifact.isolation_root,
+        "request_id": request,
+        "target_identity": target_identity,
+    }
+    if legacy_digest is not None:
+        # Bind the exact legacy tree this approval migrates or removes (ADR-048).
+        body["legacy_digest"] = legacy_digest
+    return canonical_digest(body)
+
+
+def _legacy_warnings(state: Literal["absent", "owned", "foreign"]) -> tuple[str, ...]:
+    if state == "owned":
+        return ("legacy_installation_owned",)
+    return ("legacy_installation_foreign",) if state == "foreign" else ()
 
 
 def _preview_from_inspection(
@@ -1330,15 +1433,21 @@ def _preview_from_inspection(
     } or (inspection.state is PluginArtifactState.MODIFIED and inspection.marker_valid)
     if action is PluginArtifactAction.REPLACE and not replace_allowed:
         raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
-    if action is PluginArtifactAction.REMOVE and (
-        inspection.state
-        not in {
-            PluginArtifactState.PORTABLE_EXACT,
-            PluginArtifactState.PORTABLE_MANAGED,
-            PluginArtifactState.NATIVE_MANAGED,
-            PluginArtifactState.MODIFIED,
-        }
-        or not inspection.marker_valid
+    legacy_owned = inspection.legacy_state == "owned"
+    if (
+        action is PluginArtifactAction.REMOVE
+        and (
+            inspection.state
+            not in {
+                PluginArtifactState.PORTABLE_EXACT,
+                PluginArtifactState.PORTABLE_MANAGED,
+                PluginArtifactState.NATIVE_MANAGED,
+                PluginArtifactState.MODIFIED,
+            }
+            or not inspection.marker_valid
+        )
+        # An owned legacy tree alone is still FinishUP's to remove (ADR-048).
+        and not (legacy_owned and inspection.state is PluginArtifactState.ABSENT)
     ):
         raise _error(PluginArtifactReason.REMOVE_REFUSED)
     if action is not PluginArtifactAction.REMOVE:
@@ -1358,10 +1467,15 @@ def _preview_from_inspection(
     )
     effective = (
         PluginArtifactAction.NOOP
-        if exact and action in {PluginArtifactAction.INSTALL, PluginArtifactAction.REPLACE}
+        if exact
+        and action in {PluginArtifactAction.INSTALL, PluginArtifactAction.REPLACE}
+        # An owned legacy tree is migrated in the same approval, so it is never a no-op.
+        and not legacy_owned
         else action
     )
-    warnings = tuple(sorted(set(_PREVIEW_WARNINGS), key=str.encode))
+    warnings = tuple(
+        sorted({*_PREVIEW_WARNINGS, *_legacy_warnings(inspection.legacy_state)}, key=str.encode)
+    )
     preview_digest = _preview_digest(
         request,
         effective,
@@ -1369,6 +1483,7 @@ def _preview_from_inspection(
         current_state_digest=inspection.current_state_digest,
         mcp_ownership_state=mcp_observation.ownership_state,
         target_identity=inspection.target_identity,
+        legacy_digest=inspection.legacy_digest if legacy_owned else None,
     )
     return CursorPluginPreview(
         request,
@@ -1384,6 +1499,7 @@ def _preview_from_inspection(
         artifact.plan.mcp_route_profile,
         artifact.isolation_root,
         warnings,
+        inspection.legacy_installation,
     )
 
 
@@ -1397,6 +1513,27 @@ def preview_cursor_plugin(
     inline_create: Mapping[str, JsonValue] | None = None,
     inline_send: Mapping[str, JsonValue] | None = None,
 ) -> CursorPluginPreview:
+    return _preview_with_inspection(
+        request,
+        target,
+        action,
+        artifact,
+        project_root=project_root,
+        inline_create=inline_create,
+        inline_send=inline_send,
+    )[0]
+
+
+def _preview_with_inspection(
+    request: RequestId,
+    target: CursorPluginTarget,
+    action: PluginArtifactAction,
+    artifact: CursorPluginArtifact,
+    *,
+    project_root: Path | None = None,
+    inline_create: Mapping[str, JsonValue] | None = None,
+    inline_send: Mapping[str, JsonValue] | None = None,
+) -> tuple[CursorPluginPreview, _Inspection]:
     request = validate_request_id(request)
     if type(action) is not PluginArtifactAction or action is PluginArtifactAction.NOOP:
         raise _error(PluginArtifactReason.SOURCE_INVALID)
@@ -1410,19 +1547,65 @@ def preview_cursor_plugin(
         finishup_launchers=_known_launchers(artifact, inspection),
         expected_isolation_root=artifact.isolation_root,
     )
-    return _preview_from_inspection(request, action, inspection, artifact, observation)
+    preview = _preview_from_inspection(request, action, inspection, artifact, observation)
+    return preview, inspection
+
+
+def _remove_legacy_tree(root: Path, inspection: _Inspection) -> tuple[str, ...]:
+    """Remove the previewed legacy tree, revalidated after it can no longer change (ADR-048).
+
+    The tree is renamed to the frozen rollback name first, so an interruption leaves material
+    the next inspection reports as ``recovery_required``. Only the exact marker-valid tree the
+    preview bound is deleted; anything else is restored untouched and refused. Removed files are
+    reported relative to the Cursor configuration root.
+    """
+
+    legacy = root / CURSOR_LEGACY_PLUGIN_RELATIVE_ROOT
+    rollback = legacy.parent / _ROLLBACK_NAME
+    if rollback.exists() or rollback.is_symlink():
+        raise _error(PluginArtifactReason.RECOVERY_REQUIRED)
+    try:
+        os.replace(legacy, rollback)
+        _fsync_dir(legacy.parent)
+    except OSError as exc:
+        raise _error(PluginArtifactReason.WRITE_FAILED) from exc
+    try:
+        if rollback.is_symlink() or not rollback.is_dir():
+            raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
+        files = _safe_tree(rollback)
+        if not _valid_marker(files)[0] or _tree_digest(files) != inspection.legacy_digest:
+            raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
+        shutil.rmtree(rollback)
+        _fsync_dir(legacy.parent)
+    except CursorIntegrationError:
+        with contextlib.suppress(OSError):
+            if (rollback.exists() or rollback.is_symlink()) and not legacy.exists():
+                os.replace(rollback, legacy)
+                _fsync_dir(legacy.parent)
+        raise
+    except OSError as exc:
+        raise _error(PluginArtifactReason.WRITE_FAILED) from exc
+    return tuple(
+        f"{CURSOR_LEGACY_PLUGIN_RELATIVE_ROOT}/{path}" for path in sorted(files, key=str.encode)
+    )
 
 
 def _known_launchers(
     artifact: CursorPluginArtifact, inspection: _Inspection
 ) -> tuple[tuple[str, ...], ...]:
-    """Launchers an exact FinishUP MCP entry may name: this artifact's and the installed tree's."""
+    """Launchers an exact FinishUP MCP entry may name.
 
-    known: list[tuple[str, ...]] = []
-    for launcher in (artifact.finishup_launcher, inspection.installed_launcher):
-        if launcher is not None and launcher not in known:
-            known.append(launcher)
-    return tuple(known)
+    This artifact's launcher and its deprecated ``yoetz`` alias, the launcher the installed
+    marker recorded, and the launcher the legacy tree's marker recorded (ADR-048).
+    """
+
+    candidates: list[tuple[str, ...]] = []
+    if artifact.finishup_launcher is not None:
+        candidates.extend(launcher_aliases(artifact.finishup_launcher))
+    for launcher in (inspection.installed_launcher, inspection.legacy_launcher):
+        if launcher is not None:
+            candidates.append(launcher)
+    return tuple(dict.fromkeys(candidates))
 
 
 def _write_file(path: Path, data: bytes) -> None:
@@ -1623,7 +1806,7 @@ def apply_cursor_plugin(
     _validate_digest(accepted_preview_digest)
     request = validate_request_id(request)
     try:
-        preview = preview_cursor_plugin(
+        preview, inspection = _preview_with_inspection(
             request,
             target,
             action,
@@ -1697,6 +1880,11 @@ def apply_cursor_plugin(
             _fsync_dir(parent)
         except OSError as exc:
             raise _error(PluginArtifactReason.WRITE_FAILED) from exc
+    legacy_removed: tuple[str, ...] = ()
+    if inspection.legacy_state == "owned":
+        # Migrate in the same approval: the renamed tree is committed, so a failure here leaves
+        # the legacy tree (restored when it changed) for a retry and never rolls back (ADR-048).
+        legacy_removed = _remove_legacy_tree(root, inspection)
     after = (
         PluginArtifactState.PORTABLE_EXACT
         if artifact.plan.format_profile is PluginFormatProfile.AGENT_PLUGINS_1
@@ -1712,7 +1900,7 @@ def apply_cursor_plugin(
         preview.preview_digest,
         preview.artifact_digest,
         preview.artifact_digest,
-        tuple(sorted({*artifact.members, _MARKER_NAME}, key=str.encode)),
+        tuple(sorted({*artifact.members, _MARKER_NAME, *legacy_removed}, key=str.encode)),
     )
 
 
@@ -1729,7 +1917,7 @@ def remove_cursor_plugin(
     _validate_digest(accepted_preview_digest)
     request = validate_request_id(request)
     try:
-        preview = preview_cursor_plugin(
+        preview, inspection = _preview_with_inspection(
             request,
             target,
             PluginArtifactAction.REMOVE,
@@ -1755,14 +1943,19 @@ def remove_cursor_plugin(
     root, _identity = _target_path(target)
     destination = root / CURSOR_PLUGIN_RELATIVE_ROOT
     rollback = destination.parent / _ROLLBACK_NAME
-    files = tuple(sorted(_safe_tree(destination), key=str.encode))
-    try:
-        os.replace(destination, rollback)
-        _fsync_dir(destination.parent)
-        shutil.rmtree(rollback)
-        _fsync_dir(destination.parent)
-    except OSError as exc:
-        raise _error(PluginArtifactReason.WRITE_FAILED) from exc
+    files: tuple[str, ...] = ()
+    if inspection.state is not PluginArtifactState.ABSENT:
+        files = tuple(sorted(_safe_tree(destination), key=str.encode))
+        try:
+            os.replace(destination, rollback)
+            _fsync_dir(destination.parent)
+            shutil.rmtree(rollback)
+            _fsync_dir(destination.parent)
+        except OSError as exc:
+            raise _error(PluginArtifactReason.WRITE_FAILED) from exc
+    if inspection.legacy_state == "owned":
+        # Remove takes the owned legacy tree too (ADR-048).
+        files = (*files, *_remove_legacy_tree(root, inspection))
     return CursorPluginResult(
         preview.request_id,
         PluginArtifactAction.REMOVE,
@@ -1844,6 +2037,7 @@ def status_cursor_plugin(
         _proof(inspection.state),
         launcher,
         isolation_binding,
+        inspection.legacy_installation,
     )
 
 
@@ -1923,10 +2117,8 @@ def _root_binding_surfaces_match(artifact: CursorPluginArtifact, inspection: _In
     current_hook_map = current_hooks.get("hooks")
     if not isinstance(expected_hook_map, Mapping) or not isinstance(current_hook_map, Mapping):
         return False
-    expected_prefix = (
-        ""
-        if artifact.isolation_root is None
-        else f"{ISOLATED_ROOT_ENV}={shlex.quote(artifact.isolation_root)} "
+    expected_prefixes = (
+        () if artifact.isolation_root is None else _isolation_prefixes(artifact.isolation_root)
     )
     hook_events = (
         CURSOR_ORDINARY_HOOK_EVENTS
@@ -1949,9 +2141,9 @@ def _root_binding_surfaces_match(artifact: CursorPluginArtifact, inspection: _In
         if not isinstance(expected_command, str) or not isinstance(current_command, str):
             return False
         if artifact.isolation_root is None:
-            if f"{ISOLATED_ROOT_ENV}=" in current_command:
+            if any(f"{name}=" in current_command for name in _ISOLATED_ROOT_ENV_NAMES):
                 return False
-        elif not current_command.startswith(expected_prefix):
+        elif not current_command.startswith(expected_prefixes):
             return False
 
     if "mcp.json" not in artifact.members:
@@ -1972,14 +2164,14 @@ def _installed_mcp_binding(
 
     if not inspection.marker_valid:
         return "unobserved"
-    entry, observed = _config_entry(inspection.destination / "mcp.json")
+    entry, _legacy, observed = _config_entries(inspection.destination / "mcp.json")
     if not observed:
         return "unobserved"
     if entry is None:
         return "absent"
     command = entry.get("command")
     if (
-        command == "finishup"
+        command in LAUNCHER_NAMES
         and _route_profile(entry, expected_isolation_root=expected_isolation_root) is not None
     ):
         return "ambient_path"
@@ -2058,26 +2250,31 @@ def _probe_launcher_identity(
     )
 
 
-def _config_entry(path: Path) -> tuple[Mapping[str, JsonValue] | None, bool]:
+def _config_entries(
+    path: Path,
+) -> tuple[Mapping[str, JsonValue] | None, Mapping[str, JsonValue] | None, bool]:
+    """Read the ``finishup`` entry and the legacy ``yoetz`` entry (ADR-048) of one config file."""
+
     if not path.exists() and not path.is_symlink():
-        return None, True
+        return None, None, True
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size > _MAX_FILE_BYTES:
-            return None, False
+            return None, None, False
         parsed = strict_json_parse(path.read_bytes())
     except OSError, ProtocolValueError, UnicodeError:
-        return None, False
+        return None, None, False
     if not isinstance(parsed, Mapping):
-        return None, False
+        return None, None, False
     servers = parsed.get("mcpServers")
     if not isinstance(servers, Mapping):
-        return None, "mcpServers" not in parsed
-    entry = servers.get("finishup")
-    if entry is None:
-        return None, True
-    if not isinstance(entry, Mapping):
-        return None, False
-    return cast(Mapping[str, JsonValue], entry), True
+        return None, None, "mcpServers" not in parsed
+    entries: list[Mapping[str, JsonValue] | None] = []
+    for name in (MCP_SERVER_NAME, LEGACY_MCP_SERVER_NAME):
+        entry = servers.get(name)
+        if entry is not None and not isinstance(entry, Mapping):
+            return None, None, False
+        entries.append(None if entry is None else cast(Mapping[str, JsonValue], entry))
+    return entries[0], entries[1], True
 
 
 _POLICY_ROUTE_ARGS: Final = frozenset({("mcp", "serve"), _MCP_SERVE_ARGS})
@@ -2135,7 +2332,8 @@ def _route_profile(
     args = tuple(cast(Sequence[object], raw_args))
     command = entry.get("command")
     prefix: tuple[str, ...] | None = None
-    if command == "finishup":
+    # A bare launcher under either spelling: the deprecated ``yoetz`` alias (ADR-048).
+    if command in LAUNCHER_NAMES:
         prefix = ()
     else:
         for launcher in finishup_launchers:
@@ -2169,9 +2367,13 @@ def _entry_isolation_root(entry: Mapping[str, JsonValue]) -> tuple[bool, str | N
     if not isinstance(environment, Mapping):
         return False, None
     values = cast(Mapping[object, object], environment)
-    if set(values) != {ISOLATED_ROOT_ENV}:
+    # Either spelling, or both with one value (ADR-048); two different roots are not a binding.
+    if not values or not set(values) <= set(_ISOLATED_ROOT_ENV_NAMES):
         return False, None
-    raw = values.get(ISOLATED_ROOT_ENV)
+    roots = set(values.values())
+    if len(roots) != 1:
+        return False, None
+    raw = roots.pop()
     if not _valid_isolation_root_text(raw):
         return False, None
     return True, cast(str, raw)
@@ -2199,6 +2401,7 @@ def observe_cursor_mcp(
     """
 
     candidates: list[tuple[CursorMcpSource, Mapping[str, JsonValue] | None]] = []
+    legacy_candidates: list[tuple[CursorMcpSource, Mapping[str, JsonValue]]] = []
     uncertain: list[CursorMcpSource] = []
     for source, raw in (
         (CursorMcpSource.INLINE_SEND, inline_send),
@@ -2207,22 +2410,18 @@ def observe_cursor_mcp(
         if raw is not None:
             entry = raw.get("finishup") if isinstance(raw.get("finishup"), Mapping) else raw
             candidates.append((source, cast(Mapping[str, JsonValue], entry)))
-    plugin_entry, plugin_observed = _config_entry(plugin_root / "mcp.json")
-    if not plugin_observed:
-        uncertain.append(CursorMcpSource.PLUGIN)
-    if plugin_entry is not None:
-        candidates.append((CursorMcpSource.PLUGIN, plugin_entry))
+    files = [(CursorMcpSource.PLUGIN, plugin_root / "mcp.json")]
     if project_root is not None:
-        project_entry, project_observed = _config_entry(project_root / ".cursor" / "mcp.json")
-        if not project_observed:
-            uncertain.append(CursorMcpSource.PROJECT)
-        if project_entry is not None:
-            candidates.append((CursorMcpSource.PROJECT, project_entry))
-    user_entry, user_observed = _config_entry(user_config_root / "mcp.json")
-    if not user_observed:
-        uncertain.append(CursorMcpSource.USER)
-    if user_entry is not None:
-        candidates.append((CursorMcpSource.USER, user_entry))
+        files.append((CursorMcpSource.PROJECT, project_root / ".cursor" / "mcp.json"))
+    files.append((CursorMcpSource.USER, user_config_root / "mcp.json"))
+    for source, path in files:
+        entry, legacy_entry, observed = _config_entries(path)
+        if not observed:
+            uncertain.append(source)
+        if entry is not None:
+            candidates.append((source, entry))
+        if legacy_entry is not None:
+            legacy_candidates.append((source, legacy_entry))
     if uncertain:
         present = tuple(source for source, _entry in candidates)
         return CursorMcpObservation(
@@ -2232,32 +2431,55 @@ def observe_cursor_mcp(
             tuple(dict.fromkeys((*present, *uncertain))),
             False,
         )
-    if not candidates:
-        return CursorMcpObservation(McpOwnershipState.ABSENT, None, None, (), True)
-    profiles = [
-        (
-            source,
-            _route_profile(
-                entry,
-                finishup_launchers,
-                expected_isolation_root=expected_isolation_root,
-                expected_project_root=project_root if source is CursorMcpSource.PROJECT else None,
-            ),
+
+    def classify(source: CursorMcpSource, entry: Mapping[str, JsonValue] | None) -> Route | None:
+        return _route_profile(
+            entry,
+            finishup_launchers,
+            expected_isolation_root=expected_isolation_root,
+            expected_project_root=project_root if source is CursorMcpSource.PROJECT else None,
         )
-        for source, entry in candidates
+
+    profiles: list[tuple[CursorMcpSource, Route | None]] = [
+        (source, classify(source, entry)) for source, entry in candidates
     ]
-    present = tuple(source for source, _profile in profiles)
+    # The legacy ``yoetz`` key no longer shares FinishUP's name (ADR-048): an entry there that
+    # FinishUP cannot prove is its own is reported, never a conflict. An owned legacy entry is a
+    # live FinishUP server, so it joins the classification beside any ``finishup`` entry: an
+    # owned pair reads dual or ambiguous exactly as the same pair under one name would.
+    legacy_owned: list[tuple[CursorMcpSource, Route | None]] = [
+        (source, classify(source, entry)) for source, entry in legacy_candidates
+    ]
+    legacy_owned = [(source, profile) for source, profile in legacy_owned if profile is not None]
+    legacy: LegacyInstallation = (
+        "none"
+        if not legacy_candidates
+        else "foreign"
+        if not legacy_owned
+        else "duplicate"
+        if profiles and all(profile is not None for _source, profile in profiles)
+        else "legacy_only"
+    )
+    if not profiles and not legacy_owned:
+        return CursorMcpObservation(McpOwnershipState.ABSENT, None, None, (), True, legacy)
+    order = {source: index for index, source in enumerate(CursorMcpSource)}
+    profiles = sorted((*profiles, *legacy_owned), key=lambda item: order[item[0]])
+    present = tuple(dict.fromkeys(source for source, _profile in profiles))
     if any(profile is None for _source, profile in profiles):
         foreign_source = next(source for source, profile in profiles if profile is None)
-        return CursorMcpObservation(McpOwnershipState.FOREIGN, foreign_source, None, present, True)
+        return CursorMcpObservation(
+            McpOwnershipState.FOREIGN, foreign_source, None, present, True, legacy
+        )
     plugin_profiles = [profile for source, profile in profiles if source is CursorMcpSource.PLUGIN]
     external_profiles = [
         profile for source, profile in profiles if source is not CursorMcpSource.PLUGIN
     ]
     if plugin_profiles and external_profiles:
-        return CursorMcpObservation(McpOwnershipState.DUAL, present[0], None, present, True)
+        return CursorMcpObservation(McpOwnershipState.DUAL, present[0], None, present, True, legacy)
     if len(profiles) > 1:
-        return CursorMcpObservation(McpOwnershipState.AMBIGUOUS, present[0], None, present, True)
+        return CursorMcpObservation(
+            McpOwnershipState.AMBIGUOUS, present[0], None, present, True, legacy
+        )
     source, profile = profiles[0]
     assert profile is not None
     return CursorMcpObservation(
@@ -2265,9 +2487,10 @@ def observe_cursor_mcp(
         if source is CursorMcpSource.PLUGIN
         else McpOwnershipState.EXTERNAL,
         source,
-        cast(Literal["strict", "policy"], profile),
+        profile,
         present,
         True,
+        legacy,
     )
 
 

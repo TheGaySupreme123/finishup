@@ -380,6 +380,7 @@ class ActorType(str, Enum):  # noqa: UP042 - exact wire-valued Enum is required
     LOGICAL_AGENT = "logical_agent"
     MODEL_BACKED_WORKER = "model_backed_worker"
     DELEGATED_SUBAGENT = "delegated_subagent"
+    # Frozen legacy identifier (ADR-048): the released actor-type wire value.
     FINISHUP_ENGINE = "yoetz_engine"
     IMPORTER = "importer"
 

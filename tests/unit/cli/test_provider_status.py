@@ -984,10 +984,13 @@ async def test_proven_absolute_adapter_feeds_provider_readiness(
         lambda: ("/test/runtime/bin/finishup", "sha256:" + "a" * 64),
     )
 
-    def entry(_argv: tuple[str, ...], *, codex_home: Path | None = None) -> CommandOutput:
+    def entry(argv: tuple[str, ...], *, codex_home: Path | None = None) -> CommandOutput:
         from finishup.adapters.integrations.codex_session_stream import resolve_codex_home
 
         assert codex_home == resolve_codex_home().absolute()
+        if argv[2] == "list":
+            # No legacy ``yoetz`` key entry (ADR-048).
+            return CommandOutput(0, b"[]")
         return CommandOutput(
             0,
             json.dumps(

@@ -19,8 +19,10 @@ from finishup.ports.harness_mcp import (
     McpRegistrationAction,
     McpRegistrationCommand,
     McpRegistrationError,
+    McpRegistrationObservation,
     McpRegistrationReason,
     McpRegistrationState,
+    mcp_command_profile,
 )
 from finishup.ports.integrations import HarnessId
 from finishup.protocol.canonical import canonical_digest
@@ -39,11 +41,23 @@ def scripted_registration_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     # Isolated-registration cases explicitly override this adapter lookup;
     # keep the process-wide isolation guard intact for all other test effects.
     monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: None)
-    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp.installed_launcher",
+        lambda name="finishup": None,
+    )
+    # No transitional ``yoetz`` distribution unless a case installs one (ADR-048).
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp._legacy_distribution_installed", lambda: False
+    )
 
 
 def _finishup_entry(
-    *, strict: bool = False, isolated_root: str | None = None, legacy: bool = False
+    *,
+    strict: bool = False,
+    isolated_root: str | None = None,
+    legacy: bool = False,
+    launcher: str = "finishup",
+    root_names: tuple[str, ...] = ("FINISHUP_ISOLATED_ROOT", "YOETZ_ISOLATED_ROOT"),
 ) -> bytes:
     command = (
         MCP_LEGACY_STRICT_SERVE_COMMAND
@@ -55,10 +69,23 @@ def _finishup_entry(
         else MCP_SERVE_COMMAND
     )
     args = list(command[1:])
-    transport: dict[str, object] = {"command": "finishup", "args": args}
+    transport: dict[str, object] = {"command": launcher, "args": args}
     if isolated_root is not None:
-        transport["env"] = {"FINISHUP_ISOLATED_ROOT": isolated_root}
+        # A new registration binds both spellings of the root to one value (ADR-048).
+        transport["env"] = dict.fromkeys(root_names, isolated_root)
     return json.dumps(transport).encode("utf-8")
+
+
+def _listing(name: str, entry: bytes) -> bytes:
+    """A ``codex mcp list --json`` payload holding one named entry."""
+
+    return json.dumps([{"name": name, "transport": json.loads(entry)}]).encode("utf-8")
+
+
+def _mutations(calls: list[tuple[str, ...]]) -> list[tuple[str, ...]]:
+    """Only the host-mutating ``add``/``remove`` calls, in order."""
+
+    return [call for call in calls if call[1:3] in {("mcp", "add"), ("mcp", "remove")}]
 
 
 def _absent_outputs() -> list[CommandOutput]:
@@ -68,15 +95,27 @@ def _absent_outputs() -> list[CommandOutput]:
 
 
 class _Runner:
-    """Scripted subprocess stand-in recording every argv it was asked to run."""
+    """Scripted subprocess stand-in recording every argv it was asked to run.
 
-    def __init__(self, outputs: list[CommandOutput]) -> None:
+    Every observation lists the host's entries once to read the legacy ``yoetz`` key (ADR-048).
+    After a successful named ``get`` that list is answered from ``listing`` (no legacy entry by
+    default) instead of the scripted queue, so each script names only the calls it is about.
+    """
+
+    def __init__(self, outputs: list[CommandOutput], *, listing: bytes = b"[]") -> None:
         self.outputs = outputs
+        self.listing = listing
         self.calls: list[tuple[str, ...]] = []
+        self._after_found_get = False
 
     def __call__(self, argv: tuple[str, ...]) -> CommandOutput:
         self.calls.append(argv)
-        return self.outputs.pop(0)
+        if argv[1:3] == ("mcp", "list") and self._after_found_get:
+            self._after_found_get = False
+            return CommandOutput(0, self.listing)
+        output = self.outputs.pop(0)
+        self._after_found_get = argv[1:3] == ("mcp", "get") and output.exit_code == 0
+        return output
 
 
 def test_status_absent_only_after_successful_list_confirmation() -> None:
@@ -413,7 +452,7 @@ def test_explicit_preview_allows_reregistering_an_owned_route_profile() -> None:
     )
 
     assert result.action is McpRegistrationAction.REREGISTER
-    assert runner.calls[1][-len(MCP_STRICT_SERVE_COMMAND) :] == MCP_STRICT_SERVE_COMMAND
+    assert _mutations(runner.calls)[0][-len(MCP_STRICT_SERVE_COMMAND) :] == MCP_STRICT_SERVE_COMMAND
 
 
 def test_apply_requires_explicit_acceptance_and_exact_digest() -> None:
@@ -499,6 +538,8 @@ def test_apply_isolated_registration_passes_only_the_reviewed_root(
         "finishup",
         "--env",
         f"FINISHUP_ISOLATED_ROOT={root}",
+        "--env",
+        f"YOETZ_ISOLATED_ROOT={root}",
         "--",
         *MCP_SERVE_COMMAND,
     )
@@ -530,9 +571,11 @@ def test_apply_reregisters_a_legacy_bare_entry_with_the_isolated_root(
     )
 
     assert result.action is McpRegistrationAction.REREGISTER
-    assert runner.calls[1][4:7] == (
+    assert _mutations(runner.calls)[0][4:9] == (
         "--env",
         f"FINISHUP_ISOLATED_ROOT={root}",
+        "--env",
+        f"YOETZ_ISOLATED_ROOT={root}",
         "--",
     )
 
@@ -587,7 +630,7 @@ def test_apply_never_replaces_a_foreign_entry() -> None:
         )
     assert caught.value.reason is McpRegistrationReason.FOREIGN_ENTRY_PRESENT
     # The refusal happened before any mutating `mcp add` invocation.
-    assert all(call[1:3] == ("mcp", "get") for call in runner.calls)
+    assert _mutations(runner.calls) == []
 
 
 def test_apply_noop_when_already_finishup_owned() -> None:
@@ -602,7 +645,7 @@ def test_apply_noop_when_already_finishup_owned() -> None:
     )
     assert result.action is McpRegistrationAction.NOOP
     assert result.state_before is result.state_after is McpRegistrationState.FINISHUP_OWNED
-    assert all(call[1:3] == ("mcp", "get") for call in runner.calls)
+    assert _mutations(runner.calls) == []
 
 
 def test_preview_unregistration_of_owned_entry() -> None:
@@ -654,8 +697,8 @@ def test_apply_unregistration_removes_owned_entry(exit_code: int) -> None:
     assert result.action is McpRegistrationAction.UNREGISTER
     assert result.state_after is McpRegistrationState.ABSENT
     assert result.warnings == (("host_remove_returned_nonzero",) if exit_code else ())
-    assert runner.calls[2] == ("/opt/harness/bin/codex", "mcp", "remove", "finishup")
-    assert runner.calls[3:] == [
+    assert _mutations(runner.calls) == [("/opt/harness/bin/codex", "mcp", "remove", "finishup")]
+    assert runner.calls[-2:] == [
         ("/opt/harness/bin/codex", "mcp", "get", "finishup", "--json"),
         ("/opt/harness/bin/codex", "mcp", "list", "--json"),
     ]
@@ -725,7 +768,7 @@ def test_apply_unregistration_refuses_replacement_before_name_based_remove() -> 
         )
 
     assert caught.value.reason is McpRegistrationReason.FOREIGN_ENTRY_PRESENT
-    assert all(call[1:3] == ("mcp", "get") for call in runner.calls)
+    assert _mutations(runner.calls) == []
 
 
 def test_apply_unregistration_refuses_an_isolated_root_replacement(
@@ -795,7 +838,7 @@ def test_apply_unregistration_does_not_claim_success_after_unreadable_verificati
             )
         )
     assert caught.value.reason is McpRegistrationReason.REGISTRATION_FAILED
-    assert runner.calls[2][1:3] == ("mcp", "remove")
+    assert len(_mutations(runner.calls)) == 1
 
 
 @pytest.mark.parametrize(
@@ -814,6 +857,8 @@ def test_apply_unregistration_normalizes_mutating_remove_errors(
         calls.append(argv)
         if argv[1:3] == ("mcp", "remove"):
             raise McpRegistrationError(reason, {})
+        if argv[1:3] == ("mcp", "list"):
+            return CommandOutput(0, b"[]")
         return outputs.pop(0)
 
     with pytest.raises(McpRegistrationError) as caught:
@@ -824,7 +869,7 @@ def test_apply_unregistration_normalizes_mutating_remove_errors(
         )
 
     assert caught.value.reason is McpRegistrationReason.REGISTRATION_FAILED
-    assert calls[2][1:3] == ("mcp", "remove")
+    assert _mutations(calls) == [("/opt/harness/bin/codex", "mcp", "remove", "finishup")]
 
 
 def test_apply_unregistration_normalizes_malformed_post_remove_verification() -> None:
@@ -848,7 +893,7 @@ def test_apply_unregistration_normalizes_malformed_post_remove_verification() ->
         )
 
     assert caught.value.reason is McpRegistrationReason.REGISTRATION_FAILED
-    assert runner.calls[2][1:3] == ("mcp", "remove")
+    assert len(_mutations(runner.calls)) == 1
 
 
 def test_apply_unregistration_refuses_foreign_entry() -> None:
@@ -863,7 +908,7 @@ def test_apply_unregistration_refuses_foreign_entry() -> None:
             )
         )
     assert caught.value.reason is McpRegistrationReason.FOREIGN_ENTRY_PRESENT
-    assert all(call[1:3] == ("mcp", "get") for call in runner.calls)
+    assert _mutations(runner.calls) == []
 
 
 def test_apply_unregistration_is_noop_when_absent() -> None:
@@ -963,3 +1008,453 @@ def test_registration_preview_cannot_be_replayed_for_a_different_home(tmp_path: 
             )
         )
     assert caught.value.reason is McpRegistrationReason.PREVIEW_STALE
+
+
+# Legacy ``yoetz`` registration key (ADR-048).
+
+_LEGACY_BARE = (
+    "yoetz",  # Frozen legacy identifier (ADR-048): the pre-rename bare launcher.
+    *MCP_SERVE_COMMAND[1:],
+)
+
+
+def _legacy_entry() -> bytes:
+    return _finishup_entry(launcher="yoetz")
+
+
+def test_profile_accepts_either_bare_launcher_spelling() -> None:
+    assert mcp_command_profile(_LEGACY_BARE) == "policy"
+    assert mcp_command_profile(("yoetz", *MCP_STRICT_SERVE_COMMAND[1:])) == "strict"
+    assert mcp_command_profile(("finishup-other", *MCP_SERVE_COMMAND[1:])) is None
+
+
+def test_status_reads_an_owned_legacy_only_entry_as_owned_but_outdated() -> None:
+    runner = _Runner([CommandOutput(1, b""), CommandOutput(0, _listing("yoetz", _legacy_entry()))])
+    observation = anyio.run(lambda: CodexMcpAdapter(runner).observe_registration(_BINARY))
+    assert observation.state is McpRegistrationState.FINISHUP_OWNED
+    assert observation.legacy_registration == "legacy_only"
+    assert observation.serve_command == _LEGACY_BARE
+    assert observation.route_profile == "policy"
+    assert observation.isolation_binding == "ambient"
+    # One get plus one list reads both keys; nothing is mutated.
+    assert [call[2] for call in runner.calls] == ["get", "list"]
+
+
+def test_status_reports_duplicate_and_foreign_legacy_entries() -> None:
+    duplicate = _Runner(
+        [CommandOutput(0, _finishup_entry())], listing=_listing("yoetz", _legacy_entry())
+    )
+    observed = anyio.run(lambda: CodexMcpAdapter(duplicate).observe_registration(_BINARY))
+    assert observed.state is McpRegistrationState.FINISHUP_OWNED
+    assert observed.serve_command == MCP_SERVE_COMMAND
+    assert observed.legacy_registration == "duplicate"
+
+    foreign = _listing("yoetz", json.dumps({"command": "other-server"}).encode("utf-8"))
+    alone = _Runner([CommandOutput(1, b""), CommandOutput(0, foreign)])
+    observed = anyio.run(lambda: CodexMcpAdapter(alone).observe_registration(_BINARY))
+    assert observed.state is McpRegistrationState.ABSENT
+    assert observed.legacy_registration == "foreign"
+    assert observed.serve_command is None
+
+
+def test_status_without_legacy_entry_reports_none() -> None:
+    runner = _Runner([CommandOutput(0, _finishup_entry())])
+    observed = anyio.run(lambda: CodexMcpAdapter(runner).observe_registration(_BINARY))
+    assert observed.legacy_registration == "none"
+
+
+def test_status_refuses_a_duplicated_legacy_name_in_the_listing() -> None:
+    entry = {"name": "yoetz", "transport": json.loads(_legacy_entry())}
+    listing = json.dumps([entry, entry]).encode("utf-8")
+    runner = _Runner([CommandOutput(0, _finishup_entry())], listing=listing)
+    with pytest.raises(McpRegistrationError) as caught:
+        anyio.run(lambda: CodexMcpAdapter(runner).status_registration(_BINARY))
+    assert caught.value.reason is McpRegistrationReason.PARSE_FAILED
+
+
+def test_integrate_migrates_an_owned_legacy_entry_in_one_preview() -> None:
+    legacy_only = [CommandOutput(1, b""), CommandOutput(0, _listing("yoetz", _legacy_entry()))]
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(_Runner(list(legacy_only))).preview_registration(_BINARY)
+    )
+    assert preview.action is McpRegistrationAction.REREGISTER
+    assert preview.state_before is McpRegistrationState.FINISHUP_OWNED
+    assert preview.legacy_registration == "legacy_only"
+    assert preview.warnings == ("legacy_registration_owned",)
+    assert preview.serve_command == MCP_SERVE_COMMAND
+    # A key migration keeps the route the entry already serves.
+    assert preview.route_profile_before == "policy"
+
+    legacy = _listing("yoetz", _legacy_entry())
+    calls: list[tuple[str, ...]] = []
+
+    def host(argv: tuple[str, ...]) -> CommandOutput:
+        # Before the add the new key is absent; after it, it is owned. The legacy entry stays
+        # listed until its removal runs.
+        calls.append(argv)
+        added = any(call[2] == "add" for call in calls)
+        removed = any(call[2] == "remove" for call in calls)
+        if argv[2] in {"add", "remove"}:
+            return CommandOutput(0, b"")
+        if argv[2] == "get":
+            return CommandOutput(0, _finishup_entry()) if added else CommandOutput(1, b"")
+        return CommandOutput(0, b"[]" if removed else legacy)
+
+    result = anyio.run(
+        lambda: CodexMcpAdapter(host).apply_registration(
+            _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+        )
+    )
+    assert result.action is McpRegistrationAction.REREGISTER
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
+    # The new key is written before the legacy one goes, so a failure never leaves neither.
+    assert _mutations(calls) == [
+        ("/opt/harness/bin/codex", "mcp", "add", "finishup", "--", *MCP_SERVE_COMMAND),
+        ("/opt/harness/bin/codex", "mcp", "remove", "yoetz"),
+    ]
+
+
+def test_integrate_never_touches_a_foreign_legacy_entry() -> None:
+    foreign = _listing("yoetz", json.dumps({"command": "other-server"}).encode("utf-8"))
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(1, b""), CommandOutput(0, foreign)])
+        ).preview_registration(_BINARY)
+    )
+    assert preview.action is McpRegistrationAction.REGISTER
+    assert preview.legacy_registration == "foreign"
+    assert preview.warnings == ("legacy_registration_foreign",)
+    runner = _Runner(
+        [
+            CommandOutput(1, b""),
+            CommandOutput(0, foreign),
+            CommandOutput(0, b""),
+            CommandOutput(0, _finishup_entry()),
+        ],
+        listing=foreign,
+    )
+    result = anyio.run(
+        lambda: CodexMcpAdapter(runner).apply_registration(
+            _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+        )
+    )
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
+    assert _mutations(runner.calls) == [
+        ("/opt/harness/bin/codex", "mcp", "add", "finishup", "--", *MCP_SERVE_COMMAND)
+    ]
+
+
+def test_integrate_stops_before_removing_a_legacy_entry_that_changed() -> None:
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner(
+                [CommandOutput(0, _finishup_entry())], listing=_listing("yoetz", _legacy_entry())
+            )
+        ).preview_registration(_BINARY)
+    )
+    assert preview.legacy_registration == "duplicate"
+    assert preview.action is McpRegistrationAction.REREGISTER
+    replaced = _listing("yoetz", json.dumps({"command": "other-server"}).encode("utf-8"))
+    listings = iter([_listing("yoetz", _legacy_entry()), replaced])
+    calls: list[tuple[str, ...]] = []
+
+    def host(argv: tuple[str, ...]) -> CommandOutput:
+        calls.append(argv)
+        if argv[2] == "list":
+            return CommandOutput(0, next(listings))
+        return CommandOutput(0, _finishup_entry())
+
+    with pytest.raises(McpRegistrationError) as caught:
+        anyio.run(
+            lambda: CodexMcpAdapter(host).apply_registration(
+                _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+            )
+        )
+    assert caught.value.reason is McpRegistrationReason.REGISTRATION_FAILED
+    assert caught.value.safe_details.get("legacy_state") == "foreign_present"
+    # The current entry already matched, so nothing was added and nothing was removed.
+    assert _mutations(calls) == []
+
+
+def test_remove_takes_owned_entries_under_both_keys() -> None:
+    legacy = _listing("yoetz", _legacy_entry())
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(0, _finishup_entry())], listing=legacy)
+        ).preview_unregistration(_BINARY)
+    )
+    assert preview.action is McpRegistrationAction.UNREGISTER
+    assert preview.legacy_registration == "duplicate"
+    assert preview.warnings == ("host_remove_not_compare_and_swap", "legacy_registration_owned")
+    listings = iter([legacy, legacy, b"[]"])
+    calls: list[tuple[str, ...]] = []
+
+    def host(argv: tuple[str, ...]) -> CommandOutput:
+        calls.append(argv)
+        if argv[2] == "list":
+            return CommandOutput(0, next(listings))
+        if argv[2] == "remove":
+            return CommandOutput(0, b"")
+        absent = sum(call[2] == "remove" for call in calls) > 0
+        return CommandOutput(1, b"") if absent else CommandOutput(0, _finishup_entry())
+
+    result = anyio.run(
+        lambda: CodexMcpAdapter(host).apply_unregistration(
+            _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+        )
+    )
+    assert result.state_after is McpRegistrationState.ABSENT
+    assert _mutations(calls) == [
+        ("/opt/harness/bin/codex", "mcp", "remove", "finishup"),
+        ("/opt/harness/bin/codex", "mcp", "remove", "yoetz"),
+    ]
+
+
+def test_remove_of_a_legacy_only_entry_leaves_a_foreign_one_alone() -> None:
+    legacy = _listing("yoetz", _legacy_entry())
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(1, b""), CommandOutput(0, legacy)])
+        ).preview_unregistration(_BINARY)
+    )
+    assert preview.state_before is McpRegistrationState.FINISHUP_OWNED
+    assert preview.serve_command == _LEGACY_BARE
+    runner = _Runner(
+        [
+            CommandOutput(1, b""),
+            CommandOutput(0, legacy),
+            CommandOutput(1, b""),
+            CommandOutput(0, legacy),
+            CommandOutput(0, b""),
+            CommandOutput(1, b""),
+            CommandOutput(0, b"[]"),
+        ]
+    )
+    result = anyio.run(
+        lambda: CodexMcpAdapter(runner).apply_unregistration(
+            _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+        )
+    )
+    assert result.state_after is McpRegistrationState.ABSENT
+    assert _mutations(runner.calls) == [("/opt/harness/bin/codex", "mcp", "remove", "yoetz")]
+
+    foreign = _listing("yoetz", json.dumps({"command": "other-server"}).encode("utf-8"))
+    noop = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(1, b""), CommandOutput(0, foreign)])
+        ).preview_unregistration(_BINARY)
+    )
+    assert noop.action is McpRegistrationAction.NOOP
+    assert noop.state_before is McpRegistrationState.ABSENT
+    assert noop.warnings == ("legacy_registration_foreign",)
+
+
+@pytest.mark.parametrize(
+    ("root_names", "action"),
+    [
+        (("FINISHUP_ISOLATED_ROOT", "YOETZ_ISOLATED_ROOT"), McpRegistrationAction.NOOP),
+        (("FINISHUP_ISOLATED_ROOT",), McpRegistrationAction.REREGISTER),
+        (("YOETZ_ISOLATED_ROOT",), McpRegistrationAction.REREGISTER),
+    ],
+)
+def test_isolation_root_is_read_under_either_spelling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    root_names: tuple[str, ...],
+    action: McpRegistrationAction,
+) -> None:
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: tmp_path)
+    entry = _finishup_entry(isolated_root=str(tmp_path), root_names=root_names)
+    observed = anyio.run(
+        lambda: CodexMcpAdapter(_Runner([CommandOutput(0, entry)])).observe_registration(_BINARY)
+    )
+    assert observed.state is McpRegistrationState.FINISHUP_OWNED
+    assert observed.isolation_binding == "isolated_exact"
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(_Runner([CommandOutput(0, entry)])).preview_registration(_BINARY)
+    )
+    assert preview.action is action
+
+
+def test_two_different_isolation_roots_are_not_finishups_binding() -> None:
+    entry = json.dumps(
+        {
+            "command": "finishup",
+            "args": list(MCP_SERVE_COMMAND[1:]),
+            "env": {"FINISHUP_ISOLATED_ROOT": "/a", "YOETZ_ISOLATED_ROOT": "/b"},
+        }
+    ).encode("utf-8")
+    state = anyio.run(
+        lambda: CodexMcpAdapter(_Runner([CommandOutput(0, entry)])).status_registration(_BINARY)
+    )
+    assert state is McpRegistrationState.FOREIGN_PRESENT
+
+
+def test_absolute_legacy_alias_beside_the_proven_launcher_is_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The transitional ``yoetz`` RECORD proof is unavailable, so the exact sibling of the proven
+    # ``finishup`` script is the fallback ownership evidence (ADR-048).
+    def proof(name: str = "finishup") -> tuple[str, str] | None:
+        if name == "finishup":
+            return "/opt/runtime/bin/finishup", "sha256:" + "0" * 64
+        return None
+
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", proof)
+    alias = _finishup_entry(launcher="/opt/runtime/bin/yoetz")
+    elsewhere = _finishup_entry(launcher="/opt/other/bin/yoetz")
+    owned = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(1, b""), CommandOutput(0, _listing("yoetz", alias))])
+        ).observe_registration(_BINARY)
+    )
+    assert owned.state is McpRegistrationState.FINISHUP_OWNED
+    assert owned.legacy_registration == "legacy_only"
+    other = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(1, b""), CommandOutput(0, _listing("yoetz", elsewhere))])
+        ).observe_registration(_BINARY)
+    )
+    assert other.state is McpRegistrationState.ABSENT
+    assert other.legacy_registration == "foreign"
+
+
+def test_absolute_legacy_alias_is_proven_by_the_transitional_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The RECORD-checked ``yoetz`` script owns the entry even without a ``finishup`` proof."""
+
+    requested: list[str] = []
+
+    def proof(name: str = "finishup") -> tuple[str, str] | None:
+        requested.append(name)
+        if name == "yoetz":
+            return "/opt/runtime/bin/yoetz", "sha256:" + "1" * 64
+        return None
+
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", proof)
+    alias = _finishup_entry(launcher="/opt/runtime/bin/yoetz")
+    owned = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(1, b""), CommandOutput(0, _listing("yoetz", alias))])
+        ).observe_registration(_BINARY)
+    )
+    assert owned.state is McpRegistrationState.FINISHUP_OWNED
+    assert owned.legacy_registration == "legacy_only"
+    assert "yoetz" in requested
+
+
+def _observe_sibling_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    scripts: Path,
+    *,
+    distribution_installed: bool,
+) -> McpRegistrationObservation:
+    """Observe ``<scripts>/yoetz`` while its RECORD proof is unavailable (ADR-048)."""
+
+    def proof(name: str = "finishup") -> tuple[str, str] | None:
+        if name == "finishup":
+            return str(scripts / "finishup"), "sha256:" + "0" * 64
+        return None
+
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", proof)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp._legacy_distribution_installed",
+        lambda: distribution_installed,
+    )
+    alias = _finishup_entry(launcher=str(scripts / "yoetz"))
+    return anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(1, b""), CommandOutput(0, _listing("yoetz", alias))])
+        ).observe_registration(_BINARY)
+    )
+
+
+def test_a_legacy_script_its_record_rejects_is_never_owned(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """With the transitional distribution installed, a modified ``yoetz`` script is foreign."""
+
+    scripts = tmp_path / "bin"
+    scripts.mkdir()
+    (scripts / "yoetz").write_bytes(b"#!/bin/sh\nexec something-else\n")
+
+    observed = _observe_sibling_alias(monkeypatch, scripts, distribution_installed=True)
+
+    assert observed.legacy_registration == "foreign"
+
+
+def test_a_legacy_script_is_owned_by_location_only_without_the_transitional_distribution(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    scripts = tmp_path / "bin"
+    scripts.mkdir()
+    (scripts / "yoetz").write_bytes(b"#!/bin/sh\n")
+
+    observed = _observe_sibling_alias(monkeypatch, scripts, distribution_installed=False)
+
+    assert observed.state is McpRegistrationState.FINISHUP_OWNED
+    assert observed.legacy_registration == "legacy_only"
+
+
+def test_a_registration_naming_a_missing_legacy_script_stays_removable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """No bytes at the sibling path, so no RECORD rejected any: the entry stays migratable."""
+
+    scripts = tmp_path / "bin"
+    scripts.mkdir()
+
+    observed = _observe_sibling_alias(monkeypatch, scripts, distribution_installed=True)
+
+    assert observed.legacy_registration == "legacy_only"
+
+
+def test_the_legacy_distribution_probe_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    from importlib.metadata import PackageNotFoundError
+
+    from finishup.adapters.integrations import codex_mcp
+
+    monkeypatch.undo()
+
+    def absent(_name: str) -> object:
+        raise PackageNotFoundError("yoetz")
+
+    def unreadable(_name: str) -> object:
+        raise OSError("unreadable")
+
+    probe = codex_mcp._legacy_distribution_installed  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(codex_mcp, "distribution", absent)
+    assert probe() is False
+    monkeypatch.setattr(codex_mcp, "distribution", unreadable)
+    assert probe() is True
+
+    def installed(_name: str) -> object:
+        return object()
+
+    monkeypatch.setattr(codex_mcp, "distribution", installed)
+    assert probe() is True
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"FINISHUP_ISOLATED_ROOT": ["/a"]},
+        {"YOETZ_ISOLATED_ROOT": {"root": "/a"}},
+        {"FINISHUP_ISOLATED_ROOT": "/a", "YOETZ_ISOLATED_ROOT": ["/a"]},
+    ],
+)
+def test_a_non_string_isolation_root_value_is_foreign_not_a_crash(
+    environment: dict[str, object],
+) -> None:
+    from finishup.adapters.integrations import codex_mcp
+
+    entry = {"command": "finishup", "args": ["mcp", "serve", "--host", "codex"], "env": environment}
+    parse = codex_mcp._entry_isolated_root  # pyright: ignore[reportPrivateUsage]
+    assert parse(entry) == (False, None, True)
+    observed = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(0, json.dumps(entry).encode())])
+        ).observe_registration(_BINARY)
+    )
+    assert observed.state is McpRegistrationState.FOREIGN_PRESENT

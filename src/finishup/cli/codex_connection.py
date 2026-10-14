@@ -38,6 +38,28 @@ from finishup.protocol.canonical import JsonValue, canonical_digest
 from finishup.tui.models import HarnessOption
 from finishup.tui.runtime import FinishUpRuntime
 
+# What the legacy ``yoetz`` MCP key holds when FinishUP owns the entry there (ADR-048).
+_OWNED_LEGACY_REGISTRATIONS = frozenset({"legacy_only", "duplicate"})
+# Yoetz-era project trees an approved connect deletes, keyed by the change token that names them.
+# Frozen legacy directory names (ADR-048): Yoetz 0.1-0.2 wrote these exact paths.
+_LEGACY_TREE_CHANGES = (
+    ((".agents", "plugins", "yoetz"), "remove_legacy_plugin_sources"),
+    ((".agents", "skills", "yoetz"), "remove_legacy_project_skill"),
+)
+
+
+def _legacy_tree_changes(project_root: str, managed_paths: tuple[str, ...]) -> list[str]:
+    """Name each Yoetz-era tree the plan's bound skill and activation digests delete.
+
+    The integration plan lists those trees among its managed paths exactly when the skill
+    preview owns ``.agents/skills/yoetz`` and the activation preview plans deleting
+    ``.agents/plugins/yoetz`` (ADR-048).
+    """
+
+    root = Path(project_root)
+    managed = {Path(path) for path in managed_paths}
+    return [change for parts, change in _LEGACY_TREE_CHANGES if root.joinpath(*parts) in managed]
+
 
 def prepare_codex_connection(
     installation: HostInstallation,
@@ -88,13 +110,27 @@ def prepare_codex_connection(
             executable_path=str(installation.executable),
             codex_home=installation.config_root,
         )
+        # A Yoetz-era registration or activation is migrated by the same approved apply, so it
+        # keeps the connection from reading as already complete (ADR-048).
+        legacy_registration_owned = observed.legacy_registration in _OWNED_LEGACY_REGISTRATIONS
+        legacy_trees = _legacy_tree_changes(legacy.project_root, legacy.managed_paths)
         if (
             activation.inventory_verified
             and activation.plugin_cached
             and legacy.already_registered
             and observed.route_profile == route
+            and not legacy_registration_owned
+            and not activation.legacy_activation
+            and not legacy_trees
         ):
             body["changes"] = []
+        if legacy_registration_owned:
+            cast(list[JsonValue], body["changes"]).append("migrate_legacy_mcp_registration")
+        if activation.legacy_activation:
+            cast(list[JsonValue], body["changes"]).append("migrate_legacy_plugin")
+        cast(list[JsonValue], body["changes"]).extend(legacy_trees)
+        if observed.legacy_registration == "foreign":
+            body["warnings"] = ["legacy_registration_foreign"]
 
         def apply() -> None:
             from finishup.cli.setup import apply_codex_integration
@@ -127,6 +163,8 @@ def prepare_codex_connection(
                 "installed": current.plugin_cached,
                 "enabled": current.plugin_enabled,
                 "configured": registration.route_profile == route,
+                "legacy_activation": current.legacy_activation,
+                "legacy_registration": registration.legacy_registration,
                 "connection_observed": False,
                 "reload_required": True,
             }
@@ -157,6 +195,12 @@ def prepare_codex_connection(
             IntegrationState.ABSENT,
         }:
             raise ConnectionError("connection_modified_skill")
+        # A marker-consistent Yoetz-era ``.agents/skills/yoetz`` goes with the same approved
+        # removal, including when it is the only skill tree left (ADR-048).
+        legacy_skill_owned = "legacy_skill_tree_owned" in skill_preview.warnings
+        skill_remove_planned = (
+            skill_preview.state_before is IntegrationState.INSTALLED_EXACT or legacy_skill_owned
+        )
         body["skill_preview_digest"] = skill_preview.preview_digest
         body["plugin_preview_digest"] = removal.preview_digest
         body["mcp_preview_digest"] = registration.preview_digest
@@ -167,8 +211,14 @@ def prepare_codex_connection(
         )
         if registration.action.value != "noop":
             cast(list[JsonValue], body["changes"]).append("remove_mcp_registration")
+        if registration.legacy_registration in _OWNED_LEGACY_REGISTRATIONS:
+            cast(list[JsonValue], body["changes"]).append("remove_legacy_mcp_registration")
+        if removal.legacy_removed_block or removal.legacy_cache_versions:
+            cast(list[JsonValue], body["changes"]).append("deactivate_legacy_plugin")
         if skill_preview.state_before is IntegrationState.INSTALLED_EXACT:
             cast(list[JsonValue], body["changes"]).append("remove_project_skill")
+        if legacy_skill_owned:
+            cast(list[JsonValue], body["changes"]).append("remove_legacy_project_skill")
 
         def apply() -> None:
             nonlocal removal_report
@@ -213,7 +263,7 @@ def prepare_codex_connection(
                         },
                     ) from error
                 raise
-            if skill_preview.state_before is IntegrationState.INSTALLED_EXACT:
+            if skill_remove_planned:
 
                 async def remove_skill():
                     return await skill.remove_skill(
@@ -241,6 +291,7 @@ def prepare_codex_connection(
                 "installed": None,
                 "enabled": current.outcome is not RemovalOutcome.ALREADY_ABSENT,
                 "configured": observed.action.value != "noop",
+                "legacy_registration": observed.legacy_registration,
                 "connection_observed": False,
                 "reload_required": True,
                 "retained": body["retained"],

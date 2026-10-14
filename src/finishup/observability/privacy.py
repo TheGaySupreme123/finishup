@@ -62,11 +62,14 @@ _MAX_STRUCTURAL_TEXT_BYTES: Final = 128
 _MAX_SAFE_INTEGER: Final = 2**53 - 1
 
 _TOKEN = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$", re.ASCII)
-# One finishup-owned source location, nothing else: a dotted module path under ``finishup`` and a line
-# number. Deliberately cannot express a filesystem path, a symbol, or any runtime value, so the
-# field carries where our own code failed and can carry nothing about the caller's data.
+# One FinishUP-owned source location, nothing else: a dotted module path under ``finishup`` and a
+# line number. Deliberately cannot express a filesystem path, a symbol, or any runtime value, so
+# the field carries where our own code failed and can carry nothing about the caller's data.
+# Records written before the rename name the package ``yoetz``; the durable diagnostics ring
+# re-validates them on read, so the legacy package name stays accepted (ADR-048).
 _ORIGIN = re.compile(
-    r"^finishup(?:\.[a-z_][a-z0-9_]{0,63}){0,8}:[0-9]{1,6}(?:#[A-Za-z_][A-Za-z0-9_]{0,63})?$",
+    r"^(?:finishup|yoetz)(?:\.[a-z_][a-z0-9_]{0,63}){0,8}:[0-9]{1,6}"
+    r"(?:#[A-Za-z_][A-Za-z0-9_]{0,63})?$",
     re.ASCII,
 )
 _VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._/+:-]{0,127}$", re.ASCII)

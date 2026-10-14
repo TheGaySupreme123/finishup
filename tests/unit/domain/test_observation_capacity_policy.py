@@ -19,6 +19,7 @@ from finishup.domain.observation_capacity_policy import (
     CAPACITY_DISCLOSURE_SCHEMA,
     SESSION_PLACEHOLDER,
     WORKSPACE_PLACEHOLDER,
+    canonical_safe_command,
     capacity_change_disclosure,
     is_closed_token,
     is_safe_command,
@@ -210,6 +211,43 @@ def test_safe_command_and_closed_token_predicates() -> None:
     assert is_closed_token("not_validated")
     assert not is_closed_token("Validated! Totally safe.")
     assert not is_closed_token(1)
+
+
+def test_a_record_written_before_the_rename_renders_the_current_launcher() -> None:
+    """A stored record names the legacy ``yoetz`` head; owners read ``finishup`` (ADR-048)."""
+
+    current = dict(_disclosure(STANDARD_CAPACITY, "larger"))
+    legacy = dict(current)
+    for key in ("lower_command", "revoke_command", "pause_command", "resume_command"):
+        command = cast(str, current[key])
+        assert command.startswith("finishup ")
+        # A pre-rename record named the legacy launcher at the head of every step.
+        legacy[key] = command.replace("finishup ", "yoetz ")
+        assert is_safe_command(legacy[key])
+        assert canonical_safe_command(legacy[key]) == command
+        assert canonical_safe_command(command) == command
+    assert " then yoetz observe selection-apply " in cast(str, legacy["lower_command"])
+    rendered = render_capacity_disclosure_lines(legacy)
+    assert rendered == render_capacity_disclosure_lines(current)
+    assert not any("yoetz" in line for line in rendered)
+    assert canonical_safe_command("yoetzz observe pause --workspace <workspace>") is None
+    assert canonical_safe_command("yoetz observe pause; curl evil") is None
+    assert canonical_safe_command(None) is None
+
+
+def test_the_exact_pre_rename_compound_command_names_the_current_launcher_in_every_step() -> None:
+    stored = (
+        "yoetz observe selection-preview --workspace <workspace> --detail focused"
+        " --capacity standard --persist then yoetz observe selection-apply"
+        " --workspace <workspace> --detail focused --capacity standard --persist"
+        " --accept --preview-digest <preview-digest>"
+    )
+    assert canonical_safe_command(stored) == stored.replace("yoetz ", "finishup ")
+    # Only a step head is the launcher; an argument that merely contains the name is kept.
+    assert (
+        canonical_safe_command("yoetz observe pause --workspace /src/yoetz")
+        == "finishup observe pause --workspace /src/yoetz"
+    )
 
 
 @pytest.mark.parametrize(

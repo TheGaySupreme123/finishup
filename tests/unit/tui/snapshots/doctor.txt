@@ -1,5 +1,5 @@
 ✓ Python runtime           ok — 3.14.6
-✓ FinishUP version            ok — 0.1.0
+✓ FinishUP version         ok — 0.1.0
 ■ Local service reachable  problem — not running
 ○ Provider binding saved   not configured
 

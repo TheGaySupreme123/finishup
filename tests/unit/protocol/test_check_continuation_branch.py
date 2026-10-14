@@ -202,13 +202,53 @@ def test_missing_repository_grant_carries_standing_setup_without_one_use_fields(
 def test_both_continuation_schema_branches_accept_only_their_exact_commands(
     continuation: dict[str, Any],
 ) -> None:
-    valid = _awaiting(continuation=continuation)
-    validate_schema_instance("check-result", "1.0.0", cast(JsonValue, valid))
+    # The released 1.0.0 contract fixes the head to the pre-rename launcher; the current version
+    # names ``finishup`` and still admits the legacy head an older service emitted (ADR-048).
+    legacy = {**continuation, "command": ["yoetz", *continuation["command"][1:]]}
+    validate_schema_instance(
+        "check-result", "1.0.0", cast(JsonValue, _awaiting(continuation=legacy))
+    )
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance("check-result", "1.0.0", cast(JsonValue, _awaiting()))
+    for body in (continuation, legacy):
+        validate_schema_instance(
+            "check-result", "1.4.0", cast(JsonValue, _awaiting(continuation=body))
+        )
     invalid = _awaiting(
         continuation={**continuation, "command": ["x"] * len(continuation["command"])}
     )
-    with pytest.raises(ProtocolValueError):
-        validate_schema_instance("check-result", "1.0.0", cast(JsonValue, invalid))
+    for version in ("1.0.0", "1.4.0"):
+        with pytest.raises(ProtocolValueError):
+            validate_schema_instance("check-result", version, cast(JsonValue, invalid))
+
+
+@pytest.mark.parametrize(
+    "continuation",
+    (_continuation(), _repository_grant_continuation()),
+)
+def test_the_model_admits_the_legacy_launcher_head_and_renders_the_current_one(
+    continuation: dict[str, Any],
+) -> None:
+    from finishup.mcp.summaries import _awaiting_continuation_command
+
+    legacy = {**continuation, "command": ["yoetz", *continuation["command"][1:]]}
+    result = CheckResultModel.model_validate(_awaiting(continuation=legacy))
+    assert type(result.root) is CheckAwaitingHumanModel
+    assert result.root.continuation.command[0] == "yoetz"
+    rendered = _awaiting_continuation_command(legacy["kind"], legacy["command"])
+    assert rendered == " ".join(["finishup", *continuation["command"][1:]])
+    assert rendered == _awaiting_continuation_command(continuation["kind"], continuation["command"])
+    # The CLI rendering names the current launcher too, never the pre-rename alias.
+    current = CheckResultModel.model_validate(_awaiting(continuation=continuation))
+    assert type(current.root) is CheckAwaitingHumanModel
+    human = render_human_awaiting_human(result.root)
+    assert f"  {rendered}\n" in human
+    assert "yoetz" not in human
+    assert human == render_human_awaiting_human(current.root)
+    with pytest.raises(ValidationError):
+        CheckResultModel.model_validate(
+            _awaiting(continuation={**continuation, "command": ["yoetzz", *legacy["command"][1:]]})
+        )
 
 
 @pytest.mark.parametrize("field", ("pending_id", "expires_at"))
@@ -363,6 +403,30 @@ def test_operation_status_returns_the_same_continuation_for_a_pending_check() ->
     assert page.continuation is not None
     assert page.continuation.pending_id == _PENDING
     assert page.continuation.command[3] == _PENDING
+
+
+def test_operation_status_trusted_command_names_the_current_launcher() -> None:
+    from finishup.cli.render import _continuation_command
+
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "pending",
+            "operation_kind": "check",
+            # A pre-rename service named the legacy launcher (ADR-048).
+            "continuation": {
+                **_continuation(),
+                "command": ["yoetz", *_continuation()["command"][1:]],
+            },
+        }
+    )
+
+    assert page.continuation is not None
+    assert page.continuation.command[0] == "yoetz"
+    assert (
+        _continuation_command(page.continuation) == f"finishup privacy decide-disclosure {_PENDING}"
+    )
 
 
 def test_operation_status_recovers_the_same_standing_repository_grant_handoff() -> None:

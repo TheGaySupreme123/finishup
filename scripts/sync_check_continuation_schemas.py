@@ -13,10 +13,14 @@ from typing import Any, Final, cast
 from finishup.protocol.canonical import canonical_encode
 
 _ROOT: Final = Path(__file__).resolve().parents[1]
+# Both targets are released. Their continuation commands keep the pre-rename launcher head; the
+# unreleased versions widen it in ``generate_schemas.py`` (ADR-048).
 _TARGETS: Final = (
     "operations/check-result-1.0.0.schema.json",
     "operations/status-result-1.0.0.schema.json",
 )
+# Frozen legacy identifier (ADR-048): the released continuation command head.
+_RELEASED_LAUNCHER_HEAD: Final = {"const": "yoetz"}
 
 
 def _repository_grant_branch(base: dict[str, Any]) -> dict[str, Any]:
@@ -27,7 +31,7 @@ def _repository_grant_branch(base: dict[str, Any]) -> dict[str, Any]:
         "items": {"maxLength": 256, "minLength": 1, "type": "string"},
         "maxItems": 2,
         "minItems": 2,
-        "prefixItems": [{"const": "yoetz"}, {"const": "--privacy"}],
+        "prefixItems": [copy.deepcopy(_RELEASED_LAUNCHER_HEAD), {"const": "--privacy"}],
         "type": "array",
     }
     properties.pop("pending_id", None)
@@ -55,7 +59,7 @@ def _continuation_schema(document: dict[str, Any]) -> dict[str, Any]:
         "maxItems": 4,
         "minItems": 4,
         "prefixItems": [
-            {"const": "yoetz"},
+            copy.deepcopy(_RELEASED_LAUNCHER_HEAD),
             {"const": "privacy"},
             {"const": "decide-disclosure"},
             copy.deepcopy(disclosure_properties["pending_id"]),

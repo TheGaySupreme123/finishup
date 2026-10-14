@@ -785,6 +785,37 @@ def test_on_demand_service_environment_strips_secret_shaped_names(
     assert "must-not-cross" not in environment.values()
 
 
+def test_on_demand_service_environment_forwards_both_root_spellings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The resolved root reaches the service under both spellings with one value (ADR-048)."""
+
+    import finishup.service.client as client_module
+    from finishup.config.paths import ISOLATED_ROOT_ENV, LEGACY_ISOLATED_ROOT_ENV
+
+    monkeypatch.delenv(ISOLATED_ROOT_ENV, raising=False)
+    monkeypatch.setenv(LEGACY_ISOLATED_ROOT_ENV, str(tmp_path / "legacy-spelling"))
+    monkeypatch.setattr(client_module, "isolated_root", lambda: tmp_path / "resolved")
+    environment = client_module._service_environment()  # pyright: ignore[reportPrivateUsage]
+    assert environment[ISOLATED_ROOT_ENV] == str(tmp_path / "resolved")
+    assert environment[LEGACY_ISOLATED_ROOT_ENV] == str(tmp_path / "resolved")
+
+
+def test_on_demand_service_environment_filters_legacy_names_by_the_same_allowlist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import finishup.service.client as client_module
+
+    monkeypatch.setenv("YOETZ_LOG_LEVEL", "warning")
+    monkeypatch.setenv("YOETZ_UNRELATED_APP_SETTING", "must-not-cross")
+    monkeypatch.setenv("YOETZ_PROVIDER_API_KEY", "must-not-cross")
+    environment = client_module._service_environment()  # pyright: ignore[reportPrivateUsage]
+    assert environment["YOETZ_LOG_LEVEL"] == "warning"
+    assert "YOETZ_UNRELATED_APP_SETTING" not in environment
+    assert "YOETZ_PROVIDER_API_KEY" not in environment
+    assert "must-not-cross" not in environment.values()
+
+
 def test_on_demand_spawn_routes_stderr_to_owner_only_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1869,3 +1900,98 @@ async def test_hook_startup_spawns_after_an_unheld_holder_stamp(
     assert connected is expected
     assert calls == 2
     assert spawned == 1
+
+
+def test_transport_error_keeps_a_refused_endpoint_root_by_its_path_token() -> None:
+    """A root that cannot be resolved is named, never reported as an absent service (ADR-048)."""
+
+    import finishup.service.client as client_module
+
+    for path_reason in ("installation_root_ambiguous", "isolation_root_conflict"):
+        mapped = client_module._transport_error(  # pyright: ignore[reportPrivateUsage]
+            LocalControlTransportError("runtime_directory_unsafe", path_reason=path_reason)
+        )
+        assert mapped.reason == "endpoint_unsafe"
+        assert mapped.retryable is False
+        assert client_module.path_refusal_reason(mapped) == path_reason
+        assert public_error_code_for_control_reason(mapped.reason) is (
+            PublicErrorCode.SERVICE_UNAVAILABLE
+        )
+    # A runtime directory that is merely absent (no service ever started) stays retryable.
+    plain = client_module._transport_error(  # pyright: ignore[reportPrivateUsage]
+        LocalControlTransportError("runtime_directory_unsafe")
+    )
+    assert plain.reason == "service_unavailable"
+    assert plain.retryable is True
+    assert client_module.path_refusal_reason(plain) is None
+    assert client_module.path_refusal_reason(ControlError("endpoint_unsafe")) is None
+
+
+def _ambiguous_ambient_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Catalogs under both product names in XDG roots below ``tmp_path``."""
+
+    base = tmp_path / "xdg"
+    for name in ("data", "config", "cache", "state", "runtime"):
+        (base / name).mkdir(mode=0o700, parents=True)
+    for app_name in ("finishup", "yoetz"):
+        (base / "data" / app_name).mkdir(mode=0o700)
+        (base / "data" / app_name / "catalog.sqlite3").write_bytes(b"")
+    monkeypatch.setenv("XDG_DATA_HOME", str(base / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(base / "config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(base / "cache"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(base / "state"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(base / "runtime"))
+    monkeypatch.delenv("FINISHUP_ISOLATED_ROOT", raising=False)
+    monkeypatch.delenv("YOETZ_ISOLATED_ROOT", raising=False)
+
+
+@pytest.mark.anyio
+async def test_on_demand_names_ambiguous_folders_and_never_spawns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Data under both names refuses before any endpoint, spawn, or start budget (ADR-048)."""
+
+    import finishup.service.client as client_module
+
+    _ambiguous_ambient_install(tmp_path, monkeypatch)
+    spawned = 0
+
+    def spawn() -> None:
+        nonlocal spawned
+        spawned += 1
+
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+
+    started = time.monotonic()
+    with pytest.raises(ControlError) as caught:
+        await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=5.0)
+
+    assert time.monotonic() - started < 5.0
+    assert caught.value.reason == "endpoint_unsafe"
+    assert caught.value.retryable is False
+    assert client_module.path_refusal_reason(caught.value) == "installation_root_ambiguous"
+    assert spawned == 0
+    assert not (tmp_path / "xdg" / "runtime" / "finishup").exists()
+
+
+@pytest.mark.anyio
+async def test_a_refused_successor_log_root_is_named_instead_of_spending_the_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import finishup.service.client as client_module
+    from finishup.config.paths import PathSafetyError
+
+    async def unavailable(*_args: object, **_kwargs: object) -> ServiceClient:
+        raise ControlError("service_unavailable", retryable=True)
+
+    def spawn() -> None:
+        raise PathSafetyError("isolation_root_conflict")
+
+    monkeypatch.setattr(client_module, "_connect_service_attempt", unavailable)
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+
+    with pytest.raises(ControlError) as caught:
+        await connect_service_on_demand(ControlClientKind.CLI, timeout_seconds=5.0)
+
+    assert caught.value.reason == "endpoint_unsafe"
+    assert client_module.path_refusal_reason(caught.value) == "isolation_root_conflict"

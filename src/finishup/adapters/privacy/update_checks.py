@@ -2,7 +2,8 @@
 
 This adapter is intentionally independent of the LLM egress gateway. It may only:
 
-- issue a fixed allowlisted HTTPS GET for the ``finishup`` distribution identity on PyPI;
+- issue a fixed allowlisted HTTPS GET for the ``finishup`` distribution identity on PyPI, or for
+  the transitional ``yoetz`` identity when the running install came from it (ADR-048);
 - parse version fields from a size-capped JSON body;
 - never accept task/user content, proxies (``trust_env=False``), redirects beyond one hop,
   or open endpoint configuration.
@@ -19,8 +20,11 @@ from typing import Final, Protocol, cast
 
 import httpx
 
+from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
+
 __all__ = [
     "PYPI_FINISHUP_JSON_URL",
+    "PYPI_LEGACY_JSON_URL",
     "UpdateChecksTransport",
     "UpdateChecksTransportError",
     "fetch_latest_finishup_version",
@@ -29,6 +33,13 @@ __all__ = [
 
 # Exact product allowlist for the update_checks channel. Do not generalize to arbitrary hosts.
 PYPI_FINISHUP_JSON_URL: Final = "https://pypi.org/pypi/finishup/json"
+# The transitional ``yoetz`` distribution (ADR-048). An install that came from it upgrades through
+# it, so its update check asks about that same identity.
+PYPI_LEGACY_JSON_URL: Final = "https://pypi.org/pypi/yoetz/json"
+_PACKAGE_URLS: Final = {
+    LAUNCHER_NAME: PYPI_FINISHUP_JSON_URL,
+    LEGACY_LAUNCHER_NAME: PYPI_LEGACY_JSON_URL,
+}
 _MAX_BODY_BYTES: Final = 64 * 1024
 _DEFAULT_TIMEOUT_SECONDS: Final = 3.0
 
@@ -57,11 +68,13 @@ class HttpxUpdateChecksTransport:
 
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
     max_body_bytes: int = _MAX_BODY_BYTES
+    package: str = LAUNCHER_NAME
 
     async def fetch_latest_version(self) -> str:
         return await fetch_latest_finishup_version(
             timeout_seconds=self.timeout_seconds,
             max_body_bytes=self.max_body_bytes,
+            package=self.package,
         )
 
 
@@ -98,9 +111,17 @@ async def fetch_latest_finishup_version(
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS,
     max_body_bytes: int = _MAX_BODY_BYTES,
     client: httpx.AsyncClient | None = None,
+    package: str = LAUNCHER_NAME,
 ) -> str:
-    """GET the allowlisted PyPI JSON document and return ``info.version`` only."""
+    """GET the allowlisted PyPI JSON document and return ``info.version`` only.
 
+    ``package`` selects one of the two allowlisted identities; any other value is refused before
+    a request is made.
+    """
+
+    url = _PACKAGE_URLS.get(package)
+    if url is None:
+        raise ValueError("package_invalid")
     if type(timeout_seconds) is not float and type(timeout_seconds) is not int:
         raise TypeError("timeout_seconds_invalid")
     if type(max_body_bytes) is not int or max_body_bytes <= 0 or max_body_bytes > _MAX_BODY_BYTES:
@@ -114,7 +135,7 @@ async def fetch_latest_finishup_version(
     )
     try:
         try:
-            response = await http_client.get(PYPI_FINISHUP_JSON_URL)
+            response = await http_client.get(url)
         except httpx.TimeoutException as exc:
             raise UpdateChecksTransportError("timeout") from exc
         except httpx.HTTPError as exc:

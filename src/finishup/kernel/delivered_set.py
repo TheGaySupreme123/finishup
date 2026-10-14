@@ -539,8 +539,8 @@ def path_assumption(
 ) -> EventId | None:
     """The earliest unsuperseded ``finishup-assumption`` decision that accepts an emptied path.
 
-    The decision must carry the line ``finishup-assumption:<obligation id>`` for an obligation that
-    declares the path, and its statement or rationale must name the declared value or the
+    The decision must carry the line ``finishup-assumption:<obligation id>`` (either spelling,
+    ``disclosure_line_obligations``) for an obligation that declares the path, and its statement or rationale must name the declared value or the
     root-relative path as a whole token. A disclosure that names no path never qualifies (a
     best-effort note must not disable the incomplete-work check, Codex review).
     """

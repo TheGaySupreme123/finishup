@@ -2425,3 +2425,314 @@ def test_purge_cache_deletes_other_managed_versions(tmp_path: Path) -> None:
     assert not extra.exists()
     cache_root = home / "plugins/cache/finishup/finishup"
     assert not cache_root.exists() or not any(cache_root.iterdir())
+
+
+# A Yoetz 0.1-0.2 activation of the same project (ADR-048).
+
+_LEGACY_MARKETPLACE = (
+    b'{"name":"yoetz","plugins":[{"name":"yoetz",'
+    b'"source":{"path":"./.agents/plugins/yoetz","source":"local"}}]}\n'
+)
+
+
+def _legacy_tables(project: Path) -> str:
+    return (
+        f'[marketplaces.yoetz]\nsource_type = "local"\nsource = "{project}"\n\n'
+        '[plugins."yoetz@yoetz"]\nenabled = true\n'
+    )
+
+
+def _write_legacy_activation(project: Path, home: Path, *, cache: bool = True) -> Path:
+    """Write what a Yoetz 0.2 activation left: document, tables, and a marker-valid cache."""
+
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
+
+    marketplace = project / ".agents/plugins/marketplace.json"
+    marketplace.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    marketplace.write_bytes(_LEGACY_MARKETPLACE)
+    marketplace.chmod(0o600)
+    config = home / "config.toml"
+    config.write_text('model = "gpt-5"\n\n' + _legacy_tables(project), encoding="utf-8")
+    config.chmod(0o600)
+    version = home / "plugins/cache/yoetz/yoetz/0.2.5"
+    if cache:
+        for relative, data in render_plugin_install_tree().items():
+            path = version / relative
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path.write_bytes(data)
+            path.chmod(0o600)
+        for directory in (version, *version.parents):
+            if directory == home:
+                break
+            directory.chmod(0o700)
+    return version
+
+
+def test_legacy_activation_is_migrated_in_one_approval(tmp_path: Path) -> None:
+    target, project, home = _target(tmp_path)
+    _install(target)
+    legacy_cache = _write_legacy_activation(project, home)
+
+    inspection = inspect_activation(target, codex_home=home)
+    assert inspection.state is ActivationState.INSTALLED_NOT_ACTIVATED
+    assert inspection.legacy_activation is True
+
+    preview = preview_activation(target, codex_home=home)
+    assert preview.legacy_removed_block == _legacy_tables(project)
+    assert preview.legacy_cache_versions == ("0.2.5",)
+    assert json.loads(preview.marketplace_bytes)["name"] == "finishup"
+    result = apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
+
+    assert result.state is ActivationState.ACTIVE
+    assert result.legacy_activation is False
+    text = (home / "config.toml").read_text(encoding="utf-8")
+    assert text.startswith('model = "gpt-5"\n')
+    config = tomllib.loads(text)
+    assert set(config["marketplaces"]) == {"finishup"}
+    assert set(config["plugins"]) == {"finishup@finishup"}
+    marketplace = json.loads((project / ".agents/plugins/marketplace.json").read_bytes())
+    assert [row["name"] for row in marketplace["plugins"]] == ["finishup"]
+    assert not legacy_cache.exists()
+
+
+def test_legacy_migration_binds_the_preview_digest(tmp_path: Path) -> None:
+    target, project, home = _target(tmp_path)
+    _install(target)
+    _write_legacy_activation(project, home, cache=False)
+    preview = preview_activation(target, codex_home=home)
+    assert preview.legacy_cache_versions == ()
+    # The legacy tables change between preview and apply: the approval no longer describes them.
+    (home / "config.toml").write_text('model = "gpt-5"\n', encoding="utf-8")
+    with pytest.raises(IntegrationError) as caught:
+        apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
+    assert caught.value.reason is IntegrationReason.PREVIEW_STALE
+
+
+def test_modified_legacy_table_for_this_project_is_a_conflict(tmp_path: Path) -> None:
+    target, project, home = _target(tmp_path)
+    _install(target)
+    _write_legacy_activation(project, home, cache=False)
+    config = home / "config.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "enabled = true\n", "enabled = true\nowner_note = true\n"
+        ),
+        encoding="utf-8",
+    )
+    assert inspect_activation(target, codex_home=home).state is ActivationState.FOREIGN
+    with pytest.raises(IntegrationError) as caught:
+        preview_activation(target, codex_home=home)
+    assert caught.value.reason is IntegrationReason.DESTINATION_CONFLICT
+    with pytest.raises(IntegrationError) as refused:
+        preview_removal(target, codex_home=home)
+    assert refused.value.reason is IntegrationReason.REMOVE_REFUSED
+    assert refused.value.safe_details["conflict"] == "legacy_config_plugin"
+
+
+def test_another_projects_legacy_activation_is_left_alone(tmp_path: Path) -> None:
+    target, _project, home = _target(tmp_path)
+    _install(target)
+    other = tmp_path / "other-project"
+    legacy_cache = _write_legacy_activation(other, home)
+    before = (home / "config.toml").read_text(encoding="utf-8")
+    (other / ".agents/plugins/marketplace.json").unlink()
+
+    assert inspect_activation(target, codex_home=home).legacy_activation is False
+    preview = preview_activation(target, codex_home=home)
+    assert preview.legacy_removed_block == ""
+    assert preview.legacy_cache_versions == ()
+    apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
+    assert (home / "config.toml").read_text(encoding="utf-8").startswith(before)
+    assert legacy_cache.is_dir()
+
+
+def test_unmanaged_legacy_cache_is_never_deleted(tmp_path: Path) -> None:
+    target, project, home = _target(tmp_path)
+    _install(target)
+    legacy_cache = _write_legacy_activation(project, home)
+    foreign = legacy_cache / "owner-notes.txt"
+    foreign.write_bytes(b"not a Yoetz render\n")
+    foreign.chmod(0o600)
+    preview = preview_activation(target, codex_home=home)
+    assert preview.legacy_cache_versions == ()
+    apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
+    assert foreign.read_bytes() == b"not a Yoetz render\n"
+
+
+def test_removal_deactivates_a_legacy_only_activation(tmp_path: Path) -> None:
+    target, project, home = _target(tmp_path)
+    legacy_cache = _write_legacy_activation(project, home)
+    preview = preview_removal(target, codex_home=home)
+    assert preview.outcome is RemovalOutcome.REMOVE
+    assert preview.legacy_marketplace_json_planned is True
+    assert preview.marketplace_json_planned is False
+    assert preview.legacy_removed_block == _legacy_tables(project)
+    assert preview.legacy_cache_versions == ("0.2.5",)
+
+    result = apply_removal(target, codex_home=home, approved_digest=preview.preview_digest)
+    assert result.outcome is RemovalOutcome.REMOVE
+    assert result.inspection.legacy_activation is False
+    assert not (project / ".agents/plugins/marketplace.json").exists()
+    assert (home / "config.toml").read_text(encoding="utf-8") == 'model = "gpt-5"\n'
+    assert not legacy_cache.exists()
+    assert preview_removal(target, codex_home=home).outcome is RemovalOutcome.ALREADY_ABSENT
+
+
+def test_removal_takes_both_activations(tmp_path: Path) -> None:
+    target, project, home = _target(tmp_path)
+    _install(target)
+    activation = preview_activation(target, codex_home=home)
+    apply_activation(target, codex_home=home, approved_digest=activation.preview_digest)
+    config = home / "config.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8") + "\n" + _legacy_tables(project), encoding="utf-8"
+    )
+    assert inspect_activation(target, codex_home=home).legacy_activation is True
+    preview = preview_removal(target, codex_home=home)
+    assert preview.plugin_remove_planned is True
+    assert preview.legacy_removed_block == _legacy_tables(project)
+    apply_removal(target, codex_home=home, approved_digest=preview.preview_digest)
+    parsed = tomllib.loads(config.read_text(encoding="utf-8") if config.exists() else "")
+    assert parsed.get("marketplaces", {}) == {}
+    assert parsed.get("plugins", {}) == {}
+
+
+def _write_legacy_plugin_tree(project: Path) -> Path:
+    """A marker-consistent ``.agents/plugins/yoetz`` source tree (ADR-048)."""
+
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
+
+    legacy = project / ".agents/plugins/yoetz"
+    for relative, data in render_plugin_install_tree(codex_version=None).items():
+        path = legacy / relative
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_bytes(data)
+        path.chmod(0o600)
+    return legacy
+
+
+def test_legacy_plugin_tree_is_deleted_only_by_the_approved_activation(tmp_path: Path) -> None:
+    target, project, home = _target(tmp_path)
+    legacy_tree = _write_legacy_plugin_tree(project)
+    _install(target)
+    _write_legacy_activation(project, home, cache=False)
+    # Plugin install alone keeps the source tree the legacy activation still reads.
+    assert legacy_tree.is_dir()
+
+    preview = preview_activation(target, codex_home=home)
+    assert preview.legacy_plugin_tree_planned is True
+    assert legacy_tree.is_dir()
+    result = apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
+
+    assert result.state is ActivationState.ACTIVE
+    assert not legacy_tree.exists()
+    assert not any(path.name.startswith(".yoetz.") for path in legacy_tree.parent.iterdir())
+
+
+def test_a_legacy_plugin_tree_changed_after_preview_is_stale(tmp_path: Path) -> None:
+    target, project, home = _target(tmp_path)
+    legacy_tree = _write_legacy_plugin_tree(project)
+    _install(target)
+    _write_legacy_activation(project, home, cache=False)
+    preview = preview_activation(target, codex_home=home)
+    hooks = legacy_tree / "hooks/hooks.json"
+    hooks.write_bytes(hooks.read_bytes() + b"\n")
+
+    with pytest.raises(IntegrationError) as caught:
+        apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
+
+    assert caught.value.reason is IntegrationReason.PREVIEW_STALE
+    assert legacy_tree.is_dir()
+    # Refused before any mutation: the legacy activation is still in place.
+    assert (
+        "yoetz@yoetz"
+        in tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))["plugins"]
+    )
+
+
+def test_a_legacy_plugin_tree_the_marketplace_still_names_is_kept(tmp_path: Path) -> None:
+    target, project, home = _target(tmp_path)
+    legacy_tree = _write_legacy_plugin_tree(project)
+    _install(target)
+    marketplace = project / ".agents/plugins/marketplace.json"
+    marketplace.write_bytes(
+        b'{"name":"finishup","plugins":[{"name":"yoetz",'
+        b'"source":{"path":"./.agents/plugins/yoetz","source":"local"}}]}\n'
+    )
+    marketplace.chmod(0o600)
+
+    preview = preview_activation(target, codex_home=home)
+
+    assert preview.legacy_plugin_tree_planned is False
+    apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
+    assert legacy_tree.is_dir()
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        b'{"name":"yoetz","source":{"path":".agents/plugins/yoetz","source":"local"}}',
+        b'{"name":"yoetz","source":{"path":"./.agents/plugins/yoetz/","source":"local"}}',
+        b'{"name":"yoetz","source":{"path":"./.agents/plugins/../plugins/yoetz","source":"local"}}',
+        b'{"name":"yoetz","source":"./.agents/plugins/yoetz"}',
+        b'{"name":"yoetz","source":{"path":"./.agents/plugins/other","source":"local"}}',
+        b'{"name":"other","source":{"path":"./.agents/plugins/Yoetz","source":"local"}}',
+        b'{"name":"other","source":{"source":"git","url":"https://example.invalid/p.git"}}',
+    ],
+    ids=[
+        "no-dot-prefix",
+        "trailing-slash",
+        "dot-dot",
+        "string-source",
+        "named-yoetz",
+        "case-variant",
+        "non-local",
+    ],
+)
+def test_any_row_but_finishups_keeps_the_legacy_plugin_tree(tmp_path: Path, row: bytes) -> None:
+    """Only a provably unreferenced legacy tree is deleted; other spellings fail closed."""
+
+    target, project, home = _target(tmp_path)
+    legacy_tree = _write_legacy_plugin_tree(project)
+    _install(target)
+    marketplace = project / ".agents/plugins/marketplace.json"
+    marketplace.write_bytes(b'{"name":"finishup","plugins":[' + row + b"]}\n")
+    marketplace.chmod(0o600)
+
+    preview = preview_activation(target, codex_home=home)
+
+    assert preview.legacy_plugin_tree_planned is False
+    apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
+    assert legacy_tree.is_dir()
+
+
+def test_a_finishup_only_marketplace_lets_the_legacy_plugin_tree_go(tmp_path: Path) -> None:
+    target, project, home = _target(tmp_path)
+    legacy_tree = _write_legacy_plugin_tree(project)
+    _install(target)
+    marketplace = project / ".agents/plugins/marketplace.json"
+    marketplace.write_bytes(
+        b'{"name":"finishup","plugins":[{"category":"dev","name":"finishup",'
+        b'"source":{"path":"./.agents/plugins/finishup","source":"local"}}]}\n'
+    )
+    marketplace.chmod(0o600)
+
+    preview = preview_activation(target, codex_home=home)
+
+    assert preview.legacy_plugin_tree_planned is True
+    apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
+    assert not legacy_tree.exists()
+
+
+def test_removal_retains_the_legacy_plugin_source_tree(tmp_path: Path) -> None:
+    """Like FinishUP's own source tree, removal keeps ``.agents/plugins/yoetz`` (ADR-048)."""
+
+    target, project, home = _target(tmp_path)
+    legacy_tree = _write_legacy_plugin_tree(project)
+    _install(target)
+    _write_legacy_activation(project, home, cache=False)
+    preview = preview_removal(target, codex_home=home)
+    apply_removal(target, codex_home=home, approved_digest=preview.preview_digest)
+
+    assert legacy_tree.is_dir()
+    assert inspect_activation(target, codex_home=home).legacy_activation is False

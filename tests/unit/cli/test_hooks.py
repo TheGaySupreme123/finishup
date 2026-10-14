@@ -23,6 +23,7 @@ from finishup.adapters.integrations.codex_lifecycle import (
 from finishup.cli import app as app_module
 from finishup.cli import hooks as hooks_module
 from finishup.cli.hooks import (
+    FINISHUP_START_TOOL_NAMES,
     INACTIVE_CONTEXT,
     handle_post_tool_use,
     handle_session_start,
@@ -123,7 +124,17 @@ def test_user_prompt_submit_emits_intake_cue_without_service(
     )
 
 
-def test_post_tool_use_successful_start_creates_mapping(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "mcp__finishup__start",
+        "mcp__plugin_finishup_finishup__start",
+        # The legacy server name a 0.1-0.2.5 registration still carries (ADR-048).
+        "mcp__yoetz__start",
+        "mcp__plugin_yoetz_yoetz__start",
+    ],
+)
+def test_post_tool_use_successful_start_creates_mapping(tmp_path: Path, tool_name: str) -> None:
     task_id, session_id, writer_id = _task_ids()
     codex_session = "codex-post-1"
     tool_response = {
@@ -137,7 +148,7 @@ def test_post_tool_use_successful_start_creates_mapping(tmp_path: Path) -> None:
     }
     payload = {
         "session_id": codex_session,
-        "tool_name": "mcp__finishup__start",
+        "tool_name": tool_name,
         "tool_response": tool_response,
     }
     stdout = io.BytesIO()
@@ -153,6 +164,47 @@ def test_post_tool_use_successful_start_creates_mapping(tmp_path: Path) -> None:
     assert mapping.yoetz_session_id == session_id
     assert mapping.yoetz_writer_id == writer_id
     assert mapping.last_frontier == "0:genesis"
+
+
+def test_start_tool_names_are_the_closed_current_and_legacy_spellings() -> None:
+    """``start`` under either server name binds (ADR-048); nothing resembling it does."""
+
+    assert FINISHUP_START_TOOL_NAMES == {
+        "start",
+        "mcp__finishup__start",
+        "mcp__plugin_finishup_finishup__start",
+        "mcp__yoetz__start",
+        "mcp__plugin_yoetz_yoetz__start",
+    }
+
+
+@pytest.mark.parametrize(
+    "tool_name", ["mcp__yoetzx__start", "mcp__yoetz__restart", "yoetz:start", "mcp__other__start"]
+)
+def test_post_tool_use_near_miss_start_names_create_no_mapping(
+    tmp_path: Path, tool_name: str
+) -> None:
+    task_id, session_id, writer_id = _task_ids()
+    payload = {
+        "session_id": "codex-post-near-miss",
+        "tool_name": tool_name,
+        "tool_response": {
+            "structuredContent": {
+                "ok": True,
+                "task_id": task_id,
+                "session_id": session_id,
+                "writer_id": writer_id,
+                "frontier": {"sequence": "0", "head_digest": "genesis"},
+            }
+        },
+    }
+    assert (
+        handle_post_tool_use(
+            stdin_bytes=json.dumps(payload).encode("utf-8"), stdout=io.BytesIO(), _state=tmp_path
+        )
+        == 0
+    )
+    assert load_mapping("codex-post-near-miss", _state=tmp_path) is None
 
 
 def test_post_tool_use_delegated_start_preserves_parent_mapping(tmp_path: Path) -> None:

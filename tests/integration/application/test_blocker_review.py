@@ -806,10 +806,14 @@ async def test_pretrain_blocker_question_requires_a_challenge_on_the_main_delive
 
     question = case.question_set[-1]
     golden = cast(Mapping[str, Any], strict_json_parse(_PRETRAIN_GOLDEN.read_bytes()))
+    # The golden is recorded tb4 evidence from before the rename (ADR-048) and stays byte-identical;
+    # the question differs from it only in the product name and the marker spelling.
     assert question == (
         cast(str, golden["question_template"])
         .replace("<decision>", decision)
         .replace("<obligation>", obligation)
+        .replace("yoetz-blocker:", "finishup-blocker:")
+        .replace("Yoetz or this review", "FinishUP or this review")
     )
     assert question.endswith(BLOCKER_REVIEW_INSTRUCTION)
     assert "You must challenge it" in question

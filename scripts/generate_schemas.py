@@ -3072,6 +3072,7 @@ def _check_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     definitions = cast(dict[str, JsonValue], document["$defs"])
     binding = cast(dict[str, JsonValue], definitions["semantic_binding"])
     _add_review_input_manifest_to_check_result(document)
+    _admit_current_launcher_heads(definitions)
     for branch in cast(list[JsonValue], binding["oneOf"]):
         if not isinstance(branch, dict):
             continue
@@ -4207,6 +4208,8 @@ def _add_review_input_continuation(definitions: dict[str, JsonValue]) -> None:
                     "maxItems": 4,
                     "minItems": 4,
                     "prefixItems": [
+                        # Frozen legacy identifier (ADR-048): the released head shape, widened
+                        # by ``_admit_current_launcher_heads`` in every unreleased version.
                         {"const": "yoetz"},
                         {"const": "publish-work"},
                         {"const": "--input"},
@@ -4934,6 +4937,7 @@ def _status_result_v1_4_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     _add_status_closure_verdict(definitions)
     _add_status_finding_frontier(definitions)
     _add_review_input_continuation(definitions)
+    _admit_current_launcher_heads(definitions)
     _add_status_credential_heuristic(definitions)
     _add_status_requested_item_role(definitions)
     document["$id"] = SCHEMA_NAMESPACE + entry.relative_path
@@ -5743,6 +5747,35 @@ def _add_status_operation_admission(definitions: dict[str, JsonValue]) -> None:
     )
 
 
+# Protocol 0.1 shipped as Yoetz and the product is now FinishUP (ADR-048). The released contracts
+# fix the launcher head of every emitted command and the receipt package name to the pre-rename
+# spelling; the unreleased versions below name the current spelling and still admit the legacy one
+# a pre-rename development service emitted or a stored receipt carries.
+def _admit_current_launcher_heads(definitions: dict[str, JsonValue]) -> None:
+    """Widen each CHECK continuation command head to the current or the legacy launcher."""
+
+    continuation = cast(dict[str, JsonValue], definitions["continuation"])
+    for branch in cast(list[JsonValue], continuation["oneOf"]):
+        properties = cast(dict[str, JsonValue], cast(dict[str, JsonValue], branch)["properties"])
+        command = cast(dict[str, JsonValue], properties["command"])
+        prefix = cast(list[JsonValue], command["prefixItems"])
+        # Frozen legacy identifier (ADR-048): the released continuation head.
+        if prefix[0] != {"const": "yoetz"}:
+            raise SchemaGenerationError("continuation_command_head_changed")
+        prefix[0] = {"enum": ["finishup", "yoetz"], "type": "string"}
+
+
+def _admit_current_receipt_package_name(definitions: dict[str, JsonValue]) -> None:
+    """Widen the receipt version slice package name to the current or the legacy distribution."""
+
+    version_slice = cast(dict[str, JsonValue], definitions["version_slice"])
+    properties = cast(dict[str, JsonValue], version_slice["properties"])
+    # Frozen legacy identifier (ADR-048): the released receipt package name.
+    if properties["package_name"] != {"const": "yoetz"}:
+        raise SchemaGenerationError("receipt_package_name_changed")
+    properties["package_name"] = {"enum": ["finishup", "yoetz"], "type": "string"}
+
+
 def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add the recorded child outcome section to the immutable receipt document."""
 
@@ -5751,6 +5784,7 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
         "receipts/receipt-document-1.2.0.schema.json",
     )
     definitions = cast(dict[str, JsonValue], document["$defs"])
+    _admit_current_receipt_package_name(definitions)
     definitions["child_finding"] = _lineage_child_finding_schema()
     definitions["receipt_child"] = {
         "additionalProperties": False,
@@ -6008,11 +6042,13 @@ def _receipt_document_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]
 
 
 def _receipt_result_v1_3_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
-    return _simple_versioned_schema(
+    document = _simple_versioned_schema(
         entry,
         "operations/receipt-result-1.2.0.schema.json",
         {"receipt-document-1.2.0": "receipt-document-1.3.0"},
     )
+    _admit_current_receipt_package_name(cast(dict[str, JsonValue], document["$defs"]))
+    return document
 
 
 def _publish_work_request_v1_2_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:

@@ -20,7 +20,7 @@ from typing import Final
 # measurable and is documented (~20 ms), never guessed.
 _ENTRY_MONOTONIC: Final = time.monotonic()
 
-__all__ = ["UNSUPPORTED_PLATFORM_MESSAGE", "main"]
+__all__ = ["LEGACY_ALIAS_NOTICE", "UNSUPPORTED_PLATFORM_MESSAGE", "main"]
 
 # FinishUP is POSIX-only: the service listens on an owner-only AF_UNIX socket, and every path,
 # vault, and lock check compares ``st_uid`` against ``os.geteuid()``. On native Windows the path
@@ -37,6 +37,37 @@ UNSUPPORTED_PLATFORM_MESSAGE: Final = (
     "On Windows, install and run FinishUP inside WSL 2 (Ubuntu). Setup guide:\n"
     "  https://github.com/TheGaySupreme123/finishup/blob/main/docs/usage/install-and-first-run.md#windows"
 )
+
+# The deprecated ``yoetz`` alias (ADR-048) names its replacement once per interactive run. It is
+# never printed where a machine reads the streams: hooks, MCP and service processes, ``--json``,
+# or ``--version``, whose bare stdout released ``yoetz upgrade`` code parses.
+LEGACY_ALIAS_NOTICE: Final = (
+    "notice: 'yoetz' is now 'finishup'. For this release any finishup command also works as "
+    "'yoetz' with the same subcommand, and 'yoetz upgrade' shows how to move; the alias will be "
+    "removed in a later release. See "
+    "https://github.com/TheGaySupreme123/finishup/blob/main/docs/usage/upgrading.md#upgrading-from-yoetz"
+)
+_LEGACY_ALIAS_QUIET_FLAGS: Final = frozenset({"--json", "--version"})
+
+
+def _legacy_alias_notice(arguments: list[str]) -> None:
+    """Print the alias deprecation notice to an interactive stderr only (ADR-048)."""
+
+    if any(token in _LEGACY_ALIAS_QUIET_FLAGS for token in arguments):
+        return
+    if arguments[:1] == ["hooks"] or arguments[:2] in (["mcp", "serve"], ["service", "run"]):
+        return
+    from finishup.adapters.integrations.launcher import invoked_through_legacy_alias
+
+    if not invoked_through_legacy_alias():
+        return
+    try:
+        if sys.stderr is None or not sys.stderr.isatty():
+            return
+        sys.stderr.write(LEGACY_ALIAS_NOTICE + "\n")
+        sys.stderr.flush()
+    except OSError, ValueError:
+        pass
 
 
 def _service_status_fast_path(arguments: list[str]) -> int | None:
@@ -85,7 +116,13 @@ def _service_status_fast_path(arguments: list[str]) -> int | None:
         stderr("internal_error: the command could not be completed")
         return 70
 
-    return _render(lambda: human_or_json(status, json_output=json_output))
+    code = _render(lambda: human_or_json(status, json_output=json_output))
+    if code == 0 and not json_output:
+        from finishup.cli.service_installation import report_installation_naming
+
+        # A Yoetz-era install used in place is named on stderr; stdout is unchanged (ADR-048).
+        report_installation_naming(stderr)
+    return code
 
 
 def _observe_fast_path(arguments: list[str]) -> int | None:
@@ -382,6 +419,8 @@ def main() -> None:
         code = _spool_fast_path(argv[2:])
         if code is not None:
             raise SystemExit(code)
+    # After the release-runtime handoff, so a re-executed process prints the notice only once.
+    _legacy_alias_notice(argv)
     code = _unsupported_platform_exit(argv)
     if code is not None:
         raise SystemExit(code)

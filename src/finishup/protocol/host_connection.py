@@ -13,6 +13,7 @@ type Request = Annotated[
 class HostConnectionPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    # Frozen legacy identifier (ADR-048): the protocol 0.1 tag namespace.
     schema_tag: Literal["yoetz.host-connection-plan/1"] = Field(alias="schema")
     request_id: Request
     host: Literal["codex", "claude", "cursor-ide", "cursor-cli"]
@@ -47,6 +48,7 @@ class HostConnectionPlan(BaseModel):
 class HostConnectionReport(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    # Frozen legacy identifier (ADR-048): the protocol 0.1 tag namespace.
     schema_tag: Literal["yoetz.host-connection-report/1"] = Field(alias="schema")
     host: str
     action: Literal["connect", "disconnect"]

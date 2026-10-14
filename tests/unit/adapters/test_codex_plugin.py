@@ -191,7 +191,8 @@ def test_render_plugin_tree_wires_observation_and_compat_hooks() -> None:
     assert "finishup hooks spool --workspace . --event PreToolUse" in hooks
     assert "finishup hooks spool --workspace . --event PermissionRequest" in hooks
     assert "finishup hooks observe --workspace . --event SubagentStop" in hooks
-    assert "mcp__finishup__start" in hooks
+    # The start correlation matches either registration key (ADR-048).
+    assert "^mcp__(?:finishup|yoetz)__start$" in hooks
     assert "resume|compact" in hooks
 
 
@@ -467,3 +468,115 @@ def test_inspect_absent_and_trust_not_observable(tmp_path: Path) -> None:
     assert inspection.presence is PluginHookPresence.ABSENT
     assert inspection.trust_observable is False
     assert "codex_hook_trust_not_observable_from_installation_state" in inspection.notes
+
+
+def _legacy_tree(root: Path, members: Mapping[str, bytes]) -> Path:
+    """Write a Yoetz-era plugin tree: same marker name and schema, legacy directory name."""
+
+    legacy = root / ".agents/plugins/yoetz"
+    for relative, data in members.items():
+        path = legacy / relative
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_bytes(data)
+    return legacy
+
+
+def test_install_keeps_a_marker_consistent_legacy_tree_for_the_activation_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A legacy Codex activation may still read ``.agents/plugins/yoetz`` (ADR-048).
+
+    Plugin install alone never deletes it; only the digest-bound activation migration does,
+    after the legacy tables and document that read it are gone.
+    """
+
+    from finishup.adapters.integrations.codex_plugin import (
+        legacy_plugin_tree_digest,
+        render_plugin_install_tree,
+    )
+
+    tmp_path.chmod(0o700)
+    resources = _resources()
+    _enable_supported_profile(monkeypatch, resources)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = _legacy_tree(tmp_path, render_plugin_install_tree(resource_source=resources))
+    before = inspect_plugin(target, resource_source=resources)
+    assert before.presence is PluginHookPresence.ABSENT
+    assert "legacy_plugin_tree_present" in before.notes
+    digest = legacy_plugin_tree_digest(target)
+
+    after = install_plugin(target, resource_source=resources)
+
+    assert after.presence is PluginHookPresence.INSTALLED
+    assert legacy.is_dir()
+    assert legacy_plugin_tree_digest(target) == digest
+    assert "legacy_plugin_tree_present" in after.notes
+
+
+def test_legacy_tree_removal_is_bound_to_the_approved_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.adapters.integrations.codex_plugin import (
+        legacy_plugin_tree_digest,
+        remove_legacy_plugin_tree,
+        render_plugin_install_tree,
+    )
+    from finishup.ports.integrations import IntegrationError, IntegrationReason
+
+    tmp_path.chmod(0o700)
+    resources = _resources()
+    _enable_supported_profile(monkeypatch, resources)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = _legacy_tree(tmp_path, render_plugin_install_tree(resource_source=resources))
+    digest = legacy_plugin_tree_digest(target)
+    assert digest is not None
+
+    with pytest.raises(IntegrationError) as stale:
+        remove_legacy_plugin_tree(target, "sha256:" + "0" * 64)
+    assert stale.value.reason is IntegrationReason.PREVIEW_STALE
+    assert legacy.is_dir()
+
+    remove_legacy_plugin_tree(target, digest)
+    assert not legacy.exists()
+    assert not any(path.name.startswith(".yoetz.") for path in legacy.parent.iterdir())
+    # An earlier interrupted run already removed it: nothing left to do.
+    remove_legacy_plugin_tree(target, digest)
+
+
+def test_a_modified_legacy_tree_has_no_removal_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.adapters.integrations.codex_plugin import (
+        legacy_plugin_tree_digest,
+        render_plugin_install_tree,
+    )
+
+    tmp_path.chmod(0o700)
+    resources = _resources()
+    _enable_supported_profile(monkeypatch, resources)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    members = dict(render_plugin_install_tree(resource_source=resources))
+    members["hooks/hooks.json"] += b"# owner edit\n"
+    _legacy_tree(tmp_path, members)
+
+    assert legacy_plugin_tree_digest(target) is None
+
+
+def test_install_never_removes_a_modified_legacy_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
+
+    tmp_path.chmod(0o700)
+    resources = _resources()
+    _enable_supported_profile(monkeypatch, resources)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    members = dict(render_plugin_install_tree(resource_source=resources))
+    members["hooks/hooks.json"] += b"# owner edit\n"
+    legacy = _legacy_tree(tmp_path, members)
+
+    after = install_plugin(target, resource_source=resources)
+
+    assert after.presence is PluginHookPresence.INSTALLED
+    assert (legacy / "hooks/hooks.json").read_bytes().endswith(b"# owner edit\n")
+    assert "legacy_plugin_tree_retained" in after.notes

@@ -24,6 +24,14 @@ pinned Python distribution `finishup==<this package's version>` as a persistent 
 A bare interactive `npx finishup` therefore reaches the same full-screen first run the Python CLI
 owns; this package adds no behavior of its own and duplicates no setup or interface logic.
 
+## Coming from `npx yoetz`
+
+FinishUP was called Yoetz through 0.2.5. `npx finishup` installs a separate `finishup` tool; it
+never replaces, renames or removes an existing `yoetz` tool and never passes `--force` to uv. Agents
+connected through the earlier tool keep running it until you reconnect them to `finishup`; only
+then remove the old tool with `uv tool uninstall yoetz`. The deprecated `yoetz` npm package keeps
+`npx yoetz` working for one release by updating that existing tool in place.
+
 ## When `uv` is missing
 
 The packaging contract forbids bootstrapping a runtime from here, so the launcher does not try.

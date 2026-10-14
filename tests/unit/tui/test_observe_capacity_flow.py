@@ -450,3 +450,53 @@ def test_the_command_list_names_the_capacity_change() -> None:
     command = command_named("/observe")
     assert command is not None
     assert command.summary == "show observation selection and change local retention capacity"
+
+
+def _pre_rename(disclosure: Mapping[str, object]) -> dict[str, object]:
+    """The same record as a pre-rename service wrote it: every step names ``yoetz`` (ADR-048)."""
+
+    legacy = dict(disclosure)
+    for key in ("lower_command", "revoke_command", "pause_command", "resume_command"):
+        legacy[key] = str(disclosure[key]).replace("finishup ", "yoetz ")
+    return legacy
+
+
+class _PreRenameRuntime(_Runtime):
+    def _disclosure(self, capacity: CapacityRequest) -> Mapping[str, object]:
+        return _pre_rename(super()._disclosure(capacity))
+
+    async def preview_observation_selection(
+        self, capacity: CapacityRequest
+    ) -> Mapping[str, object]:
+        if capacity.capacity is None:
+            self.previews.append(capacity)
+            raise ObservationCapacityUnavailable(
+                render_capacity_disclosure_lines(self._disclosure(capacity)),
+                _ALTERNATIVE.replace("finishup ", "yoetz "),
+            )
+        return await super().preview_observation_selection(capacity)
+
+
+async def test_a_pre_rename_disclosure_names_the_current_launcher_in_every_step() -> None:
+    runtime = _PreRenameRuntime()
+    harness = _Harness(runtime, ["larger", "apply"])
+
+    await harness.run()
+
+    _, body = harness.titled("Local retention capacity applied")
+    lower = next(line for line in body if line.startswith("Lower it later with: "))
+    assert " then finishup observe selection-apply " in lower
+    assert (
+        "Pause new observation ingest with: finishup observe pause --workspace <workspace>" in body
+    )
+    assert "yoetz" not in harness.transcript
+
+
+async def test_a_pre_rename_no_cap_alternative_names_the_current_launcher() -> None:
+    harness = _Harness(_PreRenameRuntime(), ["no_cap"])
+
+    await harness.run()
+
+    _, body = harness.titled("No FinishUP cap is not available")
+    assert f"Alternative: choose Largest (8,192 rows) in /observe, or run: {_ALTERNATIVE}" in body
+    assert "yoetz" not in harness.transcript

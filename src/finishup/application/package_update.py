@@ -23,6 +23,7 @@ from finishup.adapters.privacy.update_checks import (
 )
 from finishup.config.paths import PathSafetyError, ensure_owner_only_dir, state_dir
 from finishup.domain.privacy import EgressChannel, PrivacyPolicy
+from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
 
 __all__ = [
     "PACKAGE_UPDATE_UPGRADE_COMMAND",
@@ -33,6 +34,7 @@ __all__ = [
     "advisory_tip_lines",
     "build_package_update_advisory",
     "compare_versions",
+    "installed_package_name",
     "installed_package_version",
     "is_update_checks_permitted",
     "load_package_update_cache",
@@ -44,8 +46,18 @@ __all__ = [
 
 PACKAGE_UPDATE_UPGRADE_COMMAND: Final = "finishup upgrade"
 PACKAGE_INSTALL_COMMAND: Final = "uv tool install --managed-python --python 3.14.6 finishup"
+# Frozen legacy identifier (ADR-048): the cache file keeps its schema tag so earlier releases
+# sharing the state directory still read it. The optional ``package`` member names the PyPI
+# identity that was polled; a cache without one was written by a release that polled ``yoetz``.
 _CACHE_SCHEMA: Final = "yoetz.package-update-cache/1"
-_CACHE_NAME: Final = "package-update-cache.json"
+# One cache file per polled PyPI identity, so a ``finishup`` and a ``yoetz`` installation sharing
+# an adopted state directory never overwrite each other's entry or bypass its TTL.
+_CACHE_NAMES: Final = {
+    # Releases before the rename read this file and treat any entry in it as a ``yoetz`` poll,
+    # so it only ever holds ``yoetz`` polls (ADR-048).
+    LEGACY_LAUNCHER_NAME: "package-update-cache.json",
+    LAUNCHER_NAME: "package-update-cache-finishup.json",
+}
 _DEFAULT_TTL: Final = timedelta(hours=24)
 _MAX_CACHE_BYTES: Final = 4096
 
@@ -68,6 +80,7 @@ class PackageUpdateAdvisory:
     is_newer: bool
     upgrade_command: str
     source: Literal["network", "cache", "none"]
+    package: str = LAUNCHER_NAME
 
     def tip_lines(self) -> tuple[str, ...]:
         return advisory_tip_lines(self)
@@ -79,6 +92,7 @@ class PackageUpdateCache:
     latest_version: str
     fetched_at: datetime
     ttl_seconds: int
+    package: str = LAUNCHER_NAME
 
     def is_fresh(self, *, now: datetime) -> bool:
         if now.tzinfo is None or self.fetched_at.tzinfo is None:
@@ -93,6 +107,23 @@ def installed_package_version() -> str:
     from finishup import __version__
 
     return __version__
+
+
+def installed_package_name() -> str:
+    """Name the PyPI identity this installation upgrades through, without network I/O.
+
+    An installation that came from the transitional ``yoetz`` distribution (ADR-048) has that
+    distribution, at exactly this version, installed beside ``finishup``; it upgrades and polls
+    through ``yoetz``. Everything else is ``finishup``.
+    """
+
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        legacy = version(LEGACY_LAUNCHER_NAME)
+    except PackageNotFoundError, ValueError:
+        return LAUNCHER_NAME
+    return LEGACY_LAUNCHER_NAME if legacy == installed_package_version() else LAUNCHER_NAME
 
 
 def is_update_checks_permitted(
@@ -134,10 +165,16 @@ def compare_versions(installed: str, candidate: str) -> bool | None:
     return right > left
 
 
-def upgrade_command_for(*, latest_version: str | None = None) -> str:
-    """Primary remediation string (ADR-007). Never invents a pin from a failed check."""
+def upgrade_command_for(*, latest_version: str | None = None, package: str = LAUNCHER_NAME) -> str:
+    """Primary remediation string (ADR-007). Never invents a pin from a failed check.
+
+    An installation from the transitional ``yoetz`` distribution names the command it has on
+    ``PATH``: its ``finishup`` script sits inside the tool environment, not on ``PATH``.
+    """
 
     del latest_version  # Reserved for optional display; the guided command owns version selection.
+    if package == LEGACY_LAUNCHER_NAME:
+        return f"{LEGACY_LAUNCHER_NAME} upgrade"
     return PACKAGE_UPDATE_UPGRADE_COMMAND
 
 
@@ -147,11 +184,14 @@ def build_package_update_advisory(
     latest_version: str | None,
     source: Literal["network", "cache", "none"] = "none",
     outcome: PackageUpdateOutcome | None = None,
+    package: str = LAUNCHER_NAME,
 ) -> PackageUpdateAdvisory:
     """Pure advisory builder from already-resolved version strings."""
 
     if type(installed_version) is not str or not installed_version:
         raise ValueError("installed_version_invalid")
+    if package not in _CACHE_NAMES:
+        raise ValueError("package_invalid")
     if latest_version is not None and (type(latest_version) is not str or not latest_version):
         raise ValueError("latest_version_invalid")
 
@@ -163,8 +203,9 @@ def build_package_update_advisory(
             installed_version=installed_version,
             latest_version=latest_version,
             is_newer=False,
-            upgrade_command=upgrade_command_for(latest_version=latest_version),
+            upgrade_command=upgrade_command_for(latest_version=latest_version, package=package),
             source=source,
+            package=package,
         )
     if outcome is not None:
         resolved = outcome
@@ -179,8 +220,9 @@ def build_package_update_advisory(
         installed_version=installed_version,
         latest_version=latest_version,
         is_newer=bool(newer),
-        upgrade_command=upgrade_command_for(latest_version=latest_version),
+        upgrade_command=upgrade_command_for(latest_version=latest_version, package=package),
         source=source,
+        package=package,
     )
 
 
@@ -189,29 +231,48 @@ def advisory_tip_lines(advisory: PackageUpdateAdvisory) -> tuple[str, ...]:
 
     if not advisory.is_newer or advisory.latest_version is None:
         return ()
-    return (
+    lines = (
         f"A newer FinishUP package is available "
         f"({advisory.installed_version} → {advisory.latest_version}).",
         f"Upgrade with: {advisory.upgrade_command}",
-        "Use finishup upgrade to plan host refresh and any migration. Nothing needs to be stopped: "
-        "open sessions keep working and switch to the new version when reopened.",
+        f"Use {advisory.upgrade_command} to plan host refresh and any migration. Nothing needs to "
+        "be stopped: open sessions keep working and switch to the new version when reopened.",
     )
+    if advisory.package == LEGACY_LAUNCHER_NAME:
+        lines += (
+            "The yoetz command is deprecated and a later release removes it. Until then, any "
+            "finishup command FinishUP shows also works as yoetz with the same subcommand. Its "
+            "plan ends with the steps to move this installation to the finishup command.",
+        )
+    return lines
 
 
-def _cache_path(root: Path | None = None) -> Path:
+def _cache_path(root: Path | None, package: str) -> Path:
+    name = _CACHE_NAMES.get(package)
+    if name is None:
+        raise ValueError("package_invalid")
     base = state_dir() if root is None else root
-    return base / _CACHE_NAME
+    return base / name
 
 
 def load_package_update_cache(
     *,
     root: Path | None = None,
     now: datetime | None = None,
+    package: str | None = None,
 ) -> PackageUpdateCache | None:
-    """Load a structural cache entry; fail closed on any parse/TTL problem."""
+    """Load a structural cache entry; fail closed on any parse/TTL problem.
+
+    ``package`` (default: this installation's, ``installed_package_name``) selects that PyPI
+    identity's own cache file. An entry recording a different identity is not returned, so a
+    state directory shared by a ``finishup`` and a ``yoetz`` installation never mixes answers.
+    """
 
     del now  # Freshness is evaluated by callers that hold a clock.
-    path = _cache_path(root)
+    wanted = installed_package_name() if package is None else package
+    if wanted not in _CACHE_NAMES:
+        return None
+    path = _cache_path(root, wanted)
     try:
         raw = path.read_bytes()
     except OSError:
@@ -240,11 +301,16 @@ def load_package_update_cache(
         return None
     if fetched_at.tzinfo is None:
         return None
+    # A cache without ``package`` was written by a pre-rename release polling ``yoetz`` (ADR-048).
+    polled = document.get("package", LEGACY_LAUNCHER_NAME)
+    if polled != wanted:
+        return None
     return PackageUpdateCache(
         schema=_CACHE_SCHEMA,
         latest_version=version_raw,
         fetched_at=fetched_at.astimezone(UTC),
         ttl_seconds=ttl_raw,
+        package=wanted,
     )
 
 
@@ -254,11 +320,18 @@ def store_package_update_cache(
     fetched_at: datetime,
     ttl: timedelta = _DEFAULT_TTL,
     root: Path | None = None,
+    package: str | None = None,
 ) -> None:
-    """Write a structural cache entry under the state directory. Best-effort."""
+    """Write a structural cache entry to the polled identity's own file. Best-effort.
+
+    ``package`` defaults to this installation's identity (``installed_package_name``).
+    """
 
     if type(latest_version) is not str or not latest_version:
         raise ValueError("latest_version_invalid")
+    polled = installed_package_name() if package is None else package
+    if polled not in _CACHE_NAMES:
+        raise ValueError("package_invalid")
     if fetched_at.tzinfo is None:
         raise ValueError("fetched_at_naive")
     ttl_seconds = int(ttl.total_seconds())
@@ -272,8 +345,9 @@ def store_package_update_cache(
         .isoformat()
         .replace("+00:00", "Z"),
         "ttl_seconds": ttl_seconds,
+        "package": polled,
     }
-    path = _cache_path(root)
+    path = _cache_path(root, polled)
     try:
         ensure_owner_only_dir(path.parent)
         payload = (
@@ -297,10 +371,17 @@ async def resolve_package_update_advisory(
     now: datetime | None = None,
     cache_root: Path | None = None,
     allow_network: bool = True,
+    package: str | None = None,
 ) -> PackageUpdateAdvisory:
-    """Policy-gated advisory resolution with cache and fail-closed network errors."""
+    """Policy-gated advisory resolution with cache and fail-closed network errors.
+
+    ``package`` defaults to the identity this installation came from (``installed_package_name``).
+    """
 
     installed = installed_version if installed_version is not None else installed_package_version()
+    polled = package if package is not None else installed_package_name()
+    if polled not in _CACHE_NAMES:
+        raise ValueError("package_invalid")
     permitted = (
         is_update_checks_permitted(policy)
         if policy is not None
@@ -312,15 +393,17 @@ async def resolve_package_update_advisory(
     if not permitted:
         return build_package_update_advisory(
             installed_version=installed,
+            package=polled,
             latest_version=None,
             source="none",
             outcome="skipped_policy",
         )
     clock = now if now is not None else datetime.now(tz=UTC)
-    cached = load_package_update_cache(root=cache_root)
+    cached = load_package_update_cache(root=cache_root, package=polled)
     if cached is not None and cached.is_fresh(now=clock):
         return build_package_update_advisory(
             installed_version=installed,
+            package=polled,
             latest_version=cached.latest_version,
             source="cache",
         )
@@ -328,36 +411,43 @@ async def resolve_package_update_advisory(
         if cached is not None:
             return build_package_update_advisory(
                 installed_version=installed,
+                package=polled,
                 latest_version=cached.latest_version,
                 source="cache",
             )
         return build_package_update_advisory(
             installed_version=installed,
+            package=polled,
             latest_version=None,
             source="none",
             outcome="skipped_unavailable",
         )
-    client = transport if transport is not None else HttpxUpdateChecksTransport()
+    client = transport if transport is not None else HttpxUpdateChecksTransport(package=polled)
     try:
         latest = await client.fetch_latest_version()
     except UpdateChecksTransportError:
         if cached is not None:
             return build_package_update_advisory(
                 installed_version=installed,
+                package=polled,
                 latest_version=cached.latest_version,
                 source="cache",
             )
         return build_package_update_advisory(
             installed_version=installed,
+            package=polled,
             latest_version=None,
             source="none",
             outcome="skipped_unavailable",
         )
-    store_package_update_cache(latest_version=latest, fetched_at=clock, root=cache_root)
+    store_package_update_cache(
+        latest_version=latest, fetched_at=clock, root=cache_root, package=polled
+    )
     return build_package_update_advisory(
         installed_version=installed,
         latest_version=latest,
         source="network",
+        package=polled,
     )
 
 

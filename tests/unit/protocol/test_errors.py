@@ -1154,3 +1154,24 @@ def test_blocking_reasons_detail_admits_only_bounded_closed_tokens() -> None:
     public = error.as_public_dict()
     assert public["safe_details"] == {"blocking_reasons": ["issue_returned_again"]}
     validate_schema_instance("public-error", "1.0.0", cast(JsonValue, public))
+
+
+@pytest.mark.parametrize(
+    ("key", "current"),
+    (
+        ("authorize_command", "finishup consent authorize"),
+        ("prepare_command", "finishup consent prepare vault_initialize"),
+        ("review_command", "finishup consent review"),
+    ),
+)
+def test_consent_command_details_render_the_current_launcher_for_either_head(
+    key: str, current: str
+) -> None:
+    """A pre-rename service named the ``yoetz`` alias; the detail names ``finishup`` (ADR-048)."""
+
+    legacy = "yoetz " + current.removeprefix("finishup ")
+    assert normalize_safe_details({key: current}) == {key: current}
+    assert normalize_safe_details({key: legacy}) == {key: current}
+    assert normalize_safe_details({key: "yoetzz " + legacy}) == {}
+    other = "review_command" if key != "review_command" else "authorize_command"
+    assert normalize_safe_details({other: legacy}) == {}

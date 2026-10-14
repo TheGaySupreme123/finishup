@@ -14,6 +14,7 @@ from finishup.adapters.integrations import portable_plugin as portable_mod
 from finishup.adapters.integrations.codex_plugin import install_plugin
 from finishup.adapters.integrations.portable_plugin import (
     AGENT_PLUGIN_ROOT,
+    LEGACY_AGENT_PLUGIN_ROOT,
     ElevatedPortableArtifactReview,
     PortablePluginArtifactAdapter,
     build_portable_plugin_plan,
@@ -183,11 +184,18 @@ def test_codex_portable_root_and_scope_are_fixture_registered() -> None:
     assert fixture["host_surface"] == "codex_cli"
     assert fixture["format_profile"] == "agent_plugins_1"
     assert fixture["scope"] == "trusted_project"
-    assert fixture["plugin_root"] == AGENT_PLUGIN_ROOT
+    # The registered fixture records the Yoetz-era tree (ADR-048): its root is the legacy
+    # directory FinishUP still recognizes, and its members differ only by the skill name.
+    assert fixture["plugin_root"] == LEGACY_AGENT_PLUGIN_ROOT
+    assert AGENT_PLUGIN_ROOT == ".agents/plugins/finishup"
     assert fixture["mcp_ownership"] == "external_registration"
     expected_members = fixture["expected_members"]
     assert type(expected_members) is list
-    assert expected_members == sorted(render_portable_plugin_tree(), key=str.encode)
+    renamed = [
+        str(member).replace("skills/yoetz/", "skills/finishup/")
+        for member in cast(list[object], expected_members)
+    ]
+    assert renamed == sorted(render_portable_plugin_tree(), key=str.encode)
 
 
 def test_plugin_managed_route_variants_match_the_registered_fixture() -> None:
@@ -208,7 +216,16 @@ def test_plugin_managed_route_variants_match_the_registered_fixture() -> None:
         assert isinstance(mcp, Mapping)
         servers = mcp["mcpServers"]
         assert isinstance(servers, Mapping)
-        assert servers[server_name] == routes[profile]
+        # The fixture records the Yoetz-era route (ADR-048). The renamed render keys the same
+        # route ``finishup`` and launches ``finishup``; the legacy bytes stay recognizable.
+        legacy_route = routes[profile]
+        assert isinstance(legacy_route, Mapping)
+        assert dict(servers) == {"finishup": {**legacy_route, "command": "finishup"}}
+        legacy = strict_json_parse(
+            portable_mod._mcp_json(profile, legacy=True)  # pyright: ignore[reportPrivateUsage]
+        )
+        assert isinstance(legacy, Mapping)
+        assert legacy["mcpServers"] == {server_name: legacy_route}
 
 
 def test_portable_tree_is_skills_only_and_guidance_is_byte_identical() -> None:

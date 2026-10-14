@@ -842,7 +842,7 @@ def _assert_change_leads_and_is_accounted(semantic: SemanticCase, text: bytes) -
     return len(change_items)
 
 
-@pytest.mark.parametrize("ceiling", (262_144, 220_000, 200_000, 170_000, 160_000))
+@pytest.mark.parametrize("ceiling", (262_144, 220_000, 200_000, 170_000, 162_000))
 def test_the_change_keeps_its_leading_part_beside_sixteen_prior_findings(ceiling: int) -> None:
     """tb4n1 (issue #983): a narrowed case dropped every 16 KiB part while small excerpts stayed.
 
@@ -864,8 +864,10 @@ def test_the_change_keeps_its_leading_part_beside_sixteen_prior_findings(ceiling
 
 def test_a_tight_case_cuts_the_first_part_to_the_room_and_says_so() -> None:
     text = _cracker_change()
-    # About 2 KiB of room is left above the fixed material: less than one whole part.
-    semantic, _ = _ledger_build(_change(text), ceiling=160_000, findings=_open_prior_findings())
+    # About 4 KiB of room is left above the fixed material: less than one whole part. (The planner
+    # searches excerpt budgets in 1 KiB steps, so a ceiling within about 2 KiB of the fixed
+    # material can land on no part at all; FinishUP's labels are 3 bytes longer than Yoetz's were.)
+    semantic, _ = _ledger_build(_change(text), ceiling=162_000, findings=_open_prior_findings())
 
     (first,) = [
         item for item in semantic.items if item.item_id.startswith(CHECK_TIME_CHANGE_ITEM_PREFIX)

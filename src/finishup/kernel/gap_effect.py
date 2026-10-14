@@ -300,6 +300,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "declared_output_content_moved",
             "declared_output_not_reviewable",
             "install_into_private_env",
+            # Frozen legacy identifier (ADR-048): recorded gap code.
             "install_into_yoetz_runtime",
             "obligation_blocked_outside_agent_control",
             "obligation_evidence_stale_after_scope_edit",
@@ -456,6 +457,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "semantic_missing_items_rejected",
             "semantic_missing_non_convergent",
             "semantic_missing_structurally_unavailable",
+            # Frozen legacy identifier (ADR-048): recorded gap code.
             "semantic_missing_yoetz_limit",
             "semantic_packet_insufficient",
             "semantic_provider_input_manifest_invalid",
@@ -773,6 +775,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "evidence_digest_subject_legacy_unknown",
         "host_outcome_unavailable",
         "install_into_private_env",
+        # Frozen legacy identifier (ADR-048): recorded gap code.
         "install_into_yoetz_runtime",
         "instruction_requirement_unmapped",
         "obligation_blocked_outside_agent_control",
@@ -802,6 +805,7 @@ PROOF_TOLERATED_GAPS: Final = frozenset(
         "semantic_missing_items_rejected",
         "semantic_missing_non_convergent",
         "semantic_missing_structurally_unavailable",
+        # Frozen legacy identifier (ADR-048): recorded gap code.
         "semantic_missing_yoetz_limit",
         "semantic_packet_insufficient",
         "semantic_prior_findings_over_limit",

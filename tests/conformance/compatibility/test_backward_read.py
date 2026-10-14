@@ -135,7 +135,8 @@ def test_released_corpus_still_reads(fixture_loader: FixtureLoader, tmp_path: Pa
             assert all(_digest(data) != plaintext_canary for data in members.values()), name
 
         release_identity = cast(dict[str, JsonValue], input_block["release_manifest_identity"])
-        assert release_identity["package"] == "finishup", name
+        # Frozen legacy identifier (ADR-048): released archives record the pre-rename package.
+        assert release_identity["package"] == "yoetz", name
         assert release_identity["protocol"] == PROTOCOL_VERSION, name
         assert _classify_bundle_schema(cast(str, release_identity["bundle_schema"])) in {
             "supported",

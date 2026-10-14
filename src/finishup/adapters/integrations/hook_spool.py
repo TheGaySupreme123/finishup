@@ -92,6 +92,8 @@ class HookSpool:
         session_id = safe.get("session_id")
         if type(session_id) is not str or not session_id or len(session_id) > 128:
             return False
+        # Frozen legacy identifier (ADR-048): the key spooled payloads are replayed by, including
+        # payloads an older release spooled before the upgrade.
         safe["_yoetz_spool_id"] = str(uuid.uuid4())
         commitment = self.workspace_commitment(workspace)
         body = {

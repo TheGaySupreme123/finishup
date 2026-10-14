@@ -30,6 +30,7 @@ from finishup.domain.review_input_render import (
     render_review_input_manifest_compact,
 )
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
+from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES
 from finishup.mcp.errors import VALIDATION_REASON_TOKENS
 from finishup.protocol.canonical import JsonValue, ensure_canonical_value
 from finishup.protocol.errors import (
@@ -37,7 +38,7 @@ from finishup.protocol.errors import (
     PublicErrorCode,
     normalize_safe_details,
 )
-from finishup.protocol.guidance_uris import ALL_GUIDANCE_URIS
+from finishup.protocol.guidance_uris import ALL_GUIDANCE_URIS, LEGACY_ALL_GUIDANCE_URIS
 from finishup.protocol.ids import IdKind, is_valid_id, validate_opaque_item_id
 from finishup.protocol.inspection_text import inspection_text
 from finishup.protocol.readiness_text import (
@@ -131,9 +132,10 @@ _CORRELATION_ID: Final = re.compile(
 )
 # Closed shape for the frontier head: either the genesis sentinel or a canonical digest.
 _HEAD_DIGEST: Final = re.compile(r"^(?:genesis|sha256:[0-9a-f]{64})$", re.ASCII)
-# Closed shape of a packaged guidance URI, the only location a guidance pointer may name.
-_GUIDANCE_URI: Final = re.compile(r"^finishup://guidance/[a-z0-9-]{1,64}\.md$", re.ASCII)
-_REGISTERED_GUIDANCE_URIS: Final = frozenset(ALL_GUIDANCE_URIS)
+# Closed shape of a packaged guidance URI, the only location a guidance pointer may name. A
+# caller that read in the legacy ``yoetz://`` scheme is answered in it (ADR-048).
+_GUIDANCE_URI: Final = re.compile(r"^(?:finishup|yoetz)://guidance/[a-z0-9-]{1,64}\.md$", re.ASCII)
+_REGISTERED_GUIDANCE_URIS: Final = frozenset((*ALL_GUIDANCE_URIS, *LEGACY_ALL_GUIDANCE_URIS))
 
 
 # Priority bands for ``compose_parts`` (lower is granted room first). Every required part is
@@ -666,6 +668,7 @@ _MISSING_KINDS: Final = frozenset(
         "verification_output",
     }
 )
+# Frozen legacy identifier (ADR-048): the ``yoetz_limit_*`` availability values are released.
 _MISSING_AVAILABILITIES: Final = frozenset(
     {
         "agent_suppliable",
@@ -2403,18 +2406,23 @@ def _awaiting_continuation_command(kind: object, command: object) -> str | None:
     if not isinstance(command, Sequence) or isinstance(command, str):
         return None
     parts = tuple(cast(Sequence[object], command))
-    if kind == "review_input_required" and parts == ("finishup", "publish-work", "--input", "PATH"):
-        return "finishup publish-work --input PATH"
-    if kind == "repository_privacy_setup" and parts == ("finishup", "--privacy"):
-        return "finishup --privacy"
+    # A pre-rename service named the legacy launcher; the text always names the current one
+    # (ADR-048).
+    if not parts or parts[0] not in LAUNCHER_NAMES:
+        return None
+    arguments = parts[1:]
+    if kind == "review_input_required" and arguments == ("publish-work", "--input", "PATH"):
+        return f"{LAUNCHER_NAME} publish-work --input PATH"
+    if kind == "repository_privacy_setup" and arguments == ("--privacy",):
+        return f"{LAUNCHER_NAME} --privacy"
     if (
         kind == "privacy_disclosure_decision"
-        and len(parts) == 4
-        and parts[:3] == ("finishup", "privacy", "decide-disclosure")
-        and type(parts[3]) is str
-        and _PENDING_ID.fullmatch(parts[3]) is not None
+        and len(arguments) == 3
+        and arguments[:2] == ("privacy", "decide-disclosure")
+        and type(arguments[2]) is str
+        and _PENDING_ID.fullmatch(arguments[2]) is not None
     ):
-        return f"finishup privacy decide-disclosure {parts[3]}"
+        return f"{LAUNCHER_NAME} privacy decide-disclosure {arguments[2]}"
     return None
 
 

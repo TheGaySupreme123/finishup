@@ -134,7 +134,11 @@ def test_rendered_text_is_no_stronger_than_document(fixture_loader: FixtureLoade
         rendered = render_receipt_compact(document)
         expected_compact = variant.get("compact_markdown")
         if expected_compact is not None:
-            assert rendered == expected_compact, (path, name)
+            # The fixtures are pre-rename receipts with their pre-rename rendering; the stored
+            # document is unchanged and renders with the current product name (ADR-048).
+            assert rendered == cast(str, expected_compact).replace(
+                "Yoetz receipt at frontier ", "FinishUP receipt at frontier ", 1
+            ), (path, name)
             exercised_rendered = True
 
         haystacks = [rendered, *(section.body for section in document.sections)]

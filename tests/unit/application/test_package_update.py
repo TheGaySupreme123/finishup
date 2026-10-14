@@ -283,3 +283,250 @@ def test_update_tip_includes_complete_upgrade_guide() -> None:
         installed_version="0.2.0", latest_version="0.3.0", source="cache"
     )
     assert any("finishup upgrade" in line for line in advisory.tip_lines())
+
+
+# --- The transitional ``yoetz`` installation (ADR-048) -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("legacy_version", "expected"),
+    [("same", "yoetz"), ("0.2.5", "finishup"), (None, "finishup")],
+)
+def test_installed_package_name_follows_the_transitional_distribution(
+    monkeypatch: pytest.MonkeyPatch, legacy_version: str | None, expected: str
+) -> None:
+    import importlib.metadata
+
+    from finishup.application import package_update
+
+    def version(name: str) -> str:
+        assert name == "yoetz"
+        if legacy_version is None:
+            raise importlib.metadata.PackageNotFoundError(name)
+        return package_update.installed_package_version() if legacy_version == "same" else "0.2.5"
+
+    monkeypatch.setattr(importlib.metadata, "version", version)
+
+    assert package_update.installed_package_name() == expected
+
+
+def test_legacy_install_polls_and_names_its_own_package(tmp_path: Path) -> None:
+    transport = _ScriptedTransport(version="0.4.0")
+
+    async def run() -> None:
+        advisory = await resolve_package_update_advisory(
+            policy=_policy(update_checks=True, network=True),
+            installed_version="0.3.0",
+            transport=transport,
+            now=_NOW,
+            cache_root=tmp_path,
+            package="yoetz",
+        )
+        assert advisory.outcome == "newer_available"
+        assert advisory.upgrade_command == "yoetz upgrade"
+        assert any("yoetz upgrade" in line for line in advisory.tip_lines())
+        assert not any("finishup upgrade" in line for line in advisory.tip_lines())
+        assert any(
+            "move this installation to the finishup command" in line
+            and "also works as yoetz with the same subcommand" in line
+            for line in advisory.tip_lines()
+        )
+        cached = load_package_update_cache(root=tmp_path, package="yoetz")
+        assert cached is not None and cached.package == "yoetz"
+        assert load_package_update_cache(root=tmp_path, package="finishup") is None
+
+    import asyncio
+
+    asyncio.run(run())
+
+
+def test_a_cache_polled_for_one_package_never_answers_for_the_other(tmp_path: Path) -> None:
+    store_package_update_cache(
+        latest_version="9.0.0", fetched_at=_NOW, root=tmp_path, package="yoetz"
+    )
+    transport = _ScriptedTransport(version="0.4.0")
+
+    async def run() -> None:
+        advisory = await resolve_package_update_advisory(
+            policy=_policy(update_checks=True, network=True),
+            installed_version="0.3.0",
+            transport=transport,
+            now=_NOW,
+            cache_root=tmp_path,
+            package="finishup",
+        )
+        assert advisory.source == "network"
+        assert advisory.latest_version == "0.4.0"
+        assert advisory.upgrade_command == PACKAGE_UPDATE_UPGRADE_COMMAND
+        assert transport.calls == 1
+
+    import asyncio
+
+    asyncio.run(run())
+    kept = load_package_update_cache(root=tmp_path, package="yoetz")
+    assert kept is not None and kept.latest_version == "9.0.0"
+    refreshed = load_package_update_cache(root=tmp_path, package="finishup")
+    assert refreshed is not None and refreshed.latest_version == "0.4.0"
+
+
+def test_a_pre_rename_cache_without_package_was_polled_for_yoetz(tmp_path: Path) -> None:
+    (tmp_path / "package-update-cache.json").write_text(
+        '{"fetched_at":"2026-08-03T12:00:00Z","latest_version":"0.2.5",'
+        '"schema":"yoetz.package-update-cache/1","ttl_seconds":86400}\n',
+        encoding="utf-8",
+    )
+
+    legacy = load_package_update_cache(root=tmp_path, package="yoetz")
+    assert legacy is not None and legacy.package == "yoetz"
+    assert load_package_update_cache(root=tmp_path, package="finishup") is None
+
+
+def test_unknown_package_values_are_refused(tmp_path: Path) -> None:
+    (tmp_path / "package-update-cache.json").write_text(
+        '{"fetched_at":"2026-08-03T12:00:00Z","latest_version":"1.0.0","package":"other",'
+        '"schema":"yoetz.package-update-cache/1","ttl_seconds":86400}\n',
+        encoding="utf-8",
+    )
+    assert load_package_update_cache(root=tmp_path, package="yoetz") is None
+    assert load_package_update_cache(root=tmp_path, package="other") is None
+    with pytest.raises(ValueError, match="package_invalid"):
+        build_package_update_advisory(
+            installed_version="0.3.0", latest_version="0.4.0", package="other"
+        )
+    with pytest.raises(ValueError, match="package_invalid"):
+        store_package_update_cache(
+            latest_version="1.0.0", fetched_at=_NOW, root=tmp_path, package="other"
+        )
+
+    async def run() -> None:
+        with pytest.raises(ValueError, match="package_invalid"):
+            await resolve_package_update_advisory(
+                policy=_policy(update_checks=True, network=True),
+                installed_version="0.3.0",
+                transport=_ScriptedTransport(version="0.4.0"),
+                cache_root=tmp_path,
+                package="other",
+            )
+
+    import asyncio
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("package", "url"),
+    [("finishup", PYPI_FINISHUP_JSON_URL), ("yoetz", "https://pypi.org/pypi/yoetz/json")],
+)
+def test_transport_requests_only_the_allowlisted_identity(package: str, url: str) -> None:
+    import asyncio
+
+    import httpx
+
+    from finishup.adapters.privacy.update_checks import fetch_latest_finishup_version
+
+    requested: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        return httpx.Response(200, content=b'{"info":{"version":"0.4.0"}}')
+
+    async def run() -> str:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await fetch_latest_finishup_version(client=client, package=package)
+
+    assert asyncio.run(run()) == "0.4.0"
+    assert requested == [url]
+
+
+def test_transport_refuses_other_identities_before_any_request() -> None:
+    import asyncio
+
+    import httpx
+
+    from finishup.adapters.privacy.update_checks import fetch_latest_finishup_version
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("no request may be made")
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(ValueError, match="package_invalid"):
+                await fetch_latest_finishup_version(client=client, package="other")
+
+    asyncio.run(run())
+
+
+def test_alternating_installations_keep_their_own_ttl(tmp_path: Path) -> None:
+    """A ``finishup`` and a ``yoetz`` tool sharing one state directory poll once each per TTL."""
+
+    import asyncio
+
+    finishup_transport = _ScriptedTransport(version="0.4.0")
+    yoetz_transport = _ScriptedTransport(version="0.4.0")
+
+    async def resolve(package: str, transport: _ScriptedTransport, hours: int) -> str:
+        advisory = await resolve_package_update_advisory(
+            policy=_policy(update_checks=True, network=True),
+            installed_version="0.3.0",
+            transport=transport,
+            now=_NOW + timedelta(hours=hours),
+            cache_root=tmp_path,
+            package=package,
+        )
+        return advisory.source
+
+    async def run() -> list[str]:
+        sources: list[str] = []
+        for hours in range(4):
+            sources.append(await resolve("finishup", finishup_transport, hours))
+            sources.append(await resolve("yoetz", yoetz_transport, hours))
+        return sources
+
+    assert asyncio.run(run()) == ["network", "network"] + ["cache"] * 6
+    assert finishup_transport.calls == 1
+    assert yoetz_transport.calls == 1
+
+
+def test_a_finishup_poll_never_lands_where_pre_rename_releases_read(tmp_path: Path) -> None:
+    """Released Yoetz readers treat any entry in the legacy file as a ``yoetz`` poll (ADR-048)."""
+
+    legacy = tmp_path / "package-update-cache.json"
+    legacy_bytes = (
+        b'{"fetched_at":"2026-08-03T12:00:00Z","latest_version":"0.2.5",'
+        b'"schema":"yoetz.package-update-cache/1","ttl_seconds":86400}\n'
+    )
+    legacy.write_bytes(legacy_bytes)
+
+    store_package_update_cache(
+        latest_version="0.4.0", fetched_at=_NOW, root=tmp_path, package="finishup"
+    )
+
+    assert legacy.read_bytes() == legacy_bytes
+    assert (tmp_path / "package-update-cache-finishup.json").is_file()
+
+
+def test_each_cache_file_answers_only_for_its_own_identity(tmp_path: Path) -> None:
+    body = (
+        '{{"fetched_at":"2026-08-03T12:00:00Z","latest_version":"0.4.0",{package}'
+        '"schema":"yoetz.package-update-cache/1","ttl_seconds":86400}}\n'
+    )
+    # A legacy-file entry recording a finishup poll is not a yoetz answer.
+    (tmp_path / "package-update-cache.json").write_text(
+        body.format(package='"package":"finishup",'), encoding="utf-8"
+    )
+    # A finishup-file entry without a package member is not a finishup answer.
+    (tmp_path / "package-update-cache-finishup.json").write_text(
+        body.format(package=""), encoding="utf-8"
+    )
+
+    assert load_package_update_cache(root=tmp_path, package="yoetz") is None
+    assert load_package_update_cache(root=tmp_path, package="finishup") is None
+
+
+def test_finishup_tip_has_no_alias_notice() -> None:
+    advisory = build_package_update_advisory(
+        installed_version="0.3.0", latest_version="0.4.0", source="cache"
+    )
+
+    assert advisory.package == "finishup"
+    assert not any("yoetz" in line for line in advisory.tip_lines())

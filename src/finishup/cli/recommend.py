@@ -14,7 +14,7 @@ import anyio
 import typer
 
 from finishup.adapters.integrations.codex_session_stream import resolve_codex_home
-from finishup.application.package_update import PACKAGE_UPDATE_UPGRADE_COMMAND
+from finishup.application.package_update import installed_package_name, upgrade_command_for
 from finishup.application.recommendations import (
     RecommendationContext,
     RecommendationState,
@@ -332,6 +332,41 @@ def _preview_text(preview: object) -> tuple[str, str]:
     return digest, "\n".join(details)
 
 
+def _legacy_activation_lines(preview: object) -> tuple[str, ...]:
+    """Name every Yoetz-era deletion the activation digest binds (ADR-048).
+
+    The approval covers the legacy tables, cache versions and source tree as well as the new
+    bytes, so each is shown before consent; an unreadable field refuses the preview.
+    """
+
+    removed_block = getattr(preview, "legacy_removed_block", None)
+    raw_versions = getattr(preview, "legacy_cache_versions", None)
+    tree_planned = getattr(preview, "legacy_plugin_tree_planned", None)
+    if (
+        type(removed_block) is not str
+        or type(raw_versions) is not tuple
+        or type(tree_planned) is not bool
+    ):
+        raise _RecommendationCliError("activation_preview_invalid")
+    versions: list[str] = []
+    for version in cast(tuple[object, ...], raw_versions):
+        if type(version) is not str or not version:
+            raise _RecommendationCliError("activation_preview_invalid")
+        versions.append(version)
+    if not removed_block and not versions and not tree_planned:
+        return ()
+    lines = ["Earlier Yoetz activation removed by this change:"]
+    lines.extend(f"  {line}" for line in removed_block.splitlines())
+    if versions:
+        lines.append(f"  plugin cache versions: {', '.join(versions)}")
+    if tree_planned:
+        lines.append(
+            "  plugin source tree: .agents/plugins/yoetz (FinishUP-managed; deleted last, "
+            "once nothing activated here reads it)"
+        )
+    return tuple(lines)
+
+
 def _command_text(executable: Path, command: object) -> str:
     if type(command) is not tuple:
         raise _RecommendationCliError("activation_preview_invalid")
@@ -382,6 +417,7 @@ def _apply_codex_activation(
         )
         recommendation_target = _target_from_preview(preview)
         digest, exact_change = _preview_text(preview)
+        legacy_lines = _legacy_activation_lines(preview)
         preview_home = getattr(preview, "codex_home", None)
         if not isinstance(preview_home, Path) or preview_home != selected_home:
             raise _RecommendationCliError("activation_preview_invalid")
@@ -447,6 +483,8 @@ def _apply_codex_activation(
             typer.echo(f"  {line}")
         typer.echo("Exact activation change:")
         typer.echo(exact_change.rstrip())
+        for line in legacy_lines:
+            typer.echo(line)
         typer.echo(f"preview digest: {digest}")
         if not typer.confirm("Apply exactly this digest-bound activation change?", default=False):
             raise _RecommendationCliError("activation_not_approved")
@@ -501,7 +539,8 @@ def _apply_recommendation(
             record_approval=record_activation_approval,
         )
     if recommendation_id == "package-update":
-        return f"run: finishup upgrade (package command: {PACKAGE_UPDATE_UPGRADE_COMMAND})", None
+        # A transitional ``yoetz`` install has only ``yoetz`` on PATH (ADR-048).
+        return f"run: {upgrade_command_for(package=installed_package_name())}", None
     raise _RecommendationCliError("recommendation_unknown")
 
 

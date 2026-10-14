@@ -30,15 +30,15 @@ _XDG_ROOTS = (
 def _hermetic_finishup_environment(  # pyright: ignore[reportUnusedFunction]
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[None]:
-    """Rebase ``HOME`` and every XDG root onto a private per-test tree; drop ``FINISHUP_*``.
+    """Rebase ``HOME`` and every XDG root onto a private per-test tree; drop product variables.
 
     This is the same contract the ``cli-mcp-subprocess`` CI job applies to the whole job
     (``HOME``, ``XDG_CONFIG_HOME``, ``XDG_DATA_HOME``, ``XDG_CACHE_HOME`` under the job temp),
     extended with ``XDG_RUNTIME_DIR`` so endpoint resolution cannot fall back to a platform
     default outside the tree (on Linux that would be the real ``/run/user/<uid>``), and with a
-    scrub of inherited ``FINISHUP_*`` variables so neither a developer's exports nor the CI job's
-    own ``FINISHUP_CANDIDATE_PYTHON`` reaches the strict config loader, which
-    refuses every unknown ``FINISHUP_``-prefixed name. Underscore-prefixed harness variables such
+    scrub of inherited ``FINISHUP_*`` and legacy ``YOETZ_*`` variables so neither a developer's
+    exports nor the CI job's own ``FINISHUP_CANDIDATE_PYTHON`` reaches the strict config loader,
+    which refuses every unknown name under either prefix (ADR-048). Underscore-prefixed harness variables such
     as ``_FINISHUP_TEST_INSTALLATION`` are not product configuration and survive.
 
     ``XDG_STATE_HOME`` is unset rather than pinned, matching CI: ``state_dir()`` then follows
@@ -62,7 +62,8 @@ def _hermetic_finishup_environment(  # pyright: ignore[reportUnusedFunction]
         directory.mkdir(mode=0o700)
 
     for name in tuple(os.environ):
-        if name.startswith("FINISHUP_"):
+        # The strict loader reads the legacy ``YOETZ_`` spellings too (ADR-048).
+        if name.startswith(("FINISHUP_", "YOETZ_")):
             monkeypatch.delenv(name)
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     monkeypatch.setenv("HOME", os.fspath(home))

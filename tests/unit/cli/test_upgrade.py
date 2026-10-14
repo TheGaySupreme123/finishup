@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,9 +10,34 @@ from typer.testing import CliRunner
 
 from finishup.adapters import package_upgrade as package_adapter
 from finishup.application import upgrade
+from finishup.application.package_update import PACKAGE_INSTALL_COMMAND
 from finishup.cli.app import app
 
 _RUNNER = CliRunner()
+# ``[tool]`` lines uv records for --constraints, --overrides, --build-constraints, an index or
+# find-links option, and a key this boundary does not know: each is a choice a rebuilt command
+# would lose, so the receipt is not plain.
+_RECORDED_RESOLUTION = (
+    'constraints = [{name="openai",specifier="<2"}]',
+    'overrides = [{name="openai",specifier="<2"}]',
+    'build-constraint-dependencies = [{name="setuptools",specifier="<80"}]',
+    'options = {index=["https://example.invalid/simple"]}',
+    'excludes = ["openai"]',
+    "constraints = []\nfuture-choice = true",
+)
+# Resolution keys present but empty record no choice.
+_EMPTY_RESOLUTION = (
+    "constraints = []",
+    "overrides = []",
+    "build-constraint-dependencies = []",
+    "options = {}",
+)
+# The shape ``uv tool install --managed-python --python 3.14 '<name>[semantic-openai]'`` writes.
+_REAL_RECEIPT = (
+    '[tool]\nrequirements = [{{ name = "{name}", extras = ["semantic-openai"] }}]\n'
+    'python = "3.14"\nentrypoints = [\n'
+    '    {{ name = "{name}", install-path = "/home/u/.local/bin/{name}", from = "{name}" }},\n]\n'
+)
 
 
 def test_plan_does_not_execute_package_or_infer_host_roots(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -272,3 +298,387 @@ def test_upgrade_preserves_recorded_python_selection(tmp_path: Path) -> None:
     command = package_adapter._upgrade_command(tmp_path)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert command is not None
     assert command[4:6] == ("--python", "3.14.6")
+
+
+def _uv_tool(root: Path, tool: str, requirement: str, extras: str = "") -> Path:
+    prefix = root / tool
+    prefix.mkdir(parents=True)
+    (prefix / "uv-receipt.toml").write_text(
+        f'[tool]\nrequirements = [{{name="{requirement}",specifier="==0.2.5"{extras}}}]\n'
+    )
+    return prefix
+
+
+def _run_upgrade(
+    monkeypatch: pytest.MonkeyPatch, root: Path, prefix: Path, reported: bytes = b"99.0.0\n"
+) -> tuple[str, list[tuple[str, ...]]]:
+    monkeypatch.setattr("finishup.config.paths.isolated_root", lambda: None)
+    monkeypatch.setattr(package_adapter, "installation_prefix", lambda: prefix)
+    calls: list[tuple[str, ...]] = []
+
+    def run(argv: tuple[str, ...], **_kwargs: object) -> SimpleNamespace:
+        calls.append(argv)
+        if argv == ("uv", "tool", "dir"):
+            return SimpleNamespace(returncode=0, stdout=str(root).encode())
+        if argv[-1] == "--version":
+            return SimpleNamespace(returncode=0, stdout=reported)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(package_adapter.subprocess, "run", run)
+    return package_adapter.execute_package_upgrade(), calls
+
+
+def test_legacy_yoetz_uv_tool_upgrades_in_place_through_its_own_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A tool installed before the rename keeps its name and launcher (ADR-048)."""
+
+    root = tmp_path / "tools"
+    prefix = _uv_tool(root, "yoetz", "yoetz", ',extras=["semantic-openai"]')
+
+    outcome, calls = _run_upgrade(monkeypatch, root, prefix)
+
+    assert outcome == "package_command_succeeded"
+    install, verify = calls[1], calls[2]
+    assert install[:4] == ("uv", "tool", "install", "--upgrade")
+    assert install[-1] == f"yoetz[semantic-openai]>={package_adapter.__version__}"
+    assert verify == (str(prefix / "bin/yoetz"), "--version")
+
+
+def test_finishup_uv_tool_still_upgrades_through_finishup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "tools"
+    prefix = _uv_tool(root, "finishup", "finishup")
+
+    outcome, calls = _run_upgrade(monkeypatch, root, prefix)
+
+    assert outcome == "package_command_succeeded"
+    assert calls[1] == package_adapter.PACKAGE_UPGRADE_ARGV
+    assert calls[2] == (str(prefix / "bin/finishup"), "--version")
+
+
+@pytest.mark.parametrize(("tool", "requirement"), [("yoetz", "finishup"), ("finishup", "yoetz")])
+def test_a_tool_whose_receipt_names_the_other_package_is_never_renamed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tool: str, requirement: str
+) -> None:
+    root = tmp_path / "tools"
+    prefix = _uv_tool(root, tool, requirement)
+
+    outcome, calls = _run_upgrade(monkeypatch, root, prefix)
+
+    assert outcome == "refused_custom_uv_installation"
+    assert calls == [("uv", "tool", "dir")]
+
+
+def test_a_tool_directory_with_another_name_is_not_a_supported_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "tools"
+    prefix = _uv_tool(root, "yoetz-dev", "yoetz")
+
+    outcome, calls = _run_upgrade(monkeypatch, root, prefix)
+
+    assert outcome == "refused_non_uv_tool_runtime"
+    assert calls == [("uv", "tool", "dir")]
+
+
+def test_legacy_tool_with_an_unparsable_alias_version_is_unverified(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "tools"
+    prefix = _uv_tool(root, "yoetz", "yoetz")
+
+    outcome, _calls = _run_upgrade(monkeypatch, root, prefix, reported=b"notice: renamed\n")
+
+    assert outcome == "package_version_unverified"
+
+
+def test_alias_plan_names_the_alias_and_the_way_off_it() -> None:
+    steps = upgrade.build_upgrade_plan(["codex"], {}, launcher="yoetz")
+
+    commands = [argv for step in steps for argv in step.commands]
+    assert commands and all(argv[0] == "yoetz" for argv in commands)
+    assert "Run yoetz upgrade --accept" in steps[1].detail
+    move = steps[-1]
+    assert move.title == "Move from the yoetz name"
+    assert move.commands == ()
+    assert (
+        f"install the new name: {PACKAGE_INSTALL_COMMAND}. Its extras could not be confirmed"
+        in (move.detail)
+    )
+    assert "for example 'finishup[semantic-openai]'." in move.detail
+    assert "also works as yoetz with the same subcommand" in move.detail
+    assert "uv tool uninstall yoetz" in move.detail
+
+
+@pytest.mark.parametrize(
+    ("extras", "package"),
+    [
+        ((), "finishup"),
+        (("semantic-openai",), "'finishup[semantic-openai]'"),
+        (
+            ("portable-recovery", "semantic-openai"),
+            "'finishup[portable-recovery,semantic-openai]'",
+        ),
+    ],
+)
+def test_alias_move_step_installs_the_managed_python_pin_with_recorded_extras(
+    extras: tuple[str, ...], package: str
+) -> None:
+    steps = upgrade.build_upgrade_plan(["codex"], {}, launcher="yoetz", legacy_extras=extras)
+
+    move = steps[-1]
+    assert (
+        "install the new name: uv tool install --managed-python --python 3.14.6 " + package + "."
+    ) in move.detail
+    assert "could not be confirmed" not in move.detail
+
+
+def test_alias_move_step_refuses_unknown_extras() -> None:
+    with pytest.raises(ValueError, match="upgrade_extras_invalid"):
+        upgrade.build_upgrade_plan(["codex"], {}, launcher="yoetz", legacy_extras=("dev",))
+
+
+@pytest.mark.parametrize(
+    ("receipt", "expected"),
+    [
+        ('[tool]\nrequirements = [{name="yoetz"}]\n', ()),
+        ('[tool]\nrequirements = [{name="yoetz",specifier=">=0.3.0"}]\n', ()),
+        (
+            '[tool]\nrequirements = [{name="yoetz",extras=["semantic-openai",'
+            '"portable-recovery","semantic-openai"]}]\n',
+            ("portable-recovery", "semantic-openai"),
+        ),
+        ('[tool]\nrequirements = [{name="finishup"}]\n', None),
+        ('[tool]\nrequirements = [{name="yoetz",extras=["dev"]}]\n', None),
+        ('[tool]\nrequirements = [{name="yoetz",extras="semantic-openai"}]\n', None),
+        ('[tool]\nrequirements = [{name="yoetz",editable="."}]\n', None),
+        ('[tool]\nrequirements = [{name="yoetz"},{name="openai"}]\n', None),
+        ('[tool]\nrequirements = [{name="yoetz"}]\noptions = {index=["x"]}\n', None),
+        *(
+            (f'[tool]\nrequirements = [{{name="yoetz"}}]\n{line}\n', None)
+            for line in _RECORDED_RESOLUTION
+        ),
+        *(
+            (
+                f'[tool]\nrequirements = [{{name="yoetz",extras=["semantic-openai"]}}]\n{line}\n',
+                ("semantic-openai",),
+            )
+            for line in _EMPTY_RESOLUTION
+        ),
+        (_REAL_RECEIPT.format(name="yoetz"), ("semantic-openai",)),
+        (_REAL_RECEIPT.format(name="yoetz") + '[tool.options]\nfind-links = ["file:///x"]\n', None),
+        ('[tool]\nrequirements = ["yoetz"]\n', None),
+        ('[tool]\nrequirements = "yoetz"\n', None),
+        ('tool = "yoetz"\n', None),
+        ("[tool\n", None),
+        ("", None),
+    ],
+)
+def test_legacy_tool_extras_reads_only_a_plain_yoetz_receipt(
+    receipt: str, expected: tuple[str, ...] | None
+) -> None:
+    assert upgrade.legacy_tool_extras(receipt) == expected
+
+
+def test_finishup_plan_has_no_migration_step_and_rejects_other_launchers() -> None:
+    steps = upgrade.build_upgrade_plan(["codex"], {})
+    assert all(step.title != "Move from the yoetz name" for step in steps)
+    assert "Run finishup upgrade --accept" in steps[1].detail
+    with pytest.raises(ValueError, match="upgrade_launcher_invalid"):
+        upgrade.build_upgrade_plan(["codex"], {}, launcher="python")
+
+
+def test_upgrade_run_through_the_alias_plans_with_the_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An upgraded ``yoetz`` tool has no ``finishup`` on PATH, so its plan names ``yoetz``."""
+
+    monkeypatch.setattr("sys.argv", ["/home/user/.local/bin/yoetz", "upgrade"])
+    result = _RUNNER.invoke(app, ["upgrade"])
+
+    assert result.exit_code == 0, result.output
+    assert "  yoetz upgrade --accept" in result.output
+    assert "  finishup " not in result.output
+    assert "Move from the yoetz name" in result.output
+    assert PACKAGE_INSTALL_COMMAND in result.output
+
+
+def test_alias_upgrade_carries_the_yoetz_tool_extras_into_the_move(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    prefix = _uv_tool(tmp_path / "tools", "yoetz", "yoetz", ',extras=["semantic-openai"]')
+    monkeypatch.setattr("finishup.cli.upgrade.installation_prefix", lambda: prefix)
+    monkeypatch.setattr("sys.argv", [str(prefix / "bin/yoetz"), "upgrade"])
+    result = _RUNNER.invoke(app, ["upgrade"])
+
+    assert result.exit_code == 0, result.output
+    assert "--python 3.14.6 'finishup[semantic-openai]'." in " ".join(result.output.split())
+    assert "could not be confirmed" not in result.output
+
+
+def test_alias_upgrade_with_an_unreadable_receipt_says_to_re_add_extras(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    prefix = _uv_tool(tmp_path / "tools", "yoetz", "yoetz", ',editable="."')
+    monkeypatch.setattr("finishup.cli.upgrade.installation_prefix", lambda: prefix)
+    monkeypatch.setattr("sys.argv", [str(prefix / "bin/yoetz"), "upgrade"])
+    result = _RUNNER.invoke(app, ["upgrade"])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert (
+        f"install the new name: {PACKAGE_INSTALL_COMMAND}. Its extras could not be confirmed"
+        in output
+    )
+    assert "for example 'finishup[semantic-openai]'." in output
+
+
+def test_finishup_upgrade_never_reads_a_tool_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
+    def unexpected() -> Path:
+        raise AssertionError("receipt read for a finishup run")
+
+    monkeypatch.setattr("finishup.cli.upgrade.installation_prefix", unexpected)
+    monkeypatch.setattr("sys.argv", ["/home/user/.local/bin/finishup", "upgrade"])
+    result = _RUNNER.invoke(app, ["upgrade"])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_accepted_alias_upgrade_continues_with_the_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.argv", ["/home/user/.local/bin/yoetz", "upgrade", "--accept"])
+    monkeypatch.setattr(
+        "finishup.cli.upgrade.execute_package_upgrade", lambda: "package_command_succeeded"
+    )
+    result = _RUNNER.invoke(app, ["upgrade", "--accept"])
+
+    assert result.exit_code == 0, result.output
+    assert "Re-run yoetz upgrade with the same target options" in result.output
+
+
+def test_upgrade_run_through_finishup_plans_with_finishup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("sys.argv", ["/home/user/.local/bin/finishup", "upgrade"])
+    result = _RUNNER.invoke(app, ["upgrade"])
+
+    assert result.exit_code == 0, result.output
+    assert "  finishup upgrade --accept" in result.output
+    assert "  yoetz " not in result.output
+    assert "Move from the yoetz name" not in result.output
+
+
+@pytest.mark.parametrize("line", _RECORDED_RESOLUTION)
+def test_in_place_upgrade_refuses_any_recorded_resolution_choice(tmp_path: Path, line: str) -> None:
+    (tmp_path / "uv-receipt.toml").write_text(
+        f'[tool]\nrequirements = [{{name="finishup",extras=["semantic-openai"]}}]\n{line}\n'
+    )
+    assert package_adapter._upgrade_command(tmp_path) is None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("line", _EMPTY_RESOLUTION)
+def test_in_place_upgrade_accepts_empty_resolution_keys(tmp_path: Path, line: str) -> None:
+    (tmp_path / "uv-receipt.toml").write_text(
+        f'[tool]\nrequirements = [{{name="finishup",extras=["semantic-openai"]}}]\n{line}\n'
+    )
+    command = package_adapter._upgrade_command(tmp_path)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert command is not None
+    assert command[-1] == f"finishup[semantic-openai]>={package_adapter.__version__}"
+
+
+@pytest.mark.parametrize("name", ["finishup", "yoetz"])
+def test_in_place_upgrade_reads_a_real_uv_receipt(tmp_path: Path, name: str) -> None:
+    (tmp_path / "uv-receipt.toml").write_text(_REAL_RECEIPT.format(name=name))
+    command = package_adapter._upgrade_command(tmp_path, name)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert command == (
+        "uv",
+        "tool",
+        "install",
+        "--upgrade",
+        "--python",
+        "3.14",
+        f"{name}[semantic-openai]>={package_adapter.__version__}",
+    )
+
+
+def test_receipt_extras_are_one_shared_set() -> None:
+    """Planning the move and upgrading in place accept exactly the same extras."""
+
+    assert frozenset({"semantic-openai", "portable-recovery"}) == package_adapter.PACKAGE_EXTRAS
+    assert upgrade.PACKAGE_EXTRAS is package_adapter.PACKAGE_EXTRAS
+
+
+def _unsafe_receipt(prefix: Path, kind: str) -> None:
+    receipt = prefix / "uv-receipt.toml"
+    if kind == "symlink":
+        target = prefix / "elsewhere.toml"
+        target.write_text('[tool]\nrequirements = [{name="yoetz",extras=["semantic-openai"]}]\n')
+        receipt.symlink_to(target)
+    elif kind == "fifo":
+        os.mkfifo(receipt)
+    elif kind == "directory":
+        receipt.mkdir()
+    elif kind == "oversized":
+        body = '[tool]\nrequirements = [{name="yoetz",extras=["semantic-openai"]}]\n'
+        receipt.write_text(body + "#" * (package_adapter.UV_RECEIPT_MAX_BYTES + 1 - len(body)))
+    elif kind == "not_utf8":
+        receipt.write_bytes(b'[tool]\nrequirements = [{name="yoetz"}]\n# \xff\n')
+    elif kind == "missing":
+        pass
+    else:  # pragma: no cover - parametrize guard
+        raise AssertionError(kind)
+
+
+_UNSAFE_RECEIPTS = ("symlink", "fifo", "directory", "oversized", "not_utf8", "missing")
+
+
+@pytest.mark.parametrize("kind", _UNSAFE_RECEIPTS)
+def test_receipt_read_refuses_anything_but_a_bounded_regular_file(
+    tmp_path: Path, kind: str
+) -> None:
+    _unsafe_receipt(tmp_path, kind)
+    with pytest.raises((OSError, ValueError)):
+        package_adapter.read_uv_receipt(tmp_path)
+    assert package_adapter._upgrade_command(tmp_path, "yoetz") is None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+
+
+def test_receipt_read_accepts_a_receipt_at_the_size_limit(tmp_path: Path) -> None:
+    body = '[tool]\nrequirements = [{name="yoetz",extras=["semantic-openai"]}]\n'
+    padded = body + "#" * (package_adapter.UV_RECEIPT_MAX_BYTES - len(body))
+    (tmp_path / "uv-receipt.toml").write_text(padded)
+    assert package_adapter.read_uv_receipt(tmp_path) == padded
+
+
+@pytest.mark.parametrize("kind", _UNSAFE_RECEIPTS)
+def test_alias_plan_with_an_unsafe_receipt_falls_back_without_blocking(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, kind: str
+) -> None:
+    prefix = tmp_path / "tools" / "yoetz"
+    prefix.mkdir(parents=True)
+    _unsafe_receipt(prefix, kind)
+    monkeypatch.setattr("finishup.cli.upgrade.installation_prefix", lambda: prefix)
+    monkeypatch.setattr("sys.argv", [str(prefix / "bin/yoetz"), "upgrade"])
+    result = _RUNNER.invoke(app, ["upgrade"])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert f"install the new name: {PACKAGE_INSTALL_COMMAND}. Its extras could not be" in output
+    assert "for example 'finishup[semantic-openai]'." in output
+
+
+@pytest.mark.parametrize("line", _RECORDED_RESOLUTION)
+def test_alias_plan_with_recorded_resolution_says_to_re_add_choices(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, line: str
+) -> None:
+    prefix = tmp_path / "tools" / "yoetz"
+    prefix.mkdir(parents=True)
+    (prefix / "uv-receipt.toml").write_text(
+        f'[tool]\nrequirements = [{{name="yoetz",extras=["semantic-openai"]}}]\n{line}\n'
+    )
+    monkeypatch.setattr("finishup.cli.upgrade.installation_prefix", lambda: prefix)
+    monkeypatch.setattr("sys.argv", [str(prefix / "bin/yoetz"), "upgrade"])
+    result = _RUNNER.invoke(app, ["upgrade"])
+
+    assert result.exit_code == 0, result.output
+    output = " ".join(result.output.split())
+    assert "Its extras could not be confirmed" in output
+    assert f"install the new name: {PACKAGE_INSTALL_COMMAND}." in output

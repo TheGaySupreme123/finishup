@@ -147,6 +147,50 @@ def test_integration_preview_hides_paths_and_digests_behind_technical_details() 
     )
 
 
+def test_preview_names_every_existing_entry_the_approval_rewrites_or_removes() -> None:
+    # ADR-048: the activation digest also removes Yoetz-era tables, cache versions and trees, and
+    # a re-registration may change the route. Approval covers only what the owner was shown.
+    plan = build.plan(
+        route_profile="strict",
+        route_profile_before="policy",
+        legacy_registration="legacy_only",
+        activation_legacy_removed_block='[plugins."yoetz@yoetz"]\nenabled = true\n',
+        activation_legacy_cache_versions=("0.2.4", "0.2.5"),
+        activation_legacy_plugin_tree_planned=True,
+        legacy_skill_tree_planned=True,
+        policy_ambiguous=True,
+    )
+    friendly = " ".join(" ".join(render_integration_preview(plan, WIDE)).split())
+    for expected in (
+        "~ Change the existing MCP registration's review route: policy -> strict",
+        "~ Move the MCP registration from the earlier name yoetz to finishup",
+        "~ Remove the earlier Yoetz plugin activation from the Codex config",
+        "~ Delete earlier Yoetz plugin cache versions: 0.2.4, 0.2.5",
+        "~ Delete the earlier Yoetz project skill (.agents/skills/yoetz)",
+        "~ Delete the earlier Yoetz plugin sources (.agents/plugins/yoetz)",
+        "neither is used until you remove one",
+    ):
+        assert expected in friendly
+
+    technical = render_integration_technical_details(plan, 240)
+    start = technical.index("Earlier Yoetz activation removed by this change")
+    assert technical[start + 1 : start + 3] == ('  [plugins."yoetz@yoetz"]', "  enabled = true")
+    assert "0.2.4, 0.2.5" in "\n".join(technical[start:])
+    assert ".agents/plugins/yoetz (FinishUP-managed" in "\n".join(technical[start:])
+
+
+def test_a_plan_with_nothing_earlier_names_no_replacement() -> None:
+    plan = build.plan()
+    assert plan.replacements == ()
+    joined = "\n".join(render_integration_preview(plan, WIDE))
+    assert "~ " not in joined
+    assert "Earlier Yoetz" not in "\n".join(render_integration_technical_details(plan, 240))
+    duplicate = build.plan(legacy_registration="duplicate", route_profile_before="policy")
+    assert duplicate.replacements == (
+        "Remove the duplicate MCP registration under the earlier name yoetz",
+    )
+
+
 def test_long_activation_targets_are_wrapped_without_omitting_any_bytes() -> None:
     plan = build.plan(
         codex_home="/a/very/long/explicit/codex/home/selected/by/the/operator",
@@ -453,6 +497,27 @@ def test_doctor_reports_problems_and_never_claims_to_have_fixed_them(
     joined = "\n".join(lines)
     assert "Suggested next steps" in joined
     assert "Nothing above was changed. Diagnosis never repairs on its own." in lines
+
+
+def test_doctor_keeps_a_remediation_address_whole_and_clickable() -> None:
+    from finishup.cli.exits import UPGRADING_FROM_YOETZ_GUIDE
+    from finishup.tui.models import DoctorEntry, DoctorReport
+
+    report = DoctorReport(
+        entries=(
+            DoctorEntry(
+                "installation_folders",
+                "Installation folders",
+                LayerState.VERIFIED,
+                "Yoetz-era folders, used in place",
+                "nothing to do: keep them. Read more: " + UPGRADING_FROM_YOETZ_GUIDE,
+            ),
+        )
+    )
+    for width in (80, 100):
+        lines = render_doctor(report, width)
+        assert f"  {UPGRADING_FROM_YOETZ_GUIDE}" in lines
+        assert "  · nothing to do: keep them. Read more:" in lines
 
 
 # ---------------------------------------------------------------------------

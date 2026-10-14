@@ -1525,8 +1525,10 @@ def test_function_call_output_rejects_out_of_profile_exit_status(exit_code: obje
     assert batch.skip_reason == "unsupported_or_gap"
 
 
+# A rollout written under a 0.1-0.2.5 registration names the legacy server (ADR-048).
+@pytest.mark.parametrize("server", ["finishup", "yoetz"])
 def test_reconcile_retains_finishup_self_observation_locally_and_advances_past_it(
-    tmp_path: Path,
+    tmp_path: Path, server: str
 ) -> None:
     """#564: the stream copy of a ``status`` call is the same self-observation the hook saw."""
 
@@ -1538,13 +1540,13 @@ def test_reconcile_retains_finishup_self_observation_locally_and_advances_past_i
     target.write_bytes(
         encode_lines(
             session_meta(),
-            function_call(name="mcp__finishup__status", call_id="y1", arguments="{}"),
+            function_call(name=f"mcp__{server}__status", call_id="y1", arguments="{}"),
             function_call_output(call_id="y1", output="private projection", exit_code=None),
             function_call(name="shell", call_id="s1", arguments='{"command":"pytest"}'),
             function_call_output(call_id="s1", output="ok", exit_code=0),
-            function_call(name="mcp__finishup__respond", call_id="y2", arguments="{}"),
+            function_call(name=f"mcp__{server}__respond", call_id="y2", arguments="{}"),
             function_call_output(call_id="y2", output="recorded", exit_code=None),
-            function_call(name="mcp__finishup__status", call_id="y3", arguments="{}"),
+            function_call(name=f"mcp__{server}__status", call_id="y3", arguments="{}"),
             function_call_output(call_id="y3", output="error", exit_code=1),
         )
     )
@@ -1575,8 +1577,8 @@ def test_reconcile_retains_finishup_self_observation_locally_and_advances_past_i
         (None, None),
         ("function_call", "shell"),
         ("function_call_output", "shell"),
-        ("function_call_output", "mcp__finishup__respond"),
-        ("function_call_output", "mcp__finishup__status"),
+        ("function_call_output", f"mcp__{server}__respond"),
+        ("function_call_output", f"mcp__{server}__status"),
     ]
     # Every record was ingested locally and the cursor moved past all of them: a second
     # reconcile finds nothing new rather than re-reading the retained calls.
@@ -1683,7 +1685,8 @@ def test_0_150_1_stream_admits_from_header_and_envelopes_carry_no_content(
         if envelope.structural_payload.get("action")
         in {"function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"}
     }
-    assert call_ids["function_call"] == call_ids["function_call_output"] == "call_finishup_1"
+    # Frozen legacy identifier (ADR-048): the recorded rollout fixture's own call id.
+    assert call_ids["function_call"] == call_ids["function_call_output"] == "call_yoetz_1"
     assert call_ids["custom_tool_call"] == call_ids["custom_tool_call_output"] == "call_shell_1"
     dumped = json.dumps(
         [
@@ -3214,6 +3217,8 @@ def test_0_159_3_calls_pair_with_outputs_on_call_id_not_their_row_ids(tmp_path: 
     [
         (None, "status", "status"),
         ("finishup", "status", "mcp__finishup__status"),
+        # The legacy server name a 0.1-0.2.5 registration records keeps its own spelling (ADR-048).
+        ("yoetz", "status", "mcp__yoetz__status"),
         ("github", "status", "mcp__github__status"),
         # A named server the reader cannot fold into ``mcp__<server>__<tool>``: a FinishUP tool name
         # under it is not attributable, any other name keeps its name rules.
@@ -3225,6 +3230,7 @@ def test_0_159_3_calls_pair_with_outputs_on_call_id_not_their_row_ids(tmp_path: 
     ids=[
         "no-server",
         "finishup",
+        "yoetz-legacy",
         "github",
         "double-underscore",
         "leading-underscore",

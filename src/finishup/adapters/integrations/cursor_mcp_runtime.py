@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, Protocol
 
+from finishup.legacy_names import LAUNCHER_NAMES
+
 __all__ = [
     "CursorMcpProcessPort",
     "CursorMcpProcessSnapshot",
@@ -155,10 +157,15 @@ def _cursor_helper_comm(value: str) -> bool:
     )
 
 
+# Either launcher spelling (ADR-048): a Cursor helper keeps running the ``yoetz mcp serve`` child
+# a pre-rename registration spawned until the host restarts it, and that child is still FinishUP.
+_LAUNCHER_TOKENS: Final = frozenset({*LAUNCHER_NAMES, *(f"{name}.exe" for name in LAUNCHER_NAMES)})
+
+
 def _finishup_launcher_token(value: str) -> bool:
     if type(value) is not str or not value or len(value) > 4_096:
         return False
-    return value.replace("\\", "/").rsplit("/", 1)[-1] in {"finishup", "finishup.exe"}
+    return value.replace("\\", "/").rsplit("/", 1)[-1] in _LAUNCHER_TOKENS
 
 
 def classify_serve_suffix(

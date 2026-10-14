@@ -2,6 +2,11 @@
 
 This is a repository generator, not an installer. Its only destinations are below this
 script's checkout. Host homes, integration targets, and live install paths are never resolved.
+
+The trees were committed as ``.agents/plugins/yoetz`` and ``.agents/skills/yoetz`` before the
+FinishUP rename (ADR-048). A stale copy of either (for example from a branch cut before the
+rename) is generated output: ``--check`` names it and ``--write`` removes it, but only while its
+own marker still binds every byte; anything else there is foreign and stops the run.
 """
 
 from __future__ import annotations
@@ -25,9 +30,16 @@ from finishup.ports.integrations import IntegrationScope
 from finishup.protocol.canonical import JsonValue, canonical_digest
 
 _ROOT = Path(__file__).resolve().parent.parent
+# Frozen legacy identifier (ADR-048): the marker file names are unchanged in the renamed trees.
 _TREES = {
     ".agents/plugins/finishup": ".yoetz-plugin-install.json",
     ".agents/skills/finishup": ".yoetz-install.json",
+}
+# Frozen legacy identifier (ADR-048): the pre-rename committed trees, recognized only to be
+# reported and removed.
+_LEGACY_TREES = {
+    ".agents/plugins/yoetz": ".yoetz-plugin-install.json",
+    ".agents/skills/yoetz": ".yoetz-install.json",
 }
 _REMEDIATION = "uv run python scripts/sync_resource_ripple.py --write"
 
@@ -119,6 +131,20 @@ def _expected_tree_paths() -> dict[str, set[str]]:
     }
 
 
+def _remove_tree(root: Path, members: Mapping[str, bytes]) -> None:
+    """Delete exactly the validated member files, then the directories they leave empty."""
+
+    for relative in members:
+        (root / relative).unlink()
+    for directory in sorted(
+        (path for path in root.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        directory.rmdir()
+    root.rmdir()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -128,6 +154,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         existing = {name: _existing_tree(_ROOT / name) for name in _TREES}
+        legacy = {
+            name: tree
+            for name in _LEGACY_TREES
+            if (tree := _existing_tree(_ROOT / name)) or (_ROOT / name).exists()
+        }
+        for name, tree in legacy.items():
+            # A stale pre-rename tree is removable only while its own marker binds every file.
+            marker = _LEGACY_TREES[name]
+            if tree and (
+                marker not in tree or not _recorded_extras(tree, marker, set(tree) - {marker})
+            ):
+                print(
+                    f"sync_committed_agent_trees: FAIL (foreign_agent_files) {name}",
+                    file=sys.stderr,
+                )
+                return 1
         if args.preflight:
             # Preflight must run before the package mirror is regenerated. Check foreign names
             # from the canonical source layout first, while leaving byte/manifest validation to
@@ -154,12 +196,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 return 1
         drifted = [name for name in expected if existing[name] != expected[name]]
-        if args.check and drifted:
+        if args.check and (drifted or legacy):
             for name in drifted:
                 print(
                     f"sync_committed_agent_trees: FAIL (agent_tree_drift) {name}\n"
                     "  canonical owners: guidance/, skills/codex/finishup/, packaged resources, "
                     "Codex integration renderers\n"
+                    f"  regenerate: {_REMEDIATION}",
+                    file=sys.stderr,
+                )
+            for name in legacy:
+                print(
+                    f"sync_committed_agent_trees: FAIL (legacy_agent_tree) {name}\n"
                     f"  regenerate: {_REMEDIATION}",
                     file=sys.stderr,
                 )
@@ -175,6 +223,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     destination.write_bytes(data)
                 for relative in set(existing[name]) - set(expected[name]):
                     (root / relative).unlink()
+            for name, tree in legacy.items():
+                _remove_tree(_ROOT / name, tree)
         print("sync_committed_agent_trees: PASS (both committed trees match their renderers)")
         return 0
     except (OSError, ValueError) as error:

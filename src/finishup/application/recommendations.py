@@ -744,6 +744,7 @@ async def refresh_pending(
                     installed_version=advisory.installed_version,
                     latest_version=max(candidates, key=Version),
                     source=advisory.source,
+                    package=advisory.package,
                 )
                 resolved = replace(resolved, package_update=advisory)
         release_version = (

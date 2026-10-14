@@ -5,6 +5,8 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 
+# Frozen legacy identifier (ADR-048): the ``yoetz.mcp-removal/1`` tag and the ``yoetz_owned``
+# state are released wire values of the protocol 0.1 namespace.
 class CompletedMcpRemoval(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 

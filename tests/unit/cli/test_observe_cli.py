@@ -1765,8 +1765,8 @@ def test_explicit_recovery_uses_full_mapping_for_compressed_rollout_variant(
     assert "unsupported_format" in status.gaps
 
 
-def _write_check_policy(workspace: Path) -> None:
-    policy_dir = workspace / ".finishup"
+def _write_check_policy(workspace: Path, directory: str = ".finishup") -> None:
+    policy_dir = workspace / directory
     policy_dir.mkdir()
     (policy_dir / "checks.toml").write_bytes(
         b'format = "yoetz.approved-check-policy/1"\n'
@@ -1819,6 +1819,49 @@ def test_checks_status_names_the_probed_sandbox_outcome(
     assert payload["state"] == "untrusted"
     if reason != "ready":
         assert payload["sandbox"]["remediation"] != ""
+
+
+@pytest.mark.parametrize("directory", [".finishup", ".yoetz"])
+def test_checks_status_names_the_policy_file_in_use(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], directory: str
+) -> None:
+    """The legacy `.yoetz/checks.toml` is used when it is the only policy (ADR-048)."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_check_policy(workspace, directory)
+
+    code = observe_cli.observe_checks_status(
+        workspace=str(workspace), json_output=True, _state=tmp_path / "state"
+    )
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["policy_file"] == f"{directory}/checks.toml"
+    assert payload["state"] == "untrusted"
+
+
+@pytest.mark.parametrize("operation", ["status", "preview", "trust", "run"])
+def test_checks_operations_refuse_a_policy_in_both_directories(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], operation: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_check_policy(workspace, ".finishup")
+    _write_check_policy(workspace, ".yoetz")
+    kwargs: dict[str, object] = {"workspace": str(workspace), "_state": tmp_path / "state"}
+    if operation == "trust":
+        kwargs["policy_digest"] = "sha256:" + "0" * 64
+    else:
+        kwargs["json_output"] = True
+
+    code = getattr(observe_cli, f"observe_checks_{operation}")(**kwargs)
+
+    captured = capsys.readouterr()
+    assert code == 20
+    assert captured.out == ""
+    assert f"observation_checks_{operation}_failed:policy_ambiguous" in captured.err
+    assert "not a task blocker" in captured.err
 
 
 def test_checks_status_reports_missing_policy_as_not_configured(

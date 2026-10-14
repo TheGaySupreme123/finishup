@@ -5,12 +5,20 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from types import MappingProxyType
 from typing import Final, cast
 
-from finishup.protocol.guidance_uris import GUIDANCE_TOPIC_URIS
+from finishup.protocol.guidance_uris import (
+    GUIDANCE_TOPIC_URIS,
+    GUIDANCE_URI_PREFIX,
+    LEGACY_GUIDANCE_ANCHORS,
+    LEGACY_GUIDANCE_URI_PREFIX,
+    canonical_guidance_uri,
+    guidance_uri_in_scheme_of,
+    is_legacy_guidance_uri,
+)
 from finishup.version import read_verified_resource
 
 __all__ = [
@@ -728,9 +736,25 @@ def resolve_guidance_topic_uri(uri: object) -> str | None:
 
     if type(uri) is not str or len(uri) > _MAX_GUESSED_TOPIC_URI_CHARS:
         return None
+    resolved = _resolve_current_guidance_topic_uri(
+        GUIDANCE_URI_PREFIX + uri.removeprefix(LEGACY_GUIDANCE_URI_PREFIX)
+        if uri.startswith(LEGACY_GUIDANCE_URI_PREFIX)
+        else uri
+    )
+    # A guess in the legacy scheme reads its answer in that scheme (ADR-048).
+    return None if resolved is None else guidance_uri_in_scheme_of(resolved, uri)
+
+
+def _resolve_current_guidance_topic_uri(uri: str) -> str | None:
+    """Resolve a near-miss anchor written in the current ``finishup://`` scheme."""
+
     document, separator, anchor = uri.partition("#")
     if not separator or not anchor or document not in _RESOURCE_BY_URI:
         return None
+    # A title anchor the pre-rename guidance spelled with the old product name (ADR-048).
+    renamed = LEGACY_GUIDANCE_ANCHORS.get(uri.removeprefix(GUIDANCE_URI_PREFIX))
+    if renamed is not None:
+        return GUIDANCE_URI_PREFIX + renamed
     try:
         catalogued, aliases = _document_topic_anchors(document)
     except ValueError, OSError:
@@ -752,6 +776,12 @@ def resolve_guidance_topic_uri(uri: object) -> str | None:
 def _resource_for_uri(uri: object) -> GuidanceResource:
     if type(uri) is not str:
         raise GuidanceResourceError("guidance_resource_uri_invalid")
+    if is_legacy_guidance_uri(uri):
+        # The exact pre-rename spelling of a catalogued entry reads the same bytes, and the
+        # resource keeps the caller's URI so results and page continuations echo it (ADR-048).
+        canonical = canonical_guidance_uri(uri)
+        assert canonical is not None
+        return replace(_resource_for_uri(canonical), uri=uri)
     try:
         return _RESOURCE_BY_URI[uri]
     except KeyError:
@@ -759,7 +789,11 @@ def _resource_for_uri(uri: object) -> GuidanceResource:
 
 
 def resource_for_uri(uri: object) -> GuidanceResource:
-    """Return one registered document or bounded heading topic by its exact URI."""
+    """Return one registered document or bounded heading topic by its exact URI.
+
+    The legacy ``yoetz://`` spelling of a catalogued entry is accepted too and keeps its URI;
+    ``list_resources`` advertises only the current spelling (ADR-048).
+    """
 
     return _resource_for_uri(uri)
 

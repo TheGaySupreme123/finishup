@@ -106,6 +106,10 @@ from finishup.domain.command_segments import (
     command_segment_commitments,
 )
 from finishup.domain.compaction_recap import RECAP_CONTEXT_LIMIT, RecapFacts
+from finishup.domain.finishup_tools import (
+    FINISHUP_SCOPED_TOOL_PREFIXES,
+    FINISHUP_TOOL_SERVER_NAMES,
+)
 from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationContentChunk,
@@ -1147,6 +1151,7 @@ def _source_identity(
         "parent_tool_call_id",
         "subagent_id",
         "turn_id",
+        # Frozen legacy identifier (ADR-048): the spool replay key, also in pre-upgrade spools.
         "_yoetz_spool_id",
     ):
         token = _token_or_none(payload.get(key))
@@ -1814,6 +1819,8 @@ def _native_edit_content(
         return (
             ObservationContentKind.WORKSPACE_DIFF,
             "patch",
+            # Frozen legacy identifier (ADR-048): the captured-content header the semantic case
+            # parses back from stored objects.
             f"# yoetz edit outcome: {outcome}\n" + _sanitize_patch_paths(patch, workspace_locator),
         )
     if isinstance(arguments, Mapping) and tool in _EDIT_TOOL_NAMES:
@@ -1943,6 +1950,8 @@ def _shell_edit_contents(
             (
                 ObservationContentKind.WORKSPACE_DIFF,
                 "patch",
+                # Frozen legacy identifier (ADR-048): captured-content headers the semantic case
+                # parses back from stored objects.
                 f"# yoetz edit outcome: {outcome}\n# yoetz edit source: shell\n"
                 + "".join(_sanitize_patch_paths(patch, workspace_locator) for patch in patches),
             )
@@ -3082,10 +3091,12 @@ async def _try_auto_start(
         "protocol_version": "0.1",
         "schema_version": "1.0.0",
         "actor": {
+            # Frozen legacy identifier (ADR-048): a recorded actor id, kept for retry identity.
             "actor_id": f"yoetz:{harness_id}-observe",
             "actor_type": "harness",
         },
         "client": {
+            # Frozen legacy identifier (ADR-048): the client kind wire enum value.
             "kind": "yoetz_cli",
             "version": __version__,
             "integration": "local_cli",
@@ -4164,6 +4175,7 @@ def _decide_closure_gate(
                 session_id=mapping.yoetz_session_id,
                 writer_id=mapping.yoetz_writer_id,
                 connect=cast(Callable[..., Awaitable[object]], connector),
+                # Frozen legacy identifier (ADR-048): a recorded actor id, kept for retry identity.
                 actor_id=f"yoetz:{harness_id}-hooks",
                 observation_pending=pending,
                 reasked_blockers=reasked,
@@ -4571,6 +4583,7 @@ def _session_start_attach(
                     return await _read_status(
                         active_mapping,
                         connect=connector,
+                        # Frozen legacy identifier (ADR-048): a recorded actor id.
                         actor_id=f"yoetz:{harness_id}-hooks",
                         recap=recap,
                         recap_time_left=recap_time_left,
@@ -6294,10 +6307,21 @@ def handle_codex_observe(
 
 _CLAUDE_SESSION_PREFIX: Final = "claude:"
 # Derived from the same exact tool-name set as the rendered hook matcher, so
-# the renderer and this sanitizer allowlist cannot drift apart.
+# the renderer and this sanitizer allowlist cannot drift apart. The plugin scope
+# is the current one or the legacy one a 0.1-0.2.5 plugin still installs (ADR-048).
+_CLAUDE_PLUGIN_TOOL_PREFIXES: Final = tuple(
+    f"mcp__plugin_{server}_{server}__" for server in FINISHUP_TOOL_SERVER_NAMES
+)
 _CLAUDE_SCOPED_TOOL_RE: Final = re.compile(
-    "^mcp__plugin_finishup_finishup__(?:" + "|".join(FINISHUP_WORKFLOW_TOOL_NAMES) + ")$",
+    "^(?:"
+    + "|".join(re.escape(prefix) for prefix in _CLAUDE_PLUGIN_TOOL_PREFIXES)
+    + ")(?:"
+    + "|".join(FINISHUP_WORKFLOW_TOOL_NAMES)
+    + ")$",
     re.ASCII,
+)
+_CLAUDE_PLUGIN_START_TOOL_NAMES: Final = frozenset(
+    f"{prefix}start" for prefix in _CLAUDE_PLUGIN_TOOL_PREFIXES
 )
 _CLAUDE_UNTESTED_PROFILE_ID: Final = "untested"
 _CLAUDE_VERSION_TO_PROFILE: Final = {
@@ -6321,8 +6345,9 @@ def _claude_capability_profile_id(claude_version: object) -> str | None:
     return _CLAUDE_VERSION_TO_PROFILE.get(token, _CLAUDE_UNTESTED_PROFILE_ID)
 
 
+# ``check`` under either server scope, current or legacy (ADR-048).
 _CLAUDE_CHECK_TOOL_NAMES: Final = frozenset(
-    {"mcp__finishup__check", "mcp__plugin_finishup_finishup__check"}
+    f"{prefix}check" for prefix in FINISHUP_SCOPED_TOOL_PREFIXES
 )
 
 _NATIVE_OUTCOME_JSON_BYTES: Final = 65_536
@@ -7214,7 +7239,7 @@ def _handle_claude_observe(
                 duration = _int_or_none(payload.get("duration_ms"))
                 if duration is not None:
                     structural["duration_ms"] = duration
-            if raw_event == "PostToolUse" and tool_token == "mcp__plugin_finishup_finishup__start":
+            if raw_event == "PostToolUse" and tool_token in _CLAUDE_PLUGIN_START_TOOL_NAMES:
                 # Claude's observation envelope stays structural-only, but the
                 # successful start result is the sole authority that can bind
                 # this host session to the cooperative FinishUP task. Inspect the
@@ -7340,12 +7365,19 @@ def _handle_claude_observe(
         return 0
 
 
+# Each scoped Cursor spelling of ``start`` and the server key Cursor names beside it, under the
+# current and the legacy server name (ADR-048). A spelling only pairs with its own server key.
 _CURSOR_START_TOOL_SERVERS: Final = {
-    "mcp__finishup__start": "finishup",
-    "mcp__plugin_finishup_finishup__start": "plugin-finishup-finishup",
-    "finishup:start": "finishup",
-    "plugin-finishup-finishup:start": "plugin-finishup-finishup",
+    spelling: server_key
+    for server in FINISHUP_TOOL_SERVER_NAMES
+    for spelling, server_key in (
+        (f"mcp__{server}__start", server),
+        (f"mcp__plugin_{server}_{server}__start", f"plugin-{server}-{server}"),
+        (f"{server}:start", server),
+        (f"plugin-{server}-{server}:start", f"plugin-{server}-{server}"),
+    )
 }
+_CURSOR_SERVER_KEYS: Final = frozenset(_CURSOR_START_TOOL_SERVERS.values())
 
 
 def _bind_cursor_start(
@@ -7384,7 +7416,7 @@ def _bind_cursor_start(
         raw_event == "afterMCPExecution"
         and tool_name == "start"
         and type(server) is str
-        and server in {"finishup", "plugin-finishup-finishup"}
+        and server in _CURSOR_SERVER_KEYS
     ):
         return
     # A post-hook can carry a transport failure even with success-shaped data.

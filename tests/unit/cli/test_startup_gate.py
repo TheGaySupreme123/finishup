@@ -21,8 +21,19 @@ from finishup.protocol.ids import IdKind, new_id
 
 
 class Host:
-    def __init__(self, root: Path, host: Literal["claude", "cursor"]):
+    def __init__(
+        self,
+        root: Path,
+        host: Literal["claude", "cursor"],
+        *,
+        server: str = "finishup",
+        plugin: bool = False,
+    ):
         self.host: Literal["claude", "cursor"] = host
+        # The server spelling the host names FinishUP's tools by: the current one, or the legacy
+        # one a 0.1-0.2.5 registration still carries (ADR-048); standalone or plugin-bundled.
+        self.tool_prefix = f"mcp__plugin_{server}_{server}__" if plugin else f"mcp__{server}__"
+        self.server_key = f"plugin-{server}-{server}" if plugin else server
         self.root = root.resolve()
         self.workspace = self.root / "project"
         self.workspace.mkdir()
@@ -72,16 +83,16 @@ class Host:
     def pre(self, tool: str, request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return self.call(
             "PreToolUse" if self.host == "claude" else "beforeMCPExecution",
-            tool_name=f"mcp__finishup__{tool}" if self.host == "claude" else tool,
-            mcp_server_name="finishup",
+            tool_name=f"{self.tool_prefix}{tool}" if self.host == "claude" else tool,
+            mcp_server_name=self.server_key,
             tool_input=request,
         )
 
     def post(self, tool: str, request: dict[str, JsonValue], result: dict[str, JsonValue]) -> None:
         self.call(
             "PostToolUse" if self.host == "claude" else "afterMCPExecution",
-            tool_name=f"mcp__finishup__{tool}" if self.host == "claude" else tool,
-            mcp_server_name="finishup",
+            tool_name=f"{self.tool_prefix}{tool}" if self.host == "claude" else tool,
+            mcp_server_name=self.server_key,
             tool_input=request,
             **(
                 {"tool_response": {"structuredContent": result}}
@@ -702,3 +713,142 @@ def test_session_end_preserves_unknown_request(host: Host) -> None:
     scope = host.store.read()
     assert scope is not None and request["request_id"] in scope.pending
     assert host.denied()
+
+
+# A host registered by 0.1-0.2.5 names the server ``yoetz`` (ADR-048); the gate reads those
+# spellings exactly as the current ones, standalone and plugin-bundled.
+@pytest.mark.parametrize("host_name", ["claude", "cursor"])
+@pytest.mark.parametrize(
+    ("server", "plugin"),
+    [("finishup", False), ("finishup", True), ("yoetz", False), ("yoetz", True)],
+    ids=["current", "current-plugin", "legacy", "legacy-plugin"],
+)
+def test_either_server_spelling_starts_and_opens_the_gate(
+    tmp_path: Path, host_name: Literal["claude", "cursor"], server: str, plugin: bool
+) -> None:
+    host = Host(tmp_path, host_name, server=server, plugin=plugin)
+    assert host.denied()
+    host.start()
+    assert host.denied()
+    host.publish()
+    assert not host.denied()
+
+
+@pytest.mark.parametrize("host_name", ["claude", "cursor"])
+def test_start_and_publication_under_different_server_spellings_share_one_scope(
+    tmp_path: Path, host_name: Literal["claude", "cursor"]
+) -> None:
+    """During an upgrade both registrations can be present: one scope tracks both spellings."""
+
+    host = Host(tmp_path, host_name, server="yoetz")
+    host.start()
+    host.tool_prefix, host.server_key = "mcp__finishup__", "finishup"
+    host.publish()
+    assert not host.denied()
+
+
+@pytest.mark.parametrize(
+    ("tool", "expected"),
+    [
+        ("mcp__finishup__start", "start"),
+        ("mcp__yoetz__start", "start"),
+        ("mcp__plugin_yoetz_yoetz__publish_work", "publish_work"),
+        ("mcp__plugin_finishup_finishup__check", "check"),
+        ("mcp__yoetz__closure_prepare", None),
+        ("mcp__yoetzx__start", None),
+        ("mcp__plugin_yoetz_finishup__start", None),
+    ],
+)
+def test_workflow_tool_reads_both_scoped_server_spellings(tool: str, expected: str | None) -> None:
+    payload: dict[str, JsonValue] = {"tool_name": tool}
+    assert startup_gate_module.workflow_tool(payload, "claude", "PreToolUse") == expected
+
+
+@pytest.mark.parametrize(
+    ("server", "expected"),
+    [
+        ("finishup", "start"),
+        ("plugin-finishup-finishup", "start"),
+        ("yoetz", "start"),
+        ("plugin-yoetz-yoetz", "start"),
+        ("plugin-yoetz-finishup", None),
+        ("yoetzx", None),
+    ],
+)
+def test_cursor_workflow_tool_reads_both_server_keys(server: str, expected: str | None) -> None:
+    payload: dict[str, JsonValue] = {"tool_name": "start", "mcp_server_name": server}
+    assert startup_gate_module.workflow_tool(payload, "cursor", "beforeMCPExecution") == expected
+
+
+@pytest.mark.parametrize("scheme", ["finishup", "yoetz"])
+@pytest.mark.parametrize("name", ["agent-instructions", "workflow", "request-templates"])
+def test_bootstrap_guidance_reads_are_admitted_under_either_scheme(scheme: str, name: str) -> None:
+    """Installed 0.1-0.2.5 guidance and skills still name ``yoetz://`` (ADR-048)."""
+
+    payload: dict[str, JsonValue] = {
+        "tool_name": "ReadMcpResource",
+        "tool_input": {"uri": f"{scheme}://guidance/{name}.md"},
+    }
+    assert bootstrap_tool(payload, "claude", "PreToolUse")
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "yoetz://guidance/unknown.md",
+        "yoetzx://guidance/workflow.md",
+        "yoetz://guidance/workflow.md#when-to-use-yoetz",
+        "finishup://guidance/workflow.md#anchor",
+    ],
+)
+def test_bootstrap_guidance_admission_stays_a_closed_set(uri: str) -> None:
+    payload: dict[str, JsonValue] = {"tool_name": "ReadMcpResource", "tool_input": {"uri": uri}}
+    assert not bootstrap_tool(payload, "claude", "PreToolUse")
+
+
+@pytest.mark.parametrize(
+    ("skill", "allowed"),
+    [
+        ("finishup", True),
+        ("finishup:finishup", True),
+        ("yoetz", True),
+        ("yoetz:yoetz", True),
+        ("yoetz:finishup", False),
+        ("other", False),
+    ],
+)
+def test_bootstrap_skill_reads_both_skill_ids(skill: str, allowed: bool) -> None:
+    payload: dict[str, JsonValue] = {"tool_name": "Skill", "tool_input": {"skill": skill}}
+    assert bootstrap_tool(payload, "claude", "PreToolUse") is allowed
+
+
+@pytest.mark.parametrize("launcher", ["finishup", "yoetz"])
+def test_recovery_admits_this_runtimes_launcher_or_its_legacy_alias(launcher: str) -> None:
+    """The deprecated ``yoetz`` alias ships beside ``finishup`` for one release (ADR-048)."""
+
+    command = f"{sys.prefix}/bin/{launcher} service restart"
+    payload: dict[str, JsonValue] = {"tool_name": "Bash", "tool_input": {"command": command}}
+    assert bootstrap_tool(payload, "claude", "PreToolUse")
+    for foreign in (f"/foreign/{launcher}", f"{sys.prefix}/bin/{launcher}x"):
+        payload = {"tool_name": "Bash", "tool_input": {"command": f"{foreign} service restart"}}
+        assert not bootstrap_tool(payload, "claude", "PreToolUse")
+
+
+def test_bare_legacy_launcher_resolves_through_path_to_this_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved: list[str] = []
+
+    def which(name: str) -> str | None:
+        resolved.append(name)
+        return f"{sys.prefix}/bin/{name}" if name == "yoetz" else None
+
+    monkeypatch.setattr("finishup.cli.startup_gate.shutil.which", which)
+    payload: dict[str, JsonValue] = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "yoetz service status"},
+    }
+    assert bootstrap_tool(payload, "claude", "PreToolUse")
+    assert resolved == ["yoetz"]
+    payload = {"tool_name": "Bash", "tool_input": {"command": "yoetzx service status"}}
+    assert not bootstrap_tool(payload, "claude", "PreToolUse")

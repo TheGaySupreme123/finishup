@@ -6,7 +6,8 @@ single-use `attach_handle`, or records the parent session plus a stable child-sp
 explicit self-registration. Never share a handle or infer a selector from workspace membership.
 
 Give each child one selector, a distinct actor id, bounded scope and write policy, the expiry, and,
-after `terminal_unavailable`, the `finishup_availability` block. The child uses its own returned task,
+after `terminal_unavailable`, the `finishup_availability` block (a child treats a pre-rename
+`yoetz_availability` block the same way). The child uses its own returned task,
 session, writer, and frontier. It publishes its plan and obligations, results and evidence, and
 completion claim; `check`; `respond` to every finding it returns, repairing and rechecking where
 required; `receipt`; then `work_closed`, because a receipt never closes work. It reports task and

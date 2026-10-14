@@ -110,6 +110,7 @@ _CLASSIFIED_FAMILIES: Final = frozenset({"action_recorded", "result_recorded", "
 class LaterMaterialClass(str, Enum):  # noqa: UP042 - stable closed wire-adjacent token
     """The closed classes of a record that follows the last check (``later_material_class``)."""
 
+    # Frozen legacy identifier (ADR-048): recorded wire token value.
     FINISHUP_OWN_CALL = "yoetz_own_call"
     RESPONSE = "response"
     EXPLORATION = "exploration"
@@ -160,6 +161,7 @@ def supersession_exempt(projection: ProjectionState) -> frozenset[str]:
     """
 
     exempt = non_counting_edits_exempt(projection)
+    # Frozen legacy identifier (ADR-048): recorded wire token value.
     if "write yoetz_owned" in exempt:
         return exempt
     for obligation in effective_obligations(projection):
@@ -173,6 +175,7 @@ def supersession_exempt(projection: ProjectionState) -> frozenset[str]:
                 and finishup_tree_overlap(item.value)
             ):
                 return exempt
+    # Frozen legacy identifier (ADR-048): recorded wire token value.
     return exempt | {"write yoetz_owned"}
 
 

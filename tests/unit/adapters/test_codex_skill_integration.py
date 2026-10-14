@@ -421,3 +421,126 @@ def test_package_import_has_no_filesystem_side_effect(
     monkeypatch.chdir(tmp_path)
     __import__("finishup.adapters.integrations")
     assert list(tmp_path.iterdir()) == []
+
+
+async def _apply(
+    adapter: CodexSkillIntegration,
+    target: IntegrationTarget,
+    action: IntegrationAction,
+    suffix: str,
+) -> None:
+    request = request_id(f"req_00000000-0000-4000-8000-0000000001{suffix}")
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX, SkillPreviewCommand(request, target, action, False)
+    )
+    command = SkillApplyCommand(request, target, action, preview.preview_digest, True, False)
+    if action is IntegrationAction.REMOVE:
+        await adapter.remove_skill(HarnessId.CODEX, command)
+    else:
+        await adapter.install_skill(HarnessId.CODEX, command)
+
+
+async def _legacy_skill_tree(
+    adapter: CodexSkillIntegration, tmp_path: Path, target: IntegrationTarget
+) -> Path:
+    """A Yoetz-era tree: the same marker name and schema under the legacy directory name."""
+
+    await _apply(adapter, target, IntegrationAction.INSTALL, "90")
+    skills = tmp_path / ".agents/skills"
+    (skills / "finishup").rename(skills / "yoetz")
+    return skills / "yoetz"
+
+
+@pytest.mark.anyio
+async def test_install_migrates_an_owned_legacy_skill_tree(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    adapter = CodexSkillIntegration(_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = await _legacy_skill_tree(adapter, tmp_path, target)
+    request = request_id("req_00000000-0000-4000-8000-000000000191")
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX, SkillPreviewCommand(request, target, IntegrationAction.INSTALL, False)
+    )
+    assert preview.state_before is IntegrationState.ABSENT
+    assert "legacy_skill_tree_owned" in preview.warnings
+
+    await _apply(adapter, target, IntegrationAction.INSTALL, "92")
+
+    assert not legacy.exists()
+    assert (tmp_path / ".agents/skills/finishup/SKILL.md").is_file()
+    after = inspect_destination(target, load_packaged_skill_source(_resources()))
+    assert after.state is IntegrationState.INSTALLED_EXACT
+    assert after.legacy_tree == "absent"
+
+
+@pytest.mark.anyio
+async def test_install_beside_an_exact_tree_still_removes_the_legacy_one(tmp_path: Path) -> None:
+    import shutil
+
+    tmp_path.chmod(0o700)
+    adapter = CodexSkillIntegration(_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = await _legacy_skill_tree(adapter, tmp_path, target)
+    shutil.copytree(legacy, legacy.with_name("finishup"))
+    before = inspect_destination(target, load_packaged_skill_source(_resources()))
+    assert before.state is IntegrationState.INSTALLED_EXACT
+    assert before.legacy_tree == "owned"
+
+    await _apply(adapter, target, IntegrationAction.INSTALL, "93")
+
+    assert not legacy.exists()
+    after = inspect_destination(target, load_packaged_skill_source(_resources()))
+    assert after.state is IntegrationState.INSTALLED_EXACT
+    assert after.legacy_tree == "absent"
+
+
+@pytest.mark.anyio
+async def test_a_modified_legacy_skill_tree_is_never_removed(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    adapter = CodexSkillIntegration(_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = await _legacy_skill_tree(adapter, tmp_path, target)
+    (legacy / "SKILL.md").write_bytes(b"# owner edit\n")
+    request = request_id("req_00000000-0000-4000-8000-000000000197")
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX, SkillPreviewCommand(request, target, IntegrationAction.INSTALL, False)
+    )
+    assert "legacy_skill_tree_retained" in preview.warnings
+
+    await _apply(adapter, target, IntegrationAction.INSTALL, "98")
+    await _apply(adapter, target, IntegrationAction.REMOVE, "99")
+
+    assert (legacy / "SKILL.md").read_bytes() == b"# owner edit\n"
+
+
+@pytest.mark.anyio
+async def test_remove_takes_a_legacy_only_skill_tree(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    adapter = CodexSkillIntegration(_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = await _legacy_skill_tree(adapter, tmp_path, target)
+    await _apply(adapter, target, IntegrationAction.REMOVE, "80")
+    assert not legacy.exists()
+    assert not any((tmp_path / ".agents/skills").iterdir())
+
+
+@pytest.mark.anyio
+async def test_a_legacy_tree_changed_after_preview_is_stale(tmp_path: Path) -> None:
+    tmp_path.chmod(0o700)
+    adapter = CodexSkillIntegration(_resources(), allow_untested=True)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
+    legacy = await _legacy_skill_tree(adapter, tmp_path, target)
+    request = request_id("req_00000000-0000-4000-8000-000000000181")
+    preview = await adapter.preview_skill(
+        HarnessId.CODEX, SkillPreviewCommand(request, target, IntegrationAction.REMOVE, False)
+    )
+    (legacy / "SKILL.md").write_bytes(b"# changed after preview\n")
+    with pytest.raises(IntegrationError) as caught:
+        await adapter.remove_skill(
+            HarnessId.CODEX,
+            SkillApplyCommand(
+                request, target, IntegrationAction.REMOVE, preview.preview_digest, True, False
+            ),
+        )
+    assert caught.value.reason is IntegrationReason.REMOVE_REFUSED
+    assert legacy.is_dir()

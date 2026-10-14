@@ -12,8 +12,9 @@ Path identity is not byte content: an in-place edit of the selected config leave
 config's bytes, as one bounded content observation carrying SHA-256, size, existence, and
 observation time — never the bytes themselves (``yoetz.isolation-report/1``).
 
-A set but unusable ``FINISHUP_ISOLATED_ROOT`` propagates as the bounded ``PathSafetyError`` — the
-mode is then unprovable and callers must fail closed, never report ``ambient``.
+A set but unusable ``FINISHUP_ISOLATED_ROOT`` (or its legacy ``YOETZ_ISOLATED_ROOT`` spelling, read
+when the FinishUP name is unset, ADR-048) propagates as the bounded ``PathSafetyError`` — the mode is
+then unprovable and callers must fail closed, never report ``ambient``.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from finishup.config.installation import (
     format_rfc3339_ms,
     read_instance_identity,
 )
-from finishup.config.load import parse_minimal_safe_config
+from finishup.config.load import environment_config_path, parse_minimal_safe_config
 from finishup.config.paths import (
     IsolationBinding,
     bundle_root,
@@ -181,8 +182,8 @@ def observe_file_content(
 
 
 def _selected_config_path() -> Path:
-    explicit = os.environ.get("FINISHUP_CONFIG", "")
-    return Path(explicit) if explicit else config_file_path()
+    explicit = environment_config_path()
+    return explicit if explicit is not None else config_file_path()
 
 
 def _effective_storage_dir() -> Path:
@@ -203,7 +204,7 @@ def isolation_report(
     otherwise ``config_content`` is ``null`` and the report binds path identity only.
 
     Raises ``PathSafetyError`` when ``FINISHUP_ISOLATED_ROOT`` or the runtime pin is set but
-    unusable (or the two conflict), ``InstanceIdentityError`` when the root's instance marker is
+    unusable (or the two conflict, or the two root spellings disagree), ``InstanceIdentityError`` when the root's instance marker is
     malformed, and ``ConfigError`` when the selected configuration cannot be minimally parsed;
     all mean the isolation state is unprovable and the caller must fail closed. A dogfood
     preflight compares this report with a second report captured from the exact normal target;

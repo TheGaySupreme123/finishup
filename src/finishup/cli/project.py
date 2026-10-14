@@ -149,8 +149,10 @@ async def _invoke_status(
             "protocol_version": "0.1",
             "schema_version": "1.0.0",
             "request_id": new_id(IdKind.REQUEST),
+            # Frozen legacy identifier (ADR-048): a recorded actor id existing ledgers carry.
             "actor": {"actor_id": "yoetz:project-cli", "actor_type": "harness"},
             "client": {
+                # Frozen legacy identifier (ADR-048): the released client-kind wire value.
                 "kind": "yoetz_cli",
                 "version": __version__,
                 "integration": "local_cli",

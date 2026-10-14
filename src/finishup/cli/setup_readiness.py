@@ -12,7 +12,8 @@ import typer
 
 from finishup.adapters.integrations.launcher import invoking_launcher, resolve_finishup_launcher
 from finishup.cli.privacy_setup import configured_bindings, get_privacy_setup_snapshot
-from finishup.config.paths import isolated_root
+from finishup.cli.service_installation import installation_folders, path_refusal_failure
+from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, PathSafetyError, isolated_root
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.setup_readiness import SetupReadiness, SetupReadinessReason
 
@@ -34,7 +35,8 @@ def continuation(arguments: list[str], *, project: Path | None = None) -> str:
     root = isolated_root()
     command = [*launcher, *arguments]
     if root is not None:
-        command = ["env", f"FINISHUP_ISOLATED_ROOT={root}", *command]
+        # Both spellings with one value (ADR-048), so an older launcher stays isolated (#604).
+        command = ["env", *(f"{name}={root}" for name in ISOLATED_ROOT_ENV_NAMES), *command]
     rendered = shlex.join(command)
     return rendered if project is None else "cd " + shlex.quote(str(project)) + " && " + rendered
 
@@ -93,7 +95,7 @@ def _background_advice() -> dict[str, JsonValue] | None:
 
     try:
         return background_advice_facts(load_config({}, os.environ, None))
-    except ConfigError, OSError, ValueError:
+    except ConfigError, OSError, PathSafetyError, ValueError:
         return None
 
 
@@ -107,7 +109,46 @@ def setup_next(
     route: Literal["strict", "policy"],
     json_output: bool,
 ) -> int:
-    """Evaluate only the selected recipe; connection alone needs no service/provider login."""
+    """Evaluate only the selected recipe; connection alone needs no service/provider login.
+
+    The installation's own folders are resolved first. When they cannot be used safely -- data
+    under both product names (ADR-048), or an isolation root that is unusable or spelled two
+    ways -- the closed token, its remedy, and its continuation are the only honest next step:
+    every continuation this command could print would fail the same way.
+    """
+
+    from finishup.cli.bootstrap import stderr, stdout_json
+
+    try:
+        installation_folders()
+        return _setup_next(
+            operation=operation,
+            host=host,
+            executable=executable,
+            config_root=config_root,
+            project=project,
+            route=route,
+            json_output=json_output,
+        )
+    except PathSafetyError as error:
+        return path_refusal_failure(
+            error.reason_code,
+            json_output=json_output,
+            stderr_writer=stderr,
+            stdout_writer=stdout_json,
+        )
+
+
+def _setup_next(
+    *,
+    operation: SetupOperation,
+    host: str | None,
+    executable: Path | None,
+    config_root: Path | None,
+    project: Path,
+    route: Literal["strict", "policy"],
+    json_output: bool,
+) -> int:
     from finishup.cli.host_connection import (
         CONNECTION_ERRORS,
         prepare_selected,
@@ -172,6 +213,7 @@ def setup_next(
         reason = "host_selection_required"
         arguments = ["setup", "status"]
     report = SetupReadiness(
+        # Frozen legacy identifier (ADR-048): machine-readable report tag agents parse.
         schema="yoetz.setup-readiness/1",
         operation=operation,
         reason=reason,

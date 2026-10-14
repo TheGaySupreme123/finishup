@@ -2126,6 +2126,8 @@ def test_task_input_files_the_statement_names_are_read_only_when_unchanged(
     assert design.size > len(design.text) and len(design.text) <= 16_384
     assert design.text.startswith(b"# Design\n")
     assert b"bytes elided here; head and tail kept]" in design.text
+    # New captures spell the cut marker with the new name (ADR-048); the packet fences both names.
+    assert b"\n[finishup: " in design.text and b"[yoetz" not in design.text.lower()
     joined = b"".join(item.text for item in capture.inputs)
     assert b"IGNORED_CANARY" not in joined and b"AGENT_NOTES_MARKER" not in joined
     # Inputs never enter the change text, and they round-trip with the stored object.

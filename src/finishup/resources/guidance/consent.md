@@ -10,7 +10,9 @@ lower-disclosure option, `metadata_only` as structural review with per-request c
 `private` as no external semantics. Intent is not grant approval.
 
 Use the trusted local `finishup consent review` / `finishup --privacy` route, or relay one exact pending
-`authorize_command` target when the current host advertises that lane. Show the danger text,
+`authorize_command` target when the current host advertises that lane. On an install upgraded
+through the transitional `yoetz` package, run these with the launcher the pending
+`review_command` names. Show the danger text,
 operation, digests, recipe, and complete `repository_privacy_preview`; warn once before credential
 ingress. Relay only the exact pending fields. Keep credentials out of argv, environment, config,
 MCP arguments, logs, and files. Never ask for or handle a vault passphrase. Denial, expiry, stale

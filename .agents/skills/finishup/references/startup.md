@@ -54,7 +54,9 @@ cadence, startup failure precedence, selectors, and handoff table remain in
 
 ## Code mode
 
-Use one cell per FinishUP call. Discover the exact declaration before calling a tool:
+Use one cell per FinishUP call. The cells name the `finishup` server; where the host still registers
+the pre-rename server name, use the `mcp__yoetz__` names `ALL_TOOLS` lists. Discover the exact
+declaration before calling a tool:
 
 ```js
 const decl=name=>{const d=ALL_TOOLS.find(t=>t.name===`mcp__finishup__${name}`)?.description??"";const i=d.indexOf("exec tool declaration:");text(i<0?d:d.slice(i))};decl("start");

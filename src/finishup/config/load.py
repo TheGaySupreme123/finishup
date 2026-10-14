@@ -12,19 +12,21 @@ from typing import Final, Literal, cast
 
 from pydantic import ValidationError
 
+from finishup.config.env import ENV_PREFIXES, EnvNameConflictError, canonical_env_name, read_env
 from finishup.config.models import ConfigError, FinishUpConfig
 from finishup.config.paths import config_file_path
+from finishup.legacy_names import ENV_PREFIX
 
 __all__ = [
     "ENV_PREFIX",
     "MinimalConfig",
     "default_config_file_path",
+    "environment_config_path",
     "load_config",
     "parse_minimal_safe_config",
     "validate_config_mapping",
 ]
 
-ENV_PREFIX: Final = "FINISHUP_"
 _MAX_CONFIG_BYTES: Final = 65_536
 _INTEGER = re.compile(r"^-?[0-9]+$", re.ASCII)
 _SECRET_TOKENS: Final = ("api_key", "apikey", "token", "secret", "password")
@@ -32,6 +34,9 @@ _VCS_MARKERS: Final = frozenset({".git", ".hg", ".svn", ".jj"})
 
 type _LeafPath = tuple[str, ...]
 
+# Every name below is also accepted under its legacy ``YOETZ_`` spelling (ADR-048), checked
+# against this same allowlist: a legacy name is read only when its ``FINISHUP_`` twin is unset,
+# and the two set to different values is ``config_env_conflict``.
 _ENV_TO_LEAF: Final[dict[str, _LeafPath | None]] = {
     "FINISHUP_CONFIG": None,
     # Documented presentation control, recognized here so strict config loading cannot mistake
@@ -66,6 +71,16 @@ _ENV_TO_LEAF: Final[dict[str, _LeafPath | None]] = {
     ),
     "FINISHUP_PROVIDER_MODEL": ("provider", "model"),
     "FINISHUP_PROVIDER_TIMEOUT_SECONDS": ("provider", "timeout_seconds"),
+    # MCP bridge-to-service deadlines, read by ``finishup.mcp.server``; they map to no
+    # configuration leaf. Recognizing them keeps a documented override from making strict loading
+    # in the bridge refuse the whole environment. One name per workflow tool, plus the default.
+    "FINISHUP_MCP_DEADLINE_MS": None,
+    "FINISHUP_MCP_DEADLINE_MS_CHECK": None,
+    "FINISHUP_MCP_DEADLINE_MS_PUBLISH_WORK": None,
+    "FINISHUP_MCP_DEADLINE_MS_RECEIPT": None,
+    "FINISHUP_MCP_DEADLINE_MS_RESPOND": None,
+    "FINISHUP_MCP_DEADLINE_MS_START": None,
+    "FINISHUP_MCP_DEADLINE_MS_STATUS": None,
 }
 _OVERRIDE_TO_LEAF: Final[dict[str, _LeafPath | None]] = {
     "config": None,
@@ -128,6 +143,20 @@ def default_config_file_path() -> Path:
     return config_file_path()
 
 
+def environment_config_path(env: Mapping[str, str] | None = None) -> Path | None:
+    """Return the config file ``FINISHUP_CONFIG`` names, or ``None`` when it names none.
+
+    The legacy ``YOETZ_CONFIG`` spelling is read when ``FINISHUP_CONFIG`` is unset (ADR-048);
+    the two set to different values is ``config_env_conflict``.
+    """
+
+    try:
+        selected = read_env("CONFIG", env)
+    except EnvNameConflictError as exc:
+        raise ConfigError("config_env_conflict", safe_name=exc.name) from None
+    return Path(selected) if selected else None
+
+
 def _key_names(mapping: Mapping[str, str]) -> tuple[str, ...]:
     try:
         raw = tuple(mapping.keys())
@@ -149,12 +178,12 @@ def _validated_source_values(
     prefix_only: bool,
 ) -> dict[str, str]:
     keys = _key_names(source)
-    considered = tuple(key for key in keys if not prefix_only or key.startswith(ENV_PREFIX))
+    considered = tuple(key for key in keys if not prefix_only or key.startswith(ENV_PREFIXES))
     secret = tuple(key for key in considered if _secret_name(key))
     if secret:
         reason = "secret_env_forbidden" if prefix_only else "secret_config_override_forbidden"
         raise ConfigError(reason, safe_name=secret[0][:256])
-    unknown = tuple(key for key in considered if key not in names)
+    unknown = tuple(key for key in considered if _source_name(key, prefix_only) not in names)
     if unknown:
         reason = "unknown_config_env_var" if prefix_only else "unknown_config_override"
         raise ConfigError(reason, safe_name=unknown[0][:256])
@@ -167,8 +196,22 @@ def _validated_source_values(
             raise ConfigError("config_value_invalid", safe_name=key[:256]) from exc
         if type(value) is not str:
             raise ConfigError("config_value_invalid", safe_name=key[:256])
-        values[key] = value
+        # A legacy ``YOETZ_`` name folds onto its ``FINISHUP_`` twin (ADR-048). The same value
+        # under both is one setting; different values are ambiguous and refused.
+        name = _source_name(key, prefix_only)
+        if name in values and values[name] != value:
+            raise ConfigError("config_env_conflict", safe_name=name[:256])
+        values[name] = value
     return values
+
+
+def _source_name(key: str, prefix_only: bool) -> str:
+    """Return the allowlist spelling of one considered source key."""
+
+    if not prefix_only:
+        return key
+    canonical = canonical_env_name(key)
+    return key if canonical is None else canonical
 
 
 def _selected_config_path(

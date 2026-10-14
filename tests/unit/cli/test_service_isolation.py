@@ -26,7 +26,13 @@ import finishup.cli.app as cli
 import finishup.cli.isolation_status as module
 from finishup.cli.isolation_status import isolation_report, observe_file_content
 from finishup.config.installation import ReportedLifecycle
-from finishup.config.paths import ISOLATED_ROOT_ENV, IsolationBinding, PathSafetyError
+from finishup.config.models import ConfigError
+from finishup.config.paths import (
+    ISOLATED_ROOT_ENV,
+    LEGACY_ISOLATED_ROOT_ENV,
+    IsolationBinding,
+    PathSafetyError,
+)
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.isolation_report import IsolationReportContract
 from finishup.protocol.schemas import validate_schema_instance
@@ -52,7 +58,7 @@ def private_root() -> Iterator[Path]:
 
 
 def _scrub_finishup_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in [name for name in os.environ if name.startswith("FINISHUP_")]:
+    for name in [name for name in os.environ if name.startswith(("FINISHUP_", "YOETZ_"))]:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -103,6 +109,51 @@ def test_isolated_mode_reports_every_identity_beneath_the_exact_root(
     assert identity["config_path_digest"] == _expected_digest(root / "config" / "config.toml")
     # Digest-only privacy boundary: no raw path may appear anywhere in the report.
     assert str(root) not in repr(report)
+
+
+def test_the_legacy_root_and_config_spellings_select_the_same_identities(
+    private_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``YOETZ_ISOLATED_ROOT`` and ``YOETZ_CONFIG`` still select their targets (ADR-048)."""
+
+    _scrub_finishup_env(monkeypatch)
+    root = private_root / "iso"
+    root.mkdir(mode=0o700)
+    config = private_root / "legacy.toml"
+    monkeypatch.setenv(LEGACY_ISOLATED_ROOT_ENV, str(root))
+    monkeypatch.setenv("YOETZ_CONFIG", str(config))
+
+    report = isolation_report()
+
+    assert report["mode"] == "isolated"
+    assert report["binding"] == "environment"
+    assert report["path_identity"]["state_path_digest"] == _expected_digest(root / "state")
+    assert report["path_identity"]["config_path_digest"] == _expected_digest(config)
+
+
+def test_conflicting_config_spellings_are_unprovable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scrub_finishup_env(monkeypatch)
+    monkeypatch.setenv("FINISHUP_CONFIG", str(tmp_path / "new.toml"))
+    monkeypatch.setenv("YOETZ_CONFIG", str(tmp_path / "old.toml"))
+
+    with pytest.raises(ConfigError) as caught:
+        isolation_report()
+    assert caught.value.reason_code == "config_env_conflict"
+
+
+def test_conflicting_root_spellings_are_unprovable(
+    private_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _scrub_finishup_env(monkeypatch)
+    for name, leaf in ((ISOLATED_ROOT_ENV, "new"), (LEGACY_ISOLATED_ROOT_ENV, "old")):
+        (private_root / leaf).mkdir(mode=0o700)
+        monkeypatch.setenv(name, str(private_root / leaf))
+
+    with pytest.raises(PathSafetyError) as caught:
+        isolation_report()
+    assert caught.value.reason_code == "isolation_root_env_conflict"
 
 
 def test_two_target_reports_expose_shared_relocated_storage(

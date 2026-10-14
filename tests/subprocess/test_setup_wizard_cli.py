@@ -84,13 +84,26 @@ def _binary(path: str = "/opt/harness/bin/codex") -> HarnessBinary:
 
 
 class _ScriptedRunner:
+    """Scripted Codex subprocess stand-in.
+
+    Every MCP observation lists the host's entries once to read the legacy ``yoetz`` key
+    (ADR-048). After a successful named ``get`` that list is answered with no entries instead
+    of the scripted queue, so each script names only the calls it is about.
+    """
+
     def __init__(self, outputs: list[CommandOutput]) -> None:
         self.outputs = outputs
         self.calls: list[tuple[str, ...]] = []
+        self._after_found_get = False
 
     def __call__(self, argv: tuple[str, ...]) -> CommandOutput:
         self.calls.append(argv)
-        return self.outputs.pop(0)
+        if argv[1:3] == ("mcp", "list") and self._after_found_get:
+            self._after_found_get = False
+            return CommandOutput(0, b"[]")
+        output = self.outputs.pop(0)
+        self._after_found_get = argv[1:3] == ("mcp", "get") and output.exit_code == 0
+        return output
 
 
 def _finishup_entry(
@@ -565,7 +578,7 @@ def test_setup_update_network_requires_yes_and_successful_trusted_commit(
             "latest_version": None,
             "outcome": "skipped_policy",
             "source": "none",
-            "upgrade_command": "uv tool upgrade finishup",
+            "upgrade_command": "finishup upgrade",
         }
 
     async def recommendations(**kwargs: object) -> dict[str, JsonValue]:
@@ -674,7 +687,7 @@ def test_foreign_entry_is_preserved_and_reported(wizard_env: dict[str, object]) 
     assert report["registration"]["skill"]["outcome"] == "skipped"
     # No mutating `mcp add` ever ran.
     for calls in cast(list[list[tuple[str, ...]]], wizard_env["calls"]):
-        assert all(call[1:3] == ("mcp", "get") for call in calls)
+        assert all(call[1:3] in {("mcp", "get"), ("mcp", "list")} for call in calls)
 
 
 @pytest.mark.anyio
@@ -1576,7 +1589,7 @@ def test_non_interactive_accept_preserves_existing_policy_route(
     assert report["registration"]["serve_command"] == list(MCP_SERVE_COMMAND)
     # No mutating ``mcp add`` ever ran: the existing policy route survives.
     for calls in cast(list[list[tuple[str, ...]]], wizard_env["calls"]):
-        assert all(call[1:3] == ("mcp", "get") for call in calls)
+        assert all(call[1:3] in {("mcp", "get"), ("mcp", "list")} for call in calls)
 
 
 def test_explicit_route_profile_flag_reregisters_and_reports_the_transition(
@@ -1721,7 +1734,7 @@ def test_integrate_mcp_install_without_route_input_preserves_owned_policy_route(
     assert body["action"] == "noop"
     assert body["state_after"] == "yoetz_owned"
     for calls in cast(list[list[tuple[str, ...]]], wizard_env["calls"]):
-        assert all(call[1:3] == ("mcp", "get") for call in calls)
+        assert all(call[1:3] in {("mcp", "get"), ("mcp", "list")} for call in calls)
 
 
 def test_integrate_mcp_preview_names_the_observed_route_before(
@@ -2862,8 +2875,15 @@ class _CodexMcpHost:
         verb = argv[1:3]
         if verb == ("mcp", "get"):
             return _finishup_entry("strict") if self.registered else CommandOutput(1, b"")
-        if verb == ("mcp", "list") and not self.registered:
-            return CommandOutput(0, b"[]")
+        if verb == ("mcp", "list"):
+            # Every observation also lists entries for the legacy ``yoetz`` key (ADR-048).
+            if not self.registered:
+                return CommandOutput(0, b"[]")
+            entry = {
+                "name": "finishup",
+                "transport": {"command": "finishup", "args": list(MCP_STRICT_SERVE_COMMAND[1:])},
+            }
+            return CommandOutput(0, json.dumps([entry]).encode())
         if verb == ("mcp", "add"):
             self.registered = True
             return CommandOutput(0, b"")

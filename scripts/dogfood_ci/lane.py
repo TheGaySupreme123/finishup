@@ -689,7 +689,12 @@ def _digest(text: str) -> str:
 def _clean_env(
     extra: dict[str, str] | None = None, *, drop: tuple[str, ...] = ()
 ) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("FINISHUP_") and k not in drop}
+    # Neither the FinishUP nor the legacy YOETZ_ variable namespace leaks in (ADR-048).
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if not k.startswith(("FINISHUP_", "YOETZ_")) and k not in drop
+    }
     if extra:
         env.update(extra)
     return env

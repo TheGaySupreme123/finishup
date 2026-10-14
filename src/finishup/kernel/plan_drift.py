@@ -31,7 +31,7 @@ from finishup.domain.events import (
     PlanRevisedPayload,
 )
 from finishup.domain.task_statement import (
-    NO_MATERIAL_WORK_MARKER,
+    NO_MATERIAL_WORK_MARKERS,
     RecordedTaskStatement,
     current_task_statement,
 )
@@ -308,8 +308,9 @@ def no_material_work_decided(
 ) -> bool:
     """Whether a readable decision records that the request asks for no material work.
 
-    The decision's statement must hold the exact line ``finishup-no-material-work:<event>`` naming an
-    event that recorded the current statement content; its rationale is required by the schema.
+    The decision's statement must hold the exact line ``finishup-no-material-work:<event>`` (or its
+    legacy ``yoetz-`` spelling, ADR-048) naming an event that recorded the current statement
+    content; its rationale is required by the schema.
     The decision is contradicted, and therefore never counts, while the task records any edit
     action or ``workspace_changed`` is not ``False``: hosts record shell writes as command actions,
     so the check-time change capture is the structural witness that no file changed. ``True``
@@ -324,7 +325,8 @@ def no_material_work_decided(
         for row in projection.actions.values()
     ):
         return False
-    markers = {f"{NO_MATERIAL_WORK_MARKER}:{event}" for event in events}
+    # Either spelling of the marker counts (ADR-048): recorded statements keep the legacy one.
+    markers = {f"{marker}:{event}" for marker in NO_MATERIAL_WORK_MARKERS for event in events}
     for row in projection.decisions.values():
         payload = getattr(row, "payload", None)
         if (

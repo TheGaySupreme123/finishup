@@ -324,6 +324,7 @@ def render_evidence_json(evidence: ReleaseEvidence) -> bytes:
             }
             for gate in evidence.gates
         ],
+        # Frozen legacy identifier (ADR-048): release-evidence format tag.
         "schema": "yoetz.release-evidence/1",
         "signature_status": "not_provided",
     }

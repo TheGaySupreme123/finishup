@@ -43,6 +43,7 @@ from finishup.cli.hook_io import (
 )
 from finishup.cli.render import render_hook_recovery_suffix
 from finishup.domain.compaction_recap import RECAP_CONTEXT_LIMIT, RecapFacts
+from finishup.domain.finishup_tools import FINISHUP_SCOPED_TOOL_PREFIXES
 from finishup.ports.control import ControlClientKind, ControlError, WorkspaceLocator
 from finishup.protocol.canonical import JsonValue, strict_json_parse
 from finishup.protocol.errors import ProtocolValueError, PublicErrorCode
@@ -140,8 +141,10 @@ _STATUS_DEADLINE_MS: Final = 5_000
 _INTAKE_CUE_BYTES: Final = 512
 _MAX_PENDING_MAPPING_REPLAYS: Final = 8
 
+# ``start`` as a Codex or Claude Code hook names it, under the current and the legacy server
+# name a 0.1-0.2.5 registration still carries (ADR-048).
 FINISHUP_START_TOOL_NAMES: Final = frozenset(
-    {"start", "mcp__finishup__start", "mcp__plugin_finishup_finishup__start"}
+    {"start", *(f"{prefix}start" for prefix in FINISHUP_SCOPED_TOOL_PREFIXES)}
 )
 _STARTUP_RECOVERY_CONTEXT: Final = (
     "If start fails, follow exact continuations and same-request recovery first, including a "
@@ -1299,6 +1302,8 @@ def _with_compaction_recap(
 def _status_request(
     mapping: LifecycleMapping,
     *,
+    # Frozen legacy identifier (ADR-048): a recorded actor id; renaming it would mix ids in one
+    # ledger and turn a retry across the upgrade into an idempotency conflict.
     actor_id: str = "yoetz:codex-hooks",
     view: str = "compact",
     limit: str = "1",
@@ -1314,6 +1319,7 @@ def _status_request(
                 "actor_type": "harness",
             },
             "client": {
+                # Frozen legacy identifier (ADR-048): the client kind wire enum value.
                 "kind": "yoetz_cli",
                 "version": __version__,
                 "integration": "local_cli",
@@ -1522,6 +1528,8 @@ async def _read_status(
     mapping: LifecycleMapping,
     *,
     connect: ServiceConnector | None = None,
+    # Frozen legacy identifier (ADR-048): a recorded actor id; renaming it would mix ids in one
+    # ledger and turn a retry across the upgrade into an idempotency conflict.
     actor_id: str = "yoetz:codex-hooks",
     workspace_locator: str | None = None,
     recap: bool = False,

@@ -176,8 +176,11 @@ def _status_body(status: CursorPluginStatus) -> dict[str, object]:
             ),
             "mcp_binding": status.launcher.mcp_binding,
         },
+        # What the legacy ``plugins/local/yoetz`` directory holds (ADR-048).
+        "legacy_installation": status.legacy_installation,
         "marker_valid": status.marker_valid,
         "mcp": {
+            "legacy_registration": status.mcp_observation.legacy_registration,
             "observed": status.mcp_observation.observed,
             "ownership_state": status.mcp_observation.ownership_state.value,
             "present_sources": [item.value for item in status.mcp_observation.present_sources],
@@ -325,6 +328,7 @@ def run_cursor_plugin_command(
                     "mcp_ownership_state": preview.mcp_ownership_state.value,
                     "mcp_route_profile": preview.mcp_route_profile,
                     "isolation_root": preview.isolation_root,
+                    "legacy_installation": preview.legacy_installation,
                     "preview_digest": preview.preview_digest,
                     "request_id": preview.request_id,
                     "scope": "user",

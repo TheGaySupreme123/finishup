@@ -748,6 +748,15 @@ _TOKEN_DETAIL_VALUES: Mapping[str, frozenset[str]] = MappingProxyType(
         "route_profile": frozenset({"policy", "strict"}),
     }
 )
+# Frozen legacy identifier (ADR-048): the consent command details a pre-rename service emitted
+# name the deprecated ``yoetz`` alias. They are admitted and rendered with the current launcher.
+_LEGACY_COMMAND_DETAIL_VALUES: Mapping[str, str] = MappingProxyType(
+    {
+        "yoetz consent authorize": "finishup consent authorize",
+        "yoetz consent prepare vault_initialize": "finishup consent prepare vault_initialize",
+        "yoetz consent review": "finishup consent review",
+    }
+)
 _HEAD_DIGEST_PATTERN = re.compile(r"^(?:genesis|sha256:[0-9a-f]{64})$", re.ASCII)
 _ENUM_DETAIL_KEYS = frozenset(
     {"component", "method", "operation", "phase", "state", "status", "view"}
@@ -865,6 +874,8 @@ def _normalize_detail(key: str, value: object) -> SafeDetailValue | None:
         return value if type(value) is bool else None
     tokens = _TOKEN_DETAIL_VALUES.get(key)
     if tokens is not None:
+        if type(value) is str and value in _LEGACY_COMMAND_DETAIL_VALUES:
+            value = _LEGACY_COMMAND_DETAIL_VALUES[value]
         return value if type(value) is str and value in tokens else None
     if key == "reason_code":
         if type(value) is str and value in PROTOCOL_REASON_CODES:

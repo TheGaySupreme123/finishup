@@ -115,6 +115,7 @@ __all__ = [
     "unanswered_finding_ids",
 ]
 
+# Frozen legacy identifier (ADR-048): projection version the SQL CHECK and replay compare.
 PROJECTION_VERSION: Final = "yoetz/0.1.0"
 PROJECTION_GENERATION: Final = 1
 # At most this many checks contribute to one finding's check-time requirement (ADR-031).

@@ -21,12 +21,14 @@ from finishup.domain.review_input_render import (
     render_review_input_manifest_lines,
 )
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
+from finishup.legacy_names import LAUNCHER_NAME
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.errors import normalize_safe_details
 from finishup.protocol.ids import validate_opaque_item_id
 from finishup.protocol.inspection_text import inspection_text
 from finishup.protocol.models import (
     CheckAwaitingHumanModel,
+    CheckContinuationModel,
     CheckFindingChecklistModel,
     CheckInspectionModel,
     CheckOverallNextModel,
@@ -761,7 +763,7 @@ def render_human_status(result: StatusSuccessModel) -> str:
             lines.extend(
                 (
                     f"Continuation: {result.page.continuation.kind}",
-                    "Trusted command: " + " ".join(result.page.continuation.command),
+                    "Trusted command: " + _continuation_command(result.page.continuation),
                     f"Replay request ID: {result.page.continuation.replay_request_id}",
                 )
             )
@@ -1259,6 +1261,17 @@ def render_human_error(error: PublicErrorModel) -> str:
     return "\n".join([head, *render_error_recovery_lines(error.safe_details)])
 
 
+def _continuation_command(continuation: CheckContinuationModel) -> str:
+    """Render a validated continuation command with the current launcher.
+
+    The model admits only the current or the pre-rename launcher as the head, and a result from a
+    pre-rename service still names the legacy one; the human rendering always names the current
+    launcher, as the MCP text channel does (ADR-048).
+    """
+
+    return " ".join((LAUNCHER_NAME, *continuation.command[1:]))
+
+
 def render_human_awaiting_human(result: CheckAwaitingHumanModel) -> str:
     """Render the nonterminal check branch as an instruction, never as a conclusion.
 
@@ -1277,7 +1290,7 @@ def render_human_awaiting_human(result: CheckAwaitingHumanModel) -> str:
     else:
         heading = "AI-powered review: awaiting_human (human_approval_required)"
         explanation = "This check is paused for trusted local privacy authority. No verdict yet."
-    lines = [heading, "", explanation, "", f"  {' '.join(continuation.command)}", ""]
+    lines = [heading, "", explanation, "", f"  {_continuation_command(continuation)}", ""]
     if continuation.pending_id is not None:
         lines.append(f"Pending decision: {continuation.pending_id}")
     if continuation.expires_at is not None:

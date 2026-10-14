@@ -6,7 +6,7 @@ import hashlib
 import os
 import shutil
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
 from typing import Any, Final, Literal, Protocol, cast
@@ -18,9 +18,16 @@ from finishup import __version__
 from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 from finishup.domain.values import RequestId
 from finishup.domain.values import request_id as validate_request_id
+from finishup.legacy_names import (
+    LAUNCHER_NAME,
+    LEGACY_LAUNCHER_NAME,
+    LEGACY_MCP_SERVER_NAME,
+    MCP_SERVER_NAME,
+)
 from finishup.ports.plugin_artifacts import (
     ArtifactAuthority,
     ArtifactTarget,
+    LegacyInstallation,
     ManagedPluginFile,
     McpOwnership,
     McpOwnershipState,
@@ -52,6 +59,7 @@ from finishup.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCU
 
 __all__ = [
     "AGENT_PLUGIN_ROOT",
+    "LEGACY_AGENT_PLUGIN_ROOT",
     "ArtifactUserPresencePort",
     "ManifestValidation",
     "McpConfigValidation",
@@ -72,7 +80,13 @@ __all__ = [
     "validate_portable_plugin_tree",
 ]
 
-AGENT_PLUGIN_ROOT: Final = ".agents/plugins/finishup"
+_PLUGIN_DIRECTORY: Final = "finishup"
+# The plugin directory Yoetz 0.1-0.2 installs wrote (ADR-048). A marker-valid portable tree there
+# is FinishUP's own: status reports it, install and replace migrate it, and remove takes it too.
+# Anything else under that name is reported and never touched. It is never written.
+_LEGACY_PLUGIN_DIRECTORY: Final = "yoetz"
+AGENT_PLUGIN_ROOT: Final = f".agents/plugins/{_PLUGIN_DIRECTORY}"
+LEGACY_AGENT_PLUGIN_ROOT: Final = f".agents/plugins/{_LEGACY_PLUGIN_DIRECTORY}"
 _PLUGIN_SCHEMA_PATH: Final = "support/agent-plugins/1.0.0/plugin.schema.json"
 _MCP_SCHEMA_PATH: Final = "support/agent-plugins/1.0.0/mcp.schema.json"
 _SKILL_PATH: Final = "skills/portable/finishup/SKILL.md"
@@ -92,9 +106,13 @@ _PLUGIN_SCHEMA_SHA: Final = (
 )
 _MCP_SCHEMA_SHA: Final = "sha256:6539175bfcdf43085855183e86da40ea94b166547a72b47ae9a0a390516d3acb"
 _RENDERER_VERSION: Final = "portable-plugin/0.1.0"
+# Frozen legacy identifier (ADR-048): status and remove find ownership through these exact marker
+# names and schemas, inside both the renamed and the legacy plugin directory, and 0.3 runtimes in
+# other projects read the same markers.
 _MARKER_NAME: Final = ".yoetz-plugin-install.json"
 _MARKER_SCHEMA: Final = "yoetz.portable-plugin-install/1"
 _NATIVE_MARKER_SCHEMA: Final = "yoetz.codex-plugin-install/1"
+# Frozen legacy identifier (ADR-048): crash-recovery residue the next run finds by prefix.
 _STAGE_PREFIX: Final = ".yoetz.plugin-stage-"
 _REMOVE_PREFIX: Final = ".yoetz.plugin-remove-"
 _NATIVE_ROLLBACK_NAME: Final = ".yoetz.plugin-native-rollback"
@@ -209,10 +227,22 @@ class _Inspection:
     installed_digest: str | None
     marker_valid: bool
     rollback_digest: str | None
+    # The legacy ``.agents/plugins/yoetz`` tree (ADR-048): ``owned`` only for a marker-valid
+    # portable tree, whose exact digest a preview binds before migration or removal.
+    legacy_state: Literal["absent", "owned", "foreign"] = "absent"
+    legacy_digest: str | None = None
 
     @property
     def rollback_available(self) -> bool:
         return self.rollback_digest is not None
+
+    @property
+    def legacy_installation(self) -> LegacyInstallation:
+        if self.legacy_state == "absent":
+            return "none"
+        if self.legacy_state == "foreign":
+            return "foreign"
+        return "legacy_only" if self.state is PluginArtifactState.ABSENT else "duplicate"
 
     def __repr__(self) -> str:
         return (
@@ -503,18 +533,25 @@ def _plugin_json() -> bytes:
     return canonical_encode(body) + b"\n"
 
 
-def _mcp_json(route_profile: Literal["strict", "policy"]) -> bytes:
+def _mcp_json(route_profile: Literal["strict", "policy"], *, legacy: bool = False) -> bytes:
+    """Render the plugin-owned route; ``legacy`` reproduces the pre-rename bytes (ADR-048).
+
+    The legacy form is never written. It exists so a Yoetz-era tree, which keys the route
+    ``yoetz`` and launches the bare ``yoetz`` alias, is still recognized as FinishUP's own.
+    """
+
     args = ["mcp", "serve"]
     if route_profile == "strict":
         args.extend(("--semantic", "off"))
+    name = LEGACY_MCP_SERVER_NAME if legacy else MCP_SERVER_NAME
     body = cast(
         dict[str, JsonValue],
         {
             "$schema": _MCP_SCHEMA_ID,
             "mcpServers": {
-                "finishup": {
+                name: {
                     "args": args,
-                    "command": "finishup",
+                    "command": LEGACY_LAUNCHER_NAME if legacy else LAUNCHER_NAME,
                     "type": "stdio",
                 }
             },
@@ -671,6 +708,7 @@ def _marker(rendered: RenderedPortablePlugin) -> bytes:
         "renderer_version": rendered.plan.renderer_version,
         "schema": _MARKER_SCHEMA,
         "schema_version": rendered.plan.specification_version,
+        # Frozen legacy identifier (ADR-048): the marker key every release reads by name.
         "yoetz_version": rendered.plan.version,
     }
     body["marker_digest"] = canonical_digest(body)
@@ -761,18 +799,40 @@ def _parsed_marker(files: Mapping[str, bytes]) -> Mapping[str, JsonValue] | None
 
 
 def observe_plugin_managed_mcp(project_root: Path) -> PluginManagedMcpObservation:
-    """Observe a managed portable route without inferring activation or runtime success."""
+    """Observe a managed portable route without inferring activation or runtime success.
+
+    The legacy ``.agents/plugins/yoetz`` tree is read too (ADR-048). Its owned plugin-managed
+    route counts as FinishUP's when it is the only one; owned routes in both trees cannot say
+    which one the host loads and read as ambiguous. A legacy-tree route FinishUP cannot prove is
+    its own no longer shares the ``finishup`` name, so it is not a conflict.
+    """
 
     try:
         root, _identity = _validate_project(ArtifactTarget(str(project_root)))
-        destination = _plugin_parent(root, create=False) / "finishup"
-        if not destination.exists():
-            return PluginManagedMcpObservation(McpOwnershipState.ABSENT, None, True)
-        if destination.is_symlink() or not destination.is_dir():
-            return PluginManagedMcpObservation(McpOwnershipState.AMBIGUOUS, None, False)
-        files = _safe_tree_files(destination)
+        parent = _plugin_parent(root, create=False)
+        current = _observe_managed_route(parent / _PLUGIN_DIRECTORY, legacy=False)
+        legacy = _observe_managed_route(parent / _LEGACY_PLUGIN_DIRECTORY, legacy=True)
     except OSError, PluginArtifactError, ValueError:
         return PluginManagedMcpObservation(McpOwnershipState.AMBIGUOUS, None, False)
+    if legacy.ownership_state is McpOwnershipState.AMBIGUOUS:
+        return legacy
+    if legacy.ownership_state is not McpOwnershipState.PLUGIN:
+        return current
+    if current.ownership_state is McpOwnershipState.ABSENT:
+        return legacy
+    if current.ownership_state is McpOwnershipState.PLUGIN:
+        return PluginManagedMcpObservation(McpOwnershipState.AMBIGUOUS, None, True)
+    return current
+
+
+def _observe_managed_route(destination: Path, *, legacy: bool) -> PluginManagedMcpObservation:
+    """Classify one plugin directory's managed route; ``legacy`` expects the pre-rename bytes."""
+
+    if not destination.exists():
+        return PluginManagedMcpObservation(McpOwnershipState.ABSENT, None, True)
+    if destination.is_symlink() or not destination.is_dir():
+        return PluginManagedMcpObservation(McpOwnershipState.AMBIGUOUS, None, False)
+    files = _safe_tree_files(destination)
     mcp_raw = files.get("mcp.json")
     if mcp_raw is None:
         return PluginManagedMcpObservation(McpOwnershipState.ABSENT, None, True)
@@ -784,7 +844,7 @@ def observe_plugin_managed_mcp(project_root: Path) -> PluginManagedMcpObservatio
         marker.get("schema") != _MARKER_SCHEMA
         or marker.get("mcp_ownership") != McpOwnership.PLUGIN_MANAGED.value
         or route not in {"strict", "policy"}
-        or mcp_raw != _mcp_json(cast(Literal["strict", "policy"], route))
+        or mcp_raw != _mcp_json(cast(Literal["strict", "policy"], route), legacy=legacy)
     ):
         return PluginManagedMcpObservation(McpOwnershipState.AMBIGUOUS, None, True)
     recorded_valid, _artifact = _recorded_tree_valid(files, marker)
@@ -851,7 +911,44 @@ def _canonical_native_tree_digest(
     return _tree_digest(files)
 
 
+def _inspect_legacy(parent: Path) -> tuple[Literal["absent", "owned", "foreign"], str | None]:
+    """Classify the legacy ``yoetz`` plugin directory without ever writing it (ADR-048).
+
+    Only a marker-valid portable tree is this lane's own. A Codex-native tree there belongs to
+    the Codex activation lane; it and anything unmarked, modified, or unsafe read as foreign.
+    """
+
+    legacy = parent / _LEGACY_PLUGIN_DIRECTORY
+    if not legacy.exists() and not legacy.is_symlink():
+        return "absent", None
+    if legacy.is_symlink() or not legacy.is_dir():
+        return "foreign", None
+    try:
+        files = _safe_tree_files(legacy)
+    except OSError, PluginArtifactError:
+        return "foreign", None
+    marker = _parsed_marker(files)
+    if (
+        marker is None
+        or not _marker_self_valid(marker)
+        or marker.get("schema") != _MARKER_SCHEMA
+        or not _recorded_tree_valid(files, marker)[0]
+    ):
+        return "foreign", None
+    return "owned", _tree_digest(files)
+
+
 def _inspect(
+    target: ArtifactTarget,
+    rendered: RenderedPortablePlugin,
+    resource_source: PortableResourceSource | None,
+) -> _Inspection:
+    current = _inspect_current(target, rendered, resource_source)
+    legacy_state, legacy_digest = _inspect_legacy(current.parent)
+    return replace(current, legacy_state=legacy_state, legacy_digest=legacy_digest)
+
+
+def _inspect_current(
     target: ArtifactTarget,
     rendered: RenderedPortablePlugin,
     resource_source: PortableResourceSource | None,
@@ -866,7 +963,7 @@ def _inspect(
 
     root, target_identity = _validate_project(target)
     parent = _plugin_parent(root, create=False)
-    destination = parent / "finishup"
+    destination = parent / _PLUGIN_DIRECTORY
     rollback = parent / _NATIVE_ROLLBACK_NAME
     rollback_present = rollback.exists() or rollback.is_symlink()
     rollback_digest = (
@@ -1006,11 +1103,14 @@ def _preview(
         PluginArtifactState.PORTABLE_MANAGED,
     }:
         raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
+    legacy_owned = inspection.legacy_state == "owned"
     if action is PluginArtifactAction.REMOVE and inspection.state not in {
         PluginArtifactState.PORTABLE_EXACT,
         PluginArtifactState.PORTABLE_MANAGED,
     }:
-        raise _error(PluginArtifactReason.REMOVE_REFUSED)
+        # An owned legacy tree alone is still FinishUP's to remove (ADR-048).
+        if not (legacy_owned and inspection.state is PluginArtifactState.ABSENT):
+            raise _error(PluginArtifactReason.REMOVE_REFUSED)
     if inspection.rollback_available and inspection.state is PluginArtifactState.NATIVE_MANAGED:
         raise _error(PluginArtifactReason.RECOVERY_REQUIRED)
     allowed_owner_states = (
@@ -1027,6 +1127,8 @@ def _preview(
         PluginArtifactAction.NOOP
         if inspection.state is PluginArtifactState.PORTABLE_EXACT
         and action in {PluginArtifactAction.INSTALL, PluginArtifactAction.REPLACE}
+        # An owned legacy tree is migrated in the same approval, so it is never a no-op.
+        and not legacy_owned
         else action
     )
     warnings = tuple(
@@ -1039,6 +1141,7 @@ def _preview(
                     if rendered.plan.mcp_ownership is McpOwnership.EXTERNAL_REGISTRATION
                     else "plugin_activation_is_not_disclosure_consent"
                 ),
+                *_legacy_warnings(inspection),
             },
             key=str.encode,
         )
@@ -1048,31 +1151,33 @@ def _preview(
         if inspection.state is PluginArtifactState.NATIVE_MANAGED
         else inspection.rollback_digest
     )
-    preview_digest = canonical_digest(
-        {
-            "action": effective.value,
-            "artifact_digest": rendered.artifact_digest,
-            "current_state_digest": inspection.current_state_digest,
-            "format_profile": rendered.plan.format_profile.value,
-            "inventory": [
-                {
-                    "relative_path": item.relative_path,
-                    "sha256": item.sha256,
-                    "size": item.size,
-                }
-                for item in rendered.plan.inventory
-            ],
-            "mcp_ownership": rendered.plan.mcp_ownership.value,
-            "mcp_ownership_state": mcp_owner_state.value,
-            "mcp_route_profile": rendered.plan.mcp_route_profile,
-            "renderer_version": rendered.plan.renderer_version,
-            "request_id": request,
-            "rollback_digest": rollback_digest,
-            "schema_version": rendered.plan.specification_version,
-            "state_before": inspection.state.value,
-            "target_identity": inspection.target_identity,
-        }
-    )
+    digest_input: dict[str, JsonValue] = {
+        "action": effective.value,
+        "artifact_digest": rendered.artifact_digest,
+        "current_state_digest": inspection.current_state_digest,
+        "format_profile": rendered.plan.format_profile.value,
+        "inventory": [
+            {
+                "relative_path": item.relative_path,
+                "sha256": item.sha256,
+                "size": item.size,
+            }
+            for item in rendered.plan.inventory
+        ],
+        "mcp_ownership": rendered.plan.mcp_ownership.value,
+        "mcp_ownership_state": mcp_owner_state.value,
+        "mcp_route_profile": rendered.plan.mcp_route_profile,
+        "renderer_version": rendered.plan.renderer_version,
+        "request_id": request,
+        "rollback_digest": rollback_digest,
+        "schema_version": rendered.plan.specification_version,
+        "state_before": inspection.state.value,
+        "target_identity": inspection.target_identity,
+    }
+    if legacy_owned:
+        # Bind the exact legacy tree this approval migrates or removes (ADR-048).
+        digest_input["legacy_digest"] = inspection.legacy_digest
+    preview_digest = canonical_digest(digest_input)
     return PluginArtifactPreview(
         request_id=request,
         action=effective,
@@ -1086,6 +1191,46 @@ def _preview(
         plan=rendered.plan,
         warnings=warnings,
     )
+
+
+def _legacy_warnings(inspection: _Inspection) -> tuple[str, ...]:
+    if inspection.legacy_state == "owned":
+        return ("legacy_installation_owned",)
+    if inspection.legacy_state == "foreign":
+        return ("legacy_installation_foreign",)
+    return ()
+
+
+def _remove_legacy_tree(
+    parent: Path, inspection: _Inspection, request: RequestId
+) -> tuple[str, ...]:
+    """Remove the previewed legacy tree, revalidated after it can no longer change (ADR-048).
+
+    The tree is renamed into the frozen removal-residue family first, so an interruption leaves
+    material the next inspection reports as ``recovery_required``. Only the exact marker-valid
+    tree the preview bound is deleted; anything else is restored untouched and refused.
+    """
+
+    legacy = parent / _LEGACY_PLUGIN_DIRECTORY
+    removal = parent / f"{_REMOVE_PREFIX}{request}-legacy"
+    if removal.exists() or removal.is_symlink():
+        raise _error(PluginArtifactReason.RECOVERY_REQUIRED)
+    os.replace(legacy, removal)
+    _fsync_dir(parent)
+    try:
+        if removal.is_symlink() or not removal.is_dir():
+            raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
+        files = _safe_tree_files(removal)
+        if _tree_digest(files) != inspection.legacy_digest:
+            raise _error(PluginArtifactReason.DESTINATION_CONFLICT)
+    except PluginArtifactError:
+        if not legacy.exists():
+            os.replace(removal, legacy)
+            _fsync_dir(parent)
+        raise
+    shutil.rmtree(removal)
+    _fsync_dir(parent)
+    return tuple(sorted(files, key=str.encode))
 
 
 def _fsync_dir(path: Path) -> None:
@@ -1372,6 +1517,7 @@ class PortablePluginArtifactAdapter(PluginArtifactPort):
             inspection.marker_valid,
             inspection.rollback_available,
             proof,
+            inspection.legacy_installation,
         )
 
     async def install_artifact(self, command: PluginArtifactApplyCommand) -> PluginArtifactResult:
@@ -1421,7 +1567,7 @@ class PortablePluginArtifactAdapter(PluginArtifactPort):
                 ),
             )
         parent = _plugin_parent(inspection.root, create=True)
-        destination = parent / "finishup"
+        destination = parent / _PLUGIN_DIRECTORY
         stage = parent / f"{_STAGE_PREFIX}{command.request_id}"
         rollback = parent / _NATIVE_ROLLBACK_NAME
         if stage.exists() or (
@@ -1436,14 +1582,22 @@ class PortablePluginArtifactAdapter(PluginArtifactPort):
                 os.replace(destination, rollback)
                 native_moved = True
                 _fsync_dir(parent)
-            elif inspection.state is PluginArtifactState.PORTABLE_MANAGED:
+            elif inspection.state in {
+                PluginArtifactState.PORTABLE_MANAGED,
+                # An exact tree reaches here only beside an owned legacy tree (ADR-048).
+                PluginArtifactState.PORTABLE_EXACT,
+            }:
                 portable_moved = parent / f"{_REMOVE_PREFIX}{command.request_id}"
                 os.replace(destination, portable_moved)
                 _fsync_dir(parent)
             os.replace(stage, destination)
             _fsync_dir(parent)
-            final = _inspect(command.target, rendered, self._resource_source)
-            if final.state is not PluginArtifactState.PORTABLE_EXACT:
+            # Verify the committed bytes directly: a displaced tree still sits beside it under
+            # the removal-residue prefix, which a whole-directory inspection reads as recovery.
+            if _safe_tree_files(destination) != {
+                **rendered.members,
+                _MARKER_NAME: _marker(rendered),
+            }:
                 raise OSError("installed_verification_failed")
             if portable_moved is not None and portable_moved.exists():
                 shutil.rmtree(portable_moved)
@@ -1483,6 +1637,8 @@ class PortablePluginArtifactAdapter(PluginArtifactPort):
                 {"operation_state": PluginOperationState.OUTCOME_UNKNOWN.value},
             ) from exc
         changed = tuple(sorted((*rendered.members, _MARKER_NAME), key=str.encode))
+        if inspection.legacy_state == "owned":
+            changed = self._migrate_legacy(command, inspection, parent, preview, rendered, changed)
         return self._store(
             command,
             PluginArtifactResult(
@@ -1496,6 +1652,52 @@ class PortablePluginArtifactAdapter(PluginArtifactPort):
                 rendered.artifact_digest,
                 changed,
             ),
+        )
+
+    def _migrate_legacy(
+        self,
+        command: PluginArtifactApplyCommand,
+        inspection: _Inspection,
+        parent: Path,
+        preview: PluginArtifactPreview,
+        rendered: RenderedPortablePlugin,
+        changed: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Remove the owned legacy tree once the renamed tree is committed (ADR-048).
+
+        The new tree is already verified, so a failure here never rolls it back: the result is
+        recorded as an unknown outcome and the legacy tree is left (or restored) for a retry.
+        Removed legacy files are reported relative to the project root.
+        """
+
+        try:
+            removed = _remove_legacy_tree(parent, inspection, command.request_id)
+        except (OSError, PluginArtifactError) as exc:
+            self._store(
+                command,
+                PluginArtifactResult(
+                    command.request_id,
+                    command.action,
+                    PluginOperationState.OUTCOME_UNKNOWN,
+                    inspection.state,
+                    PluginArtifactState.PORTABLE_EXACT,
+                    preview.preview_digest,
+                    rendered.artifact_digest,
+                    rendered.artifact_digest,
+                    changed,
+                ),
+            )
+            if isinstance(exc, PluginArtifactError):
+                raise
+            raise _error(
+                PluginArtifactReason.WRITE_FAILED,
+                {"operation_state": PluginOperationState.OUTCOME_UNKNOWN.value},
+            ) from exc
+        return tuple(
+            sorted(
+                {*changed, *(f"{LEGACY_AGENT_PLUGIN_ROOT}/{path}" for path in removed)},
+                key=str.encode,
+            )
         )
 
     async def remove_artifact(self, command: PluginArtifactApplyCommand) -> PluginArtifactResult:
@@ -1535,18 +1737,23 @@ class PortablePluginArtifactAdapter(PluginArtifactPort):
         rollback = parent / _NATIVE_ROLLBACK_NAME
         if removal.exists():
             raise _error(PluginArtifactReason.RECOVERY_REQUIRED)
+        restored = False
+        legacy_removed: tuple[str, ...] = ()
         try:
-            os.replace(destination, removal)
-            _fsync_dir(parent)
-            restored = False
-            if rollback.exists():
-                if rollback.is_symlink() or not rollback.is_dir():
-                    raise OSError("rollback_unsafe")
-                os.replace(rollback, destination)
-                restored = True
+            if inspection.state is not PluginArtifactState.ABSENT:
+                os.replace(destination, removal)
                 _fsync_dir(parent)
-            shutil.rmtree(removal)
-            _fsync_dir(parent)
+                if rollback.exists():
+                    if rollback.is_symlink() or not rollback.is_dir():
+                        raise OSError("rollback_unsafe")
+                    os.replace(rollback, destination)
+                    restored = True
+                    _fsync_dir(parent)
+                shutil.rmtree(removal)
+                _fsync_dir(parent)
+            if inspection.legacy_state == "owned":
+                # Disconnect takes the owned legacy tree too (ADR-048).
+                legacy_removed = _remove_legacy_tree(parent, inspection, command.request_id)
         except OSError as exc:
             result = PluginArtifactResult(
                 command.request_id,
@@ -1566,9 +1773,21 @@ class PortablePluginArtifactAdapter(PluginArtifactPort):
             ) from exc
         final = _inspect(command.target, rendered, self._resource_source)
         expected = PluginArtifactState.NATIVE_MANAGED if restored else PluginArtifactState.ABSENT
-        if final.state is not expected:
+        if final.state is not expected or final.legacy_state == "owned":
             raise _error(PluginArtifactReason.WRITE_FAILED)
-        changed = tuple(sorted((*rendered.members, _MARKER_NAME), key=str.encode))
+        changed = tuple(
+            sorted(
+                {
+                    *(
+                        (*rendered.members, _MARKER_NAME)
+                        if inspection.state is not PluginArtifactState.ABSENT
+                        else ()
+                    ),
+                    *(f"{LEGACY_AGENT_PLUGIN_ROOT}/{path}" for path in legacy_removed),
+                },
+                key=str.encode,
+            )
+        )
         return self._store(
             command,
             PluginArtifactResult(

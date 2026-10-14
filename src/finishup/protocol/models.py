@@ -43,6 +43,7 @@ from finishup.domain.coordination import (
     SessionHealth,
     WorkState,
 )
+from finishup.legacy_names import LAUNCHER_NAMES
 from finishup.protocol.canonical import JsonValue, parse_canonical_integer_string
 from finishup.protocol.coverage import (
     ArtifactObservation,
@@ -55,10 +56,10 @@ from finishup.protocol.coverage import (
 )
 from finishup.protocol.errors import ProtocolValueError, PublicErrorCode
 from finishup.protocol.guidance_uris import (
-    ALL_GUIDANCE_URIS as _ALL_GUIDANCE_URIS,
+    REGISTERED_GUIDANCE_URIS as _REGISTERED_GUIDANCE_URIS,
 )
 from finishup.protocol.guidance_uris import (
-    REGISTERED_GUIDANCE_URIS as _REGISTERED_GUIDANCE_URIS,
+    canonical_guidance_uri as _canonical_guidance_uri,
 )
 from finishup.protocol.ids import IdKind, validate_actor_id, validate_id
 from finishup.protocol.redacted_values import (
@@ -263,6 +264,7 @@ MISSING_FOR_ASSESSMENT_KINDS: Final = frozenset(
         "verification_output",
     }
 )
+# Frozen legacy identifier (ADR-048): the ``yoetz_limit_*`` availability values are released.
 MISSING_ITEM_AVAILABILITIES: Final = frozenset(
     {
         "agent_suppliable",
@@ -284,6 +286,7 @@ class ActorType(str, Enum):  # noqa: UP042 - exact public wire enum base
     LOGICAL_AGENT = "logical_agent"
     MODEL_BACKED_WORKER = "model_backed_worker"
     DELEGATED_SUBAGENT = "delegated_subagent"
+    # Frozen legacy identifier (ADR-048): the released actor-type wire value.
     FINISHUP_ENGINE = "yoetz_engine"
     IMPORTER = "importer"
 
@@ -307,6 +310,7 @@ class DataCategory(str, Enum):  # noqa: UP042 - exact public wire enum base
 class ClientKind(str, Enum):  # noqa: UP042 - exact public wire enum base
     CODEX_CLI = "codex_cli"
     COOPERATIVE_AGENT = "cooperative_agent"
+    # Frozen legacy identifier (ADR-048): the released client-kind wire value.
     FINISHUP_CLI = "yoetz_cli"
     TEST_CLIENT = "test_client"
     IMPORTER = "importer"
@@ -2025,9 +2029,13 @@ REGISTERED_GUIDANCE_URIS: Final[tuple[str, ...]] = _REGISTERED_GUIDANCE_URIS
 
 
 def _guidance_resource_uri(value: object) -> str:
-    """Admit only catalogued full-document or bounded-section guidance URIs."""
+    """Admit only catalogued full-document or bounded-section guidance URIs.
 
-    if type(value) is not str or value not in _ALL_GUIDANCE_URIS:
+    The exact legacy ``yoetz://`` spelling of a catalogued entry is admitted unchanged, so a
+    caller reading pre-rename guidance is answered in the scheme it used (ADR-048).
+    """
+
+    if type(value) is not str or _canonical_guidance_uri(value) is None:
         raise ValueError("guidance_resource_uri_unregistered")
     return value
 
@@ -2340,6 +2348,7 @@ type MissingForAssessmentKindWire = Literal[
     "task_statement",
     "verification_output",
 ]
+# Frozen legacy identifier (ADR-048): the ``yoetz_limit_*`` availability values are released.
 type MissingItemAvailabilityWire = Literal[
     "agent_suppliable",
     "structurally_unavailable_on_this_host",
@@ -3397,22 +3406,25 @@ class CheckContinuationModel(_ClosedModel):
 
     @model_validator(mode="after")
     def _validate_continuation(self) -> CheckContinuationModel:
+        # The service names the current launcher. A pre-rename service named the legacy one, so
+        # either head is admitted; every rendering names the current launcher (ADR-048).
+        launcher = self.command[0] if self.command else None
+        arguments = tuple(self.command[1:]) if launcher in LAUNCHER_NAMES else None
         if self.kind == "privacy_disclosure_decision":
             if self.pending_id is None or self.expires_at is None or len(self.command) != 4:
                 raise ValueError("check_continuation_disclosure_invalid")
-            head = ("finishup", "privacy", "decide-disclosure")
-            if tuple(self.command[:3]) != head or self.command[3] != self.pending_id:
+            if arguments != ("privacy", "decide-disclosure", self.pending_id):
                 raise ValueError("check_continuation_command_invalid")
         elif self.kind == "review_input_required" and (
             self.pending_id is not None
             or self.expires_at is not None
-            or tuple(self.command) != ("finishup", "publish-work", "--input", "PATH")
+            or arguments != ("publish-work", "--input", "PATH")
         ):
             raise ValueError("check_continuation_review_input_invalid")
         elif self.kind == "repository_privacy_setup" and (
             self.pending_id is not None
             or self.expires_at is not None
-            or tuple(self.command) != ("finishup", "--privacy")
+            or arguments != ("--privacy",)
         ):
             raise ValueError("check_continuation_repository_setup_invalid")
         return self
@@ -3485,6 +3497,7 @@ class ReviewInputMissingModel(_ClosedModel):
 class ReviewInputManifestModel(_ClosedModel):
     optional_non_null_fields = frozenset({"review_phase", "omitted_item_total", "follow_up_round"})
 
+    # Frozen legacy identifier (ADR-048): the recorded review-input manifest tag.
     schema_: Literal["yoetz.review-input-manifest/1"] = Field(alias="schema")
     specification: ReviewInputSectionModel
     current_diff: ReviewInputSectionModel
@@ -3931,6 +3944,7 @@ class CheckInspectionMissingModel(_ClosedModel):
         "requested_item_not_attempted",
         "resolution_evidence_not_cited",
     ]
+    # Frozen legacy identifier (ADR-048): the released ``owner`` wire value.
     owner: Literal["agent", "yoetz"]
     item_indexes: tuple[RequestedItemIndexWire, ...] | None = None
 
@@ -4019,6 +4033,7 @@ class CheckInspectionObservedActionModel(_ClosedModel):
     action_kind: Literal["command", "edit", "other", "research", "review"]
     material_class: Literal["edit_or_write", "exploration", "non_counting_write", "other"]
     tool_name: ObservedToolWire | None = None
+    # Frozen legacy identifier (ADR-048): ``yoetz_owned`` is a released write-scope value.
     write_scope: (
         Literal["notes", "outside_workspace", "scratch", "workspace", "yoetz_owned"] | None
     ) = None
@@ -5004,6 +5019,7 @@ class StatusCheckCauseModel(_ClosedModel):
     check_event_id: EventIdWire
     check_subject_frontier: CanonicalUInt64Wire
     family: CodeWire
+    # Frozen legacy identifier (ADR-048): ``yoetz_own_call`` is a recorded material class.
     material_class: Literal[
         "yoetz_own_call",
         "response",
@@ -5693,6 +5709,7 @@ class StatusAdviceItemModel(_ClosedModel):
 
 
 class StatusAdvicePageModel(_ClosedModel):
+    # Frozen legacy identifier (ADR-048): the protocol 0.1 tag namespace.
     projection_format: Literal["yoetz.advice-snapshot/1"]
     items: tuple[StatusAdviceItemModel, ...]
     next_cursor: None
@@ -5880,6 +5897,7 @@ class StatusVersionSliceModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     engine_version: VersionWire
     projection_version: VersionWire
+    # Frozen legacy identifier (ADR-048): the stored object format.
     object_format: Literal["yoetz-object/1"]
     storage_schema: CanonicalUInt64Wire
     python_version: VersionWire
@@ -6218,7 +6236,9 @@ class ReceiptSchemaVersionEntryModel(_ClosedModel):
 
 
 class ReceiptVersionSliceModel(_ClosedModel):
-    package_name: Literal["finishup"]
+    # A receipt issued before the rename names the ``yoetz`` distribution; new receipts name
+    # ``finishup`` (ADR-048).
+    package_name: Literal["finishup", "yoetz"]
     package_version: ReceiptVersionIdentityWire
     protocol_version: ReceiptVersionIdentityWire
     engine_version: ReceiptVersionIdentityWire

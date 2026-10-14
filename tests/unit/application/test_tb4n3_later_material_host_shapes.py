@@ -455,3 +455,71 @@ def test_every_spelling_the_delivery_policy_calls_finishup_owned_is_classified_f
     # The support tool is advertised through MCP too (closure_prepare is read-only).
     assert "closure_prepare" in FINISHUP_MCP_TOOL_NAMES
     assert finishup_tool_spelling("mcp__finishup__closure_prepare") == "server_scoped"
+
+
+# The spellings a 0.1-0.2.5 registration records (ADR-048), paired with the current spelling of
+# the same call. Recorded observations keep the legacy names and replay reclassifies them, so each
+# legacy hook must materialize and classify exactly as its current counterpart.
+_LEGACY_SPELLINGS: tuple[tuple[str, Callable[[str], _Hook], str, str], ...] = (
+    (
+        "codex check",
+        lambda tool: _codex(tool, "call_lc", {"mode": "deterministic_only"}, _OK),
+        "mcp__finishup__check",
+        "mcp__yoetz__check",
+    ),
+    (
+        "codex status",
+        lambda tool: _codex(tool, "call_ls", {"view": "findings"}, _OK),
+        "mcp__finishup__status",
+        "mcp__yoetz__status",
+    ),
+    (
+        "claude check",
+        lambda tool: _claude(tool, {}, "toolu_lc"),
+        "mcp__plugin_finishup_finishup__check",
+        "mcp__plugin_yoetz_yoetz__check",
+    ),
+    (
+        "claude receipt",
+        lambda tool: _claude(tool, {}, "toolu_lr"),
+        "mcp__plugin_finishup_finishup__receipt",
+        "mcp__plugin_yoetz_yoetz__receipt",
+    ),
+    (
+        "cursor scoped status",
+        lambda tool: _cursor(tool, {}, "cur_ls"),
+        "finishup:status",
+        "yoetz:status",
+    ),
+    (
+        "cursor plugin-scoped check",
+        lambda tool: _cursor(tool, {}, "cur_lc"),
+        "plugin-finishup-finishup:check",
+        "plugin-yoetz-yoetz:check",
+    ),
+)
+_HANDLERS: dict[str, Callable[..., int]] = {
+    "codex": observe_hooks.handle_observe,
+    "claude": observe_hooks.handle_claude_observe,
+    "cursor": observe_hooks.handle_cursor_observe,
+}
+
+
+@pytest.mark.parametrize(
+    ("name", "hook", "current", "legacy"), _LEGACY_SPELLINGS, ids=[c[0] for c in _LEGACY_SPELLINGS]
+)
+def test_recorded_legacy_tool_names_classify_as_the_current_spelling_after_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    hook: Callable[[str], _Hook],
+    current: str,
+    legacy: str,
+) -> None:
+    handler = _HANDLERS[name.split(" ", 1)[0]]
+    (tmp_path / "current").mkdir()
+    (tmp_path / "legacy").mkdir()
+    current_classes = _classes(_ingest(tmp_path / "current", monkeypatch, handler, hook(current)))
+    legacy_classes = _classes(_ingest(tmp_path / "legacy", monkeypatch, handler, hook(legacy)))
+    assert set(current_classes) == {_C.FINISHUP_OWN_CALL}, (name, current_classes)
+    assert legacy_classes == current_classes, (name, legacy_classes)

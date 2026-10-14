@@ -189,6 +189,8 @@ __all__ = [
     "AGENT_ACTIONABLE_TASK_FACT_GAPS",
     "BLOCKER_KINDS",
     "BLOCKER_MARKER",
+    "LEGACY_BLOCKER_MARKER",
+    "LEGACY_DISCLOSURE_MARKERS",
     "DECLARED_OUTPUT_CONTENT_MOVED_GAP",
     "DECLARED_OUTPUT_EMPTIED_GAP",
     "DECLARED_OUTPUT_NOT_REVIEWABLE_GAP",
@@ -262,9 +264,17 @@ __all__ = [
 ]
 
 BLOCKER_MARKER: Final = "finishup-blocker"
+# Frozen legacy identifier (ADR-048): decision statements recorded before the rename carry this
+# spelling and are re-parsed on every projection rebuild, so the reader accepts it permanently.
+LEGACY_BLOCKER_MARKER: Final = "yoetz-blocker"
 BLOCKER_KINDS: Final = ("authority", "consent", "credential", "dependency_unavailable")
+# Both spellings of one kind are the same line to every rule, the confirmation rule included.
 _BLOCKER_LINES: Final = MappingProxyType(
-    {f"{BLOCKER_MARKER}:{kind}": kind for kind in BLOCKER_KINDS}
+    {
+        f"{marker}:{kind}": kind
+        for marker in (BLOCKER_MARKER, LEGACY_BLOCKER_MARKER)
+        for kind in BLOCKER_KINDS
+    }
 )
 _VERIFICATION_RUNNERS: Final = frozenset({"test", "lint", "typecheck", "build"})
 _COOPERATIVE_CHANNELS: Final = frozenset(
@@ -303,6 +313,7 @@ def command_identity_key_registered() -> bool:
     return _COMMAND_IDENTITY_KEY[0] is not None
 
 
+# Frozen legacy identifier (ADR-048): domain separator inside stored digests.
 _PATH_IDENTITY_DOMAIN: Final = b"yoetz/deliverable-path/v1\x00"
 
 
@@ -456,8 +467,9 @@ def blocker_declarations(
 ) -> Mapping[ObligationId, BlockerDeclaration]:
     """Obligations a readable, unsuperseded blocker decision names, with its kind and event ids.
 
-    Only the exact statement line ``finishup-blocker:<kind>`` for a closed kind counts, and only for
-    the ids in ``affected_obligation_ids``. The first kind in ``BLOCKER_KINDS`` order wins when a
+    Only the exact statement line ``finishup-blocker:<kind>`` (or its legacy ``yoetz-blocker:<kind>``
+    spelling, ADR-048) for a closed kind counts, and only for the ids in
+    ``affected_obligation_ids``. The first kind in ``BLOCKER_KINDS`` order wins when a
     decision names more than one; the earliest such decision in ledger order claims the
     obligation. The claim is confirmed by the earliest later decision that repeats the same
     ``finishup-blocker:<kind>`` line for the same obligation *in a later publish batch* (issue #985):
@@ -632,6 +644,14 @@ def blocker_publication_notices(
 DISCLOSURE_MARKERS: Final = MappingProxyType(
     {"finishup-assumption": "assumption", "finishup-verification-limit": "verification_limit"}
 )
+# Frozen legacy identifiers (ADR-048): decision statements recorded before the rename carry these
+# spellings and are re-parsed on every projection rebuild, so the reader accepts them permanently.
+LEGACY_DISCLOSURE_MARKERS: Final = MappingProxyType(
+    {"yoetz-assumption": "assumption", "yoetz-verification-limit": "verification_limit"}
+)
+_DISCLOSURE_LINE_MARKERS: Final = MappingProxyType(
+    {**DISCLOSURE_MARKERS, **LEGACY_DISCLOSURE_MARKERS}
+)
 DISCLOSURE_KINDS: Final = ("assumption", "verification_limit")
 
 
@@ -652,8 +672,9 @@ def disclosure_line_obligations(statement: str) -> tuple[tuple[str, ObligationId
     """The ``(kind, obligation id)`` pairs a decision statement's disclosure lines name.
 
     Only a line ``finishup-assumption:<obligation id>`` or ``finishup-verification-limit:<obligation
-    id>`` with a well-formed obligation id counts; whitespace around the line and around the
-    colon is ignored, and anything else on the line makes it ordinary prose. Pairs are
+    id>`` with a well-formed obligation id counts, or the same line with its legacy ``yoetz-``
+    spelling (ADR-048); whitespace around the line and around the colon is ignored, and anything
+    else on the line makes it ordinary prose. Pairs are
     unique, in first-seen order. The reducer reads the same pairs to report an id that names no
     recorded obligation as ``missing_ref``.
     """
@@ -661,7 +682,7 @@ def disclosure_line_obligations(statement: str) -> tuple[tuple[str, ObligationId
     pairs: dict[tuple[str, ObligationId], None] = {}
     for line in statement.splitlines():
         marker, separator, value = line.strip().partition(":")
-        kind = DISCLOSURE_MARKERS.get(marker.strip())
+        kind = _DISCLOSURE_LINE_MARKERS.get(marker.strip())
         if kind is None or not separator:
             continue
         try:
@@ -1024,6 +1045,7 @@ def non_counting_edits_exempt(projection: ProjectionState) -> frozenset[str]:
             if scratch_overlap(item.value):
                 exempt.discard("write scratch")
             if item.item_kind is RequestedItemKind.DIRECTORY or finishup_artifact_name(item.value):
+                # Frozen legacy identifier (ADR-048): recorded wire token value.
                 exempt.discard("write yoetz_owned")
             if item.item_kind is RequestedItemKind.DIRECTORY or notes_artifact_name(item.value):
                 # A declared output named like a notes file, or any declared directory (which may
@@ -1484,6 +1506,7 @@ def task_fact_signals(
         )
 
     # Runtime facts.
+    # Frozen legacy identifier (ADR-048): recorded wire token value.
     if "install yoetz_runtime" in state.command_tokens:
         markers.add((INSTALL_INTO_FINISHUP_RUNTIME_GAP, None))
     if "install private_env" in state.command_tokens:

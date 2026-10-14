@@ -39,7 +39,7 @@ from finishup.adapters.integrations.observation_local import (
     self_observation_deliverable,
 )
 from finishup.domain.command_segments import command_segment_commitments
-from finishup.domain.finishup_tools import finishup_tool_spelling
+from finishup.domain.finishup_tools import FINISHUP_SCOPED_TOOL_PREFIXES, finishup_tool_spelling
 from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
@@ -208,7 +208,8 @@ _ROLLOUT_ITEM_TYPES: Final = frozenset(
 _ROLLOUT_WRAPPER_TYPES: Final = frozenset(
     wrapper for profile in SUPPORTED_ROLLOUT_PROFILES.values() for wrapper in profile.wrapper_types
 )
-_OVERSIZED_PARTIAL_PREFIX: Final = b"\x00finishup-oversized-line/v1\x00"
+# Frozen legacy identifier (ADR-048): the persisted oversized-line continuation marker.
+_OVERSIZED_PARTIAL_PREFIX: Final = b"\x00yoetz-oversized-line/v1\x00"
 _OVERSIZED_PARTIAL_DOMAIN: Final = b"yoetz/observation-stream-oversized-state/v1\x00"
 _OVERSIZED_LINE_DOMAIN: Final = b"yoetz/observation-stream-oversized-line/v1\x00"
 # The local stream call map predates selection and stores only tool names.  A
@@ -642,7 +643,8 @@ def _normalize_tool_name(value: object) -> str | None:
     token = _token(value)
     if token is None:
         return None
-    if token.startswith("mcp__finishup__") and token in FINISHUP_TOOL_NAMES:
+    # Either server spelling, current or legacy (ADR-048); see ``FINISHUP_TOOL_NAMES``.
+    if token.startswith(FINISHUP_SCOPED_TOOL_PREFIXES) and token in FINISHUP_TOOL_NAMES:
         return token
     if token in FINISHUP_TOOL_NAMES:
         return token

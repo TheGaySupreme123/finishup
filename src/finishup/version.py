@@ -72,10 +72,12 @@ PRIVACY_POLICY_SCHEMA_VERSION: Final = "1.2.0"
 EGRESS_RECEIPT_SCHEMA_VERSION: Final = "1.1.0"
 PRIVACY_CLASSIFIER_RULESET_VERSION: Final = "privacy-classifier/0.1.0"
 ENGINE_VERSION: Final = "0.1.0"
+# Frozen legacy identifier (ADR-048): projection version stored in SQL CHECKs and events.
 PROJECTION_VERSION: Final = "yoetz/0.1.0"
 WORK_INTEGRITY_POLICY_VERSION: Final = current_policy_pack(WORK_INTEGRITY_POLICY_ID)
 RESEARCH_EVIDENCE_POLICY_VERSION: Final = current_policy_pack(RESEARCH_EVIDENCE_POLICY_ID)
 COORDINATION_POLICY_VERSION: Final = current_policy_pack(COORDINATION_POLICY_ID)
+# Frozen legacy identifier (ADR-048): encryption format of every stored object.
 OBJECT_FORMAT_VERSION: Final = "yoetz-object/1"
 # Static identity on the status versions slice. Distinct from catalog/bundle schema counters
 # and from live SQLite user_version. Not a probed runtime fact.
@@ -98,8 +100,11 @@ _PROFILE_ID_WIRE_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._/-]{0,127}$")
 _ASCII_PRINTABLE_PATTERN: Final = re.compile(r"^[ -~]+$")
 CATALOG_SCHEMA_VERSION: Final = "5"
 BUNDLE_SCHEMA_VERSION: Final = "13"
+# Frozen legacy identifier (ADR-048): SQLite application_id ("YOET") every open compares.
 SQLITE_APPLICATION_ID: Final = "0x594F4554"
 
+# Frozen legacy identifier (ADR-048): resource and runtime-support format tags, kept in
+# lockstep with scripts/verify_resource_manifest.py and the codex skill manifest reader.
 _MANIFEST_SCHEMA: Final = "yoetz.resource-manifest/1"
 _SUPPORT_SCHEMA: Final = "yoetz.runtime-support/1"
 _RESOURCE_ROOT: Final = "finishup.resources"

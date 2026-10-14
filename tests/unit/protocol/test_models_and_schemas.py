@@ -1933,6 +1933,27 @@ def test_receipt_version_slice_is_exact_and_canonical() -> None:
         models.ReceiptResultModel.model_validate(duplicate_schemas)
 
 
+def test_receipt_version_slice_admits_the_current_and_the_legacy_package_name() -> None:
+    """A receipt issued before the rename names ``yoetz``; new receipts name ``finishup``."""
+
+    models = _models_module()
+    legacy = _receipt_result_wire()
+    assert cast(dict[str, JsonValue], legacy["versions"])["package_name"] == "yoetz"
+    for package_name in ("yoetz", "finishup"):
+        wire = _receipt_result_wire()
+        for versions in (
+            wire["versions"],
+            cast(dict[str, JsonValue], wire["document"])["versions"],
+        ):
+            cast(dict[str, JsonValue], versions)["package_name"] = package_name
+        result = models.ReceiptResultModel.model_validate(wire)
+        assert result.root.versions.package_name == package_name
+    unknown = _receipt_result_wire()
+    cast(dict[str, JsonValue], unknown["versions"])["package_name"] = "other"
+    with pytest.raises(ValidationError):
+        models.ReceiptResultModel.model_validate(unknown)
+
+
 def test_check_semantic_status_reason_and_provenance_matrix() -> None:
     models = _models_module()
     for status, reasons in _EXPECTED_SEMANTIC_STATUS_REASONS.items():

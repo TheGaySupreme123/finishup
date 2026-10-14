@@ -62,6 +62,9 @@ _TEST_DIRS: Final = frozenset({"test", "tests", "spec", "specs", "__tests__"})
 # ``finishup:test-change:<edit-action-id>:sha256:<path-digest>``.  Guidance owns how agents learn this
 # marker; this kernel keeps the parser exact and never stores the path behind the digest.
 _TEST_CHANGE_MARKER: Final = "finishup:test-change"
+# Frozen legacy identifier (ADR-048): decision statements recorded before the rename carry this
+# spelling and are re-parsed on every projection rebuild, so the parser accepts it permanently.
+_LEGACY_TEST_CHANGE_MARKER: Final = "yoetz:test-change"
 
 TestEditKind = Literal["modified", "renamed", "deleted", "skipped"]
 
@@ -513,8 +516,12 @@ def _path_justified(
         # action prevents a disposition for an earlier edit of the same path from clearing a later
         # edit. Matching arbitrary prose or a rationale that merely repeats a path would let an
         # unrelated decision clear the edit and would leak the path at a structural boundary.
-        marker = f"{_TEST_CHANGE_MARKER}:{latest_action_id}:{digest}"
-        if any(line.strip() == marker for line in payload.statement.splitlines()):
+        # Either spelling of the marker counts (ADR-048).
+        markers = {
+            f"{prefix}:{latest_action_id}:{digest}"
+            for prefix in (_TEST_CHANGE_MARKER, _LEGACY_TEST_CHANGE_MARKER)
+        }
+        if any(line.strip() in markers for line in payload.statement.splitlines()):
             return True
     return False
 

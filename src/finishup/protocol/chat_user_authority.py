@@ -34,6 +34,7 @@ class ChatUserAttestationModel(BaseModel):
 
     model_config = _CLOSED_CONFIG
 
+    # Frozen legacy identifier (ADR-048): the protocol 0.1 tag namespace.
     schema_: Literal["yoetz.chat-user-attestation/1"] = Field(alias="schema")
     channel: Literal["agent_attested_chat_instruction"]
     client_kind: ChatUserClientKind

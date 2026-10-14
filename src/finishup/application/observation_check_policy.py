@@ -6,7 +6,7 @@ import hashlib
 import os
 import stat
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final, cast
 
@@ -14,20 +14,30 @@ from finishup.adapters.approved_checks import (
     ApprovedCheckApproval,
     approval_commitment,
 )
+from finishup.legacy_names import LEGACY_REPOSITORY_DIRECTORY, REPOSITORY_DIRECTORY
 from finishup.protocol.errors import ProtocolValueError
 
 __all__ = [
     "CHECK_POLICY_FORMAT",
     "CHECK_POLICY_PATH",
+    "CHECK_POLICY_PATHS",
+    "LEGACY_CHECK_POLICY_PATH",
     "ObservationCheckPolicy",
     "ObservationCheckPolicyAbsent",
+    "ObservationCheckPolicyAmbiguous",
     "load_observation_check_policy",
     "parse_observation_check_policy",
     "raw_policy_digest",
 ]
 
+# Frozen legacy identifier (ADR-048): the single accepted format value inside a user's
+# checks.toml. Trust binds to the file's raw bytes, so the file moves between directories
+# byte-identically; a second format value would fork the grammar older services read.
 CHECK_POLICY_FORMAT: Final = "yoetz.approved-check-policy/1"
-CHECK_POLICY_PATH: Final = Path(".finishup/checks.toml")
+CHECK_POLICY_PATH: Final = Path(REPOSITORY_DIRECTORY) / "checks.toml"
+# Read when ``.finishup/checks.toml`` is absent (ADR-048); both present is ambiguous.
+LEGACY_CHECK_POLICY_PATH: Final = Path(LEGACY_REPOSITORY_DIRECTORY) / "checks.toml"
+CHECK_POLICY_PATHS: Final = (CHECK_POLICY_PATH, LEGACY_CHECK_POLICY_PATH)
 _MAX_POLICY_BYTES: Final = 256 * 1024
 
 
@@ -35,6 +45,8 @@ _MAX_POLICY_BYTES: Final = 256 * 1024
 class ObservationCheckPolicy:
     raw_digest: str
     checks: tuple[ApprovedCheckApproval, ...]
+    # The fixed workspace-relative file the bytes were read from; trust binds to the bytes only.
+    source_path: Path = field(default=CHECK_POLICY_PATH, compare=False)
 
     def __post_init__(self) -> None:
         if (
@@ -56,6 +68,19 @@ class ObservationCheckPolicyAbsent(ProtocolValueError):
     Approved workspace checks are an opt-in owner feature, so absence is the ordinary state, not a
     policy fault. It subclasses the invalid-policy failure so every caller that only needs "no
     usable policy" keeps failing closed, while callers that report state can tell the two apart.
+    """
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        super().__init__("invalid_approved_check_policy")
+
+
+class ObservationCheckPolicyAmbiguous(ProtocolValueError):
+    """Both `.finishup/checks.toml` and the legacy `.yoetz/checks.toml` exist (ADR-048).
+
+    Neither file is chosen: the owner removes one. It subclasses the invalid-policy failure so
+    every caller that only needs "no usable policy" keeps failing closed.
     """
 
     __slots__ = ()
@@ -120,25 +145,54 @@ def parse_observation_check_policy(raw: bytes) -> ObservationCheckPolicy:
     return ObservationCheckPolicy(digest, tuple(checks))
 
 
+def _open_policy_file(root_fd: int, location: Path) -> int | None:
+    """Open one fixed policy location without following symlinks; ``None`` when it is missing.
+
+    Only a genuinely missing entry is absent; a symlink, wrong type, or unreadable file raises.
+    """
+
+    directory, name = location.parts
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | nofollow
+    try:
+        directory_fd = os.open(directory, directory_flags, dir_fd=root_fd)
+    except FileNotFoundError:
+        return None
+    try:
+        return os.open(
+            name, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow, dir_fd=directory_fd
+        )
+    except FileNotFoundError:
+        return None
+    finally:
+        os.close(directory_fd)
+
+
 def load_observation_check_policy(workspace: Path) -> tuple[ObservationCheckPolicy, bytes]:
-    """Read the fixed policy beneath a validated root without following symlinks."""
+    """Read the fixed policy beneath a validated root without following symlinks.
+
+    ``.finishup/checks.toml`` is the policy file; the legacy ``.yoetz/checks.toml`` is read when it
+    is absent (ADR-048). Both present raises ``ObservationCheckPolicyAmbiguous``.
+    """
 
     if workspace.is_symlink():
         raise ProtocolValueError("invalid_approved_check_policy")
     root = workspace.resolve(strict=True)
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
-    file_flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
     nofollow = getattr(os, "O_NOFOLLOW", 0)
-    root_fd = policy_dir_fd = policy_fd = -1
+    root_fd = -1
+    opened: list[tuple[Path, int]] = []
     try:
         root_fd = os.open(root, directory_flags | nofollow)
-        try:
-            policy_dir_fd = os.open(".finishup", directory_flags | nofollow, dir_fd=root_fd)
-            policy_fd = os.open("checks.toml", file_flags | nofollow, dir_fd=policy_dir_fd)
-        except FileNotFoundError as exc:
-            # Only a genuinely missing entry is "absent"; a symlink, wrong type, or unreadable
-            # file still fails as an invalid policy below.
-            raise ObservationCheckPolicyAbsent() from exc
+        for location in CHECK_POLICY_PATHS:
+            descriptor = _open_policy_file(root_fd, location)
+            if descriptor is not None:
+                opened.append((location, descriptor))
+        if not opened:
+            raise ObservationCheckPolicyAbsent()
+        if len(opened) > 1:
+            raise ObservationCheckPolicyAmbiguous()
+        location, policy_fd = opened[0]
         facts = os.fstat(policy_fd)
         if not stat.S_ISREG(facts.st_mode) or not 0 < facts.st_size <= _MAX_POLICY_BYTES:
             raise ProtocolValueError("invalid_approved_check_policy")
@@ -156,7 +210,8 @@ def load_observation_check_policy(workspace: Path) -> tuple[ObservationCheckPoli
     except OSError as exc:
         raise ProtocolValueError("invalid_approved_check_policy") from exc
     finally:
-        for descriptor in (policy_fd, policy_dir_fd, root_fd):
-            if descriptor >= 0:
-                os.close(descriptor)
-    return parse_observation_check_policy(raw), raw
+        for _location, descriptor in opened:
+            os.close(descriptor)
+        if root_fd >= 0:
+            os.close(root_fd)
+    return replace(parse_observation_check_policy(raw), source_path=location), raw

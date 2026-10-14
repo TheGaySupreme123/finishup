@@ -140,6 +140,7 @@ def _remaining_lines(remaining: Mapping[str, JsonValue]) -> tuple[list[str], lis
         parts: list[str] = []
         for missing in _rows(row.get("missing")):
             kind = _tok(missing.get("kind"))
+            # Frozen legacy identifier (ADR-048): the released ``owner`` wire value.
             owner = "FinishUP" if missing.get("owner") == "yoetz" else "you"
             text = _MISSING_TEXT.get(kind, kind)
             where = _indexes(missing.get("item_indexes"))

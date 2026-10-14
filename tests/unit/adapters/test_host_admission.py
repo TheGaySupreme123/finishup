@@ -834,3 +834,253 @@ def test_errors_and_reports_never_carry_paths_or_contents(tmp_path: Path) -> Non
     rendered = json.dumps(preview.as_json())
     assert "SECRET_CANARY" not in rendered
     assert str(tmp_path) not in rendered
+
+
+# --- legacy ``yoetz`` server-name entries (ADR-048) ----------------------------------------
+
+
+def _write_json(path: Path, body: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+
+
+def test_legacy_entries_are_reported_without_changing_the_state(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / ".claude/settings.local.json",
+        {"permissions": {"allow": ["mcp__yoetz__check", "Bash(ls)"]}},
+    )
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex/config.toml").write_text(
+        '[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n', encoding="utf-8"
+    )
+    _write_json(tmp_path / ".cursor/permissions.json", {"mcpAllowlist": ["Yoetz:Check"]})
+    _write_json(
+        tmp_path / ".cursor/cli.json", {"permissions": {"allow": ["Mcp(plugin-yoetz-yoetz:check)"]}}
+    )
+
+    claude = observe_host_admission("claude", tmp_path)
+    assert claude.state is HostAdmissionState.ABSENT
+    assert claude.entries[0].legacy_entries == ("mcp__yoetz__check",)
+    assert claude.as_json()["legacy_entries_present"] is True
+    codex = observe_host_admission("codex", tmp_path)
+    assert codex.state is HostAdmissionState.ABSENT
+    assert codex.entries[0].legacy_entries == ("[mcp_servers.yoetz.tools.check]",)
+    cursor = observe_host_admission("cursor", tmp_path)
+    assert [entry.legacy_entries for entry in cursor.entries] == [
+        ("Yoetz:Check",),
+        ("Mcp(plugin-yoetz-yoetz:check)",),
+    ]
+    assert observe_host_admission("claude", tmp_path / ".codex").legacy_entries_present is False
+
+
+def test_grant_writes_only_the_finishup_name_and_keeps_legacy_entries(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / ".claude/settings.local.json",
+        {"permissions": {"allow": ["mcp__plugin_yoetz_yoetz__check"]}},
+    )
+    _grant("claude", tmp_path)
+    allow = json.loads((tmp_path / ".claude/settings.local.json").read_text())["permissions"][
+        "allow"
+    ]
+    assert allow == ["mcp__plugin_yoetz_yoetz__check", CLAUDE_PLUGIN_CHECK_TOOL_NAME]
+    assert not any("yoetz" in entry for entry in allow[1:])
+
+
+def test_revoke_removes_legacy_entries_on_every_host(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / ".claude/settings.local.json",
+        {"permissions": {"allow": ["Bash(ls)"], "ask": ["mcp__yoetz__check"]}},
+    )
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex/config.toml").write_text(
+        'model = "gpt-5"\n\n'
+        '[plugins."yoetz@yoetz".mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n',
+        encoding="utf-8",
+    )
+    _write_json(tmp_path / ".cursor/permissions.json", {"mcpAllowlist": ["yoetz:check"]})
+    _grant("cursor", tmp_path, owner="external")
+    _write_json(
+        tmp_path / ".cursor/cli.json",
+        {"permissions": {"allow": ["Mcp(finishup:check)", "Mcp(yoetz:check)"]}},
+    )
+
+    claude = preview_host_admission(
+        "claude", tmp_path, HostAdmissionAction.REVOKE, route_profile=None, grant_permits=None
+    )
+    assert claude.action is HostAdmissionAction.REVOKE
+    assert "legacy_entries_removed" in claude.warnings
+    _revoke("claude", tmp_path)
+    _revoke("codex", tmp_path)
+    _revoke("cursor", tmp_path)
+
+    settings = json.loads((tmp_path / ".claude/settings.local.json").read_text())
+    assert settings == {"permissions": {"allow": ["Bash(ls)"]}}
+    assert (tmp_path / ".codex/config.toml").read_text(encoding="utf-8") == 'model = "gpt-5"\n'
+    assert not (tmp_path / ".cursor/permissions.json").exists()
+    assert not (tmp_path / ".cursor/cli.json").exists()
+    for host in ("claude", "codex", "cursor"):
+        assert observe_host_admission(host, tmp_path).legacy_entries_present is False
+
+
+def test_sweep_removes_a_legacy_only_entry(tmp_path: Path) -> None:
+    (tmp_path / ".codex").mkdir()
+    (tmp_path / ".codex/config.toml").write_text(
+        '[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n', encoding="utf-8"
+    )
+    (outcome,) = sweep_host_admission(tmp_path, ("codex",))
+    assert outcome.outcome == "removed"
+    assert not (tmp_path / ".codex/config.toml").exists()
+
+
+def test_a_non_exact_legacy_table_is_not_ours_and_stays(tmp_path: Path) -> None:
+    (tmp_path / ".codex").mkdir()
+    text = '[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\nnote = "owner"\n'
+    (tmp_path / ".codex/config.toml").write_text(text, encoding="utf-8")
+    assert observe_host_admission("codex", tmp_path).legacy_entries_present is False
+    (outcome,) = sweep_host_admission(tmp_path, ("codex",))
+    assert outcome.outcome == "absent"
+    assert (tmp_path / ".codex/config.toml").read_text(encoding="utf-8") == text
+
+
+def _legacy_grants_on_every_host(root: Path) -> None:
+    _write_json(
+        root / ".claude/settings.local.json",
+        {"permissions": {"allow": ["Bash(ls)", "mcp__yoetz__check"], "ask": ["mcp__yoetz__check"]}},
+    )
+    (root / ".codex").mkdir(exist_ok=True)
+    (root / ".codex/config.toml").write_text(
+        'model = "gpt-5"\n\n[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n',
+        encoding="utf-8",
+    )
+    _write_json(root / ".cursor/permissions.json", {"mcpAllowlist": ["yoetz:check"]})
+    _write_json(root / ".cursor/cli.json", {"permissions": {"allow": ["Mcp(yoetz:check)"]}})
+
+
+def test_grant_retires_stale_legacy_entries_without_revoking_the_grant(tmp_path: Path) -> None:
+    """No FinishUP registration uses the old name: grant removes the stale entries (ADR-048)."""
+
+    _legacy_grants_on_every_host(tmp_path)
+    for host in ("claude", "codex", "cursor"):
+        preview = preview_host_admission(
+            host,
+            tmp_path,
+            HostAdmissionAction.GRANT,
+            route_profile="policy",
+            grant_permits=True,
+            owner="external",
+            legacy_name="unused",
+        )
+        assert "legacy_entries_removed" in preview.warnings
+        apply_host_admission(preview, tmp_path, accepted_preview_digest=preview.preview_digest)
+        after = observe_host_admission(host, tmp_path, owner="external")
+        assert after.state is HostAdmissionState.PRESENT
+        assert after.legacy_entries_present is False
+
+    settings = json.loads((tmp_path / ".claude/settings.local.json").read_text())
+    assert settings["permissions"]["allow"] == ["Bash(ls)", CLAUDE_EXTERNAL_CHECK_TOOL_NAME]
+    assert "ask" not in settings["permissions"]
+    codex = (tmp_path / ".codex/config.toml").read_text(encoding="utf-8")
+    assert codex.startswith('model = "gpt-5"\n')
+    assert "yoetz" not in codex and CODEX_EXTERNAL_ADMISSION_TABLE in codex
+
+
+def test_grant_over_a_present_entry_retires_only_the_legacy_one(tmp_path: Path) -> None:
+    _grant("codex", tmp_path, owner="external")
+    config = tmp_path / ".codex/config.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8")
+        + '\n[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n',
+        encoding="utf-8",
+    )
+    kept = preview_host_admission(
+        "codex",
+        tmp_path,
+        HostAdmissionAction.GRANT,
+        route_profile="policy",
+        grant_permits=True,
+        owner="external",
+    )
+    # Unread legacy use: the grant is already in place and the legacy entry stays.
+    assert kept.action is HostAdmissionAction.NOOP
+    assert "legacy_entries_retained" in kept.warnings
+
+    result = _grant("codex", tmp_path, owner="external", legacy_name="unused")
+
+    assert result.action is HostAdmissionAction.GRANT
+    assert result.state_after is HostAdmissionState.PRESENT
+    assert config.read_text(encoding="utf-8").count("[mcp_servers.") == 1
+    assert observe_host_admission("codex", tmp_path).legacy_entries_present is False
+
+
+@pytest.mark.parametrize("legacy_name", [None, "shared"])
+def test_grant_keeps_legacy_entries_a_registration_still_uses(
+    tmp_path: Path, legacy_name: str | None
+) -> None:
+    _write_json(tmp_path / ".cursor/permissions.json", {"mcpAllowlist": ["yoetz:check"]})
+    preview = preview_host_admission(
+        "cursor",
+        tmp_path,
+        HostAdmissionAction.GRANT,
+        route_profile="policy",
+        grant_permits=True,
+        owner="external",
+        legacy_name=legacy_name,  # type: ignore[arg-type]
+    )
+    assert "legacy_entries_retained" in preview.warnings
+    apply_host_admission(preview, tmp_path, accepted_preview_digest=preview.preview_digest)
+    allow = json.loads((tmp_path / ".cursor/permissions.json").read_text())["mcpAllowlist"]
+    assert allow == ["yoetz:check", CURSOR_IDE_ENTRY]
+
+
+def test_grant_refuses_while_the_host_serves_only_the_legacy_name(tmp_path: Path) -> None:
+    for host in ("claude", "codex", "cursor"):
+        with pytest.raises(HostAdmissionError) as caught:
+            preview_host_admission(
+                host,
+                tmp_path,
+                HostAdmissionAction.GRANT,
+                route_profile="policy",
+                grant_permits=True,
+                owner="external",
+                legacy_name="serving",
+            )
+        assert caught.value.reason is HostAdmissionReason.LEGACY_REGISTRATION_ACTIVE
+    assert not (tmp_path / ".codex").exists()
+    # The way out stays open whatever the legacy use.
+    revoke = preview_host_admission(
+        "codex",
+        tmp_path,
+        HostAdmissionAction.REVOKE,
+        route_profile=None,
+        grant_permits=None,
+        legacy_name="serving",
+    )
+    assert revoke.action is HostAdmissionAction.NOOP
+
+
+def test_the_observed_legacy_use_is_bound_into_the_preview_digest(tmp_path: Path) -> None:
+    _legacy_grants_on_every_host(tmp_path)
+    digests = {
+        legacy_name: preview_host_admission(
+            "codex",
+            tmp_path,
+            HostAdmissionAction.GRANT,
+            route_profile="policy",
+            grant_permits=True,
+            owner="external",
+            legacy_name=legacy_name,  # type: ignore[arg-type]
+        ).preview_digest
+        for legacy_name in (None, "shared", "unused")
+    }
+    assert len(set(digests.values())) == 3
+    with pytest.raises(HostAdmissionError) as caught:
+        preview_host_admission(
+            "codex",
+            tmp_path,
+            HostAdmissionAction.GRANT,
+            route_profile="policy",
+            grant_permits=True,
+            owner="external",
+            legacy_name="maybe",  # type: ignore[arg-type]
+        )
+    assert caught.value.reason is HostAdmissionReason.HOST_INVALID

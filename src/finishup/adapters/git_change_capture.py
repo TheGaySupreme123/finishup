@@ -333,6 +333,7 @@ class _NestedMetadata:
     listing_truncated: bool = False
 
 
+# Frozen legacy identifier (ADR-048): domain separator of the stored task-start baseline.
 _BASELINE_DOMAIN: Final = b"yoetz/untracked-baseline/v1\x00"
 
 

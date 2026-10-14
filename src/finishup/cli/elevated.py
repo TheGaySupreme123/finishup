@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from contextlib import AbstractContextManager, ExitStack
 from typing import Literal, Protocol, cast
 
+from finishup.adapters.integrations.launcher import invoked_through_legacy_alias
 from finishup.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
 from finishup.cli.unlock import (
     HumanCeremonyCliError,
@@ -15,12 +16,14 @@ from finishup.cli.unlock import (
     run_human_ceremony,
     run_human_ceremony_on_terminal,
 )
+from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
 from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 from finishup.protocol.chat_user_authority import (
     ChatUserAttestationModel,
     agent_chat_attestation_supported,
 )
 from finishup.protocol.consent import (
+    ConsentCommandHead,
     ConsentPrepareResultModel,
     ConsentReviewResultModel,
 )
@@ -81,12 +84,23 @@ class _AutoUnlockStore(Protocol):
     def promote_staged_rotation(self) -> None: ...
 
 
+def _consent_command_head() -> ConsentCommandHead:
+    """The launcher this process was invoked through, for the consent commands it names.
+
+    Deprecated-alias exception (ADR-048): an install upgraded through the transitional ``yoetz``
+    package links only the ``yoetz`` script, so a consent command naming ``finishup`` would not
+    run there. The /7 contract admits either head and binds one head per pending.
+    """
+
+    return LEGACY_LAUNCHER_NAME if invoked_through_legacy_alias() else LAUNCHER_NAME
+
+
 def status_elevated() -> dict[str, JsonValue]:
-    return status_payload()
+    return status_payload(command_head=_consent_command_head())
 
 
 def catalog_elevated() -> dict[str, JsonValue]:
-    return catalog_payload()
+    return catalog_payload(command_head=_consent_command_head())
 
 
 def prepare_elevated(
@@ -107,14 +121,16 @@ def prepare_elevated(
         grant_binding=grant_binding,
         coordination_binding=coordination_binding,
     )
+    # Every operation emits the current /7 contract: the released /6 fixed the review and
+    # authorize command head to the pre-rename launcher, and /7 names the launcher this process
+    # was invoked through (ADR-048). Readers keep admitting /6 results produced before the upgrade.
     model = ConsentPrepareResultModel.model_validate(
         {
-            "schema": (
-                "yoetz.elevated-bootstrap.prepare-result/7"
-                if pending.coordination_binding is not None
-                else "yoetz.elevated-bootstrap.prepare-result/6"
+            # Frozen legacy identifier (ADR-048): the released elevated-bootstrap.* tag namespace.
+            "schema": "yoetz.elevated-bootstrap.prepare-result/7",
+            "pending": projection_for_status(
+                pending, _version="7", command_head=_consent_command_head()
             ),
-            "pending": projection_for_status(pending),
         }
     )
     return model.model_dump(mode="json", by_alias=True)

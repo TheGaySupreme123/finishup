@@ -388,6 +388,20 @@ def control_failure(
     ``inspect``) times out as a read, never as a write that may have committed.
     """
 
+    from finishup.service.client import path_refusal_reason
+
+    path_reason = path_refusal_reason(error)
+    if path_reason is not None:
+        # FinishUP's local folders cannot be used safely (for example data under both product
+        # names, ADR-048): name the closed token and its remedy, never an absent service.
+        from finishup.cli.service_installation import path_refusal_failure
+
+        return path_refusal_failure(
+            path_reason,
+            json_output=json_output,
+            stderr_writer=stderr_writer,
+            stdout_writer=stdout_writer,
+        )
     error = _bind_handshake_correlation(error)
     code = public_error_code_for_control_reason(error.reason)
     if error.reason == "request_timeout" and operation is not None:

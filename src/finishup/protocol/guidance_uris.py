@@ -4,15 +4,29 @@ The heading entries intentionally live in a closed source catalog: runtime admis
 invented anchors even though the advertised JSON Schema uses a compact pattern.
 """
 
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Final
+
+from finishup.legacy_names import GUIDANCE_SCHEME, LEGACY_GUIDANCE_SCHEME
 
 __all__ = [
     "ALL_GUIDANCE_URIS",
     "FOCUSED_GUIDANCE_URIS",
     "GUIDANCE_DOCUMENT_URIS",
     "GUIDANCE_TOPIC_URIS",
+    "GUIDANCE_URI_PREFIX",
+    "LEGACY_ALL_GUIDANCE_URIS",
+    "LEGACY_GUIDANCE_ANCHORS",
+    "LEGACY_GUIDANCE_URI_PREFIX",
     "REGISTERED_GUIDANCE_URIS",
+    "canonical_guidance_uri",
+    "guidance_uri_in_scheme_of",
+    "is_legacy_guidance_uri",
+    "legacy_guidance_uri",
 ]
+
+GUIDANCE_URI_PREFIX: Final = f"{GUIDANCE_SCHEME}://guidance/"
 
 GUIDANCE_DOCUMENT_URIS: Final[tuple[str, ...]] = (
     "finishup://guidance/agent-instructions.md",
@@ -318,3 +332,77 @@ ALL_GUIDANCE_URIS: Final[tuple[str, ...]] = (
 
 # Legacy document enumeration remains stable for resources/list; topic URIs use the exact catalog above.
 REGISTERED_GUIDANCE_URIS: Final[tuple[str, ...]] = GUIDANCE_DOCUMENT_URIS
+
+# Installed 0.1-0.3 guidance, skills, host artifacts and the released read-guidance 1.0.0 contract
+# name ``yoetz://guidance/...`` (ADR-048). A legacy URI is recognized only as the exact legacy
+# spelling of a catalogued entry: the scheme, plus the four title anchors whose heading carried the
+# product name. It is never resolved by pattern, so the closed catalog stays the admission rule.
+LEGACY_GUIDANCE_URI_PREFIX: Final = f"{LEGACY_GUIDANCE_SCHEME}://guidance/"
+# Frozen legacy identifier (ADR-048): heading anchors as the pre-rename guidance spelled them.
+LEGACY_GUIDANCE_ANCHORS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "agent-instructions.md#when-to-use-yoetz": "agent-instructions.md#when-to-use-finishup",
+        "coverage-and-receipts.md#when-host-auto-review-blocks-an-ai-powered-check-before-yoetz-runs": (
+            "coverage-and-receipts.md"
+            "#when-host-auto-review-blocks-an-ai-powered-check-before-finishup-runs"
+        ),
+        "request-templates.md#yoetz-request-templates-and-exceptional-operations": (
+            "request-templates.md#finishup-request-templates-and-exceptional-operations"
+        ),
+        "workflow.md#yoetz-cooperative-workflow": "workflow.md#finishup-cooperative-workflow",
+    }
+)
+_CURRENT_TO_LEGACY_ANCHOR: Final[Mapping[str, str]] = MappingProxyType(
+    {current: legacy for legacy, current in LEGACY_GUIDANCE_ANCHORS.items()}
+)
+_ALL_GUIDANCE_URI_SET: Final = frozenset(ALL_GUIDANCE_URIS)
+
+
+def legacy_guidance_uri(uri: str) -> str:
+    """Spell one catalogued guidance URI the way pre-rename guidance named it (ADR-048)."""
+
+    if uri not in _ALL_GUIDANCE_URI_SET:
+        raise ValueError("guidance_resource_uri_unregistered")
+    relative = uri.removeprefix(GUIDANCE_URI_PREFIX)
+    return LEGACY_GUIDANCE_URI_PREFIX + _CURRENT_TO_LEGACY_ANCHOR.get(relative, relative)
+
+
+LEGACY_ALL_GUIDANCE_URIS: Final[tuple[str, ...]] = tuple(
+    legacy_guidance_uri(uri) for uri in ALL_GUIDANCE_URIS
+)
+_LEGACY_TO_CURRENT: Final[Mapping[str, str]] = MappingProxyType(
+    dict(zip(LEGACY_ALL_GUIDANCE_URIS, ALL_GUIDANCE_URIS, strict=True))
+)
+
+
+def is_legacy_guidance_uri(uri: object) -> bool:
+    """Whether ``uri`` is the exact legacy spelling of a catalogued entry (ADR-048)."""
+
+    return type(uri) is str and uri in _LEGACY_TO_CURRENT
+
+
+def canonical_guidance_uri(uri: object) -> str | None:
+    """The catalogued ``finishup://`` URI that ``uri`` names in either spelling, else ``None``.
+
+    A current catalog entry is returned unchanged; an exact legacy spelling maps to its entry
+    (ADR-048). Anything else, including an uncatalogued anchor, returns ``None``.
+    """
+
+    if type(uri) is not str:
+        return None
+    if uri in _ALL_GUIDANCE_URI_SET:
+        return uri
+    return _LEGACY_TO_CURRENT.get(uri)
+
+
+def guidance_uri_in_scheme_of(uri: str, caller_uri: str) -> str:
+    """Render catalogued ``uri`` in the scheme ``caller_uri`` used (ADR-048).
+
+    A caller that asked in the legacy scheme reads its answer, page continuations included, in
+    that scheme, as the released read-guidance 1.0.0 result requires; every other caller reads the
+    current spelling.
+    """
+
+    if caller_uri.startswith(LEGACY_GUIDANCE_URI_PREFIX):
+        return legacy_guidance_uri(uri)
+    return uri

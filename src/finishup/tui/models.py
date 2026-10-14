@@ -163,6 +163,20 @@ class IntegrationPlan:
     activation_cache_mutation_planned: bool
     mcp_isolated_root: str | None = None
     activation_mcp_command: tuple[str, ...] = ()
+    # The route the existing owned registration serves now, when known. A differing value means
+    # this approval rewrites it.
+    route_profile_before: Literal["policy", "strict"] | None = None
+    # What the pre-rename ``yoetz`` MCP key holds (ADR-048): ``legacy_only`` is migrated to
+    # ``finishup`` and ``duplicate`` removed by this approval; ``foreign`` and ``none`` are kept.
+    legacy_registration: str = "none"
+    # Yoetz-era activation this approval removes (ADR-048): the exact config tables, the plugin
+    # cache versions, the ``.agents/plugins/yoetz`` source tree, and the project skill tree.
+    activation_legacy_removed_block: str = ""
+    activation_legacy_cache_versions: tuple[str, ...] = ()
+    activation_legacy_plugin_tree_planned: bool = False
+    legacy_skill_tree_planned: bool = False
+    # Both ``.finishup/checks.toml`` and ``.yoetz/checks.toml`` exist, so neither is proposed.
+    policy_ambiguous: bool = False
 
     @property
     def changes(self) -> tuple[str, ...]:
@@ -176,6 +190,38 @@ class IntegrationPlan:
         ]
         if self.policy_digest is not None:
             lines.append(f"Trust the exact approved-check policy digest: {self.policy_digest}")
+        return tuple(lines)
+
+    @property
+    def replacements(self) -> tuple[str, ...]:
+        """Existing entries this approval rewrites or removes, so approval covers all of it."""
+
+        lines: list[str] = []
+        if self.route_profile_before is not None and self.route_profile_before != (
+            self.route_profile
+        ):
+            lines.append(
+                "Change the existing MCP registration's review route: "
+                f"{self.route_profile_before} -> {self.route_profile}"
+            )
+        if self.legacy_registration == "legacy_only":
+            lines.append("Move the MCP registration from the earlier name yoetz to finishup")
+        elif self.legacy_registration == "duplicate":
+            lines.append("Remove the duplicate MCP registration under the earlier name yoetz")
+        if self.activation_legacy_removed_block:
+            lines.append("Remove the earlier Yoetz plugin activation from the Codex config")
+        if self.activation_legacy_cache_versions:
+            lines.append(
+                "Delete earlier Yoetz plugin cache versions: "
+                + ", ".join(self.activation_legacy_cache_versions)
+            )
+        if self.legacy_skill_tree_planned:
+            lines.append("Delete the earlier Yoetz project skill (.agents/skills/yoetz)")
+        if self.activation_legacy_plugin_tree_planned:
+            lines.append(
+                "Delete the earlier Yoetz plugin sources (.agents/plugins/yoetz), last, once "
+                "nothing activated here reads them"
+            )
         return tuple(lines)
 
 

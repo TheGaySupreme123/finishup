@@ -25,12 +25,37 @@ from finishup.cli.hook_io import (
     read_cursor_hook_payload,
     stdout_json,
 )
+from finishup.domain.finishup_tools import (
+    FINISHUP_SKILL_NAMES,
+    FINISHUP_TOOL_SERVER_NAMES,
+    finishup_scoped_tool_basename,
+)
+from finishup.legacy_names import GUIDANCE_SCHEME, LAUNCHER_NAMES, LEGACY_GUIDANCE_SCHEME
 from finishup.ports.integrations import FINISHUP_WORKFLOW_TOOL_NAMES
 from finishup.protocol.canonical import JsonValue
 from finishup.protocol.errors import PublicErrorCode
 from finishup.protocol.ids import IdKind, is_valid_id
 
 _WORKFLOW = frozenset(FINISHUP_WORKFLOW_TOOL_NAMES)
+# Cursor's ``mcp_server_name`` for the external and the plugin-bundled server, under the current
+# and the legacy server name a 0.1-0.2.5 registration still carries (ADR-048).
+_CURSOR_SERVER_KEYS = frozenset(
+    key for server in FINISHUP_TOOL_SERVER_NAMES for key in (server, f"plugin-{server}-{server}")
+)
+# The bootstrap guidance documents, readable under either URI scheme: installed 0.1-0.2.5
+# guidance and skills still name ``yoetz://`` (ADR-048).
+_BOOTSTRAP_GUIDANCE_URIS = frozenset(
+    f"{scheme}://guidance/{name}.md"
+    for scheme in (GUIDANCE_SCHEME, LEGACY_GUIDANCE_SCHEME)
+    for name in (
+        "agent-instructions",
+        "workflow",
+        "publication-policy",
+        "coverage-and-receipts",
+        "request-templates",
+    )
+)
+_SKILLS = frozenset(FINISHUP_SKILL_NAMES)
 _DISCOVERY = frozenset({"ToolSearch", "AskUserQuestion", "AskQuestion", "ListMcpResources"})
 _PRE = frozenset({"PreToolUse", "preToolUse", "beforeMCPExecution"})
 _POST = frozenset({"PostToolUse", "PostToolUseFailure", "afterMCPExecution"})
@@ -109,15 +134,8 @@ def workflow_tool(payload: Mapping[str, JsonValue], host: str, event: str) -> st
         return None
     server = payload.get("mcp_server_name")
     if host == "cursor" and event in {"beforeMCPExecution", "afterMCPExecution"}:
-        return (
-            tool
-            if server in {"finishup", "plugin-finishup-finishup"} and tool in _WORKFLOW
-            else None
-        )
-    for prefix in ("mcp__finishup__", "mcp__plugin_finishup_finishup__"):
-        if tool.startswith(prefix) and tool[len(prefix) :] in _WORKFLOW:
-            return tool[len(prefix) :]
-    return None
+        return tool if server in _CURSOR_SERVER_KEYS and tool in _WORKFLOW else None
+    return finishup_scoped_tool_basename(tool)
 
 
 def bootstrap_tool(payload: Mapping[str, JsonValue], host: str, event: str) -> bool:
@@ -128,21 +146,12 @@ def bootstrap_tool(payload: Mapping[str, JsonValue], host: str, event: str) -> b
         return True
     if tool == "ReadMcpResource":
         arguments = _object(payload.get("tool_input"))
-        return arguments is not None and arguments.get("uri") in {
-            f"finishup://guidance/{name}.md"
-            for name in (
-                "agent-instructions",
-                "workflow",
-                "publication-policy",
-                "coverage-and-receipts",
-                "request-templates",
-            )
-        }
+        return arguments is not None and arguments.get("uri") in _BOOTSTRAP_GUIDANCE_URIS
     if host == "cursor" and event == "preToolUse" and tool.startswith(("MCP:", "mcp__")):
         return True  # Deferred to the server-qualified beforeMCPExecution gate.
     if tool == "Skill":
         arguments = _object(payload.get("tool_input"))
-        return arguments is not None and arguments.get("skill") in {"finishup", "finishup:finishup"}
+        return arguments is not None and arguments.get("skill") in _SKILLS
     if tool in {"Bash", "Shell"}:
         arguments = _object(payload.get("tool_input"))
         command = None if arguments is None else arguments.get("command")
@@ -154,9 +163,10 @@ def bootstrap_tool(payload: Mapping[str, JsonValue], host: str, event: str) -> b
             return False
         if len(argv) < 3:
             return False
-        launcher = Path(sys.prefix) / "bin" / "finishup"
-        selected = shutil.which(argv[0]) if argv[0] == "finishup" else argv[0]
-        if selected is None or Path(selected).absolute() != launcher:
+        # This runtime's own launcher, or its deprecated legacy alias (ADR-048).
+        launchers = {Path(sys.prefix) / "bin" / name for name in LAUNCHER_NAMES}
+        selected = shutil.which(argv[0]) if argv[0] in LAUNCHER_NAMES else argv[0]
+        if selected is None or Path(selected).absolute() not in launchers:
             return False
         # This only leaves the host's normal tool admission in force. It does
         # not authorize a named repair, consent decision, OS presence or unlock;

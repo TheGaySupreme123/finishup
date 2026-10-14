@@ -38,7 +38,7 @@ from finishup.ports.control import McpHostProfile
 # and the policy-route destination disclosure (#479) ride on top and are never trimmed to fit.
 COMPACT_BODY_CAP_BYTES = 2_048
 # The Claude body hash locks the current compact startup contract, including guidance recovery.
-CLAUDE_BODY_SHA256 = "sha256:126d3c3d59bc10c7c96ca87f8136ebfac90fe83ec4bd33ce00ae9928450cf86a"
+CLAUDE_BODY_SHA256 = "sha256:54b49902ede8a3ba423a12453c040d28f51730575a03d6b7fe97fee0e5f5857f"
 COMPACT_HOSTS: tuple[McpHostProfile, ...] = ("codex", "cursor")
 # The longer of the two route lines the bridge appends to every body.
 LONGEST_ROUTE_LINE = (

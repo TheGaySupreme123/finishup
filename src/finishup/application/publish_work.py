@@ -1127,7 +1127,9 @@ def _blocker_notices(
 ) -> tuple[PublishWorkBlockerNoticeModel, ...]:
     """Publish-time challenge and no-effect notices for the batch's finishup-blocker lines (#985).
 
-    ``projection`` already includes the batch (the accepted frontier, or a dry run's provisional
+    The kernel parses the lines, so a pre-rename ``yoetz-blocker`` line yields the same notices
+    (ADR-048); the notice text always teaches the current spelling. ``projection`` already
+    includes the batch (the accepted frontier, or a dry run's provisional
     fold). Notices are closed codes with fixed text, so a replay returns the same body.
     """
 

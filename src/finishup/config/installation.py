@@ -60,6 +60,7 @@ __all__ = [
 ]
 
 INSTANCE_IDENTITY_NAME: Final = "instance-identity.json"
+# Frozen legacy identifier (ADR-048): sealed into existing instance markers and their digest.
 INSTANCE_IDENTITY_SCHEMA: Final = "yoetz.instance-identity/1"
 _INSTANCE_IDENTITY_DOMAIN: Final = b"yoetz/instance-identity/v1\x00"
 _MAX_INSTANCE_IDENTITY_BYTES: Final = 8_192

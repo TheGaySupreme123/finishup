@@ -26,6 +26,7 @@ type SetupReadinessReason = Literal[
 class SetupReadiness(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
+    # Frozen legacy identifier (ADR-048): the protocol 0.1 tag namespace.
     schema_tag: Literal["yoetz.setup-readiness/1"] = Field(alias="schema")
     operation: Literal["local", "review", "connection"]
     reason: SetupReadinessReason

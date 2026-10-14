@@ -50,7 +50,7 @@ def test_the_first_two_sentences_are_the_trigger_and_the_late_start_rule() -> No
     assert first.startswith(
         "If this session edits files, runs state-changing commands, or delegates"
     )
-    assert first.endswith("call `start` before work")
+    assert first.endswith("call `start` first")
     assert second.startswith("If work began without a task, call `start` now")
     assert "disclose the uncovered prefix in the receipt" in second
 
@@ -58,7 +58,9 @@ def test_the_first_two_sentences_are_the_trigger_and_the_late_start_rule() -> No
 def test_the_claude_text_names_the_deferred_schema_load_step_and_the_catalog() -> None:
     text = CLAUDE_CODE_INITIALIZE_INSTRUCTIONS
     assert "ToolSearch `select:mcp__finishup__start`" in text
-    assert "plugin-prefixed name" in text
+    # A plugin prefixes the name and a pre-rename registration lists ``mcp__yoetz__start``, so
+    # the hint defers to the listed name rather than naming one server (ADR-048).
+    assert "or the listed `start` name" in text
     assert "Read-only questions skip it." in text
     assert "Subagents whose assignment names no handle or parent session skip it." in text
     # Everything that no longer fits is one guidance read away (#961): the block names the
@@ -71,7 +73,7 @@ def test_the_claude_text_names_the_deferred_schema_load_step_and_the_catalog() -
     core = read_resource("finishup://guidance/agent-instructions.md").decode("utf-8")
     assert "`read_guidance`" in core
     assert "finishup://guidance/workflow.md" in core
-    assert "Do not list resources." in text
+    assert "Never list resources." in text
     assert "if empty or clipped, page and verify." in text
     assert "Never claim active before `start`" in text
     assert "a clean check does not mean the work is correct" in text

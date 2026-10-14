@@ -195,6 +195,16 @@ def test_endpoint_layer_fails_closed_as_the_bounded_transport_reason(
     with pytest.raises(unix_socket.LocalControlTransportError) as caught:
         unix_socket._runtime_directory()  # pyright: ignore[reportPrivateUsage]
     assert caught.value.reason == "runtime_directory_unsafe"
+    # The closed path-safety token rides along so a client can name it; never a path.
+    assert caught.value.path_reason == "isolation_root_invalid"
+
+
+def test_a_path_token_rides_only_on_an_unsafe_runtime_directory() -> None:
+    with pytest.raises(ValueError, match="local_control_transport_path_reason_invalid"):
+        unix_socket.LocalControlTransportError(
+            "connection_failed", path_reason="installation_root_ambiguous"
+        )
+    assert unix_socket.LocalControlTransportError("connection_failed").path_reason is None
 
 
 def test_endpoint_layer_binds_beneath_the_isolated_root(

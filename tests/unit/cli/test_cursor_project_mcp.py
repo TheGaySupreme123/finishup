@@ -157,6 +157,7 @@ def test_status_is_local_read_only_and_forwards_pinned_launcher_and_root(
     body = _json(result)
     assert body == {
         "host_trust": "unknown",
+        "legacy_registration": "none",
         "ok": True,
         "route_profile": None,
         "project_binding": None,
@@ -249,7 +250,7 @@ def test_preview_and_mutation_require_exact_preview_and_bind_launcher_route_and_
             "off",
         ],
         "command": _LAUNCHER[0],
-        "env": {"FINISHUP_ISOLATED_ROOT": str(isolated)},
+        "env": {"FINISHUP_ISOLATED_ROOT": str(isolated), "YOETZ_ISOLATED_ROOT": str(isolated)},
         "type": "stdio",
     }
     assert calls == [_INVOCATION, _INVOCATION, _INVOCATION, _INVOCATION]

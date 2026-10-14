@@ -35,7 +35,7 @@ from finishup.ports.change_capture import (
 from finishup.protocol.canonical import canonical_digest
 
 
-def _projection(*, justified: bool) -> ProjectionState:
+def _projection(*, justified: bool, marker: str = "finishup:test-change") -> ProjectionState:
     action = ActionRecordedPayload(
         action_id=action_id("act_10000000-0000-4000-8000-000000000001"),
         action_kind=ActionKind.EDIT,
@@ -50,7 +50,7 @@ def _projection(*, justified: bool) -> ProjectionState:
         source_frontier=1,
     )
     statement = (
-        "finishup:test-change:act_10000000-0000-4000-8000-000000000001:sha256:"
+        f"{marker}:act_10000000-0000-4000-8000-000000000001:sha256:"
         + hashlib.sha256(b"tests/skip_test.py").hexdigest()
         if justified
         else "The test changed for a broader reason."
@@ -285,6 +285,30 @@ def test_exact_action_and_path_marker_clears_the_edit_finding() -> None:
 
     assert facts.unjustified == 0
     assert "preexisting_test_edit_unjustified" not in facts.gaps
+
+
+@pytest.mark.parametrize("marker", ("yoetz:test-change", "finishup:test-change"))
+def test_the_marker_clears_the_edit_finding_under_either_spelling(marker: str) -> None:
+    """ADR-048: decision statements recorded before the rename keep the ``yoetz`` spelling."""
+
+    facts = preexisting_test_edits(
+        _capture(include_ordinary=False), _projection(justified=True, marker=marker)
+    )
+
+    assert facts.unjustified == 0
+    assert "preexisting_test_edit_unjustified" not in facts.gaps
+
+
+@pytest.mark.parametrize(
+    "marker", ("Yoetz:test-change", "yoetz-test-change", "finishup-test-change")
+)
+def test_no_other_spelling_of_the_marker_clears_the_edit_finding(marker: str) -> None:
+    facts = preexisting_test_edits(
+        _capture(include_ordinary=False), _projection(justified=True, marker=marker)
+    )
+
+    assert facts.unjustified == 1
+    assert "preexisting_test_edit_unjustified" in facts.gaps
 
 
 def test_an_older_decision_does_not_clear_a_later_edit_of_the_same_path() -> None:

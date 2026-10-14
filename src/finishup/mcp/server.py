@@ -36,8 +36,10 @@ from finishup.adapters.workspace_binding import (
     MAX_WORKSPACE_LOCATOR_BYTES,
     canonical_workspace_locator,
 )
+from finishup.config.env import EnvNameConflictError, read_env
 from finishup.config.load import load_config
 from finishup.config.models import LoggingConfig
+from finishup.config.paths import PathSafetyError, isolated_root_variable
 from finishup.domain.check_totals import render_check_totals
 from finishup.domain.closure import PREPARATION_REMEDIATIONS, prepare_closure
 from finishup.domain.review_input_render import render_review_input_manifest_compact
@@ -112,6 +114,7 @@ from finishup.protocol.guidance_uris import (
     FOCUSED_GUIDANCE_URIS,
     GUIDANCE_DOCUMENT_URIS,
     GUIDANCE_TOPIC_URIS,
+    canonical_guidance_uri,
 )
 from finishup.protocol.ids import IdKind, new_id, safe_request_id_from
 from finishup.protocol.models import (
@@ -146,6 +149,7 @@ from finishup.service.client import (
     connect_service,
     connect_service_on_demand,
     holder_version_order,
+    path_refusal_reason,
     service_holder_identity,
 )
 
@@ -193,8 +197,10 @@ _DEFAULT_RPC_DEADLINES_MS: Final = MappingProxyType(
 )
 # ``FINISHUP_MCP_DEADLINE_MS_<TOOL>`` sets one tool; ``FINISHUP_MCP_DEADLINE_MS`` sets every tool except
 # ``check``, whose semantic-review budget is only changed by its own variable. Values are integer
-# milliseconds, clamped to a sane range; anything unparsable keeps the default.
-_RPC_DEADLINE_ENV: Final = "FINISHUP_MCP_DEADLINE_MS"
+# milliseconds, clamped to a sane range; anything unparsable keeps the default. The legacy
+# ``YOETZ_MCP_DEADLINE_MS[_<TOOL>]`` spellings are read when the FinishUP name is unset; the two
+# set to different values is ambiguous and is skipped like an unparsable value (ADR-048).
+_RPC_DEADLINE_ENV_SUFFIX: Final = "MCP_DEADLINE_MS"
 _MIN_RPC_DEADLINE_MS: Final = 1_000
 _MAX_RPC_DEADLINE_MS: Final = 900_000
 # A write that timed out is probed once for its durable operation state with this budget.
@@ -536,19 +542,39 @@ def _runtime_launcher_from_argv() -> tuple[str, ...] | None:
         prefix = (*original, *prefix[1:])
         return prefix if _valid_runtime_launcher(prefix) else None
     try:
-        package_main = (Path(__file__).resolve().parents[1] / "__main__.py").resolve(strict=True)
         first = Path(prefix[0]).resolve(strict=True)
     except OSError:
         return None
-    if first == package_main:
+    module = _module_launcher_name(first)
+    if module is not None:
         try:
             executable = str(Path(sys.executable).resolve(strict=True))
         except OSError:
             return None
-        prefix = (executable, "-m", "finishup", *prefix[1:])
+        prefix = (executable, "-m", module, *prefix[1:])
     else:
         prefix = (str(first), *prefix[1:])
     return prefix if _valid_runtime_launcher(prefix) else None
+
+
+def _module_launcher_name(first: Path) -> str | None:
+    """Name the ``python -m`` module whose ``__main__.py`` is serving, or ``None``.
+
+    A registration from before the rename runs ``python -m yoetz``, the import shim the
+    transitional ``yoetz`` distribution installs beside this package; its spelling is kept, as
+    ``release_runtime.original_module_launcher`` keeps it, because callers compare the launcher
+    with the host entry (ADR-048).
+    """
+
+    site = Path(__file__).resolve().parents[2]
+    for module in ("finishup", "yoetz"):
+        try:
+            module_main = (site / module / "__main__.py").resolve(strict=True)
+        except OSError:
+            continue
+        if first == module_main:
+            return module
+    return None
 
 
 def build_bridge_runtime(
@@ -1899,6 +1925,24 @@ def _control_error_result(
             host_profile=host_profile,
             safe_details={"reason_code": "peer_untrusted"},
         )
+    path_reason = path_refusal_reason(error)
+    if path_reason is not None:
+        # FinishUP's local folders cannot be used safely (for example data under both product
+        # names, ADR-048). The client refused before any endpoint and never spawned a service;
+        # the closed token and its remedy are the only next step, so name them.
+        from finishup.cli.service_installation import path_refusal_agent_message
+
+        return _control_public_error_result(
+            error,
+            request_id,
+            operation,
+            code=PublicErrorCode.STORAGE_UNSAFE,
+            message=path_refusal_agent_message(path_reason),
+            retryable=False,
+            host_profile=host_profile,
+            safe_details={"reason_code": "endpoint_unsafe"},
+            diagnostic_reason=path_reason,
+        )
     if error.reason == "endpoint_unsafe":
         return _control_public_error_result(
             error,
@@ -2229,11 +2273,14 @@ def _rpc_deadline_ms(tool: str, environ: Mapping[str, str] | None = None) -> int
     """Return the bridge-to-service deadline for one workflow tool, honouring env overrides."""
 
     source = os.environ if environ is None else environ
-    names = [f"{_RPC_DEADLINE_ENV}_{tool.upper()}"]
+    suffixes = [f"{_RPC_DEADLINE_ENV_SUFFIX}_{tool.upper()}"]
     if tool != "check":
-        names.append(_RPC_DEADLINE_ENV)
-    for name in names:
-        raw = source.get(name)
+        suffixes.append(_RPC_DEADLINE_ENV_SUFFIX)
+    for suffix in suffixes:
+        try:
+            raw = read_env(suffix, source)
+        except EnvNameConflictError:
+            continue
         if raw is None:
             continue
         text = raw.strip()
@@ -3307,10 +3354,12 @@ def _unknown_guidance_uri_result(
     Benchmark transcripts showed agents deriving topic anchors from heading text or tool names
     (``#publish-work``, ``#publish_work-plan-revision``) and receiving a bare INVALID_REQUEST with
     nothing to retry against. The retry options named here are closed-catalog constants: the caller's
-    URI is used only to select which registered document's catalog to list and is never echoed.
+    URI is used only to select which registered document's catalog to list and is never echoed. A
+    document named in the pre-rename ``yoetz://`` scheme selects the same catalog, which is listed
+    in the current spelling (ADR-048).
     """
 
-    document = uri.partition("#")[0] if type(uri) is str else None
+    document = canonical_guidance_uri(uri.partition("#")[0]) if type(uri) is str else None
     if document in GUIDANCE_DOCUMENT_URIS:
         anchors = _guidance_topic_anchors(document)
         message = (
@@ -3733,11 +3782,13 @@ def main(
     launcher = (
         _runtime_launcher_from_argv() if host == "cursor" and project_root is not None else None
     )
-    registration_isolation_root = (
-        os.environ.get("FINISHUP_ISOLATED_ROOT")
-        if host == "cursor" and project_root is not None
-        else None
-    )
+    registration_isolation_root: str | None = None
+    if host == "cursor" and project_root is not None:
+        # Either spelling of the variable names the registered root (ADR-048). Two spellings
+        # that disagree leave the registration unmatched; every root resolution then refuses
+        # the same conflict as ``isolation_root_env_conflict``.
+        with contextlib.suppress(PathSafetyError):
+            registration_isolation_root = isolated_root_variable()
     runtime = build_bridge_runtime(
         "strict" if semantic == "off" else "policy",
         host_profile=host,

@@ -173,6 +173,7 @@ def run_claude_code_plugin_export(
                 ),
                 "output_root": str(output_root),
                 "proof": "development_export_not_marketplace_activation",
+                # Frozen legacy identifier (ADR-048): a released output key scripts read.
                 "yoetz_launcher": list(artifact.finishup_launcher),
             },
             json_output=json_output,
@@ -194,11 +195,14 @@ def _status_body(status: ClaudeCodePluginStatus) -> dict[str, object]:
         "host_state_digest": status.host_state_digest,
         "loaded_root_digest": status.loaded_root_digest,
         "host_version_provenance": status.version_provenance,
+        # What the legacy ``yoetz-local`` marketplace holds for this project (ADR-048).
+        "legacy_installation": status.legacy_installation,
         "marketplace_digest": status.marketplace_digest,
         "marketplace_registered": status.marketplace_registered,
         "marker_valid": status.marker_valid,
         "mcp": {
             "host_admission_supported": status.mcp_observation.host_admission_supported,
+            "legacy_registration": status.mcp_observation.legacy_registration,
             "observed": status.mcp_observation.observed,
             "ownership_state": status.mcp_observation.ownership_state.value,
             "present_sources": [item.value for item in status.mcp_observation.present_sources],
@@ -345,6 +349,7 @@ def run_claude_code_plugin_command(
                         "version": identity.version,
                         "version_provenance": preview.version_provenance,
                     },
+                    "legacy_installation": preview.legacy_installation,
                     "marketplace_digest": preview.marketplace_digest,
                     "marketplace_name": "finishup-local",
                     "mcp_ownership": preview.mcp_ownership.value,

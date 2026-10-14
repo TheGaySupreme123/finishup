@@ -10,16 +10,22 @@ lifecycle commands, so a test cell can never bleed into the maintainer's real ho
 from __future__ import annotations
 
 import sys
-from collections.abc import Mapping
+import tomllib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 from finishup.adapters.integrations.host_admission import (
     ADMISSION_HOSTS,
+    CODEX_LEGACY_PLUGIN_ADMISSION_HEADER,
     HostAdmissionAction,
+    HostAdmissionEntry,
     HostAdmissionError,
     HostAdmissionHost,
+    HostAdmissionObservation,
+    HostAdmissionReason,
+    LegacyNameUse,
     McpOwnerForm,
     apply_host_admission,
     observe_host_admission,
@@ -39,6 +45,10 @@ __all__ = [
 
 ADMISSION_COMMANDS: tuple[str, ...] = ("status", "preview", "grant", "revoke")
 
+# Frozen legacy identifier (ADR-048): the plugin id a Yoetz 0.1-0.2 Codex activation enabled.
+_CODEX_LEGACY_PLUGIN_ID = "yoetz@yoetz"
+_MAX_CODEX_CONFIG_BYTES = 1_048_576
+
 
 @dataclass(frozen=True, slots=True)
 class AdmissionFacts:
@@ -50,12 +60,56 @@ class AdmissionFacts:
     grant_state: str | None
     llm_inference_enabled: bool | None
     service_state: str | None
+    # What the host holds under the legacy ``yoetz`` MCP key, and (Claude, Cursor) what the
+    # legacy plugin install holds: none | legacy_only | duplicate | foreign (ADR-048).
+    legacy_registration: str | None = None
+    legacy_installation: str | None = None
+    # Codex only: whether a Yoetz-era ``[plugins."yoetz@yoetz"]`` activation may be enabled, which
+    # the plugin-form legacy admission table serves; ``None`` when unread (ADR-048).
+    legacy_plugin_activation: bool | None = None
 
     @property
     def grant_permits(self) -> bool | None:
         if self.grant_state is None or self.llm_inference_enabled is None:
             return None
         return self.grant_state == "granted" and self.llm_inference_enabled is True
+
+    @property
+    def legacy_name(self) -> LegacyNameUse | None:
+        """How FinishUP still uses the legacy ``yoetz`` server name; ``None`` when unread.
+
+        Only a FinishUP-owned entry counts as use: a foreign ``yoetz`` registration is exactly
+        what a stale legacy grant would wrongly admit (ADR-048).
+        """
+
+        if self.legacy_registration not in {"none", "legacy_only", "duplicate", "foreign"}:
+            return None
+        if self.legacy_registration == "legacy_only":
+            return "serving"
+        if self.legacy_registration == "duplicate" or self.legacy_installation in {
+            "legacy_only",
+            "duplicate",
+        }:
+            return "shared"
+        return "unused"
+
+    def legacy_name_for(self, entries: Sequence[HostAdmissionEntry]) -> LegacyNameUse | None:
+        """``legacy_name``, narrowed by what the observed legacy entries would admit (ADR-048).
+
+        The Codex plugin-form legacy table admits the Yoetz-era plugin's ``check``, which the
+        legacy MCP key never shows. While that table remains it is unused only when no Yoetz-era
+        plugin activation can be enabled; an enabled one keeps it, and an unread one leaves the
+        use unread.
+        """
+
+        legacy_name = self.legacy_name
+        if legacy_name != "unused" or not any(
+            CODEX_LEGACY_PLUGIN_ADMISSION_HEADER in entry.legacy_entries for entry in entries
+        ):
+            return legacy_name
+        if self.legacy_plugin_activation is None:
+            return None
+        return "shared" if self.legacy_plugin_activation else "unused"
 
     def as_json(self) -> dict[str, JsonValue]:
         return {
@@ -66,11 +120,32 @@ class AdmissionFacts:
                 "service_state": self.service_state,
             },
             "route": {
+                "legacy_installation": self.legacy_installation,
+                "legacy_plugin_activation": self.legacy_plugin_activation,
+                "legacy_registration": self.legacy_registration,
                 "observed": self.route_observed,
                 "owner": self.owner,
                 "route_profile": self.route_profile,
             },
         }
+
+
+def legacy_grant_state(observation: HostAdmissionObservation, facts: AdmissionFacts) -> str:
+    """Classify exact legacy ``yoetz`` admission entries against the observed registration.
+
+    ``absent``: none remain. ``in_use``: a FinishUP-owned registration or install still uses the
+    old name. ``stale``: nothing FinishUP owns does, so the entry would only admit an unrelated
+    server that takes the old name; a grant (or revoke) removes it. ``unverified``: the
+    registration, or (for the Codex plugin-form table) the Yoetz-era plugin activation, was not
+    read (ADR-048).
+    """
+
+    if not observation.legacy_entries_present:
+        return "absent"
+    legacy_name = facts.legacy_name_for(observation.entries)
+    if legacy_name is None:
+        return "unverified"
+    return "stale" if legacy_name == "unused" else "in_use"
 
 
 def _owner(ownership_state: object) -> McpOwnerForm | None:
@@ -95,6 +170,9 @@ def _emit(value: Mapping[str, JsonValue], *, json_output: bool) -> None:
         sys.stdout.write(f"{key}: {rendered}\n")
 
 
+type _Route = tuple[str | None, McpOwnerForm | None, bool, str | None, str | None]
+
+
 def _claude_route(
     *,
     project_root: Path,
@@ -104,11 +182,11 @@ def _claude_route(
     marketplace_root: Path | None,
     ownership_name: str,
     route_name: str | None,
-) -> tuple[str | None, McpOwnerForm | None, bool]:
+) -> _Route:
     if any(
         value is None for value in (claude_path, claude_config_root, cache_root, marketplace_root)
     ):
-        return None, None, False
+        return None, None, False, None, None
     assert claude_path is not None
     assert claude_config_root is not None
     assert cache_root is not None
@@ -136,6 +214,8 @@ def _claude_route(
         observation.route_profile,
         _owner(observation.ownership_state.value) if observation.host_admission_supported else None,
         observation.observed,
+        observation.legacy_registration if observation.observed else None,
+        status.legacy_installation if observation.observed else None,
     )
 
 
@@ -145,9 +225,9 @@ def _cursor_route(
     cursor_config_root: Path | None,
     ownership_name: str,
     route_name: str | None,
-) -> tuple[str | None, McpOwnerForm | None, bool]:
+) -> _Route:
     if cursor_config_root is None:
-        return None, None, False
+        return None, None, False, None, None
     from finishup.adapters.integrations.cursor_integration import (
         CursorPluginTarget,
         status_cursor_plugin,
@@ -165,7 +245,101 @@ def _cursor_route(
         observation.route_profile,
         _owner(observation.ownership_state.value),
         observation.observed,
+        observation.legacy_registration if observation.observed else None,
+        status.legacy_installation if observation.observed else None,
     )
+
+
+async def _codex_legacy_registration() -> str | None:
+    """Read what the Codex legacy ``yoetz`` MCP key holds; ``None`` when unread (ADR-048).
+
+    Mirrors the provider-status route probe: exactly one discovered Codex and its default home.
+    Fail-soft, like that probe, because an unread fact only keeps legacy entries in place.
+    """
+
+    try:
+        from finishup.adapters.integrations.codex_discovery import discover_codex_binaries
+        from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter
+        from finishup.adapters.integrations.codex_session_stream import resolve_codex_home
+
+        binaries = discover_codex_binaries()
+        if len(binaries) != 1:
+            return None
+        adapter = CodexMcpAdapter(codex_home=resolve_codex_home(None).absolute())
+        observation = await adapter.observe_registration(binaries[0])
+    except Exception:  # noqa: BLE001 - an unread fact is reported as unread, never raised
+        return None
+    return observation.legacy_registration
+
+
+def _codex_config_enables_legacy_plugin(path: Path) -> bool | None:
+    """Whether one Codex config may enable the Yoetz-era plugin; ``None`` when unreadable.
+
+    ``enabled = true`` (what a Yoetz-era activation wrote) counts; ``enabled = false`` does not.
+    Without an ``enabled`` key the table counts unless it holds only the ``mcp_servers`` subtable
+    the plugin-form legacy admission entry implies (ADR-048).
+    """
+
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return None
+    if len(raw) > _MAX_CODEX_CONFIG_BYTES:
+        return None
+    try:
+        parsed = tomllib.loads(raw.decode("utf-8"))
+    except UnicodeError, tomllib.TOMLDecodeError:
+        return None
+    plugins = parsed.get("plugins")
+    if plugins is None:
+        return False
+    if not isinstance(plugins, Mapping):
+        return None
+    plugin = cast(Mapping[str, object], plugins).get(_CODEX_LEGACY_PLUGIN_ID)
+    if plugin is None:
+        return False
+    if not isinstance(plugin, Mapping):
+        # Not a table Codex could read as an activation, nor one FinishUP can judge.
+        return None
+    table = cast(Mapping[str, object], plugin)
+    enabled = table.get("enabled")
+    if enabled is True:
+        # Exactly what a Yoetz-era activation wrote.
+        return True
+    if enabled is False:
+        return False
+    # The plugin-form admission subtable ``[plugins."yoetz@yoetz".mcp_servers...]`` creates an
+    # implicit ``yoetz@yoetz`` table holding only ``mcp_servers``; that is the table being judged,
+    # not an activation. Any other shape without ``enabled = false`` may still enable the plugin.
+    return set(table) != {"mcp_servers"}
+
+
+def _codex_legacy_plugin_activation(project_root: Path) -> bool | None:
+    """Whether a Yoetz-era Codex plugin activation may be enabled; ``None`` when unread.
+
+    Reads the default Codex home's ``config.toml`` and the project's ``.codex/config.toml``
+    without running Codex. Any project's legacy activation counts, since an enabled plugin is
+    loaded in every project. Fail-soft: an unread fact keeps the plugin-form legacy admission
+    table in place (ADR-048).
+    """
+
+    try:
+        from finishup.adapters.integrations.codex_session_stream import resolve_codex_home
+
+        configs = (
+            resolve_codex_home(None).absolute() / "config.toml",
+            project_root / ".codex" / "config.toml",
+        )
+    except Exception:  # noqa: BLE001 - an unread fact is reported as unread, never raised
+        return None
+    results = [_codex_config_enables_legacy_plugin(path) for path in configs]
+    if True in results:
+        return True
+    if None in results:
+        return None
+    return False
 
 
 async def gather_admission_facts(
@@ -191,6 +365,9 @@ async def gather_admission_facts(
     route_profile: str | None = None
     owner: McpOwnerForm | None = None
     route_observed = False
+    legacy_registration: str | None = None
+    legacy_installation: str | None = None
+    legacy_plugin_activation: bool | None = None
     if harness == "codex":
         route = report.get("mcp_route")
         if isinstance(route, Mapping):
@@ -200,22 +377,28 @@ async def gather_admission_facts(
                 registered = route_map.get("registered_profile")
                 route_profile = registered if type(registered) is str else None
                 owner = _owner(route_map.get("ownership_state"))
+        legacy_registration = await _codex_legacy_registration()
+        legacy_plugin_activation = _codex_legacy_plugin_activation(project_root)
     elif harness == "claude":
-        route_profile, owner, route_observed = _claude_route(
-            project_root=project_root,
-            claude_path=claude_path,
-            claude_config_root=claude_config_root,
-            cache_root=cache_root,
-            marketplace_root=marketplace_root,
-            ownership_name=ownership_name,
-            route_name=route_name,
+        route_profile, owner, route_observed, legacy_registration, legacy_installation = (
+            _claude_route(
+                project_root=project_root,
+                claude_path=claude_path,
+                claude_config_root=claude_config_root,
+                cache_root=cache_root,
+                marketplace_root=marketplace_root,
+                ownership_name=ownership_name,
+                route_name=route_name,
+            )
         )
     elif harness == "cursor":
-        route_profile, owner, route_observed = _cursor_route(
-            project_root=project_root,
-            cursor_config_root=cursor_config_root,
-            ownership_name=ownership_name,
-            route_name=route_name,
+        route_profile, owner, route_observed, legacy_registration, legacy_installation = (
+            _cursor_route(
+                project_root=project_root,
+                cursor_config_root=cursor_config_root,
+                ownership_name=ownership_name,
+                route_name=route_name,
+            )
         )
     return AdmissionFacts(
         route_profile,
@@ -224,6 +407,9 @@ async def gather_admission_facts(
         grant_state if type(grant_state) is str else None,
         llm if type(llm) is bool else None,
         service_state if type(service_state) is str else None,
+        legacy_registration,
+        legacy_installation,
+        legacy_plugin_activation,
     )
 
 
@@ -237,10 +423,14 @@ def admission_cleanup_preview(host: HostAdmissionHost, project_root: Path) -> di
     return {
         "host": host,
         "state": observation.state.value,
+        # The sweep also takes exact legacy ``yoetz`` entries on an otherwise absent surface.
         "surfaces": cast(
             list[JsonValue],
             sorted(
-                entry.surface for entry in observation.entries if entry.state.value == "present"
+                entry.surface
+                for entry in observation.entries
+                if entry.state.value == "present"
+                or (entry.state.value == "absent" and entry.legacy_entries)
             ),
         ),
     }
@@ -320,16 +510,19 @@ async def run_host_admission_command(
             ownership_name=ownership_name,
             route_name=route_name,
         )
+        observation = observe_host_admission(host, root, owner=facts.owner)
         if command == "status":
-            observation = observe_host_admission(host, root, owner=facts.owner)
             body: dict[str, JsonValue] = {
                 "admission": observation.as_json(),
                 "host": host,
+                # A legacy ``yoetz`` grant that no FinishUP registration needs reads ``stale``.
+                "legacy_grant": legacy_grant_state(observation, facts),
                 "scope": "project",
                 **facts.as_json(),
             }
             _emit(body, json_output=json_output)
             return 0
+        legacy_name = facts.legacy_name_for(observation.entries)
         preview = preview_host_admission(
             host,
             root,
@@ -338,7 +531,11 @@ async def run_host_admission_command(
             grant_permits=facts.grant_permits,
             owner=facts.owner,
             checkpoint=checkpoint,
+            legacy_name=legacy_name,
         )
+        if facts.legacy_name_for(preview.entries) != legacy_name:
+            # The legacy entries changed between the two reads; the use was judged on others.
+            raise HostAdmissionError(HostAdmissionReason.PREVIEW_STALE)
         if command == "preview":
             body = {
                 **preview.as_json(),

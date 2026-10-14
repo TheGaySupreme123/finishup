@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import pytest
@@ -262,3 +262,44 @@ def test_writable_published_root_is_not_reused_as_a_sealed_generation(prefix: Pa
     assert runtimes.prune_release_runtimes(prefix) == (1, 0)
     repaired = runtimes.prepare_release_runtime(prefix)
     assert not repaired.stat().st_mode & 0o222
+
+
+def _fixed_marker(marker: dict[str, str]) -> Callable[[Path], dict[str, str]]:
+    def read(_prefix: Path) -> dict[str, str]:
+        return marker
+
+    return read
+
+
+@pytest.mark.parametrize("module", ["finishup", "yoetz"])
+def test_module_registration_keeps_its_spelling_across_the_handoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, module: str
+) -> None:
+    """``python -m yoetz`` host entries from before the rename keep comparing equal (ADR-048)."""
+
+    origin = tmp_path / "tool"
+    interpreter = origin / "bin/python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.write_bytes(b"interpreter fixture")
+    marker = {"schema": "yoetz.release-runtime/1", "origin": str(origin), "key": "0" * 64}
+    monkeypatch.setattr(runtimes, "_marker", _fixed_marker(marker))
+    monkeypatch.setattr(runtimes, "_original_interpreter", str(interpreter))
+    main = origin / "lib/python3.14/site-packages" / module / "__main__.py"
+
+    assert runtimes.original_module_launcher(main) == (str(interpreter.resolve()), "-m", module)
+
+
+@pytest.mark.parametrize(
+    "relative", ["lib/python3.14/site-packages/other/__main__.py", "lib/yoetz/entry.py"]
+)
+def test_module_registration_ignores_other_modules(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative: str
+) -> None:
+    origin = tmp_path / "tool"
+    marker = {"schema": "yoetz.release-runtime/1", "origin": str(origin), "key": "0" * 64}
+    monkeypatch.setattr(runtimes, "_marker", _fixed_marker(marker))
+    monkeypatch.setattr(runtimes, "_original_interpreter", "/usr/bin/python3")
+
+    assert runtimes.original_module_launcher(origin / relative) is None
+    outside = tmp_path / "elsewhere/lib/python3.14/site-packages/yoetz/__main__.py"
+    assert runtimes.original_module_launcher(outside) is None

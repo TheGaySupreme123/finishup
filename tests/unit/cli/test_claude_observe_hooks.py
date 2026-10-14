@@ -125,11 +125,17 @@ def test_claude_native_child_ingress_keeps_child_identity_without_parent_tool(
     assert captured["source"] is ObservationSource.CLAUDE_HOOK
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    # The legacy plugin scope a 0.1-0.2.5 plugin still installs binds alike (ADR-048).
+    ["mcp__plugin_finishup_finishup__start", "mcp__plugin_yoetz_yoetz__start"],
+)
 @pytest.mark.parametrize("response_shape", ["structured", "content_blocks", "json_string"])
 def test_claude_successful_start_binds_only_structural_mapping(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     response_shape: str,
+    tool_name: str,
 ) -> None:
     captured: dict[str, object] = {}
 
@@ -157,7 +163,7 @@ def test_claude_successful_start_binds_only_structural_mapping(
     payload: dict[str, JsonValue] = {
         "hook_event_name": "PostToolUse",
         "session_id": "session-bind",
-        "tool_name": "mcp__plugin_finishup_finishup__start",
+        "tool_name": tool_name,
         "tool_response": tool_response,
         "tool_use_id": "tool-bind",
     }
@@ -978,6 +984,9 @@ def test_claude_ingress_names_paused_consent_distinctly(tmp_path: Path) -> None:
         ("mcp__plugin_finishup_finishup__check", None, "host_auto_review_denied"),
         ("mcp__finishup__check", "permission_rule", "host_permission_rule_denied"),
         ("mcp__plugin_finishup_finishup__check", "hook", "host_permission_rule_denied"),
+        # The legacy server scopes a 0.1-0.2.5 registration still carries (ADR-048).
+        ("mcp__yoetz__check", "auto_mode", "host_auto_review_denied"),
+        ("mcp__plugin_yoetz_yoetz__check", "permission_rule", "host_permission_rule_denied"),
     ],
 )
 def test_claude_permission_denied_on_a_scoped_check_records_one_payload_free_diagnostic(
@@ -1317,7 +1326,11 @@ def test_claude_permission_denied_for_any_other_tool_records_nothing(tmp_path: P
     assert not (tmp_path / "observation/hook-diagnostics.jsonl").exists()
 
 
-def test_claude_scoped_finishup_calls_follow_the_self_observation_policy(tmp_path: Path) -> None:
+# The legacy plugin scope a 0.1-0.2.5 plugin still installs is read alike (ADR-048).
+@pytest.mark.parametrize("prefix", ["mcp__plugin_finishup_finishup__", "mcp__plugin_yoetz_yoetz__"])
+def test_claude_scoped_finishup_calls_follow_the_self_observation_policy(
+    tmp_path: Path, prefix: str
+) -> None:
     """#564 on Claude Code: reads stay local, mutations and failures ship one row each."""
 
     store = LocalObservationStore(_state=tmp_path)
@@ -1346,21 +1359,21 @@ def test_claude_scoped_finishup_calls_follow_the_self_observation_policy(tmp_pat
             == 0
         )
 
-    hook("PostToolUse", "mcp__plugin_finishup_finishup__status", "claude-status-1")
-    hook("PostToolUse", "mcp__plugin_finishup_finishup__receipt", "claude-receipt-1")
-    hook("PostToolUse", "mcp__plugin_finishup_finishup__read_guidance", "claude-guidance-1")
-    hook("PostToolUse", "mcp__plugin_finishup_finishup__respond", "claude-respond-1")
-    hook("PostToolUse", "mcp__plugin_finishup_finishup__check", "claude-check-1")
-    hook("PostToolUseFailure", "mcp__plugin_finishup_finishup__status", "claude-status-2")
+    hook("PostToolUse", f"{prefix}status", "claude-status-1")
+    hook("PostToolUse", f"{prefix}receipt", "claude-receipt-1")
+    hook("PostToolUse", f"{prefix}read_guidance", "claude-guidance-1")
+    hook("PostToolUse", f"{prefix}respond", "claude-respond-1")
+    hook("PostToolUse", f"{prefix}check", "claude-check-1")
+    hook("PostToolUseFailure", f"{prefix}status", "claude-status-2")
 
     rows = store.list_pending_outbox_rows(commitment)
     assert [
         (row.envelope.structural_payload["tool_name"], row.envelope.structural_payload["action"])
         for row in rows
     ] == [
-        ("mcp__plugin_finishup_finishup__respond", "claude_mcp_success"),
-        ("mcp__plugin_finishup_finishup__check", "claude_mcp_success"),
-        ("mcp__plugin_finishup_finishup__status", "claude_mcp_failure"),
+        (f"{prefix}respond", "claude_mcp_success"),
+        (f"{prefix}check", "claude_mcp_success"),
+        (f"{prefix}status", "claude_mcp_failure"),
     ]
     # Every call remains in the bounded local store as structural-only evidence.
     assert len(store.list_envelopes(commitment)) == 6

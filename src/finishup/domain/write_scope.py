@@ -8,8 +8,10 @@ An observed edit is one of five classes:
   package the task told the agent to patch);
 * ``scratch`` — a temporary location outside the workspace (``/tmp`` and the platform temp
   roots): working notes the delivered work never reads;
-* ``yoetz_owned`` — FinishUP's own material: a receipt or export the agent saved (``finishup_receipt.md``),
-  FinishUP's state directory, and the packaged FinishUP plugin and skill trees;
+* ``yoetz_owned`` — FinishUP's own material: a receipt or export the agent saved
+  (``finishup_receipt.md``), FinishUP's state directory, and the packaged FinishUP plugin and skill
+  trees. The token keeps its frozen wire spelling, and the legacy ``yoetz`` receipt names and trees
+  stay recognized (ADR-048);
 * ``notes`` — the agent's own working notes inside the workspace (``NOTES.md``, ``todo.txt``):
   conventional names that are not source, tests or data (ADR-045). A declared output with such a
   name is a deliverable and keeps counting; a ``.log`` file is never named by its extension, since
@@ -47,6 +49,7 @@ __all__ = [
     "scratch_path",
 ]
 
+# Frozen legacy identifier (ADR-048): ``yoetz_owned`` is a recorded hook fact and wire enum value.
 WriteClass = Literal["workspace", "outside_workspace", "scratch", "yoetz_owned", "notes"]
 # The hook's closed ``write_scope`` structural fact: absent for an edit-tool call that stays in
 # the workspace, otherwise the class every named path shares (``outside_workspace`` wins).
@@ -70,10 +73,12 @@ _WSL_WINDOWS_TEMP: Final = re.compile(
 )
 # The last component of an environment temp directory must name temporary space.
 _TEMP_NAME: Final = re.compile(r"te?mp|scratch", re.IGNORECASE)
-# A FinishUP receipt or export the agent saved as a file (tb4n2 cad S `/app/finishup_receipt.md`,
-# lake D `/app/output/finishup_receipt.json`).
+# A FinishUP receipt or export the agent saved as a file (tb4n2 cad S `/app/yoetz_receipt.md`,
+# lake D `/app/output/yoetz_receipt.json`). The legacy ``yoetz`` names stay owned (ADR-048): agents
+# guided before the rename still save them, and replay of recorded paths must classify alike.
 _FINISHUP_ARTIFACT_NAME: Final = re.compile(
-    r"^finishup[-_.]?(?:receipt|export)s?(?:[-_.][a-z0-9]+)*\.(?:md|markdown|json|txt|text)$",
+    r"^(?:finishup|yoetz)[-_.]?(?:receipt|export)s?(?:[-_.][a-z0-9]+)*"
+    r"\.(?:md|markdown|json|txt|text)$",
     re.IGNORECASE,
 )
 # Conventional names of the agent's own working notes and logs. Deliberately narrow: a name that
@@ -85,7 +90,13 @@ _NOTES_NAME: Final = re.compile(
     re.IGNORECASE,
 )
 # Packaged FinishUP trees a host installation writes into a repository (generated, never the work).
-_FINISHUP_TREES: Final = (".agents/plugins/finishup", ".agents/skills/finishup")
+# The legacy ``yoetz`` trees an earlier install wrote stay owned until removed (ADR-048).
+_FINISHUP_TREES: Final = (
+    ".agents/plugins/finishup",
+    ".agents/skills/finishup",
+    ".agents/plugins/yoetz",
+    ".agents/skills/yoetz",
+)
 
 
 def _normalize(path: str) -> str:
@@ -156,10 +167,11 @@ def finishup_artifact_name(path: str) -> bool:
 def finishup_tree_overlap(path: str) -> bool:
     """Whether a declared path lies in, or is an ancestor of, a packaged FinishUP tree (pure).
 
-    A declared deliverable there (a repository whose product is the FinishUP plugin or skill) is the
-    work itself; a saved receipt is not. ``.agents/plugins/finishup`` and ``.agents/skills/finishup`` are
-    the trees; the bare ``.agents``, ``.agents/plugins`` and ``.agents/skills`` directories contain
-    them. A sibling such as ``.agents/skills/project-skill`` does not overlap.
+    A declared deliverable there (a repository whose product is the FinishUP plugin or skill) is
+    the work itself; a saved receipt is not. ``.agents/plugins/finishup`` and
+    ``.agents/skills/finishup`` (and their legacy ``yoetz`` spellings, ADR-048) are the trees; the
+    bare ``.agents``, ``.agents/plugins`` and ``.agents/skills`` directories contain them. A
+    sibling such as ``.agents/skills/project-skill`` does not overlap.
     """
 
     if type(path) is not str or not path:
@@ -221,7 +233,7 @@ def classify_write_path(
         return "workspace"
     normalized = _normalize(path)
     if _finishup_owned(normalized, owned_roots):
-        return "yoetz_owned"
+        return "yoetz_owned"  # Frozen legacy identifier (ADR-048): recorded write-scope token.
     absolute = normalized.startswith("/")
     if not absolute or inside is not False:
         # Inside the workspace (or unknown: no workspace root to compare with) a write counts,
@@ -244,8 +256,8 @@ def edit_write_scope(classes: Iterable[WriteClass]) -> str | None:
     """The closed ``write_scope`` fact for one edit naming *classes*, or ``None`` (workspace).
 
     ``outside_workspace`` wins over everything; any workspace path, or a mix of scratch and
-    FinishUP-owned paths, makes the edit an ordinary workspace edit; only an edit whose every path is
-    scratch, or every path FinishUP-owned, is named so. An edit naming no path is a workspace edit.
+    FinishUP-owned paths, makes the edit an ordinary workspace edit; only an edit whose every path
+    is scratch, or every path FinishUP-owned, is named so. An edit naming no path is a workspace edit.
     """
 
     seen = frozenset(classes)

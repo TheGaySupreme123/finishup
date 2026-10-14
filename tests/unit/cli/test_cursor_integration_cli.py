@@ -491,3 +491,30 @@ def test_default_presence_cell_follows_the_platform_and_fails_closed_before_muta
     )
     assert called == expected
     assert not (config / "plugins" / "local" / "finishup").exists()
+
+
+def test_cursor_plugin_cli_reports_a_legacy_tree_in_status_and_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A Yoetz-era tree under ``plugins/local/yoetz`` (ADR-048) shows up in both surfaces.
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.cursor_integration.isolated_root", lambda: None
+    )
+    runner = CliRunner()
+    config = tmp_path / ".cursor"
+    project = tmp_path / "project"
+    project.mkdir()
+    legacy = config / "plugins" / "local" / "yoetz"
+    legacy.mkdir(parents=True)
+    (legacy / "notes.txt").write_text("not a managed tree\n", encoding="utf-8")
+
+    status = runner.invoke(app, _args(config, project, "status"))
+    assert status.exit_code == 0, status.output
+    body = json.loads(status.stdout)
+    assert body["legacy_installation"] == "foreign"
+    assert body["mcp"]["legacy_registration"] == "none"
+    preview = runner.invoke(app, _args(config, project, "preview"))
+    assert preview.exit_code == 0, preview.output
+    preview_body = json.loads(preview.stdout)
+    assert preview_body["legacy_installation"] == "foreign"
+    assert "legacy_installation_foreign" in preview_body["warnings"]

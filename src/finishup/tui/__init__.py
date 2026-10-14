@@ -20,6 +20,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
+from finishup.legacy_names import ENV_PREFIX, LEGACY_ENV_PREFIX
+
 __all__ = ["TUI_UNAVAILABLE", "tui_available", "tui_supported", "run_tui"]
 
 TUI_UNAVAILABLE: Final = -1
@@ -48,11 +50,17 @@ def tui_available(environment: Mapping[str, str] | None = None) -> bool:
     """True only for an interactive human terminal that has not opted out.
 
     ``FINISHUP_TUI=0`` is an explicit opt-out for anyone who prefers the prompt-loop
-    menu; ``TERM=dumb`` and any CI marker are treated as automation.
+    menu; the legacy ``YOETZ_TUI=0`` still opts out when ``FINISHUP_TUI`` is unset (ADR-048),
+    and the two set to different values keeps the prompt loop. ``TERM=dumb`` and any CI marker
+    are treated as automation.
     """
 
     env: Mapping[str, str] = os.environ if environment is None else environment
-    if env.get("FINISHUP_TUI") == "0":
+    opt_out = env.get(f"{ENV_PREFIX}TUI")
+    legacy_opt_out = env.get(f"{LEGACY_ENV_PREFIX}TUI")
+    if opt_out is not None and legacy_opt_out is not None and opt_out != legacy_opt_out:
+        return False
+    if (legacy_opt_out if opt_out is None else opt_out) == "0":
         return False
     if env.get("TERM", "") in {"dumb", ""}:
         return False

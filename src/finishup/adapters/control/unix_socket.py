@@ -78,16 +78,29 @@ _ENDPOINT_BASENAMES: Final = {
 
 
 class LocalControlTransportError(Exception):
-    """A bounded transport failure that never includes a path or peer value."""
+    """A bounded transport failure that never includes a path or peer value.
 
-    __slots__ = ("reason",)
+    ``path_reason`` is set only on ``runtime_directory_unsafe`` raised because the endpoint
+    directory itself could not be resolved: it carries the closed ``PathSafetyError`` token
+    (``installation_root_ambiguous``, ``isolation_root_conflict``,
+    ``isolation_root_env_conflict``, ...), never a path. Such a
+    refusal is persistent, so a caller can name it instead of reporting an absent service.
+    """
+
+    __slots__ = ("path_reason", "reason")
 
     reason: str
+    path_reason: str | None
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, path_reason: str | None = None) -> None:
         if type(reason) is not str or reason not in _TRANSPORT_REASONS:
             raise ValueError("local_control_transport_reason_invalid")
+        if path_reason is not None and (
+            reason != "runtime_directory_unsafe" or type(path_reason) is not str
+        ):
+            raise ValueError("local_control_transport_path_reason_invalid")
         self.reason = reason
+        self.path_reason = path_reason
         super().__init__(reason)
 
 
@@ -363,11 +376,14 @@ def authenticate_peer(
 def _runtime_directory() -> Path:
     # Derives from the one isolation contract in finishup.config.paths: an isolated runtime binds
     # and connects beneath its isolation root, never at the ambient platform endpoint. A set but
-    # unusable isolation root fails closed as the bounded transport reason.
+    # unusable isolation root, or ambient roots that exist under both product names (ADR-048),
+    # fail closed as the bounded transport reason carrying the path-safety token.
     try:
         return runtime_dir()
     except PathSafetyError as exc:
-        raise LocalControlTransportError("runtime_directory_unsafe") from exc
+        raise LocalControlTransportError(
+            "runtime_directory_unsafe", path_reason=exc.reason_code
+        ) from exc
 
 
 def _endpoint_path(kind: EndpointKind) -> Path:

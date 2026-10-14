@@ -30,7 +30,7 @@ from finishup.application.host_connection import (
     apply_connection,
     prepare_connection,
 )
-from finishup.config.paths import isolated_root
+from finishup.config.paths import ISOLATED_ROOT_ENV_NAMES, isolated_root
 from finishup.domain.values import request_id
 from finishup.ports.integrations import IntegrationError
 from finishup.ports.plugin_artifacts import ArtifactAuthority, PluginArtifactError
@@ -387,7 +387,10 @@ def launch_details(installation: HostInstallation, project: Path) -> dict[str, J
         command.extend(("--new-window", str(project)))
     root = isolated_root()
     if root is not None:
-        environment["FINISHUP_ISOLATED_ROOT"] = str(root)
+        # Both spellings with one value (ADR-048): a host that resolves an older ``yoetz``
+        # launcher through PATH stays on this isolated root too (#604).
+        for name in ISOLATED_ROOT_ENV_NAMES:
+            environment[name] = str(root)
     arguments = [
         "env",
         *(f"{key}={value}" for key, value in environment.items()),

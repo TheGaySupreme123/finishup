@@ -86,6 +86,24 @@ def test_a_dumb_or_absent_term_is_treated_as_automation(
     assert tui_available({}) is False
 
 
+@pytest.mark.parametrize(
+    ("variables", "available"),
+    [
+        ({"YOETZ_TUI": "0"}, False),
+        ({"YOETZ_TUI": "1"}, True),
+        ({"FINISHUP_TUI": "0", "YOETZ_TUI": "0"}, False),
+        ({"FINISHUP_TUI": "1", "YOETZ_TUI": "1"}, True),
+        # Two spellings that disagree keep the prompt loop rather than choosing (ADR-048).
+        ({"FINISHUP_TUI": "1", "YOETZ_TUI": "0"}, False),
+    ],
+)
+def test_the_legacy_opt_out_spelling_is_honoured(
+    monkeypatch: pytest.MonkeyPatch, variables: Mapping[str, str], available: bool
+) -> None:
+    terminal(monkeypatch)
+    assert tui_available({**TTY, **variables}) is available
+
+
 def test_the_environment_opt_out_is_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
     terminal(monkeypatch)
     assert tui_available({**TTY, "FINISHUP_TUI": "0"}) is False

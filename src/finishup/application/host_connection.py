@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Final, Literal
 
 from finishup.adapters.integrations import claude_code_integration as claude
 from finishup.adapters.integrations import cursor_integration as cursor
@@ -25,6 +25,10 @@ from finishup.protocol.canonical import JsonValue, canonical_digest
 
 type Route = Literal["strict", "policy"]
 type ConnectionAction = Literal["connect", "disconnect"]
+
+_CLAUDE_MARKETPLACE: Final = "finishup-local"
+# Legacy installation states that a connection migrates or a disconnect removes (ADR-048).
+_OWNED_LEGACY: Final = frozenset({"legacy_only", "duplicate"})
 
 
 class ConnectionError(ValueError):
@@ -84,6 +88,7 @@ def prepare_connection(
 ) -> ConnectionPlan:
     """Read all participating preimages before any authorization or mutation."""
     body: dict[str, JsonValue] = {
+        # Frozen legacy identifier (ADR-048): a released schema tag (host-connection-1.0.0).
         "schema": "yoetz.host-connection-plan/1",
         "request_id": request,
         "host": installation.host,
@@ -107,7 +112,7 @@ def prepare_connection(
             str(project),
             str(installation.config_root),
             str(installation.config_root / "plugins" / "cache"),
-            str(installation.config_root / "plugins" / "marketplaces" / "finishup-local"),
+            str(installation.config_root / "plugins" / "marketplaces" / _CLAUDE_MARKETPLACE),
             str(installation.executable),
             claude.discover_claude_code(installation.executable),
         )
@@ -123,9 +128,15 @@ def prepare_connection(
             if action == "connect"
             else claude.ClaudeCodePluginAction.REMOVE
         )
+        # An owned legacy ``yoetz-local`` install alone still needs the disconnect (ADR-048).
+        legacy_owned = before.legacy_installation in _OWNED_LEGACY
         preview = (
             None
-            if (action == "disconnect" and before.state is PluginArtifactState.ABSENT)
+            if (
+                action == "disconnect"
+                and before.state is PluginArtifactState.ABSENT
+                and not legacy_owned
+            )
             else claude.preview_claude_code_plugin(request, target, operation, artifact)
         )
         noop = preview is None or preview.action is claude.ClaudeCodePluginAction.NOOP
@@ -134,15 +145,17 @@ def prepare_connection(
         body["cache_root"] = target.cache_root
         body["state_before"] = before.state.value
         body["enabled_before"] = before.enabled
-        body["changes"] = (
-            []
-            if noop
-            else (
-                ["install_plugin", "enable_plugin", "plugin_mcp"]
-                if action == "connect"
-                else ["uninstall_plugin", "remove_marketplace", "remove_plugin_mcp"]
-            )
-        )
+        changes: list[JsonValue] = []
+        if not noop:
+            if legacy_owned:
+                changes.append(
+                    "migrate_legacy_plugin" if action == "connect" else "remove_legacy_plugin"
+                )
+            if action == "connect":
+                changes.extend(("install_plugin", "enable_plugin", "plugin_mcp"))
+            elif before.state is not PluginArtifactState.ABSENT:
+                changes.extend(("uninstall_plugin", "remove_marketplace", "remove_plugin_mcp"))
+        body["changes"] = changes
 
         def status() -> dict[str, JsonValue]:
             observed = claude.status_claude_code_plugin(target, artifact)
@@ -151,6 +164,7 @@ def prepare_connection(
                 "enabled": observed.enabled,
                 "configured": observed.marketplace_registered,
                 "state": observed.state.value,
+                "legacy_installation": observed.legacy_installation,
                 "connection_observed": False,
                 "reload_required": action == "connect",
             }
@@ -195,25 +209,39 @@ def prepare_connection(
             if observed.state is PluginArtifactState.ABSENT
             else PluginArtifactAction.REPLACE
         )
+        # An owned legacy ``plugins/local/yoetz`` tree alone still needs the disconnect (ADR-048).
+        cursor_legacy_owned = observed.legacy_installation in _OWNED_LEGACY
         cursor_preview = (
             None
-            if (action == "disconnect" and observed.state is PluginArtifactState.ABSENT)
+            if (
+                action == "disconnect"
+                and observed.state is PluginArtifactState.ABSENT
+                and not cursor_legacy_owned
+            )
             else cursor.preview_cursor_plugin(
                 request, cursor_target, cursor_action, cursor_artifact, project_root=project
             )
         )
         mcp_action = "install" if action == "connect" else "remove"
+        # Launchers the plugin markers recorded now, before any step can migrate them (ADR-048).
+        recorded = mcp.recorded_cursor_launchers(installation.config_root)
         mcp_preview = mcp.preview_cursor_project_mcp(
             project_target,
             action=mcp_action,
             launcher=launcher,
             route_profile=route,
             isolation_root=isolation_root,
+            known_launchers=recorded,
         )
         plugin_noop = cursor_preview is None or cursor_preview.action is PluginArtifactAction.NOOP
         changes: list[JsonValue] = []
         if not plugin_noop:
-            changes.append("install_plugin" if action == "connect" else "remove_plugin")
+            if cursor_legacy_owned:
+                changes.append(
+                    "migrate_legacy_plugin" if action == "connect" else "remove_legacy_plugin"
+                )
+            if action == "connect" or observed.state is not PluginArtifactState.ABSENT:
+                changes.append("install_plugin" if action == "connect" else "remove_plugin")
         if mcp_preview["action"] != "noop":
             changes.append("register_project_mcp" if action == "connect" else "remove_project_mcp")
         body.update(
@@ -235,50 +263,52 @@ def prepare_connection(
                 cursor_target, cursor_artifact, project_root=project
             )
             registration = mcp.status_cursor_project_mcp(
-                project_target, launcher=launcher, isolation_root=isolation_root
+                project_target,
+                launcher=launcher,
+                isolation_root=isolation_root,
+                known_launchers=recorded,
             )
             return {
                 "installed": current.installed_digest == cursor_artifact.artifact_digest,
                 "enabled": None,
+                # Frozen legacy identifier (ADR-048): ``yoetz_owned`` is a released state value.
                 "configured": registration["state"] == "yoetz_owned",
                 "state": current.state.value,
+                "legacy_installation": current.legacy_installation,
                 "connection_observed": False,
                 "reload_required": action == "connect",
                 "project_mcp": registration,
             }
 
-        def apply() -> None:
-            # External-registration artifacts do not change any MCP preimage. Removing or
-            # installing that plugin first therefore preserves the approved MCP digest.
-            if not plugin_noop and cursor_preview is not None:
-                result = (
-                    cursor.apply_cursor_plugin(
-                        request,
-                        cursor_target,
-                        cursor_action,
-                        cursor_artifact,
-                        accepted_preview_digest=cursor_preview.preview_digest,
-                        authority=ArtifactAuthority(
-                            "setup_composition", cursor_preview.preview_digest
-                        ),
-                        review=_ReviewedStep(cursor_preview.preview_digest),
-                        project_root=project,
-                    )
-                    if action == "connect"
-                    else cursor.remove_cursor_plugin(
-                        request,
-                        cursor_target,
-                        cursor_artifact,
-                        accepted_preview_digest=cursor_preview.preview_digest,
-                        authority=ArtifactAuthority(
-                            "setup_composition", cursor_preview.preview_digest
-                        ),
-                        review=_ReviewedStep(cursor_preview.preview_digest),
-                        project_root=project,
-                    )
+        def plugin_step() -> None:
+            if plugin_noop or cursor_preview is None:
+                return
+            result = (
+                cursor.apply_cursor_plugin(
+                    request,
+                    cursor_target,
+                    cursor_action,
+                    cursor_artifact,
+                    accepted_preview_digest=cursor_preview.preview_digest,
+                    authority=ArtifactAuthority("setup_composition", cursor_preview.preview_digest),
+                    review=_ReviewedStep(cursor_preview.preview_digest),
+                    project_root=project,
                 )
-                if result.operation_state is not PluginOperationState.COMPLETED:
-                    raise ConnectionError("connection_outcome_unknown")
+                if action == "connect"
+                else cursor.remove_cursor_plugin(
+                    request,
+                    cursor_target,
+                    cursor_artifact,
+                    accepted_preview_digest=cursor_preview.preview_digest,
+                    authority=ArtifactAuthority("setup_composition", cursor_preview.preview_digest),
+                    review=_ReviewedStep(cursor_preview.preview_digest),
+                    project_root=project,
+                )
+            )
+            if result.operation_state is not PluginOperationState.COMPLETED:
+                raise ConnectionError("connection_outcome_unknown")
+
+        def mcp_step() -> None:
             accepted_mcp = str(mcp_preview["preview_digest"])
             if not config_existed and action == "connect":
                 # The reviewed plugin step created its missing private config root. Only
@@ -293,6 +323,7 @@ def prepare_connection(
                     launcher=launcher,
                     route_profile=route,
                     isolation_root=isolation_root,
+                    known_launchers=recorded,
                 )
                 omit = {"target_identity", "preview_digest"}
                 if {key: value for key, value in refreshed.items() if key not in omit} != {
@@ -308,7 +339,17 @@ def prepare_connection(
                 isolation_root=isolation_root,
                 preview_digest=accepted_mcp,
                 accept=True,
+                known_launchers=recorded,
             )
+
+        def apply() -> None:
+            # External-registration artifacts do not change any MCP preimage. Removing or
+            # installing that plugin first therefore preserves the approved MCP digest; the
+            # legacy launchers captured above keep a legacy project entry provably FinishUP's
+            # after the plugin step migrates the legacy tree whose marker recorded it (ADR-048).
+            plugin_step()
+            mcp_step()
+
     else:
         raise ConnectionError("connection_host_unsupported")
     body["preview_digest"] = canonical_digest(body)

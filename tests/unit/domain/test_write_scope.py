@@ -11,7 +11,12 @@ from finishup.application.observation_materialize import (
     _action_kind,  # pyright: ignore[reportPrivateUsage]
 )
 from finishup.domain.events import ActionKind
-from finishup.domain.write_scope import classify_write_path, edit_write_scope
+from finishup.domain.write_scope import (
+    classify_write_path,
+    edit_write_scope,
+    finishup_artifact_name,
+    finishup_tree_overlap,
+)
 
 
 def _inside(path: str) -> bool:
@@ -34,6 +39,14 @@ def _inside(path: str) -> bool:
         ("/app/output/finishup_receipt.json", "yoetz_owned"),
         ("/app/.agents/skills/finishup/SKILL.md", "yoetz_owned"),
         ("/srv/state/finishup/ledger.sqlite", "yoetz_owned"),
+        # Legacy receipt names and packaged trees an earlier install wrote stay owned (ADR-048).
+        ("/app/yoetz_exporter.py", "workspace"),
+        ("/app/yoetz_receipt.md", "yoetz_owned"),
+        ("/app/output/yoetz-export.json", "yoetz_owned"),
+        ("/app/.agents/skills/yoetz/SKILL.md", "yoetz_owned"),
+        ("/app/.agents/plugins/yoetz/.mcp.json", "yoetz_owned"),
+        ("/app/.agents/plugins/finishup/.mcp.json", "yoetz_owned"),
+        ("/app/.agents/skills/yoetz-notes/SKILL.md", "workspace"),
         ("/usr/lib/python3/site-packages/lightning/x.py", "outside_workspace"),
         ("/opt/logs/x.log", "outside_workspace"),
         ("/tmp/../etc/passwd", "outside_workspace"),
@@ -47,6 +60,17 @@ def test_classify_write_path(path: str, expected: str) -> None:
         )
         == expected
     )
+
+
+def test_legacy_trees_overlap_like_the_finishup_trees() -> None:
+    """A declared deliverable in either spelling of the packaged trees is the work (ADR-048)."""
+
+    assert finishup_tree_overlap(".agents/skills/yoetz/SKILL.md")
+    assert finishup_tree_overlap(".agents/plugins/finishup")
+    assert not finishup_tree_overlap(".agents/skills/yoetz-extra/SKILL.md")
+    assert finishup_artifact_name("out/yoetz_receipt.json")
+    assert finishup_artifact_name("out/finishup_receipt.json")
+    assert not finishup_artifact_name("out/receipt.json")
 
 
 def test_a_workspace_under_a_temporary_root_is_still_the_workspace() -> None:

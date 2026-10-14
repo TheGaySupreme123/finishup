@@ -15,12 +15,20 @@ __all__ = [
     "LOCAL_REASONS",
     "PUBLIC_EXIT_CODES",
     "REMEDIATION_MESSAGES",
+    "UPGRADING_FROM_YOETZ_GUIDE",
     "VAULT_RESULT_REASON_PREFIX",
     "ceremony_refusal_message",
     "exit_code_for",
     "lifecycle_public_code",
     "remediation_message",
 ]
+
+# Where an install upgraded from Yoetz reads how its folders are kept and how to resolve two
+# installations (ADR-048). Shipped-product guide; no repository path or local file is named.
+UPGRADING_FROM_YOETZ_GUIDE: Final = (
+    "https://github.com/TheGaySupreme123/finishup/blob/main/docs/usage/upgrading.md"
+    "#upgrading-from-yoetz"
+)
 
 PUBLIC_EXIT_CODES: Final = MappingProxyType(
     {
@@ -107,7 +115,10 @@ INSTANCE_PUBLIC_CODES: Final = MappingProxyType(
         "instance_identity_invalid": PublicErrorCode.STORAGE_UNSAFE,
         "instance_lifecycle_requires_isolated_root": PublicErrorCode.STORAGE_UNSAFE,
         "installation_identity_mismatch": PublicErrorCode.STORAGE_UNSAFE,
+        "installation_root_ambiguous": PublicErrorCode.STORAGE_UNSAFE,
         "isolation_root_conflict": PublicErrorCode.STORAGE_UNSAFE,
+        "isolation_root_env_conflict": PublicErrorCode.STORAGE_UNSAFE,
+        "isolation_root_invalid": PublicErrorCode.STORAGE_UNSAFE,
         "runtime_pin_conflict": PublicErrorCode.STORAGE_UNSAFE,
         "runtime_pin_invalid": PublicErrorCode.STORAGE_UNSAFE,
         "instance_service_running": PublicErrorCode.BUNDLE_BUSY,
@@ -323,6 +334,12 @@ REMEDIATION_MESSAGES: Final = MappingProxyType(
             "an unrecognized FINISHUP_-prefixed environment variable is set; unset it or use a "
             "documented configuration variable"
         ),
+        # A FINISHUP_ name and its pre-rename YOETZ_ spelling disagree (ADR-048).
+        "config_env_conflict": (
+            "a FINISHUP_ environment variable and its older YOETZ_ spelling are both set to "
+            "different values, so FinishUP will not choose one; unset the YOETZ_ variable (or set "
+            "both to the same value) and retry"
+        ),
         "repository_privacy_grant_unconfirmed": (
             "the grant decision was submitted but its outcome could not be confirmed over the "
             "confidential channel, so it may already be effective; check 'finishup provider status' "
@@ -355,8 +372,69 @@ REMEDIATION_MESSAGES: Final = MappingProxyType(
             "Dispose and recreate the instance, or remove the stale pin from the runtime"
         ),
         "isolation_root_conflict": (
-            "FINISHUP_ISOLATED_ROOT names a different root than this runtime's pin; unset the "
-            "variable to use the pinned root, or run the runtime that belongs to that root"
+            "FINISHUP_ISOLATED_ROOT (or the older YOETZ_ISOLATED_ROOT) names a different root "
+            "than this runtime's pin; unset it to use the pinned root, or run the runtime that "
+            "belongs to that root"
+        ),
+        # Both spellings of the isolation-root variable are set and disagree (ADR-048). The
+        # instance itself is fine, so the remedy only corrects the environment.
+        "isolation_root_env_conflict": (
+            "FINISHUP_ISOLATED_ROOT and the older YOETZ_ISOLATED_ROOT name different roots, so "
+            "FinishUP will not choose one and nothing was read or changed; set both to the same "
+            "root, or unset YOETZ_ISOLATED_ROOT, then retry. No instance needs to be disposed"
+        ),
+        # Two sources raise this token: the isolation-root variable (either spelling), or, with
+        # the variable unset, this runtime's pin naming a root that no longer exists. A pinned
+        # runtime never falls back to the everyday installation (#604), so the remedy names the
+        # action for each source.
+        "isolation_root_invalid": (
+            "the isolation root is empty, not an absolute path, or no longer an existing "
+            "directory. If FINISHUP_ISOLATED_ROOT (or the older YOETZ_ISOLATED_ROOT) is set, "
+            "point it at the instance's private root, or unset it to use this runtime's pinned "
+            "instance root (the everyday installation when the runtime is not pinned), then "
+            "retry. If neither is set, this runtime is pinned to an instance root that is gone "
+            "and will not fall back to the everyday installation; recreate the instance, or run "
+            "'finishup instance dispose --root <root>' with the root given when the instance was "
+            "provisioned to remove the stale pin"
+        ),
+        # Ambient roots exist under both product names, so neither is chosen (ADR-048). Nothing
+        # is moved or merged automatically: recorded data is never rewritten. A settings file
+        # alone counts as an installation, so the remedy says which folders must stay.
+        "installation_root_ambiguous": (
+            "FinishUP found its folders under both the FinishUP name and the earlier Yoetz name, "
+            "so it will not choose between them and nothing was read or changed. The folders "
+            "that hold the vault and catalog are this installation's data and must stay where "
+            "they are. If the other name holds only a settings file (config.toml), move that "
+            "file into the folders that hold the vault and catalog. If both names hold a vault "
+            "or catalog, keep the installation you use and move the other name's folders aside "
+            "without deleting them; a leftover service.lock from a stopped older service can be "
+            "moved aside the same way. Then retry. Read more: " + UPGRADING_FROM_YOETZ_GUIDE
+        ),
+        # Path-safety refusals for a FinishUP folder or the isolation root. The token names the
+        # condition; no path is ever included.
+        "path_contains_symlink": (
+            "a FinishUP folder or the isolation root runs through a symbolic link; use a real, "
+            "symlink-free directory owned by you, then retry"
+        ),
+        "path_in_repository": (
+            "a FinishUP folder or the isolation root sits inside a Git repository; keep FinishUP "
+            "state outside every repository, then retry"
+        ),
+        "path_in_sync_folder": (
+            "a FinishUP folder or the isolation root sits inside a cloud-sync folder; keep "
+            "FinishUP state on a local, unsynced disk, then retry"
+        ),
+        "path_not_owned": (
+            "a FinishUP folder or the isolation root is owned by another user; use a directory "
+            "owned by the current user, then retry"
+        ),
+        "path_shared_temp": (
+            "a FinishUP folder or the isolation root sits in a shared temporary directory; use "
+            "a private directory outside shared temp, then retry"
+        ),
+        "permissions_too_broad": (
+            "a FinishUP folder or the isolation root is readable or writable by other users; "
+            "make it owner-only (mode 0700), then retry"
         ),
         "runtime_pin_invalid": (
             "this runtime's yoetz-instance-pin.json is unreadable, foreign-owned, writable by "

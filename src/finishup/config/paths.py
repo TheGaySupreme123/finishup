@@ -16,10 +16,16 @@ from typing import Final, Literal, cast
 
 from platformdirs import PlatformDirs
 
+from finishup.config.env import EnvNameConflictError, env_names, read_env
+from finishup.legacy_names import APP_NAME, LEGACY_APP_NAME
+
 __all__ = [
     "ISOLATED_ROOT_ENV",
+    "ISOLATED_ROOT_ENV_NAMES",
+    "LEGACY_ISOLATED_ROOT_ENV",
     "RUNTIME_PIN_NAME",
     "RUNTIME_PIN_SCHEMA",
+    "InstallationNaming",
     "IsolationBinding",
     "PathSafetyError",
     "RuntimePin",
@@ -29,7 +35,9 @@ __all__ = [
     "config_file_path",
     "ensure_owner_only_dir",
     "existing_owner_only_dir",
+    "installation_naming",
     "isolated_root",
+    "isolated_root_variable",
     "isolation_binding",
     "log_dir",
     "read_runtime_pin",
@@ -43,12 +51,28 @@ __all__ = [
     "verify_private_local_bundle",
 ]
 
-_APP_NAME: Final = "finishup"
-ISOLATED_ROOT_ENV: Final = "FINISHUP_ISOLATED_ROOT"
+_ISOLATED_ROOT_SUFFIX: Final = "ISOLATED_ROOT"
+# ``FINISHUP_ISOLATED_ROOT`` and its legacy ``YOETZ_ISOLATED_ROOT`` spelling (ADR-048). Children
+# this runtime spawns receive both with one value, so an older launcher still isolates (#604).
+ISOLATED_ROOT_ENV_NAMES: Final = env_names(_ISOLATED_ROOT_SUFFIX)
+ISOLATED_ROOT_ENV: Final = ISOLATED_ROOT_ENV_NAMES[0]
+LEGACY_ISOLATED_ROOT_ENV: Final = ISOLATED_ROOT_ENV_NAMES[1]
+# Files that mark an existing ambient installation under one platform-directory application name
+# (ADR-048): the storage catalog and vault (the keyring auto-unlock account is bound to the data
+# directory's absolute path), the user config file, and the service singleton lock an older
+# running service still holds. Caches, logs, and runtime endpoints are not anchors.
+_INSTALLATION_ANCHORS: Final = (
+    ("data", "catalog.sqlite3"),
+    ("data", "vault"),
+    ("config", "config.toml"),
+    ("state", "service.lock"),
+)
 # A runtime pin lives inside the snapshot's own virtual environment (``sys.prefix``), next to the
 # interpreter that every launcher, hook, and MCP bridge of that snapshot resolves. It binds the
 # executable to one isolated root so a dropped environment cannot select the ambient install
 # (issue #604). ``config/installation.py`` writes and removes it; this module only reads it.
+# Frozen legacy identifier (ADR-048): retained older runtimes and release snapshots read this pin
+# by name and schema; a missed pin would silently fall back to the everyday install (#604).
 RUNTIME_PIN_NAME: Final = "yoetz-instance-pin.json"
 RUNTIME_PIN_SCHEMA: Final = "yoetz.runtime-instance-pin/1"
 _MAX_RUNTIME_PIN_BYTES: Final = 4_096
@@ -56,6 +80,10 @@ _INSTALLATION_ID: Final = re.compile(
     r"^ins_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.ASCII
 )
 type IsolationBinding = Literal["ambient", "environment", "runtime_pin", "environment_and_pin"]
+# Which platform-directory application name the ambient roots use (ADR-048): ``finishup`` for a
+# new installation, ``legacy_yoetz`` for one first installed as Yoetz and adopted in place.
+type InstallationNaming = Literal["finishup", "legacy_yoetz"]
+type _NamingSelection = Literal["finishup", "legacy_yoetz", "ambiguous"]
 _PRIVATE_DIR_MODE: Final = 0o700
 _VCS_MARKERS: Final = frozenset({".git", ".hg", ".svn", ".jj"})
 # ``9p`` (WSL 2 Windows drives and other virtio-9p shares), ``drvfs`` (WSL 1 Windows drives), and
@@ -88,7 +116,9 @@ _LINUX_SYNC_COMPONENTS: Final = frozenset(
 _SYNC_METADATA_NAMES: Final = frozenset({".dropbox", ".dropbox.cache", ".stfolder", ".sync"})
 _PATH_SAFETY_REASONS: Final = frozenset(
     {
+        "installation_root_ambiguous",
         "isolation_root_conflict",
+        "isolation_root_env_conflict",
         "isolation_root_invalid",
         "path_contains_symlink",
         "path_in_repository",
@@ -128,6 +158,8 @@ class _PathProbe:
     macos_fstype: Callable[[Path], str | None]
     diagnostic: Callable[[str], None]
     runtime_prefix: Path = field(default_factory=lambda: Path(sys.prefix))
+    # The ambient application-name selection ``platform_dirs`` was built for (ADR-048).
+    installation_naming: _NamingSelection = "finishup"
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,8 +213,52 @@ def _darwin_fstype(path: Path) -> str | None:
     return bytes(result.f_fstypename).split(b"\0", 1)[0].decode("ascii", errors="strict")
 
 
+def _platform_dirs(app_name: str) -> PlatformDirs:
+    return PlatformDirs(appname=app_name, appauthor=False, roaming=False)
+
+
+def _anchor_present(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError, NotADirectoryError:
+        return False
+    except OSError:
+        # An anchor that cannot be examined is not proven absent.
+        return True
+    return True
+
+
+def _has_installation_anchor(dirs: PlatformDirs) -> bool:
+    roots = {
+        "data": Path(dirs.user_data_dir),
+        "config": Path(dirs.user_config_dir),
+        "state": Path(dirs.user_state_dir),
+    }
+    return any(_anchor_present(roots[root] / name) for root, name in _INSTALLATION_ANCHORS)
+
+
+def _select_installation_naming(current: PlatformDirs, legacy: PlatformDirs) -> _NamingSelection:
+    """Choose one application name for every ambient root (ADR-048).
+
+    An installation first made as Yoetz keeps its directories in place: a legacy anchor with no
+    FinishUP anchor selects the legacy name for all roots, so the vault, the keyring auto-unlock
+    binding, and an older service's singleton lock stay where they are. Nothing is moved, copied,
+    or linked. A FinishUP anchor, or no anchor at all, selects ``finishup``. Anchors under both
+    names are ambiguous: the caller fails closed rather than choosing one installation.
+    """
+
+    current_present = _has_installation_anchor(current)
+    legacy_present = _has_installation_anchor(legacy)
+    if current_present and legacy_present:
+        return "ambiguous"
+    return "legacy_yoetz" if legacy_present else "finishup"
+
+
 def _default_probe() -> _PathProbe:
-    dirs = PlatformDirs(appname=_APP_NAME, appauthor=False, roaming=False)
+    current = _platform_dirs(APP_NAME)
+    legacy = _platform_dirs(LEGACY_APP_NAME)
+    naming = _select_installation_naming(current, legacy)
+    dirs = legacy if naming == "legacy_yoetz" else current
     effective_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
     return _PathProbe(
         platform=sys.platform,
@@ -194,11 +270,47 @@ def _default_probe() -> _PathProbe:
         mount_table=_read_mount_table,
         macos_fstype=_darwin_fstype,
         diagnostic=_ignore_diagnostic,
+        installation_naming=naming,
     )
 
 
 def _probe_or_default(probe: _PathProbe | None) -> _PathProbe:
     return _default_probe() if probe is None else probe
+
+
+def _ambient_dirs(probe: _PathProbe) -> PlatformDirs:
+    if probe.installation_naming == "ambiguous":
+        raise PathSafetyError("installation_root_ambiguous")
+    return probe.platform_dirs
+
+
+def installation_naming(*, _probe: _PathProbe | None = None) -> InstallationNaming:
+    """Name which application name the ambient platform roots use, as a closed token (ADR-048).
+
+    ``legacy_yoetz`` means an installation first made as Yoetz is used in place. An isolated root
+    never uses the ambient roots, so this answer does not describe it. Raises
+    ``installation_root_ambiguous`` when installations exist under both names.
+    """
+
+    probe = _probe_or_default(_probe)
+    _ambient_dirs(probe)
+    return "legacy_yoetz" if probe.installation_naming == "legacy_yoetz" else "finishup"
+
+
+def isolated_root_variable() -> str | None:
+    """Return the raw isolation-root variable under either spelling (ADR-048), unvalidated.
+
+    Raises ``isolation_root_env_conflict`` when ``FINISHUP_ISOLATED_ROOT`` and the legacy
+    ``YOETZ_ISOLATED_ROOT`` are both set to different values. That is an environment mistake, not
+    a disagreement between a root and a runtime pin (``isolation_root_conflict``), so it has its
+    own token and a non-destructive remedy.
+    """
+
+    try:
+        return read_env(_ISOLATED_ROOT_SUFFIX)
+    except EnvNameConflictError:
+        # Both spellings name different roots (ADR-048): refuse rather than choose either.
+        raise PathSafetyError("isolation_root_env_conflict") from None
 
 
 def runtime_pin_path(*, _probe: _PathProbe | None = None) -> Path:
@@ -286,10 +398,13 @@ def isolated_root(*, _probe: _PathProbe | None = None) -> Path | None:
     host or hook that drops the environment still reaches the snapshot's own state and never the
     everyday singleton. When both are present they must name the same root;
     ``isolation_root_conflict`` fails closed instead of choosing either.
+
+    The legacy ``YOETZ_ISOLATED_ROOT`` spelling is read when ``FINISHUP_ISOLATED_ROOT`` is unset
+    (ADR-048); both set to different roots is ``isolation_root_env_conflict``.
     """
 
     probe = _probe_or_default(_probe)
-    raw = os.environ.get(ISOLATED_ROOT_ENV)
+    raw = isolated_root_variable()
     pin = read_runtime_pin(_probe=probe)
     if raw is None and pin is None:
         return None
@@ -308,7 +423,7 @@ def isolation_binding(*, _probe: _PathProbe | None = None) -> IsolationBinding:
     probe = _probe_or_default(_probe)
     if isolated_root(_probe=probe) is None:
         return "ambient"
-    from_environment = os.environ.get(ISOLATED_ROOT_ENV) is not None
+    from_environment = isolated_root_variable() is not None
     from_pin = read_runtime_pin(_probe=probe) is not None
     if from_environment and from_pin:
         return "environment_and_pin"
@@ -323,7 +438,7 @@ def bundle_root(*, _data_dir: Path | None = None, _probe: _PathProbe | None = No
         isolated = isolated_root(_probe=probe)
         if isolated is not None:
             return isolated / "data"
-        return Path(probe.platform_dirs.user_data_dir)
+        return Path(_ambient_dirs(probe).user_data_dir)
     verify_private_local_bundle(_data_dir, _probe=probe)
     return _data_dir
 
@@ -349,7 +464,7 @@ def config_file_path(*, _probe: _PathProbe | None = None) -> Path:
     isolated = isolated_root(_probe=probe)
     if isolated is not None:
         return isolated / "config" / "config.toml"
-    return Path(probe.platform_dirs.user_config_dir) / "config.toml"
+    return Path(_ambient_dirs(probe).user_config_dir) / "config.toml"
 
 
 def cache_dir(*, _probe: _PathProbe | None = None) -> Path:
@@ -359,7 +474,7 @@ def cache_dir(*, _probe: _PathProbe | None = None) -> Path:
     isolated = isolated_root(_probe=probe)
     if isolated is not None:
         return isolated / "cache"
-    return Path(probe.platform_dirs.user_cache_dir)
+    return Path(_ambient_dirs(probe).user_cache_dir)
 
 
 def state_dir(*, _probe: _PathProbe | None = None) -> Path:
@@ -369,7 +484,7 @@ def state_dir(*, _probe: _PathProbe | None = None) -> Path:
     isolated = isolated_root(_probe=probe)
     if isolated is not None:
         return isolated / "state"
-    return Path(probe.platform_dirs.user_state_dir)
+    return Path(_ambient_dirs(probe).user_state_dir)
 
 
 def log_dir(*, _probe: _PathProbe | None = None) -> Path:
@@ -379,7 +494,7 @@ def log_dir(*, _probe: _PathProbe | None = None) -> Path:
     isolated = isolated_root(_probe=probe)
     if isolated is not None:
         return isolated / "log"
-    return Path(probe.platform_dirs.user_log_dir)
+    return Path(_ambient_dirs(probe).user_log_dir)
 
 
 def runtime_dir(*, _probe: _PathProbe | None = None) -> Path:
@@ -394,7 +509,7 @@ def runtime_dir(*, _probe: _PathProbe | None = None) -> Path:
     isolated = isolated_root(_probe=probe)
     if isolated is not None:
         return isolated / "run"
-    return Path(probe.platform_dirs.user_runtime_path)
+    return Path(_ambient_dirs(probe).user_runtime_path)
 
 
 def service_generation_path(*, _probe: _PathProbe | None = None) -> Path:

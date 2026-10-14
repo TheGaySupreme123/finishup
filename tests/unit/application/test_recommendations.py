@@ -6,9 +6,11 @@ import os
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from finishup.application import recommendations
 from finishup.application.package_update import PackageUpdateAdvisory, build_package_update_advisory
 from finishup.application.recommendations import (
     RECOMMENDED_DEFAULTS,
@@ -543,6 +545,45 @@ async def test_performed_up_to_date_advisory_clears_pending(tmp_path: Path) -> N
 
     assert up_to_date.outcome == "up_to_date"
     assert "package-update" not in cleared.pending
+
+
+@pytest.mark.anyio
+async def test_rebuilt_advisory_keeps_the_transitional_yoetz_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A transitional-yoetz install (ADR-048) has only ``yoetz`` on PATH: an advisory rebuilt for a
+    # newer pending release must keep naming that package and its upgrade command.
+    await refresh_pending(
+        context=RecommendationContext(
+            package_update=build_package_update_advisory(
+                installed_version="0.1.0", latest_version="0.3.0", source="cache", package="yoetz"
+            )
+        ),
+        root=tmp_path,
+        version="0.1.0",
+    )
+    rebuilt: list[PackageUpdateAdvisory] = []
+
+    def spy(**kwargs: Any) -> PackageUpdateAdvisory:
+        advisory = build_package_update_advisory(**kwargs)
+        rebuilt.append(advisory)
+        return advisory
+
+    monkeypatch.setattr(recommendations, "build_package_update_advisory", spy)
+    state = await refresh_pending(
+        context=RecommendationContext(
+            package_update=build_package_update_advisory(
+                installed_version="0.1.0", latest_version="0.2.0", source="network", package="yoetz"
+            )
+        ),
+        root=tmp_path,
+        version="0.1.0",
+        force=True,
+    )
+
+    assert state.pending_package_version == "0.3.0"
+    assert [(item.latest_version, item.package) for item in rebuilt] == [("0.3.0", "yoetz")]
+    assert rebuilt[0].upgrade_command == "yoetz upgrade"
 
 
 @pytest.mark.anyio

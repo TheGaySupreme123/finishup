@@ -35,6 +35,7 @@ from finishup.domain.privacy import (
     PrivacyPolicy,
     ProviderBinding,
 )
+from finishup.legacy_names import LAUNCHER_NAME
 from finishup.protocol.canonical import canonical_digest
 from finishup.protocol.chat_user_authority import ChatUserAttestationModel
 from finishup.protocol.consent import ConsentReviewResultModel
@@ -288,8 +289,9 @@ def test_prepare_expanded_review_returns_exact_agent_safe_policy_diff(tmp_path: 
         "endpoint_version:1.0.0",
         "transport:external",
     }
+    assert prepared["schema"] == "yoetz.elevated-bootstrap.prepare-result/7"
     assert prepared["pending"]["authorize_command"] == ["finishup", "consent", "authorize"]
-    validate_schema_instance("prepare-result", "6.0.0", prepared)
+    validate_schema_instance("prepare-result", "7.0.0", prepared)
 
 
 def test_prepare_unknown_repository_recipe_is_a_bounded_failure(tmp_path: Path) -> None:
@@ -1022,9 +1024,10 @@ def test_catalog_and_prepare_are_agent_safe(tmp_path: Path) -> None:
         catalog = cast(dict[str, Any], elevated.catalog_elevated())
         prepared = cast(dict[str, Any], elevated.prepare_elevated("vault_initialize"))
     assert catalog["schema"] == "yoetz.consent.catalog/7"
-    assert prepared["schema"] == "yoetz.elevated-bootstrap.prepare-result/6"
+    assert prepared["schema"] == "yoetz.elevated-bootstrap.prepare-result/7"
+    assert prepared["pending"]["schema"] == "yoetz.consent.pending-agent/7"
     assert prepared["pending"]["review_command"] == ["finishup", "consent", "review"]
-    validate_schema_instance("prepare-result", "6.0.0", prepared)
+    validate_schema_instance("prepare-result", "7.0.0", prepared)
     rendered = json.dumps({"catalog": catalog, "prepared": prepared})
     for forbidden in (
         "approve_command",
@@ -1033,6 +1036,77 @@ def test_catalog_and_prepare_are_agent_safe(tmp_path: Path) -> None:
         "secret_fds",
     ):
         assert forbidden not in rendered
+
+
+@pytest.mark.parametrize(
+    ("operation", "target_digest"),
+    [
+        ("vault_initialize", None),
+        ("vault_passphrase_rotate", None),
+        ("plugin_artifact_apply", "sha256:" + "a" * 64),
+    ],
+)
+def test_every_prepared_consent_names_the_current_launcher(
+    tmp_path: Path, operation: Any, target_digest: str | None
+) -> None:
+    """New prepare output run through ``finishup`` names only ``finishup`` (ADR-048)."""
+
+    with _patch_state(tmp_path):
+        prepared = cast(
+            dict[str, Any], elevated.prepare_elevated(operation, target_digest=target_digest)
+        )
+    assert prepared["schema"] == "yoetz.elevated-bootstrap.prepare-result/7"
+    assert prepared["pending"]["schema"] == "yoetz.consent.pending-agent/7"
+    commands = [prepared["pending"]["review_command"], prepared["pending"]["authorize_command"]]
+    assert {command[0] for command in commands if command is not None} == {LAUNCHER_NAME}
+    validate_schema_instance("prepare-result", "7.0.0", prepared)
+
+
+@pytest.mark.parametrize(
+    ("operation", "target_digest"),
+    [
+        ("vault_initialize", None),
+        ("vault_passphrase_rotate", None),
+        ("plugin_artifact_apply", "sha256:" + "a" * 64),
+    ],
+)
+@pytest.mark.parametrize("argv0", ["/home/u/.local/bin/yoetz", "/opt/site/yoetz/__main__.py"])
+def test_a_run_through_the_deprecated_alias_names_the_alias_it_was_run_through(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: Any,
+    target_digest: str | None,
+    argv0: str,
+) -> None:
+    """An install upgraded through the transitional package has only ``yoetz`` (ADR-048)."""
+
+    monkeypatch.setattr("sys.argv", [argv0, "consent", "prepare", operation])
+    with _patch_state(tmp_path):
+        prepared = cast(
+            dict[str, Any], elevated.prepare_elevated(operation, target_digest=target_digest)
+        )
+        status = cast(dict[str, Any], elevated.status_elevated())
+        catalog = cast(dict[str, Any], elevated.catalog_elevated())
+    assert prepared["schema"] == "yoetz.elevated-bootstrap.prepare-result/7"
+    for pending in (prepared["pending"], status["pending"]):
+        assert pending["schema"] == "yoetz.consent.pending-agent/7"
+        commands = [pending["review_command"], pending["authorize_command"]]
+        assert {command[0] for command in commands if command is not None} == {"yoetz"}
+        validate_schema_instance("pending-agent", "7.0.0", pending)
+    validate_schema_instance("prepare-result", "7.0.0", prepared)
+    validate_schema_instance("status", "7.0.0", status)
+    for hints in (status["consent_catalog"]["operations"], catalog["operations"]):
+        assert all(entry["prepare_hint"].startswith("yoetz ") for entry in hints)
+
+
+def test_status_and_catalog_run_through_finishup_name_finishup(tmp_path: Path) -> None:
+    with _patch_state(tmp_path):
+        elevated.prepare_elevated("vault_initialize")
+        status = cast(dict[str, Any], elevated.status_elevated())
+        catalog = cast(dict[str, Any], elevated.catalog_elevated())
+    assert status["pending"]["review_command"][0] == LAUNCHER_NAME
+    for hints in (status["consent_catalog"]["operations"], catalog["operations"]):
+        assert all(entry["prepare_hint"].startswith(f"{LAUNCHER_NAME} ") for entry in hints)
 
 
 def test_import_publication_requires_service_prepared_preview(tmp_path: Path) -> None:

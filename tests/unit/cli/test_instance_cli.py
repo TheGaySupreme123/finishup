@@ -34,7 +34,12 @@ from finishup.config.installation import (
     read_instance_identity,
     write_instance_identity,
 )
-from finishup.config.paths import ISOLATED_ROOT_ENV, RUNTIME_PIN_NAME, read_runtime_pin
+from finishup.config.paths import (
+    ISOLATED_ROOT_ENV,
+    LEGACY_ISOLATED_ROOT_ENV,
+    RUNTIME_PIN_NAME,
+    read_runtime_pin,
+)
 from finishup.protocol.canonical import canonical_encode
 from finishup.service.lifecycle import SINGLETON_LOCK_NAME
 
@@ -74,7 +79,7 @@ def _ambient_state_dir(cell: Path) -> Callable[..., Path]:
 
 
 def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in [name for name in os.environ if name.startswith("FINISHUP_")]:
+    for name in [name for name in os.environ if name.startswith(("FINISHUP_", "YOETZ_"))]:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -103,7 +108,10 @@ def test_create_seals_identity_creates_root_and_binds_runtime(
 
     assert result["created"] is True
     assert result["isolated_root"] == str(root)
-    assert result["environment_export"] == f"{ISOLATED_ROOT_ENV}={root}"
+    # Both spellings with one root (ADR-048): an older launcher on PATH stays isolated too.
+    assert result["environment_export"] == (
+        f"{ISOLATED_ROOT_ENV}={root} {LEGACY_ISOLATED_ROOT_ENV}={root}"
+    )
     assert result["runtime_pin"] == "bound"
     assert result["lifecycle"] == "disposable"
     assert result["expires_at"] == "2026-09-05T23:00:00.000Z"

@@ -45,7 +45,7 @@ from finishup.adapters.providers.codex_evaluator_runtime import (
     retain_codex_runtime,
     runtime_mutation_lock,
 )
-from finishup.config.load import load_config
+from finishup.config.load import environment_config_path, load_config
 from finishup.config.models import (
     CODEX_ROUTINE_REASONING_EFFORT_DEFAULT,
     ConfigError,
@@ -674,8 +674,8 @@ def _config_snapshot(path: Path) -> tuple[FinishUpConfig, bytes | None]:
 def _target_config_path(path: Path | None) -> Path:
     if path is not None:
         return path
-    selected = os.environ.get("FINISHUP_CONFIG", "")
-    return Path(selected) if selected else config_file_path()
+    selected = environment_config_path()
+    return selected if selected is not None else config_file_path()
 
 
 def _binding(

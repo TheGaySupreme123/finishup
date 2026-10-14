@@ -72,6 +72,10 @@ def _preview_body(preview: RemovalPreview) -> dict[str, object]:
         "config_preimage_digest": preview.config_preimage_digest,
         "config_toml_block": preview.config_toml_block,
         "inventory_command": list(preview.inventory_command),
+        # The Yoetz-era activation of this project this removal also deactivates (ADR-048).
+        "legacy_cache_versions": list(preview.legacy_cache_versions),
+        "legacy_marketplace_json_planned": preview.legacy_marketplace_json_planned,
+        "legacy_removed_block": preview.legacy_removed_block,
         "marketplace_json_planned": preview.marketplace_json_planned,
         "marketplace_preimage_digest": preview.marketplace_preimage_digest,
         "marketplace_remove_command": list(preview.marketplace_remove_command),
@@ -132,6 +136,8 @@ def run_codex_plugin_command(
             _emit(
                 {
                     "inspected_codex_home": str(codex_home),
+                    # A Yoetz-era activation of this project is still present (ADR-048).
+                    "legacy_activation": inspection.legacy_activation,
                     "skill_tree": skill_tree_state(target),
                     "state": inspection.state.value,
                 },

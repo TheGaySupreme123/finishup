@@ -29,6 +29,7 @@ from finishup.domain.observation_budget import (
     no_cap_support,
 )
 from finishup.domain.values import JsonObject
+from finishup.legacy_names import LAUNCHER_NAME
 
 __all__ = [
     "CAPACITY_DISCLOSURE_SCHEMA",
@@ -36,6 +37,7 @@ __all__ = [
     "WORKSPACE_PLACEHOLDER",
     "CapacityChange",
     "CapacityScope",
+    "canonical_safe_command",
     "capacity_change_disclosure",
     "is_closed_token",
     "is_safe_command",
@@ -43,6 +45,7 @@ __all__ = [
     "scope_flag",
 ]
 
+# Frozen legacy identifier (ADR-048): the stored disclosure record tag.
 CAPACITY_DISCLOSURE_SCHEMA: Final = "yoetz.capacity-change-disclosure/1"
 
 type CapacityScope = Literal["session", "workspace"]
@@ -71,7 +74,12 @@ _PREVIEW_DIGEST_PLACEHOLDER: Final = "<preview-digest>"
 # character can never be ``-``, so an argument cannot read as a flag; anything
 # else falls back to the placeholder instead of echoing caller text.
 _SAFE_ARGUMENT: Final = re.compile(r"^[A-Za-z0-9_.~/<][A-Za-z0-9_.:/~<>@+-]{0,255}$", re.ASCII)
-_SAFE_COMMAND: Final = re.compile(r"^finishup [A-Za-z0-9_.:/~<>@+ -]{1,1024}$", re.ASCII)
+# A record written before the rename names the legacy launcher, so either head is safe; it is
+# rendered with the current launcher (ADR-048).
+_SAFE_COMMAND: Final = re.compile(r"^(finishup|yoetz) ([A-Za-z0-9_.:/~<>@+ -]{1,1024})$", re.ASCII)
+# A compound command joins its steps with `` then `` (``lower_command``), and a record written
+# before the rename names the legacy launcher at the head of every step (ADR-048).
+_LEGACY_STEP_HEAD: Final = re.compile(r"(?<= then )yoetz(?= )", re.ASCII)
 _TOKEN: Final = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
 _KIB: Final = 1024
 _MIB: Final = 1024 * 1024
@@ -83,9 +91,28 @@ class _DisclosureError(ValueError):
 
 
 def is_safe_command(text: object) -> TypeGuard[str]:
-    """Return whether ``text`` is a ``finishup`` command built only from safe characters."""
+    """Return whether ``text`` is a ``finishup`` command built only from safe characters.
+
+    The legacy ``yoetz`` head of a record written before the rename is accepted too (ADR-048).
+    """
 
     return type(text) is str and _SAFE_COMMAND.fullmatch(text) is not None
+
+
+def canonical_safe_command(text: object) -> str | None:
+    """Return a safe command spelled with the current launcher, or ``None`` when unsafe.
+
+    A legacy ``yoetz`` head is rewritten to ``finishup`` so owner-facing text never points at
+    the pre-rename launcher (ADR-048). That holds for every step of a compound command, whose
+    later steps follow the `` then `` joiner; the arguments are already closed-shape and kept.
+    """
+
+    if type(text) is not str:
+        return None
+    match = _SAFE_COMMAND.fullmatch(text)
+    if match is None:
+        return None
+    return f"{LAUNCHER_NAME} {_LEGACY_STEP_HEAD.sub(LAUNCHER_NAME, match.group(2))}"
 
 
 def is_closed_token(text: object) -> TypeGuard[str]:
@@ -233,10 +260,10 @@ def _mapping(source: Mapping[str, object], key: str) -> Mapping[str, object]:
 
 
 def _command(source: Mapping[str, object], key: str) -> str:
-    value = source.get(key)
-    if not is_safe_command(value):
+    command = canonical_safe_command(source.get(key))
+    if command is None:
         raise _DisclosureError()
-    return value
+    return command
 
 
 def _capacity_line_parts(record: Mapping[str, object]) -> tuple[int, str, int, int]:

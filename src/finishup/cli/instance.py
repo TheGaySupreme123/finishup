@@ -40,7 +40,7 @@ from finishup.config.installation import (
     write_runtime_pin,
 )
 from finishup.config.paths import (
-    ISOLATED_ROOT_ENV,
+    ISOLATED_ROOT_ENV_NAMES,
     PathSafetyError,
     ensure_owner_only_dir,
     read_runtime_pin,
@@ -168,7 +168,9 @@ def create_instance(
     return {
         "created": True,
         "isolated_root": str(root),
-        "environment_export": f"{ISOLATED_ROOT_ENV}={root}",
+        # Both spellings with one value (ADR-048), matching scripts/provision_test_instance.py,
+        # so a pre-rename launcher on PATH stays on this root too (#604).
+        "environment_export": " ".join(f"{name}={root}" for name in ISOLATED_ROOT_ENV_NAMES),
         "runtime_pin": pin_state,
         **_identity_fields(identity),
     }

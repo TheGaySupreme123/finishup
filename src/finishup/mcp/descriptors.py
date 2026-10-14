@@ -95,6 +95,8 @@ def _tool_output_schema_version(name: str) -> str:
 # resource-read failure that motivated inlining workflow.md and coverage-and-receipts.md here.
 # Keep this tuple at one entry; see ADVERTISED_SURFACE_BUDGET for why length is load-bearing.
 INITIALIZE_GUIDANCE_URIS: Final[tuple[str, ...]] = ("finishup://guidance/agent-instructions.md",)
+# Descriptor and initialize text is new output, so only the current scheme is exempt: a legacy
+# ``yoetz://`` URI reintroduced here trips the boundary lint (readers still accept it, ADR-048).
 _GUIDANCE_URI: Final = re.compile(r"finishup://guidance/[a-z0-9.-]+\.md(?:#[a-z0-9-]+)?", re.ASCII)
 _FORBIDDEN_CLAIMS: Final = re.compile(
     r"\b(?:authenticated|enforces?|gates?|observes?|proved|proves?|verified)\b",
@@ -290,19 +292,21 @@ _STRICT_ROUTE_TAIL: Final = (
 # rule, in imperative form, because those are the only lines guaranteed to survive a host that
 # cuts the block; everything else is one `read_guidance` call away. Claude also renders this block
 # into native subagents, which see no hook cue saying they are children (issue #509), so the
-# scope sentences exempt a subagent whose assignment names neither child selector.
+# scope sentences exempt a subagent whose assignment names neither child selector. The schema
+# hint names the current registration but defers to the listed name: a plugin prefixes it, and a
+# host registered before the rename lists `mcp__yoetz__start` (ADR-048).
 CLAUDE_CODE_INITIALIZE_INSTRUCTIONS: Final = (
     "# FinishUP: call start first\n"
     "\n"
     "If this session edits files, runs state-changing commands, or delegates, call `start` "
     "first. If work began without a task, call `start` now, publish a plan, and disclose "
     "the uncovered prefix in the receipt. If only tool names show, load schema first (ToolSearch "
-    "`select:mcp__finishup__start` or plugin-prefixed name). Read-only questions skip it. "
+    "`select:mcp__finishup__start` or the listed `start` name). Read-only questions skip it. "
     "Subagents whose assignment names no handle or parent session skip it.\n"
     "\n"
     "Before `start`, read `finishup://guidance/agent-instructions.md`; if empty or clipped, page and "
     "verify. Never list resources. After `start`, read workflow, publication, coverage or "
-    "request-template topics only on demand. Cadence: "
+    "template topics only on demand. Cadence: "
     "`publish_work` per transition, `check`, `receipt` last. Never claim active before `start`; "
     "never invent a task. If it fails, follow its continuation, then ask; do not work without a "
     "task.\n"
@@ -358,7 +362,7 @@ COMPACT_INITIALIZE_INSTRUCTIONS: Final = (
     "\n"
     "Publish only material, state-bound facts, never hidden reasoning, transcripts, credentials, "
     "secrets or whole files. Setup, privacy, credential and recommendation changes need user "
-    "approval; never handle a vault secret. Recover through `status`, not FinishUP databases or source.\n"
+    "approval; never handle a vault secret. Recover through `status`, not databases or source.\n"
     "\n"
     "FinishUP records only what participants publish; a clean check does not mean the work is correct."
 )
@@ -1091,7 +1095,9 @@ def _external_schema_documents(
 
 
 def _bundle_key(uri: str) -> str:
-    return "__finishup_" + hashlib.sha256(uri.encode("ascii")).hexdigest()[:16]
+    # A product-neutral local key: the advertised input schemas carry one per bundled document,
+    # and the presentation budgets count every byte of them.
+    return "__def_" + hashlib.sha256(uri.encode("ascii")).hexdigest()[:16]
 
 
 def _rewrite_schema_refs(
@@ -1535,7 +1541,7 @@ def _mcp_output_presentation_schema(name: str, version: str) -> Mapping[str, Jso
     if root_type not in (None, "object"):
         raise RuntimeError("mcp_output_schema_root_not_object")
     bundled_dict["type"] = "object"
-    return MappingProxyType(bundled_dict)
+    return MappingProxyType(cast(dict[str, JsonValue], _product_named_titles(bundled_dict)))
 
 
 def _legacy_compatible_output_arrays(candidate: JsonValue) -> JsonValue:
@@ -1623,10 +1629,40 @@ def _mcp_presentation_schema(name: str, version: str) -> Mapping[str, JsonValue]
         raise RuntimeError("mcp_schema_invalid")
     bundled_dict = flattened
     _describe_presentation_schema(name, bundled_dict)
+    bundled_dict = cast(dict[str, JsonValue], _product_named_titles(bundled_dict))
     examples = _INPUT_SCHEMA_EXAMPLES.get(name)
     if examples is not None:
         bundled_dict["examples"] = [_mutable_json(item) for item in examples]
     return MappingProxyType(bundled_dict)
+
+
+# Catalog schema titles name the product as it shipped: released schemas are byte-frozen with
+# ``Yoetz <name> <version>`` titles, and unreleased versions derive from them (ADR-048). A title
+# is an annotation, so the advertised projection names the current product instead; the
+# catalogue bytes and the instances either schema admits are unchanged.
+_LEGACY_TITLE_PREFIX: Final = "Yoetz "
+_TITLE_PREFIX: Final = "FinishUP "
+# Keywords whose values are instance data, never subschemas, so a ``title`` key inside them is
+# data and is kept exactly.
+_INSTANCE_VALUE_KEYWORDS: Final = frozenset({"const", "default", "enum", "examples"})
+
+
+def _product_named_titles(value: JsonValue) -> JsonValue:
+    if isinstance(value, Mapping):
+        source = cast(Mapping[str, JsonValue], value)
+        renamed: dict[str, JsonValue] = {}
+        for key, item in source.items():
+            if key == "title" and type(item) is str and item.startswith(_LEGACY_TITLE_PREFIX):
+                renamed[key] = _TITLE_PREFIX + item.removeprefix(_LEGACY_TITLE_PREFIX)
+            elif key in _INSTANCE_VALUE_KEYWORDS:
+                renamed[key] = _mutable_json(item)
+            else:
+                renamed[key] = _product_named_titles(item)
+        return renamed
+    if isinstance(value, tuple | list):
+        sequence = cast(tuple[JsonValue, ...] | list[JsonValue], value)
+        return [_product_named_titles(item) for item in sequence]
+    return value
 
 
 def presentation_schema_metrics(schema: Mapping[str, JsonValue]) -> dict[str, int]:

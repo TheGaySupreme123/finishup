@@ -254,6 +254,35 @@ def test_diagnostic_origin_is_rejected_unless_it_is_a_finishup_source_location(
     assert lookup_diagnostic_records(bare, root=tmp_path)[0]["origin"] == "finishup:12"
 
 
+@pytest.mark.parametrize(
+    ("origin", "kept"),
+    [
+        # Records written before the rename name the legacy package (ADR-048).
+        ("yoetz.application.status:1097", True),
+        ("yoetz:12", True),
+        ("finishup.application.status:1097", True),
+        ("yoetzz.application:12", False),
+        ("finishupx:12", False),
+        ("legacy.yoetz.status:12", False),
+        ("yoetz/application/status.py:12", False),
+    ],
+)
+def test_diagnostic_origin_accepts_the_legacy_package_name_only(
+    tmp_path: Path, origin: str, kept: bool
+) -> None:
+    correlation_id = "err_00000000-0000-4000-8000-0000000000f4"
+    append_diagnostic_record(
+        correlation_id=correlation_id,
+        component="service.daemon",
+        operation="status_read_projection_failed",
+        reason="exception_attribute_error",
+        origin=origin,
+        root=tmp_path,
+    )
+    records = lookup_diagnostic_records(correlation_id, root=tmp_path)
+    assert records[0]["origin"] == (origin if kept else "unavailable")
+
+
 def test_bounded_counts_reach_the_durable_ring(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

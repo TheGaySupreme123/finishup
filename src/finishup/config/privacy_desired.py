@@ -25,6 +25,7 @@ __all__ = [
     "write_privacy_desired_toml",
 ]
 
+# Frozen legacy identifier (ADR-048): the schema tag stored in existing desired-privacy files.
 PRIVACY_DESIRED_SCHEMA: Final = "yoetz.privacy-desired/1"
 
 

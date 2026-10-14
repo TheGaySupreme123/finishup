@@ -70,7 +70,8 @@ def _rewrite_version(
     include_truncation_history: bool,
 ) -> None:
     raw = json.loads(state_path.read_text(encoding="utf-8"))
-    raw["schema"] = f"finishup.observation-local/{version}"
+    # Frozen legacy identifier (ADR-048): the persisted observation-local state tag.
+    raw["schema"] = f"yoetz.observation-local/{version}"
     raw["pairing_state_unknown"] = False
     raw.pop("envelopes_truncated", None)
     if version < 13:

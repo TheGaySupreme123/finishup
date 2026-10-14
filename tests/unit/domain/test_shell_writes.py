@@ -286,3 +286,30 @@ def test_the_same_path_is_named_once_and_in_order() -> None:
         "b.txt",
         "a.txt",
     ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "finishup_receipt.md",
+        "yoetz_receipt.md",
+        "/app/output/yoetz_receipt.json",
+        "YOETZ-export.txt",
+    ],
+)
+def test_a_receipt_saved_under_either_product_name_is_finishup_material(name: str) -> None:
+    """Agents guided before the rename save ``yoetz_receipt.md``; it is classified alike (ADR-048)."""
+
+    command = f": > {name}"
+    assert shell_write_scope(command, workspace="/app", inside=_inside) == "yoetz_owned"
+    if not name.startswith("/"):
+        assert (
+            shell_write_scope(
+                command, workspace=None, inside=lambda _path: False, relative_only=True
+            )
+            == "yoetz_owned"
+        )
+    # Two non-counting classes still count as an edit, whichever spelling names the receipt.
+    assert shell_write_scope(f": > NOTES.md; {command}", workspace="/app", inside=_inside) == (
+        "workspace"
+    )

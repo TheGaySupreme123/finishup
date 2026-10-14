@@ -102,14 +102,17 @@ _RUNNER_CLASSES: Final = frozenset(
 # Hook-derived runtime facts (#977), appended after the runner suffix in this closed order:
 # where a package install resolved its interpreter, an edit outside the workspace root, and the
 # effective user the hook process ran as. Closed tokens only; never a path or command text.
+# Frozen legacy identifier (ADR-048): yoetz_runtime / yoetz_owned are recorded wire tokens.
 INSTALL_TARGET_CLASSES: Final = frozenset(
     {"yoetz_runtime", "workspace_env", "private_env", "system", "unresolved"}
 )
+# Frozen legacy identifier (ADR-048): yoetz_runtime / yoetz_owned are recorded wire tokens.
 _RUNTIME_SUFFIX_RE: Final = re.compile(
     r" \((install (?:yoetz_runtime|workspace_env|private_env|system|unresolved)"
     r"|write (?:outside_workspace|scratch|yoetz_owned|notes|workspace)|user (?:root|non_root))\)\Z",
     re.ASCII,
 )
+# Frozen legacy identifier (ADR-048): yoetz_runtime / yoetz_owned are recorded wire tokens.
 RUNTIME_SUFFIX_TOKENS: Final = frozenset(
     {f"install {name}" for name in INSTALL_TARGET_CLASSES}
     | {
@@ -125,6 +128,7 @@ RUNTIME_SUFFIX_TOKENS: Final = frozenset(
 # Edit runtime tokens that name a write which changes nothing under test (ADR-042, tb4n2 R4):
 # every path the edit named was scratch (temp roots outside the workspace), FinishUP's own material
 # or the agent's own notes and logs (ADR-045).
+# Frozen legacy identifier (ADR-048): yoetz_runtime / yoetz_owned are recorded wire tokens.
 NON_COUNTING_WRITE_TOKENS: Final = frozenset({"write scratch", "write yoetz_owned", "write notes"})
 # A command's runtime tokens that make it an edit: it wrote files in the workspace, or a real
 # one outside it (ADR-045). A command with no such token wrote nothing the hook could attribute.
@@ -391,6 +395,7 @@ def observed_action_description(
         result = f"{result} (install {install_target})"
     if write_outside_workspace is True or write_scope == "outside_workspace":
         result = f"{result} (write outside_workspace)"
+    # Frozen legacy identifier (ADR-048): yoetz_runtime / yoetz_owned are recorded wire tokens.
     elif write_scope in {"scratch", "yoetz_owned", "notes", "workspace"}:
         result = f"{result} (write {write_scope})"
     if effective_user in {"root", "non_root"}:

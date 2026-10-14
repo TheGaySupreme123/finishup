@@ -18,6 +18,13 @@ Rules shared by every host surface:
 - An unreadable, oversized, symlinked, or unparseable host file is ``unknown``, never ``absent``.
 - Grant is previewed and digest-bound, and the digest binds the exact host file bytes it read.
 - Revoke and sweep remove only the exact entries FinishUP writes and nothing else in the file.
+- Grant writes only the ``finishup`` server-name forms. The exact entries Yoetz 0.1-0.2 wrote
+  for the legacy ``yoetz`` server name are reported (``legacy_entries``) and never written: a
+  stale one would admit a later, unrelated server that takes the old name (ADR-048). Revoke and
+  sweep remove them with the FinishUP forms. Grant removes them too, without touching the
+  FinishUP grant, once the caller observed that no FinishUP registration still serves the old
+  name; it refuses while the host serves FinishUP only under that name, because a ``finishup``
+  entry would then admit nothing.
 - Admission is host tool-call authorization. It does not prove dispatch, widen FinishUP policy, or
   bypass any privacy, disclosure, credential, or dispatch gate.
 """
@@ -51,6 +58,7 @@ __all__ = [
     "CLAUDE_EXTERNAL_CHECK_TOOL_NAME",
     "CLAUDE_PLUGIN_CHECK_TOOL_NAME",
     "CODEX_EXTERNAL_ADMISSION_TABLE",
+    "CODEX_LEGACY_PLUGIN_ADMISSION_HEADER",
     "CODEX_PLUGIN_ADMISSION_TABLE",
     "CURSOR_CLI_EXTERNAL_ENTRY",
     "CURSOR_CLI_PLUGIN_ENTRY",
@@ -65,6 +73,7 @@ __all__ = [
     "HostAdmissionResult",
     "HostAdmissionState",
     "HostAdmissionSweep",
+    "LegacyNameUse",
     "McpOwnerForm",
     "admission_surfaces",
     "apply_host_admission",
@@ -75,6 +84,11 @@ __all__ = [
 
 type HostAdmissionHost = Literal["claude", "codex", "cursor"]
 type McpOwnerForm = Literal["external", "plugin"]
+# How the host uses the legacy ``yoetz`` server name, as the caller observed it (ADR-048):
+# ``serving`` (FinishUP is served only under it), ``shared`` (a FinishUP-owned registration or
+# install still uses it beside the ``finishup`` one), ``unused`` (nothing FinishUP owns does).
+type LegacyNameUse = Literal["serving", "shared", "unused"]
+_LEGACY_NAME_USES: Final = frozenset({"serving", "shared", "unused"})
 
 ADMISSION_HOSTS: Final[tuple[HostAdmissionHost, ...]] = ("claude", "codex", "cursor")
 
@@ -128,7 +142,20 @@ _CURSOR_CLI_WIDER: Final = frozenset(
     {"Mcp(finishup:*)", "Mcp(*:check)", "Mcp(*:*)", "Mcp(plugin-finishup-finishup:*)"}
 )
 
+# Frozen legacy identifier (ADR-048): the exact admission entries Yoetz 0.1-0.2 wrote for the
+# legacy ``yoetz`` server name, per host. Recognized and removed; never written.
+_CLAUDE_LEGACY_ENTRIES: Final = frozenset({"mcp__yoetz__check", "mcp__plugin_yoetz_yoetz__check"})
+_CODEX_LEGACY_TABLES: Final = (
+    '[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n',
+    '[plugins."yoetz@yoetz".mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n',
+)
+# The legacy entry that admits the Yoetz-era plugin's ``check``, as ``legacy_entries`` names it.
+CODEX_LEGACY_PLUGIN_ADMISSION_HEADER: Final = _CODEX_LEGACY_TABLES[1].splitlines()[0]
+_CURSOR_IDE_LEGACY_ENTRIES: Final = frozenset({"yoetz:check"})
+_CURSOR_CLI_LEGACY_ENTRIES: Final = frozenset({"Mcp(yoetz:check)", "Mcp(plugin-yoetz-yoetz:check)"})
+
 _MAX_FILE_BYTES: Final = 262_144
+# Frozen legacy identifier (ADR-048): the preview tag family keeps its namespace.
 _PREVIEW_SCHEMA: Final = "yoetz.host-admission-preview/1"
 
 
@@ -156,6 +183,8 @@ class HostAdmissionReason(str, Enum):  # noqa: UP042 - exact public token
     ROUTE_UNOBSERVED = "route_unobserved"
     GRANT_NOT_PERMITTING = "grant_not_permitting"
     GRANT_UNVERIFIABLE = "grant_unverifiable"
+    # The host serves FinishUP only under the legacy ``yoetz`` name; integrate migrates it first.
+    LEGACY_REGISTRATION_ACTIVE = "legacy_registration_active"
     OWNER_REQUIRED = "owner_required"
     TARGET_UNSAFE = "target_unsafe"
     WRITE_FAILED = "write_failed"
@@ -179,15 +208,21 @@ class HostAdmissionEntry:
     entry: str
     detail: str | None = None
     file_digest: str | None = None
+    # Exact pre-rename entries for the legacy ``yoetz`` server name still on this surface
+    # (ADR-048). FinishUP never needs them; revoke and sweep remove them.
+    legacy_entries: tuple[str, ...] = ()
 
     def as_json(self) -> dict[str, JsonValue]:
-        return {
+        body: dict[str, JsonValue] = {
             "detail": self.detail,
             "entry": self.entry,
             "file_digest": self.file_digest,
             "state": self.state.value,
             "surface": self.surface,
         }
+        if self.legacy_entries:
+            body["legacy_entries"] = list(self.legacy_entries)
+        return body
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,10 +235,17 @@ class HostAdmissionObservation:
     def observed(self) -> bool:
         return self.state is not HostAdmissionState.UNKNOWN
 
+    @property
+    def legacy_entries_present(self) -> bool:
+        """A stale pre-rename admission for the legacy ``yoetz`` server name remains (ADR-048)."""
+
+        return any(entry.legacy_entries for entry in self.entries)
+
     def as_json(self) -> dict[str, JsonValue]:
         return {
             "entries": [entry.as_json() for entry in self.entries],
             "host": self.host,
+            "legacy_entries_present": self.legacy_entries_present,
             "observed": self.observed,
             "state": self.state.value,
         }
@@ -223,6 +265,7 @@ class HostAdmissionPreview:
     warnings: tuple[str, ...]
     _requested_action: HostAdmissionAction = field(repr=False, compare=False)
     files_after: Mapping[str, bytes] = field(repr=False, compare=False)
+    legacy_name: LegacyNameUse | None = None
 
     @property
     def requested_action(self) -> HostAdmissionAction:
@@ -418,8 +461,13 @@ def _observe_string_list_surface(
     entries: frozenset[str],
     wider: frozenset[str],
     case_insensitive: bool,
+    legacy: frozenset[str] = frozenset(),
 ) -> HostAdmissionEntry:
-    """Classify one JSON allow-list surface against the exact FinishUP entries."""
+    """Classify one JSON allow-list surface against the exact FinishUP entries.
+
+    Exact ``legacy`` entries in the allow or ask list are reported beside the classification;
+    they never change it, because they admit a different server name (ADR-048).
+    """
 
     expected = sorted(entries)[0]
     parsed, problem = _json_object(read)
@@ -456,29 +504,25 @@ def _observe_string_list_surface(
             return _unknown(surface, expected, "shape_invalid")
         ask = ask_value
     digest = read.digest
+    folded_legacy = {fold(item) for item in legacy}
+    legacy_present = tuple(sorted({item for item in (*allow, *ask) if fold(item) in folded_legacy}))
+
+    def classified(state: HostAdmissionState, entry: str, detail: str | None) -> HostAdmissionEntry:
+        return HostAdmissionEntry(surface, state, entry, detail, digest, legacy_present)
+
     if any(fold(item) in folded_entries or fold(item) in folded_wider for item in deny):
-        return HostAdmissionEntry(
-            surface, HostAdmissionState.FOREIGN, expected, "deny_rule_present", digest
-        )
+        return classified(HostAdmissionState.FOREIGN, expected, "deny_rule_present")
     if any(fold(item) in folded_wider for item in (*allow, *ask)):
-        return HostAdmissionEntry(
-            surface, HostAdmissionState.FOREIGN, expected, "wider_rule_present", digest
-        )
+        return classified(HostAdmissionState.FOREIGN, expected, "wider_rule_present")
     present_allow = [item for item in allow if fold(item) in folded_entries]
     present_ask = [item for item in ask if fold(item) in folded_entries]
     if {fold(item) for item in present_allow} & {fold(item) for item in present_ask}:
-        return HostAdmissionEntry(
-            surface, HostAdmissionState.FOREIGN, expected, "allow_and_ask_present", digest
-        )
+        return classified(HostAdmissionState.FOREIGN, expected, "allow_and_ask_present")
     if present_allow:
-        return HostAdmissionEntry(
-            surface, HostAdmissionState.PRESENT, present_allow[0], "allow", digest
-        )
+        return classified(HostAdmissionState.PRESENT, present_allow[0], "allow")
     if present_ask:
-        return HostAdmissionEntry(
-            surface, HostAdmissionState.PRESENT, present_ask[0], "ask", digest
-        )
-    return HostAdmissionEntry(surface, HostAdmissionState.ABSENT, expected, None, digest)
+        return classified(HostAdmissionState.PRESENT, present_ask[0], "ask")
+    return classified(HostAdmissionState.ABSENT, expected, None)
 
 
 def _json_with_list_entry(
@@ -569,6 +613,11 @@ def _observe_codex(read: _Read, owner: McpOwnerForm | None) -> HostAdmissionEntr
     except UnicodeError, tomllib.TOMLDecodeError:
         return _unknown(surface, expected, "file_invalid")
     digest = read.digest
+    legacy = _codex_legacy_tables(read.raw, parsed)
+
+    def classified(state: HostAdmissionState, detail: str | None) -> HostAdmissionEntry:
+        return HostAdmissionEntry(surface, state, expected, detail, digest, legacy)
+
     forms: dict[McpOwnerForm, tuple[str, tuple[str, ...]]] = {
         "external": (CODEX_EXTERNAL_ADMISSION_TABLE, ("mcp_servers", "finishup")),
         "plugin": (
@@ -582,37 +631,47 @@ def _observe_codex(read: _Read, owner: McpOwnerForm | None) -> HostAdmissionEntr
         if server is None:
             continue
         if not isinstance(server, Mapping):
-            return HostAdmissionEntry(
-                surface, HostAdmissionState.FOREIGN, expected, "entry_not_exact", digest
-            )
+            return classified(HostAdmissionState.FOREIGN, "entry_not_exact")
         server_map = cast(Mapping[str, object], server)
         if server_map.get("default_tools_approval_mode") is not None:
             # A server-wide default admits every tool; wider than FinishUP ever writes.
-            return HostAdmissionEntry(
-                surface, HostAdmissionState.FOREIGN, expected, "server_default_present", digest
-            )
+            return classified(HostAdmissionState.FOREIGN, "server_default_present")
         check = _toml_path(server_map, "tools", "check")
         if check is None:
             continue
         if not isinstance(check, Mapping) or exact_table_span(read.raw, table) is None:
-            return HostAdmissionEntry(
-                surface, HostAdmissionState.FOREIGN, expected, "entry_not_exact", digest
-            )
+            return classified(HostAdmissionState.FOREIGN, "entry_not_exact")
         present.append(form)
     if not present:
-        return HostAdmissionEntry(surface, HostAdmissionState.ABSENT, expected, None, digest)
+        return classified(HostAdmissionState.ABSENT, None)
     if owner is not None and owner not in present:
         # An exact table for the inactive owner is FinishUP-shaped but does not admit the active
         # route. Report the applicable entry absent so grant appends the owner-selected form.
-        return HostAdmissionEntry(
-            surface,
-            HostAdmissionState.ABSENT,
-            expected,
-            f"inactive_{present[0]}_entry_present",
-            digest,
-        )
+        return classified(HostAdmissionState.ABSENT, f"inactive_{present[0]}_entry_present")
     detail = "both" if len(present) == 2 else present[0]
-    return HostAdmissionEntry(surface, HostAdmissionState.PRESENT, expected, detail, digest)
+    return classified(HostAdmissionState.PRESENT, detail)
+
+
+def _codex_legacy_tables(raw: bytes, parsed: Mapping[str, object]) -> tuple[str, ...]:
+    """Exact legacy ``yoetz`` admission tables on the Codex surface, by header (ADR-048)."""
+
+    found: list[str] = []
+    for table, keys in zip(
+        _CODEX_LEGACY_TABLES,
+        (
+            ("mcp_servers", "yoetz", "tools", "check"),
+            ("plugins", "yoetz@yoetz", "mcp_servers", "yoetz", "tools", "check"),
+        ),
+        strict=True,
+    ):
+        check = _toml_path(parsed, *keys)
+        if (
+            isinstance(check, Mapping)
+            and dict(cast(Mapping[str, object], check)) == {"approval_mode": "approve"}
+            and exact_table_span(raw, table) is not None
+        ):
+            found.append(table.splitlines()[0])
+    return tuple(sorted(found))
 
 
 def _codex_table(owner: McpOwnerForm | None) -> str:
@@ -643,6 +702,10 @@ def _codex_after(read: _Read, *, add: bool, owner: McpOwnerForm | None) -> bytes
     )
     for table in tables:
         after = strip_exact_table(after, table)
+    if owner is None:
+        # An ownership-independent revoke also takes the exact legacy tables (ADR-048).
+        for table in _CODEX_LEGACY_TABLES:
+            after = strip_exact_table(after, table)
     return None if after == raw else after
 
 
@@ -693,6 +756,7 @@ def _observe_entries(
                 entries=_claude_check_entries(owner),
                 wider=_CLAUDE_WIDER_RULES,
                 case_insensitive=False,
+                legacy=_CLAUDE_LEGACY_ENTRIES,
             ),
         )
     if host == "codex":
@@ -709,6 +773,7 @@ def _observe_entries(
                 entries=frozenset({CURSOR_IDE_ENTRY}),
                 wider=_CURSOR_IDE_WIDER,
                 case_insensitive=True,
+                legacy=_CURSOR_IDE_LEGACY_ENTRIES,
             ),
             _observe_string_list_surface(
                 surface=_CURSOR_CLI_SURFACE,
@@ -720,6 +785,7 @@ def _observe_entries(
                 entries=_cursor_cli_entries(owner),
                 wider=_CURSOR_CLI_WIDER,
                 case_insensitive=False,
+                legacy=_CURSOR_CLI_LEGACY_ENTRIES,
             ),
         )
     raise HostAdmissionError(HostAdmissionReason.HOST_INVALID)
@@ -749,19 +815,57 @@ def _files_after(
     *,
     checkpoint: bool,
     entries: Sequence[HostAdmissionEntry],
+    retire_legacy: bool = False,
 ) -> dict[str, bytes]:
     add = action is HostAdmissionAction.GRANT
     changed: dict[str, bytes] = {}
     by_surface = {entry.surface: entry for entry in entries}
 
     def editable(surface: str) -> bool:
-        # Revoke touches only a surface that carries an exact FinishUP entry; grant touches only
-        # an absent one — except the Claude allow<->ask mode change below. A foreign or unknown
-        # surface is never edited.
-        state = by_surface[surface].state
+        # Revoke touches only a surface that carries an exact FinishUP entry (or, on an otherwise
+        # absent surface, an exact legacy one, ADR-048); grant touches only an absent one —
+        # except the Claude allow<->ask mode change below, and a surface whose exact legacy
+        # entries a grant retires. A foreign or unknown surface is never edited.
+        entry = by_surface[surface]
         if add:
-            return state is HostAdmissionState.ABSENT
-        return state is HostAdmissionState.PRESENT
+            return entry.state is HostAdmissionState.ABSENT or (
+                retire_legacy
+                and entry.state is HostAdmissionState.PRESENT
+                and bool(entry.legacy_entries)
+            )
+        return entry.state is HostAdmissionState.PRESENT or (
+            entry.state is HostAdmissionState.ABSENT and bool(entry.legacy_entries)
+        )
+
+    def retired(
+        surface: str,
+        after: bytes | None,
+        *,
+        container_key: str | None,
+        list_keys: tuple[str, ...],
+        legacy: frozenset[str],
+        case_insensitive: bool = False,
+    ) -> bytes | None:
+        """Strip the exact legacy entries a grant retires from one JSON surface (ADR-048)."""
+
+        if not (retire_legacy and by_surface[surface].legacy_entries):
+            return after
+        current = _read(root / surface) if after is None else _Read(after or None, None)
+        result = after
+        for list_key in list_keys:
+            stripped = _json_with_list_entry(
+                current,
+                container_key=container_key,
+                list_key=list_key,
+                entry=sorted(legacy)[0],
+                add=False,
+                remove_entries=legacy,
+                case_insensitive=case_insensitive,
+            )
+            if stripped is not None:
+                result = stripped
+                current = _Read(stripped or None, None)
+        return result
 
     if host == "claude":
         # A grant whose exact entry already sits in the other Claude list is a mode change
@@ -802,7 +906,16 @@ def _files_after(
                     add=True,
                     remove_entries=claude_entries,
                 )
+                after = retired(
+                    _CLAUDE_SURFACE,
+                    after,
+                    container_key="permissions",
+                    list_keys=("allow", "ask"),
+                    legacy=_CLAUDE_LEGACY_ENTRIES,
+                )
             else:
+                # Revoke takes the exact legacy spellings with the FinishUP ones (ADR-048).
+                claude_entries = claude_entries | _CLAUDE_LEGACY_ENTRIES
                 after_allow = _json_with_list_entry(
                     before,
                     container_key="permissions",
@@ -828,7 +941,15 @@ def _files_after(
                 changed[_CLAUDE_SURFACE] = after
     elif host == "codex":
         if editable(_CODEX_SURFACE):
-            after = _codex_after(_read(root / _CODEX_SURFACE), add=add, owner=owner)
+            before = _read(root / _CODEX_SURFACE)
+            after = _codex_after(before, add=add, owner=owner)
+            if add and retire_legacy and by_surface[_CODEX_SURFACE].legacy_entries:
+                # The grant retires the exact legacy tables (ADR-048).
+                stripped = after if after is not None else (before.raw or b"")
+                for table in _CODEX_LEGACY_TABLES:
+                    stripped = strip_exact_table(stripped, table)
+                if stripped != (before.raw or b""):
+                    after = stripped
             if after is not None:
                 changed[_CODEX_SURFACE] = after
     elif host == "cursor":
@@ -839,12 +960,24 @@ def _files_after(
                 list_key="mcpAllowlist",
                 entry=CURSOR_IDE_ENTRY,
                 add=add,
+                remove_entries=frozenset({CURSOR_IDE_ENTRY}) | _CURSOR_IDE_LEGACY_ENTRIES,
                 case_insensitive=True,
             )
+            if add:
+                after = retired(
+                    _CURSOR_IDE_SURFACE,
+                    after,
+                    container_key=None,
+                    list_keys=("mcpAllowlist",),
+                    legacy=_CURSOR_IDE_LEGACY_ENTRIES,
+                    case_insensitive=True,
+                )
             if after is not None:
                 changed[_CURSOR_IDE_SURFACE] = after
         if editable(_CURSOR_CLI_SURFACE):
             cli_entries = _cursor_cli_entries(owner)
+            if not add:
+                cli_entries = cli_entries | _CURSOR_CLI_LEGACY_ENTRIES
             after = _json_with_list_entry(
                 _read(root / _CURSOR_CLI_SURFACE),
                 container_key="permissions",
@@ -853,6 +986,14 @@ def _files_after(
                 add=add,
                 remove_entries=cli_entries,
             )
+            if add:
+                after = retired(
+                    _CURSOR_CLI_SURFACE,
+                    after,
+                    container_key="permissions",
+                    list_keys=("allow",),
+                    legacy=_CURSOR_CLI_LEGACY_ENTRIES,
+                )
             if after is not None:
                 changed[_CURSOR_CLI_SURFACE] = after
     return changed
@@ -866,21 +1007,24 @@ def _preview_digest(
     *,
     checkpoint: bool,
     files_after: Mapping[str, bytes],
+    legacy_name: LegacyNameUse | None = None,
 ) -> str:
-    return canonical_digest(
-        {
-            "action": action.value,
-            "checkpoint": checkpoint,
-            "entries_before": [entry.as_json() for entry in entries],
-            "files_after": {
-                surface: f"sha256:{hashlib.sha256(data).hexdigest()}"
-                for surface, data in sorted(files_after.items())
-            },
-            "host": host,
-            "owner": owner,
-            "schema": _PREVIEW_SCHEMA,
-        }
-    )
+    body: dict[str, JsonValue] = {
+        "action": action.value,
+        "checkpoint": checkpoint,
+        "entries_before": [entry.as_json() for entry in entries],
+        "files_after": {
+            surface: f"sha256:{hashlib.sha256(data).hexdigest()}"
+            for surface, data in sorted(files_after.items())
+        },
+        "host": host,
+        "owner": owner,
+        "schema": _PREVIEW_SCHEMA,
+    }
+    if legacy_name is not None:
+        # The observed legacy-name use decides whether a grant retires legacy entries (ADR-048).
+        body["legacy_name"] = legacy_name
+    return canonical_digest(body)
 
 
 def preview_host_admission(
@@ -892,15 +1036,21 @@ def preview_host_admission(
     grant_permits: bool | None,
     owner: McpOwnerForm | None = None,
     checkpoint: bool = False,
+    legacy_name: LegacyNameUse | None = None,
 ) -> HostAdmissionPreview:
     """Plan one grant or revoke and bind it to the exact bytes it read and would write.
 
-    ``route_profile`` and ``grant_permits`` are the caller's *observed* facts (``None`` means
-    unread). A grant is refused unless the route is ``policy`` and the repository grant permits
-    external review; a revoke needs neither, because the way out must always stay open.
+    ``route_profile``, ``grant_permits`` and ``legacy_name`` are the caller's *observed* facts
+    (``None`` means unread). A grant is refused unless the route is ``policy`` and the repository
+    grant permits external review; a revoke needs neither, because the way out must always stay
+    open. A grant is also refused while the host serves FinishUP only under the legacy ``yoetz``
+    name, and it retires the exact legacy entries once ``legacy_name`` is ``unused``; an unread
+    or still-used legacy name leaves them in place (ADR-048).
     """
 
     if action is HostAdmissionAction.NOOP:
+        raise HostAdmissionError(HostAdmissionReason.HOST_INVALID)
+    if legacy_name is not None and legacy_name not in _LEGACY_NAME_USES:
         raise HostAdmissionError(HostAdmissionReason.HOST_INVALID)
     root = _validated_root(project_root)
     # Revoke is ownership-independent: its job is to remove every exact FinishUP admission form,
@@ -919,6 +1069,13 @@ def preview_host_admission(
             raise HostAdmissionError(HostAdmissionReason.OWNER_REQUIRED)
         if checkpoint and host != "claude":
             raise HostAdmissionError(HostAdmissionReason.HOST_INVALID)
+        if legacy_name == "serving":
+            # A ``finishup`` entry would admit nothing the host routes (ADR-048).
+            raise HostAdmissionError(HostAdmissionReason.LEGACY_REGISTRATION_ACTIVE)
+    else:
+        # Revoke removes every exact form regardless; the observed use cannot change it.
+        legacy_name = None
+    retire_legacy = action is HostAdmissionAction.GRANT and legacy_name == "unused"
     entries = _observe_entries(host, root, effective_owner)
     state_before = _aggregate(entries)
     warnings: list[str] = []
@@ -929,7 +1086,13 @@ def preview_host_admission(
     if state_before is HostAdmissionState.FOREIGN:
         warnings.append("foreign_entry_retained")
     files_after = _files_after(
-        host, root, action, effective_owner, checkpoint=checkpoint, entries=entries
+        host,
+        root,
+        action,
+        effective_owner,
+        checkpoint=checkpoint,
+        entries=entries,
+        retire_legacy=retire_legacy,
     )
     effective = action if files_after else HostAdmissionAction.NOOP
     if effective is not HostAdmissionAction.NOOP:
@@ -938,8 +1101,24 @@ def preview_host_admission(
         warnings.append("codex_project_layer_requires_trusted_project")
     if host == "claude" and effective is HostAdmissionAction.GRANT:
         warnings.append("claude_local_settings_held_until_trusted_when_tracked")
+    if (effective is HostAdmissionAction.REVOKE or retire_legacy) and any(
+        entry.legacy_entries and entry.surface in files_after for entry in entries
+    ):
+        warnings.append("legacy_entries_removed")
+    elif (
+        action is HostAdmissionAction.GRANT
+        and not retire_legacy
+        and any(entry.legacy_entries for entry in entries)
+    ):
+        warnings.append("legacy_entries_retained")
     digest = _preview_digest(
-        host, action, entries, effective_owner, checkpoint=checkpoint, files_after=files_after
+        host,
+        action,
+        entries,
+        effective_owner,
+        checkpoint=checkpoint,
+        files_after=files_after,
+        legacy_name=legacy_name,
     )
     return HostAdmissionPreview(
         host,
@@ -954,6 +1133,7 @@ def preview_host_admission(
         tuple(warnings),
         action,
         files_after,
+        legacy_name,
     )
 
 
@@ -1040,6 +1220,7 @@ def apply_host_admission(
         grant_permits=preview.grant_permits,
         owner=preview.owner,
         checkpoint=preview.checkpoint,
+        legacy_name=preview.legacy_name,
     )
     if fresh.preview_digest != accepted_preview_digest:
         raise HostAdmissionError(HostAdmissionReason.PREVIEW_STALE)
@@ -1054,6 +1235,7 @@ def apply_host_admission(
             grant_permits=preview.grant_permits,
             owner=preview.owner,
             checkpoint=preview.checkpoint,
+            legacy_name=preview.legacy_name,
         )
         if final.preview_digest != accepted_preview_digest:
             raise HostAdmissionError(HostAdmissionReason.PREVIEW_STALE)
@@ -1088,6 +1270,13 @@ def apply_host_admission(
         else HostAdmissionState.ABSENT
     )
     if after.state is not expected_state:
+        raise HostAdmissionError(HostAdmissionReason.WRITE_FAILED)
+    retiring = (
+        preview.requested_action is HostAdmissionAction.REVOKE or preview.legacy_name == "unused"
+    )
+    if retiring and any(
+        entry.legacy_entries and entry.surface in fresh.files_after for entry in after.entries
+    ):
         raise HostAdmissionError(HostAdmissionReason.WRITE_FAILED)
     return HostAdmissionResult(
         preview.host,

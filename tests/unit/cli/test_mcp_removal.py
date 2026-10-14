@@ -39,9 +39,18 @@ def test_remove_json_exit_and_bookkeeping_agree(
     }[post_state]
     outputs = [owned, owned, owned, owned, CommandOutput(exit_code, b"private-host-payload"), *post]
 
+    found = False
+
     def runner(argv: tuple[str, ...]) -> CommandOutput:
+        nonlocal found
         calls.append(argv)
-        return outputs.pop(0)
+        if argv[1:3] == ("mcp", "list") and found:
+            # The legacy ``yoetz`` key read that follows a found entry (ADR-048): none here.
+            found = False
+            return CommandOutput(0, b"[]")
+        output = outputs.pop(0)
+        found = argv[1:3] == ("mcp", "get") and output.exit_code == 0
+        return output
 
     adapter = CodexMcpAdapter(runner)
     monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: None)

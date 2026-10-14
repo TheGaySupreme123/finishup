@@ -23,12 +23,19 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Final, Literal, cast
 
+# Frozen legacy identifier (ADR-048): retained generations written by earlier releases carry this
+# marker name and schema, and pruning and adoption read them.
 _MARKER: Final = "yoetz-release-runtime.json"
 _SCHEMA: Final = "yoetz.release-runtime/1"
 _LEASE: Final = ".in-use"
 _STAGING: Final = ".creation.json"
 _KEY: Final = re.compile(r"[0-9a-f]{64}\Z")
+# Frozen legacy identifier (ADR-048): the instance pin name feeds the release key and is read by
+# retained older runtimes.
 _PIN: Final = "yoetz-instance-pin.json"
+# Module names a ``python -m`` host registration may run: FinishUP, and the import shim of the
+# transitional ``yoetz`` distribution that registrations from before the rename name (ADR-048).
+_MODULE_LAUNCHERS: Final = frozenset({"finishup", "yoetz"})
 # Kept open for the lifetime of this process; intentionally not inherited by unrelated children.
 _process_lease: int | None = None
 _original_interpreter: str | None = None
@@ -381,10 +388,11 @@ def original_module_launcher(argv0: Path) -> tuple[str, ...] | None:
     origin = Path(marker["origin"])
     if (
         argv0.name == "__main__.py"
-        and argv0.parent.name == "finishup"
+        and argv0.parent.name in _MODULE_LAUNCHERS
         and argv0.is_relative_to(origin)
     ):
-        return (str(Path(_original_interpreter).resolve()), "-m", "finishup")
+        # The registered spelling is kept verbatim: callers compare it with the host entry.
+        return (str(Path(_original_interpreter).resolve()), "-m", argv0.parent.name)
     return None
 
 
@@ -438,6 +446,8 @@ def enter_release_runtime(arguments: list[str]) -> None:
             python = target / "bin/python"
             # Fixed bootstrap, no path interpolation and no shell. -I excludes ambient Python
             # search paths; sys.argv preserves the installation's original host identity.
+            # Earlier releases ran the same bootstrap under ``yoetz.*`` module paths; the
+            # transitional ``yoetz`` distribution keeps those importable (ADR-048).
             bootstrap = (
                 "import sys; from finishup.adapters.release_runtime import adopt_release_lease; "
                 "adopt_release_lease(int(sys.argv[1]), sys.argv[2]); sys.argv = sys.argv[3:]; "

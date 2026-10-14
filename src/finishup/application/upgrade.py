@@ -5,10 +5,15 @@ Planning is read-only. Package execution never claims host activation or migrati
 
 from __future__ import annotations
 
+import shlex
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
+
+from finishup.adapters.package_upgrade import PACKAGE_EXTRAS, plain_uv_tool_receipt
+from finishup.application.package_update import PACKAGE_INSTALL_COMMAND
+from finishup.legacy_names import LAUNCHER_NAME, LAUNCHER_NAMES, LEGACY_LAUNCHER_NAME
 
 HOSTS: Final = ("codex", "claude", "cursor")
 _PATH_OPTIONS: Final = frozenset(
@@ -45,10 +50,59 @@ class UpgradeStep:
     environment: tuple[tuple[str, str], ...] = ()
 
 
+def legacy_tool_extras(receipt: str) -> tuple[str, ...] | None:
+    """Read the extras a ``yoetz`` uv tool receipt carries; None when they are not provable.
+
+    Only a plain receipt qualifies (``plain_uv_tool_receipt``): one ``yoetz`` requirement with
+    known extras and no recorded options, constraints, overrides or build constraints, so the
+    move command built from it installs the same choices under the new name.
+    """
+
+    plain = plain_uv_tool_receipt(receipt, LEGACY_LAUNCHER_NAME)
+    return None if plain is None else plain.extras
+
+
+def _move_detail(extras: tuple[str, ...] | None) -> str:
+    install = shlex.split(PACKAGE_INSTALL_COMMAND)
+    if extras:
+        install[-1] = f"{LAUNCHER_NAME}[{','.join(extras)}]"
+    unread = (
+        " Its extras could not be confirmed from the yoetz tool's installation record, so add "
+        "any extras or package options it was installed with yourself, for example "
+        "'finishup[semantic-openai]'."
+        if extras is None
+        else ""
+    )
+    return (
+        "This installation runs the deprecated yoetz command, which a later release removes. "
+        "Its package step keeps it current while the alias is published. Until you move, any "
+        "finishup command that FinishUP shows also works as yoetz with the same subcommand. To "
+        f"move, first install the new name: {shlex.join(install)}.{unread} Then refresh each "
+        "host above with finishup instead of yoetz so it runs the finishup command, and only "
+        "then remove the old tool with uv tool uninstall yoetz. Hosts connected earlier keep "
+        "running yoetz until they are refreshed. Existing tasks, settings and permissions stay "
+        "where they are."
+    )
+
+
 def build_upgrade_plan(
-    hosts: Sequence[str], options: Mapping[str, str], *, launcher: str = "finishup"
+    hosts: Sequence[str],
+    options: Mapping[str, str],
+    *,
+    launcher: str = LAUNCHER_NAME,
+    legacy_extras: tuple[str, ...] | None = None,
 ) -> tuple[UpgradeStep, ...]:
-    """Return only safe inspection/preview commands; apply uses their fresh returned authority."""
+    """Return only safe inspection/preview commands; apply uses their fresh returned authority.
+
+    ``launcher`` is the command the user ran: ``finishup``, or the deprecated ``yoetz`` alias of
+    an installation from before the rename (ADR-048), whose plan also names the way off it.
+    ``legacy_extras`` are the extras that alias's tool was installed with, from
+    ``legacy_tool_extras``; None when they could not be read, which the move step says plainly.
+    """
+    if launcher not in LAUNCHER_NAMES:
+        raise ValueError("upgrade_launcher_invalid")
+    if legacy_extras is not None and any(value not in PACKAGE_EXTRAS for value in legacy_extras):
+        raise ValueError("upgrade_extras_invalid")
     if not hosts or len(set(hosts)) != len(hosts) or any(host not in HOSTS for host in hosts):
         raise ValueError("upgrade_host_invalid")
     if set(options) - (_PATH_OPTIONS | {"mcp-ownership", "route-profile", "observation-profile"}):
@@ -78,7 +132,7 @@ def build_upgrade_plan(
         ),
         UpgradeStep(
             "Replace the package",
-            "Run finishup upgrade --accept only for this uv-tool installation, even from inside an "
+            f"Run {launcher} upgrade --accept only for this uv-tool installation, even from inside an "
             "open agent session. Open sessions keep working on the previous version; a successful "
             "package command still leaves host refresh and the switch to the new version below.",
             ((launcher, "upgrade", "--accept"),),
@@ -203,4 +257,6 @@ def build_upgrade_plan(
             ((launcher, "provider", "codex-subscription", "runtime", "status", "--json"),),
         )
     )
+    if launcher == LEGACY_LAUNCHER_NAME:
+        steps.append(UpgradeStep("Move from the yoetz name", _move_detail(legacy_extras)))
     return tuple(steps)

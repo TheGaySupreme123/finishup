@@ -11,6 +11,8 @@ if TYPE_CHECKING:
         VersionManifest,  # pyright: ignore[reportMissingImports, reportUnknownVariableType]
     )
 
+# Always the ``finishup`` distribution: a transitional ``yoetz`` distribution installed beside it
+# (ADR-048) carries its own metadata and must never stand in for this package's version.
 try:
     __version__ = version("finishup")
 except PackageNotFoundError:

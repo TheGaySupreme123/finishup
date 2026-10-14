@@ -25,6 +25,8 @@ def test_child_paths_cannot_select_inherited_instance(
     marker = outer / "holder"
     marker.write_text("outer-instance-holder")
     monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(outer))
+    # A legacy spelling of the ambient root must not leak into the child either (ADR-048).
+    monkeypatch.setenv("YOETZ_ISOLATED_ROOT", str(outer))
     monkeypatch.setenv("FINISHUP_CANDIDATE_PYTHON", candidate)
     parameters = _serve_parameters(tmp_path)
     assert parameters.command == (candidate or "uv")
@@ -32,6 +34,7 @@ def test_child_paths_cannot_select_inherited_instance(
     assert environment is not None
     root = Path(environment["FINISHUP_ISOLATED_ROOT"])
     assert root != outer
+    assert environment["YOETZ_ISOLATED_ROOT"] == str(root)
     assert stat.S_IMODE(root.stat().st_mode) == 0o700
     probe = subprocess.run(
         [

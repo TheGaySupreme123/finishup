@@ -411,3 +411,16 @@ def test_darwin_scanner_uses_the_text_match_for_whitespace_launchers(
     snapshot = module._darwin_snapshots(spaced)  # pyright: ignore[reportPrivateUsage]
     assert snapshot == (CursorMcpProcessSnapshot("cursor_helper", "policy", "matched"),)
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize(
+    "launcher",
+    ["yoetz", "/opt/yoetz/bin/yoetz", "C:\\tools\\yoetz.exe", "finishup", "/opt/x/finishup.exe"],
+)
+def test_either_launcher_spelling_is_a_finishup_child(launcher: str) -> None:
+    # A helper keeps the ``yoetz mcp serve`` child an older registration spawned (ADR-048).
+    assert classify_serve_suffix((launcher, "mcp", "serve", "--host", "cursor")) == "policy"
+
+
+def test_other_launcher_names_are_not_finishup_children() -> None:
+    assert classify_serve_suffix(("/opt/yoetz-tools/bin/yoetzd", "mcp", "serve")) is None

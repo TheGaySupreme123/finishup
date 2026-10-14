@@ -96,7 +96,7 @@ jobs:
       - name: Reject symlink/path escape in owned resource and release roots
         run: |
           set -euo pipefail
-          for root in schemas migrations fixtures skills; do
+          for root in schemas migrations fixtures skills release; do
             if [ -d "$root" ]; then
               found=$(find "$root" -type l -print)
               if [ -n "$found" ]; then
@@ -120,6 +120,15 @@ jobs:
 
       - name: Verify generated schemas and packaged resources reached a fixed point
         run: uv run --locked python scripts/sync_resource_ripple.py --check
+
+      - name: Verify the transitional yoetz distributions build and stay in lockstep (ADR-048)
+        run: |
+          set -euo pipefail
+          uv run --locked python scripts/check_transitional_yoetz.py
+          uv build --no-sources release/transitional-yoetz/python \
+            --out-dir "${{ runner.temp }}/transitional-dist"
+          uv run --locked python scripts/check_transitional_yoetz.py \
+            --dist "${{ runner.temp }}/transitional-dist"
 
       - name: Verify CHECK continuation schemas are exact
         run: uv run --locked python scripts/sync_check_continuation_schemas.py --check

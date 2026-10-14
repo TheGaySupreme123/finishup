@@ -35,9 +35,11 @@ async def test_setup_status_output_is_validated_as_assembled_contract(
 ) -> None:
     """The CLI producer must keep its assembled report inside the published /2 contract."""
 
-    async def unavailable_service(*, start_if_absent: bool = False) -> dict[str, object]:
+    async def unavailable_service(
+        *, start_if_absent: bool = False
+    ) -> tuple[dict[str, object], str | None]:
         assert start_if_absent is False
-        return {"reachable": False, "state": None, "vault_mode": None}
+        return {"reachable": False, "state": None, "vault_mode": None}, None
 
     from finishup.cli import host_connection
 
@@ -45,7 +47,7 @@ async def test_setup_status_output_is_validated_as_assembled_contract(
         return []
 
     monkeypatch.setattr(setup, "discover_codex_binaries", lambda: ())
-    monkeypatch.setattr(setup, "_service_reachability", unavailable_service)
+    monkeypatch.setattr(setup, "_service_reachability_observed", unavailable_service)
     monkeypatch.setattr(setup, "setup_marker_present", lambda: False)
     monkeypatch.setattr(host_connection, "installation_rows", empty_installation_rows)
 

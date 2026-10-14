@@ -177,6 +177,13 @@ def test_ordinary_mcp_hook_binds_only_and_generic_hook_observes_once(
         ("mcp__plugin_finishup_finishup__start", "plugin-finishup-finishup"),
         ("finishup:start", "finishup"),
         ("plugin-finishup-finishup:start", "plugin-finishup-finishup"),
+        # The legacy server name a 0.1-0.2.5 registration still carries (ADR-048).
+        ("start", "yoetz"),
+        ("start", "plugin-yoetz-yoetz"),
+        ("mcp__yoetz__start", "yoetz"),
+        ("mcp__plugin_yoetz_yoetz__start", "plugin-yoetz-yoetz"),
+        ("yoetz:start", "yoetz"),
+        ("plugin-yoetz-yoetz:start", "plugin-yoetz-yoetz"),
     ],
 )
 def test_exact_cursor_owner_names(tmp_path: Path, name: str, server: str) -> None:
@@ -194,6 +201,12 @@ def test_exact_cursor_owner_names(tmp_path: Path, name: str, server: str) -> Non
         ("afterMCPExecution", "mcp__foreign__start", "finishup"),
         ("afterMCPExecution", "restart", "finishup"),
         ("afterMCPExecution", "finishup:start", "plugin-finishup-finishup"),
+        # A spelling pairs only with its own server key, across the rename too (ADR-048).
+        ("afterMCPExecution", "yoetz:start", "finishup"),
+        ("afterMCPExecution", "finishup:start", "yoetz"),
+        ("afterMCPExecution", "mcp__yoetz__start", "plugin-yoetz-yoetz"),
+        ("afterMCPExecution", "start", "yoetz-extra"),
+        ("afterMCPExecution", "start", "plugin-yoetz-finishup"),
         ("postToolUse", "start", "finishup"),
         ("postToolUse", "MCP:start", None),
         ("postToolUse", "MCP:start", "finishup"),

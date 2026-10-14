@@ -2,6 +2,15 @@
 
 Cursor supplies project roots for project-managed servers. This adapter owns only the exact
 ``finishup`` entry; it never infers repository authority from a working directory or hook record.
+
+Entries written before the rename sit under the legacy ``yoetz`` key and may carry only the
+legacy ``YOETZ_ISOLATED_ROOT`` spelling (ADR-048). An owned legacy entry reads as owned but
+outdated; install migrates it in the same preview (write ``finishup``, drop ``yoetz``) and remove
+takes both keys. A legacy entry FinishUP cannot prove is its own is reported and never touched.
+A FinishUP server elsewhere -- the user configuration or either plugin tree, under either key --
+is an external source this adapter reports and never edits, exactly as before the rename.
+New entries carry the root under both spellings while the deprecated ``yoetz`` alias ships, so an
+older launcher that only reads the legacy name still isolates.
 """
 
 from __future__ import annotations
@@ -17,6 +26,9 @@ from pathlib import Path
 from typing import Literal, cast
 
 from finishup.adapters.integrations.launcher import valid_launcher
+from finishup.adapters.integrations.legacy_launchers import launcher_aliases, recorded_launcher
+from finishup.config.paths import ISOLATED_ROOT_ENV, LEGACY_ISOLATED_ROOT_ENV
+from finishup.legacy_names import LAUNCHER_NAMES, LEGACY_MCP_SERVER_NAME, MCP_SERVER_NAME
 from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
@@ -25,9 +37,18 @@ from finishup.protocol.canonical import (
 )
 
 type Route = Literal["policy", "strict"]
+# Owned legacy-key state (ADR-048), with the token vocabulary of ``ports.harness_mcp``.
+type LegacyRegistration = Literal["none", "legacy_only", "duplicate", "foreign"]
 
 _MAX_BYTES = 262144
 _CURSOR_PROJECT_SELECTOR = "${workspaceFolder}"
+# Frozen legacy identifier (ADR-048): the Cursor plugin install marker, read only for the launcher
+# a pre-rename native install recorded under its frozen ``yoetz_launcher`` key.
+_PLUGIN_MARKER_NAME = ".yoetz-cursor-plugin-install.json"
+_PLUGIN_DIRECTORIES = ("finishup", "yoetz")
+# Where each inspected configuration document comes from, in ``_Inspection.raws`` order: the
+# project file, the user file, the renamed plugin tree, and the Yoetz-era plugin tree (ADR-048).
+_SOURCE_NAMES = ("project", "user", "plugin", "plugin")
 _REASONS = frozenset(
     {
         "cursor_project_mcp_target_unsafe",
@@ -251,14 +272,29 @@ def inspect_project_mcp_registration(
 
     if route_profile not in {"policy", "strict"}:
         raise _fail("command_invalid")
-    expected = _expected(
+    # Validates the request in its established order before any alias is derived.
+    _expected(
         launcher,
         isolation_root,
         route_profile,
         project_root=project_root,
         project_binding=project_binding,
     )
-    legacy_selector = _expected(launcher, isolation_root, route_profile)
+    accepted: list[dict[str, JsonValue]] = []
+    # The renamed launcher or its deprecated alias, under any isolation-root spelling (ADR-048).
+    for alias in _launcher_aliases(launcher):
+        forms = [
+            _expected(
+                alias,
+                isolation_root,
+                route_profile,
+                project_root=project_root,
+                project_binding=project_binding,
+            )
+        ]
+        if project_binding == "mcp-roots":
+            forms.append(_expected(alias, isolation_root, route_profile))
+        accepted.extend(form for base in forms for form in _environment_forms(base))
     with _directory(project_root) as project_descriptor:
         assert project_descriptor is not None
         project_identity = _identity(os.fstat(project_descriptor))
@@ -271,8 +307,10 @@ def inspect_project_mcp_registration(
             raise _fail("config_invalid")
         raw, config_identity = observed
         document = _document(raw)
-        if not _present(document) or _entry(document) not in (
-            (expected, legacy_selector) if project_binding == "mcp-roots" else (expected,)
+        # Either key may hold the entry that launched this bridge (ADR-048).
+        if not any(
+            _present(document, name) and _entry(document, name) in accepted
+            for name in (MCP_SERVER_NAME, LEGACY_MCP_SERVER_NAME)
         ):
             raise _fail("foreign_present")
         if _identity(os.fstat(config_directory)) != config_directory_identity:
@@ -308,17 +346,73 @@ def _document(raw: bytes | None) -> dict[str, JsonValue]:
         raise _fail("config_invalid") from None
 
 
-def _entry(document: Mapping[str, JsonValue]) -> JsonValue:
+def _entry(document: Mapping[str, JsonValue], name: str = MCP_SERVER_NAME) -> JsonValue:
     servers = document.get("mcpServers", {})
     assert isinstance(servers, Mapping)
     # Null is a same-name foreign entry, not absence.
-    return servers.get("finishup")
+    return servers.get(name)
 
 
-def _present(document: Mapping[str, JsonValue]) -> bool:
+def _present(document: Mapping[str, JsonValue], name: str = MCP_SERVER_NAME) -> bool:
     servers = document.get("mcpServers", {})
     assert isinstance(servers, Mapping)
-    return "finishup" in servers
+    return name in servers
+
+
+def _environment_forms(entry: dict[str, JsonValue]) -> tuple[dict[str, JsonValue], ...]:
+    """Every isolation-root spelling an owned entry may carry (ADR-048).
+
+    A rendered isolated entry names the root under both spellings. An entry with only the new
+    name, or only the legacy ``YOETZ_ISOLATED_ROOT`` an earlier release wrote, binds the same
+    root. Two spellings with different values never match: no form here carries them.
+    """
+
+    environment = entry.get("env")
+    if not isinstance(environment, Mapping):
+        return (entry,)
+    root = cast(Mapping[str, JsonValue], environment)[ISOLATED_ROOT_ENV]
+    return (
+        entry,
+        {**entry, "env": {ISOLATED_ROOT_ENV: root}},
+        {**entry, "env": {LEGACY_ISOLATED_ROOT_ENV: root}},
+    )
+
+
+def _launcher_aliases(launcher: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+    """The launcher and the deprecated alias of the same installation (ADR-048)."""
+
+    if not valid_launcher(launcher):
+        raise _fail("launcher_invalid")
+    return launcher_aliases(launcher)
+
+
+def recorded_cursor_launchers(cursor_config_root: Path) -> tuple[tuple[str, ...], ...]:
+    """Launchers the native Cursor plugin markers recorded, under either plugin name (ADR-048).
+
+    A project entry rendered by an earlier install names the launcher of that installation,
+    which an upgrade may have moved. The plugin marker written in the same guided connection
+    records it under the frozen ``yoetz_launcher`` key; a self-consistent marker whose launcher
+    names a FinishUP launcher is the ownership proof. Unreadable markers prove nothing.
+    """
+
+    recorded: list[tuple[str, ...]] = []
+    for directory in _PLUGIN_DIRECTORIES:
+        path = cursor_config_root / "plugins" / "local" / directory / _PLUGIN_MARKER_NAME
+        try:
+            raw = _read(path)
+            marker = None if raw is None else strict_json_parse(raw)
+        except CursorProjectMcpError, TypeError, ValueError:
+            continue
+        if not isinstance(marker, Mapping):
+            continue
+        body = {key: value for key, value in marker.items() if key != "marker_digest"}
+        if marker.get("marker_digest") != canonical_digest(body):
+            continue
+        # Frozen legacy identifier (ADR-048): the marker key every release writes.
+        launcher = recorded_launcher(marker.get("yoetz_launcher"))
+        if launcher is not None and launcher not in recorded:
+            recorded.append(launcher)
+    return tuple(recorded)
 
 
 def _expected(
@@ -357,7 +451,8 @@ def _expected(
         args.extend(("--semantic", "off"))
     entry: dict[str, JsonValue] = {"type": "stdio", "command": launcher[0], "args": args}
     if root is not None:
-        entry["env"] = {"FINISHUP_ISOLATED_ROOT": root}
+        # Both spellings with one value while the deprecated ``yoetz`` alias ships (ADR-048).
+        entry["env"] = {ISOLATED_ROOT_ENV: root, LEGACY_ISOLATED_ROOT_ENV: root}
     return entry
 
 
@@ -382,34 +477,95 @@ class _Inspection:
     source: str
     route: Route | None
     project_binding: Literal["mcp-roots", "registered-project"] | None
+    legacy_registration: LegacyRegistration = "none"
+    # Whether the project file's own legacy ``yoetz`` key is FinishUP's: the only legacy entry
+    # this adapter migrates or removes (ADR-048).
+    project_legacy_owned: bool = False
+
+
+def _owned_forms(
+    launchers: tuple[tuple[str, ...], ...], root: str | None, project_root: Path
+) -> dict[Route, list[tuple[dict[str, JsonValue], Literal["mcp-roots", "registered-project"]]]]:
+    """Every entry shape FinishUP wrote for this project, per route, with its project binding."""
+
+    forms: dict[
+        Route, list[tuple[dict[str, JsonValue], Literal["mcp-roots", "registered-project"]]]
+    ] = {"policy": [], "strict": []}
+    for launcher in launchers:
+        for route in ("policy", "strict"):
+            bases: tuple[
+                tuple[dict[str, JsonValue], Literal["mcp-roots", "registered-project"]], ...
+            ] = (
+                (_expected(launcher, root, route, project_root=project_root), "mcp-roots"),
+                (
+                    _expected(
+                        launcher,
+                        root,
+                        route,
+                        project_root=project_root,
+                        project_binding="registered-project",
+                    ),
+                    "registered-project",
+                ),
+                (_expected(launcher, root, route), "mcp-roots"),
+                # Entries written before the explicit project selector remain safe to recognize
+                # as FinishUP's own project source so the next preview can upgrade them in place.
+                # They never get emitted again, and foreign/user/plugin sources remain untouched.
+                (_expected(launcher, root, route, project_selector=False), "mcp-roots"),
+            )
+            forms[route].extend(
+                (form, binding) for base, binding in bases for form in _environment_forms(base)
+            )
+    return forms
+
+
+def _classify(
+    entry: JsonValue,
+    forms: Mapping[
+        Route, list[tuple[dict[str, JsonValue], Literal["mcp-roots", "registered-project"]]]
+    ],
+) -> tuple[Route, Literal["mcp-roots", "registered-project"]] | None:
+    for route in ("policy", "strict"):
+        for form, binding in forms[route]:
+            if entry == form:
+                return route, binding
+    return None
+
+
+def _launches_finishup(entry: JsonValue, launchers: tuple[tuple[str, ...], ...]) -> bool:
+    """Whether a user or plugin entry serves FinishUP's MCP through a provable launcher.
+
+    Those sources are never this adapter's to edit, so their exact shape does not matter: an
+    entry that runs ``mcp serve`` through a bare ``finishup``/``yoetz`` script or one of
+    ``launchers`` is a FinishUP server registered elsewhere (ADR-048). Anything else under the
+    legacy key no longer shares FinishUP's name.
+    """
+
+    if not isinstance(entry, Mapping):
+        return False
+    typed = cast(Mapping[str, JsonValue], entry)
+    command = typed.get("command")
+    raw_args = typed.get("args")
+    if type(command) is not str or not isinstance(raw_args, list):
+        return False
+    args = tuple(cast(list[JsonValue], raw_args))
+    prefixes = [launcher[1:] for launcher in launchers if launcher[0] == command]
+    if command in LAUNCHER_NAMES:
+        prefixes.append(())
+    return any(
+        args[: len(prefix)] == prefix and args[len(prefix) : len(prefix) + 2] == ("mcp", "serve")
+        for prefix in prefixes
+    )
 
 
 def _inspect(
-    target: CursorProjectMcpTarget, launcher: tuple[str, ...], root: str | None
+    target: CursorProjectMcpTarget,
+    launcher: tuple[str, ...],
+    root: str | None,
+    known_launchers: tuple[tuple[str, ...], ...] = (),
 ) -> _Inspection:
-    policy = _expected(launcher, root, "policy", project_root=target.project_root)
-    strict = _expected(launcher, root, "strict", project_root=target.project_root)
-    cli_policy = _expected(
-        launcher,
-        root,
-        "policy",
-        project_root=target.project_root,
-        project_binding="registered-project",
-    )
-    cli_strict = _expected(
-        launcher,
-        root,
-        "strict",
-        project_root=target.project_root,
-        project_binding="registered-project",
-    )
-    placeholder_policy = _expected(launcher, root, "policy")
-    placeholder_strict = _expected(launcher, root, "strict")
-    # Entries written before the explicit project selector remain safe to recognize as FinishUP's
-    # own project source so the next preview can upgrade them in place.  They never get emitted
-    # again, and foreign/user/plugin sources remain untouched.
-    legacy_policy = _expected(launcher, root, "policy", project_selector=False)
-    legacy_strict = _expected(launcher, root, "strict", project_selector=False)
+    # Validates the launcher and root before any filesystem read.
+    _expected(launcher, root, "policy", project_root=target.project_root)
     identities: list[JsonValue] = []
     project_identity: tuple[int, int] | None = None
     for path in (target.project_root, target.cursor_config_root):
@@ -425,22 +581,17 @@ def _inspect(
     project_config_directory_identity = _directory_identity(
         target.project_root / ".cursor", optional=True
     )
-    raws = tuple(
-        _read(path)
-        for path in (
-            target.project_root / ".cursor" / "mcp.json",
-            target.cursor_config_root / "mcp.json",
-            target.cursor_config_root / "plugins" / "local" / "finishup" / "mcp.json",
-        )
+    paths = (
+        target.project_root / ".cursor" / "mcp.json",
+        target.cursor_config_root / "mcp.json",
+        # The Yoetz-era plugin tree serves FinishUP until it is migrated (ADR-048).
+        *(
+            target.cursor_config_root / "plugins" / "local" / directory / "mcp.json"
+            for directory in _PLUGIN_DIRECTORIES
+        ),
     )
-    config_identities = tuple(
-        _file_identity(path)
-        for path in (
-            target.project_root / ".cursor" / "mcp.json",
-            target.cursor_config_root / "mcp.json",
-            target.cursor_config_root / "plugins" / "local" / "finishup" / "mcp.json",
-        )
-    )
+    raws = tuple(_read(path) for path in paths)
+    config_identities = tuple(_file_identity(path) for path in paths)
     config_identity_values: list[JsonValue] = [
         None
         if project_config_directory_identity is None
@@ -452,8 +603,42 @@ def _inspect(
     )
     config_identity_digest = canonical_digest(config_identity_values)
     documents = tuple(_document(raw) for raw in raws)
-    present = [i for i, document in enumerate(documents) if _present(document)]
-    source = ("project", "user", "plugin")[present[0]] if len(present) == 1 else "none"
+    launchers = tuple(
+        dict.fromkeys(
+            (
+                *_launcher_aliases(launcher),
+                *recorded_cursor_launchers(target.cursor_config_root),
+                *(item for item in known_launchers if recorded_launcher(list(item)) is not None),
+            )
+        )
+    )
+    forms = _owned_forms(launchers, root, target.project_root)
+
+    def elsewhere(document: Mapping[str, JsonValue]) -> bool:
+        # A user or plugin source serves FinishUP under the new key (whatever it holds, as
+        # before the rename) or under the legacy key through a provable launcher (ADR-048).
+        return _present(document) or (
+            _present(document, LEGACY_MCP_SERVER_NAME)
+            and _launches_finishup(_entry(document, LEGACY_MCP_SERVER_NAME), launchers)
+        )
+
+    # The legacy ``yoetz`` key across every source (ADR-048). Only the project file's is this
+    # adapter's to migrate; an owned one elsewhere is reported through the external state below.
+    legacy_classified: tuple[Route, Literal["mcp-roots", "registered-project"]] | None = None
+    if _present(documents[0], LEGACY_MCP_SERVER_NAME):
+        legacy_classified = _classify(_entry(documents[0], LEGACY_MCP_SERVER_NAME), forms)
+    # The project file serves FinishUP under the new key, or under the legacy key through an
+    # owned route: both count as a project source, as the same entry did before the rename.
+    present = [
+        index
+        for index, document in enumerate(documents)
+        if (
+            _present(document) or legacy_classified is not None
+            if index == 0
+            else elsewhere(document)
+        )
+    ]
+    source = _SOURCE_NAMES[present[0]] if len(present) == 1 else "none"
     route: Route | None = None
     binding: Literal["mcp-roots", "registered-project"] | None = None
     if not present:
@@ -463,17 +648,32 @@ def _inspect(
     elif source != "project":
         state = "external_source"
     else:
-        entry = _entry(documents[0])
-        route = (
-            "policy"
-            if entry in (policy, placeholder_policy, legacy_policy, cli_policy)
-            else "strict"
-            if entry in (strict, placeholder_strict, legacy_strict, cli_strict)
-            else None
+        # A project file holding only an owned legacy entry is owned but outdated (ADR-048).
+        classified = (
+            _classify(_entry(documents[0]), forms) if _present(documents[0]) else legacy_classified
         )
-        state = "yoetz_owned" if route is not None else "foreign_present"
-        if route is not None:
-            binding = "registered-project" if entry in (cli_policy, cli_strict) else "mcp-roots"
+        # Frozen legacy identifier (ADR-048): ``yoetz_owned`` is the released state wire value.
+        state = "foreign_present" if classified is None else "yoetz_owned"
+        if classified is not None:
+            route, binding = classified
+    legacy_present = any(_present(document, LEGACY_MCP_SERVER_NAME) for document in documents)
+    legacy_owned = legacy_classified is not None or any(
+        _present(document, LEGACY_MCP_SERVER_NAME)
+        and _launches_finishup(_entry(document, LEGACY_MCP_SERVER_NAME), launchers)
+        for document in documents[1:]
+    )
+    current = (
+        _present(documents[0]) and _classify(_entry(documents[0]), forms) is not None
+    ) or any(_present(document) for document in documents[1:])
+    legacy: LegacyRegistration = (
+        "none"
+        if not legacy_present
+        else "foreign"
+        if not legacy_owned
+        else "duplicate"
+        if current
+        else "legacy_only"
+    )
     return _Inspection(
         raws,
         project_identity,
@@ -486,7 +686,15 @@ def _inspect(
         source,
         route,
         binding,
+        legacy,
+        legacy_classified is not None,
     )
+
+
+def _legacy_warnings(legacy: LegacyRegistration) -> list[JsonValue]:
+    if legacy in {"legacy_only", "duplicate"}:
+        return ["legacy_registration_owned"]
+    return ["legacy_registration_foreign"] if legacy == "foreign" else []
 
 
 def status_cursor_project_mcp(
@@ -494,14 +702,18 @@ def status_cursor_project_mcp(
     *,
     launcher: tuple[str, ...],
     isolation_root: str | None,
+    known_launchers: tuple[tuple[str, ...], ...] = (),
 ) -> dict[str, JsonValue]:
-    observed = _inspect(target, launcher, isolation_root)
+    """Read the project registration; ``known_launchers`` adds marker-recorded proofs."""
+
+    observed = _inspect(target, launcher, isolation_root, known_launchers)
     return {
         "ok": True,
         "state": observed.state,
         "source": observed.source,
         "route_profile": observed.route,
         "project_binding": observed.project_binding,
+        "legacy_registration": observed.legacy_registration,
         "target_identity": observed.target_identity,
         "host_trust": "unknown",
         "runtime_binding": "unobserved",
@@ -514,12 +726,13 @@ def _plan(
     launcher: tuple[str, ...],
     route_profile: Route | None,
     isolation_root: str | None,
+    known_launchers: tuple[tuple[str, ...], ...] = (),
 ) -> tuple[dict[str, JsonValue], _Inspection, bytes | None]:
     if action not in {"install", "remove"} or route_profile not in {None, "policy", "strict"}:
         raise _fail("command_invalid")
     if target.project_binding not in {None, "mcp-roots", "registered-project"}:
         raise _fail("command_invalid")
-    observed = _inspect(target, launcher, isolation_root)
+    observed = _inspect(target, launcher, isolation_root, known_launchers)
     if observed.state not in {"absent", "yoetz_owned"}:
         raise _fail(observed.state)
     route = route_profile or observed.route or "policy"
@@ -528,9 +741,13 @@ def _plan(
     servers = dict(cast(Mapping[str, JsonValue], document.get("mcpServers", {})))
     replacement = observed.raws[0]
     mutation = "noop"
+    legacy_owned = observed.project_legacy_owned
     if action == "remove":
         if observed.state == "yoetz_owned":
-            del servers["finishup"]
+            # Remove takes owned entries under both keys (ADR-048).
+            servers.pop(MCP_SERVER_NAME, None)
+            if legacy_owned:
+                del servers[LEGACY_MCP_SERVER_NAME]
             mutation = "unregister"
     else:
         entry = _expected(
@@ -540,8 +757,12 @@ def _plan(
             project_root=target.project_root,
             project_binding=binding,
         )
-        if servers.get("finishup") != entry:
-            servers["finishup"] = entry
+        if legacy_owned:
+            # Migrate the owned legacy entry in this same preview (ADR-048).
+            del servers[LEGACY_MCP_SERVER_NAME]
+            mutation = "reregister"
+        if servers.get(MCP_SERVER_NAME) != entry:
+            servers[MCP_SERVER_NAME] = entry
             mutation = "register" if observed.state == "absent" else "reregister"
     if mutation != "noop":
         document["mcpServers"] = servers
@@ -564,7 +785,12 @@ def _plan(
         "config_digest_before": _digest(observed.raws[0]),
         "config_digest_after": _digest(replacement),
         "source_digests": [_digest(raw) for raw in observed.raws],
-        "warnings": ["host_config_not_compare_and_swap", "host_restart_required"],
+        "legacy_registration": observed.legacy_registration,
+        "warnings": [
+            "host_config_not_compare_and_swap",
+            "host_restart_required",
+            *_legacy_warnings(observed.legacy_registration),
+        ],
     }
     body["preview_digest"] = canonical_digest(body)
     return body, observed, replacement
@@ -577,8 +803,16 @@ def preview_cursor_project_mcp(
     launcher: tuple[str, ...],
     route_profile: Route | None,
     isolation_root: str | None,
+    known_launchers: tuple[tuple[str, ...], ...] = (),
 ) -> dict[str, JsonValue]:
-    return _plan(target, action, launcher, route_profile, isolation_root)[0]
+    """Plan one install or remove.
+
+    ``known_launchers`` are marker-recorded launchers a caller captured before a step that may
+    migrate the marker away (ADR-048); they are accepted only when they name a FinishUP
+    launcher, and the same tuple must reach the matching apply.
+    """
+
+    return _plan(target, action, launcher, route_profile, isolation_root, known_launchers)[0]
 
 
 def _write(
@@ -654,16 +888,19 @@ def apply_cursor_project_mcp(
     isolation_root: str | None,
     preview_digest: str,
     accept: bool,
+    known_launchers: tuple[tuple[str, ...], ...] = (),
 ) -> dict[str, JsonValue]:
     if accept is not True:
         raise _fail("preview_required")
-    body, observed, replacement = _plan(target, action, launcher, route_profile, isolation_root)
+    body, observed, replacement = _plan(
+        target, action, launcher, route_profile, isolation_root, known_launchers
+    )
     if preview_digest != body["preview_digest"]:
         raise _fail("preview_stale")
     if body["action"] != "noop":
         assert replacement is not None
         # Recheck every known source immediately before the project-file effect.
-        if _inspect(target, launcher, isolation_root) != observed:
+        if _inspect(target, launcher, isolation_root, known_launchers) != observed:
             raise _fail("preview_stale")
         try:
             _write(
@@ -676,13 +913,15 @@ def apply_cursor_project_mcp(
         except OSError:
             raise _fail("write_failed") from None
     try:
-        after = _inspect(target, launcher, isolation_root)
+        after = _inspect(target, launcher, isolation_root, known_launchers)
     except CursorProjectMcpError:
         raise _fail("write_failed") from None
     expected_state = "absent" if action == "remove" else "yoetz_owned"
     if (
         after.raws[0] != replacement
         or after.state != expected_state
+        # A migrated or removed legacy entry must be gone; a foreign one stays untouched.
+        or (body["action"] != "noop" and after.project_legacy_owned)
         or after.target_identity != observed.target_identity
         or (
             action == "install"

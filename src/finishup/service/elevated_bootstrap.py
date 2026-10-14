@@ -14,6 +14,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Literal, NoReturn, cast
 
 try:
@@ -39,6 +40,7 @@ from finishup.domain.privacy import (
     ReviewContextProfile,
 )
 from finishup.domain.values import ProtocolValueError, validate_commitment, validate_sha256_digest
+from finishup.legacy_names import LAUNCHER_NAME
 from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
@@ -46,9 +48,11 @@ from finishup.protocol.canonical import (
     parse_canonical_integer_string,
 )
 from finishup.protocol.consent import (
+    CONSENT_COMMAND_HEADS,
     CONSENT_PENDING_TTL_SECONDS,
     AgentSafePendingModel,
     ConsentCatalogModel,
+    ConsentCommandHead,
     ConsentStatusModel,
     ImportPublicationPreviewModel,
     PrivacyPolicyChangeModel,
@@ -116,6 +120,8 @@ ElevatedOperation = Literal[
     "project_coordination_grant",
 ]
 
+# Frozen legacy identifier (ADR-048): every ``yoetz.*`` tag in this module names a stored record
+# or a released consent contract of the protocol 0.1 namespace and stays spelled as shipped.
 _SCHEMA: Final = "yoetz.elevated-bootstrap.pending/4"
 _LEGACY_SCHEMAS: Final = frozenset(
     {
@@ -411,6 +417,46 @@ CONSENT_OPERATIONS: Final[tuple[ConsentOperationSpec, ...]] = (
 )
 
 _OPS: Final[dict[str, ConsentOperationSpec]] = {spec.operation: spec for spec in CONSENT_OPERATIONS}
+
+# Frozen legacy identifier (ADR-048): the exact danger text a pre-rename service recorded in a
+# pending/4 file for each operation whose text changed in the rename. A stored record keeps the
+# text its owner was shown, and its danger digest covers that text, so such a pending stays a
+# valid record that can be reviewed, expired, or cleared. Any other mismatch is still tampering.
+_LEGACY_DANGER_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "provider_credential_set": (
+            "DANGER — provider credential set. Stores an API credential in the local vault for the "
+            "exact provider binding. Ordinary chat may retain or expose the value — prefer a "
+            "confidential input surface or a limited/rotatable credential, or run "
+            "`yoetz consent review` locally. After one clear warning and an explicit current-chat "
+            "instruction, the agent may attest and complete this exact action without a second "
+            "terminal. Yoetz cannot independently authenticate the chat provenance."
+        ),
+        "provider_credential_rotate": (
+            "DANGER — provider credential rotate. Replaces a stored API credential for the exact "
+            "provider binding. Ordinary chat may retain or expose the value — prefer confidential "
+            "input or a limited/rotatable credential, or run `yoetz consent review` locally. "
+            "After one clear warning and an explicit current-chat instruction, the agent may "
+            "attest and complete this exact action without a second terminal. Yoetz cannot "
+            "independently authenticate the chat provenance."
+        ),
+        "repository_privacy_grant": (
+            "DANGER — repository privacy grant. Widens or sets external-review permission for one "
+            "exact repository recipe and the complete before/after policy diff shown in the "
+            "prepared preview. After one warning, an agent attesting an explicit current-chat "
+            "instruction may complete only that expiring target. Yoetz cannot independently "
+            "authenticate that provenance; the stronger local path remains `yoetz --privacy`."
+        ),
+    }
+)
+
+
+def _recorded_danger_text(operation: str, danger_text: str) -> bool:
+    """Whether ``danger_text`` is the text this or a pre-rename service records for ``operation``."""
+
+    return danger_text == _OPS[operation].danger_text or (
+        danger_text == _LEGACY_DANGER_TEXTS.get(operation)
+    )
 
 
 class ElevatedBootstrapError(Exception):
@@ -1229,7 +1275,7 @@ def _load_pending_path(
             raise ElevatedBootstrapError("pending_corrupt")
         risk = _require_str(source["risk_class"])
         danger_text = _require_str(source["danger_text"])
-        if risk != spec.risk_class or danger_text != spec.danger_text:
+        if risk != spec.risk_class or not _recorded_danger_text(operation, danger_text):
             raise ElevatedBootstrapError("pending_tampered")
         target_digest = validate_sha256_digest(_require_str(source["target_digest"]))
         danger_digest = validate_sha256_digest(_require_str(source["danger_digest"]))
@@ -1839,15 +1885,21 @@ def complete_review(
 def projection_for_status(
     pending: PendingElevatedConsent | None,
     *,
-    _version: Literal["6", "7"] | None = None,
+    _version: Literal["6", "7"] = "7",
+    command_head: ConsentCommandHead | None = None,
 ) -> dict[str, JsonValue] | None:
-    """Versioned agent-safe projection with exact bounded recovery/authorization guidance."""
+    """Versioned agent-safe projection with exact bounded recovery/authorization guidance.
+
+    New output is always /7, which names the current launcher. The released /6 fixed the command
+    head to the pre-rename launcher, so it is projected only when a caller asks for it explicitly
+    (ADR-048). ``command_head`` lets a /7 caller name the launcher it was invoked through; the
+    contract still binds one head per pending.
+    """
 
     if pending is None:
         return None
     version = _version
-    if version is None:
-        version = "7" if pending.coordination_binding is not None else "6"
+    head = CONSENT_COMMAND_HEADS[version] if command_head is None else command_head
     if version == "6" and pending.coordination_binding is not None:
         raise ElevatedBootstrapError("coordination_binding_requires_pending_v7")
     grant_preview = (
@@ -1858,7 +1910,8 @@ def projection_for_status(
         )
     )
     model_values: dict[str, object] = {
-        "schema": f"finishup.consent.pending-agent/{version}",
+        # Frozen legacy identifier (ADR-048): the released consent.* tag namespace.
+        "schema": f"yoetz.consent.pending-agent/{version}",
         "operation": pending.operation,
         "risk_class": pending.risk_class,
         "pending_id": pending.pending_id,
@@ -1875,9 +1928,11 @@ def projection_for_status(
                 dict(pending.import_publication_preview)
             )
         ),
-        "review_command": ("finishup", "consent", "review"),
+        # pending-agent/7 names the current launcher; the released /6 fixed the head to the
+        # pre-rename launcher (ADR-048).
+        "review_command": (head, "consent", "review"),
         "authorize_command": (
-            ("finishup", "consent", "authorize")
+            (head, "consent", "authorize")
             if operation_spec(pending.operation).agent_chat_authorize_allowed
             else None
         ),
@@ -1892,15 +1947,19 @@ def projection_for_status(
     return cast(dict[str, JsonValue], model.model_dump(mode="json", by_alias=True))
 
 
-def catalog_payload() -> dict[str, JsonValue]:
-    """Agent-facing catalog of default-safe vs consent-required operations."""
+def catalog_payload(*, command_head: ConsentCommandHead = LAUNCHER_NAME) -> dict[str, JsonValue]:
+    """Agent-facing catalog of default-safe vs consent-required operations.
+
+    ``command_head`` names the launcher each prepare hint starts with: the current launcher, or
+    the deprecated alias a caller was invoked through (ADR-048).
+    """
 
     operations: list[JsonValue] = []
     for spec in CONSENT_OPERATIONS:
         hint = (
-            "finishup import --request <bounded-json>"
+            f"{command_head} import --request <bounded-json>"
             if spec.operation == "import_publication"
-            else f"finishup consent prepare {spec.operation}"
+            else f"{command_head} consent prepare {spec.operation}"
         )
         if spec.requires_target_digest_arg:
             hint += " --target-digest <sha256:...>"
@@ -1969,12 +2028,19 @@ def catalog_payload() -> dict[str, JsonValue]:
     return cast(dict[str, JsonValue], model.model_dump(mode="json", by_alias=True))
 
 
-def status_payload(*, _state: Path | None = None) -> dict[str, JsonValue]:
+def status_payload(
+    *,
+    command_head: ConsentCommandHead = LAUNCHER_NAME,
+    _state: Path | None = None,
+) -> dict[str, JsonValue]:
     model = ConsentStatusModel.model_validate(
         {
+            # Frozen legacy identifier (ADR-048): the released elevated-bootstrap.* tag namespace.
             "schema": "yoetz.elevated-bootstrap.status/7",
-            "pending": projection_for_status(load_pending(_state=_state), _version="7"),
-            "consent_catalog": catalog_payload(),
+            "pending": projection_for_status(
+                load_pending(_state=_state), _version="7", command_head=command_head
+            ),
+            "consent_catalog": catalog_payload(command_head=command_head),
         }
     )
     return cast(dict[str, JsonValue], model.model_dump(mode="json", by_alias=True))

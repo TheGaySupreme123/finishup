@@ -59,11 +59,10 @@ MIN_ASCII_WIDTH = 52
 """Below this width the wordmark is dropped rather than wrapped into noise."""
 
 _MARK = (
-    "  _   _  ___  ___ _____ ____",
-    " | | | |/ _ \\| __|_   _|_  /",
-    " | |_| | (_) | _|  | |  / /",
-    "  \\__, |\\___/|___| |_| /___|",
-    "  |___/",
+    "  ___ _      _    _   _   _ ___",
+    " | __(_)_ _ (_)__| |_| | | | _ \\",
+    " | _|| | ' \\| (_-< ' \\ |_| |  _/",
+    " |_| |_|_||_|_/__/_||_\\___/|_|",
 )
 
 
@@ -252,6 +251,21 @@ def render_integration_preview(plan: IntegrationPlan, width: int) -> tuple[str, 
     lines.append("Project changes")
     for change in plan.changes:
         lines.extend(_indent(wrap(f"+ {change}", body - 2), width=2))
+    # Existing entries this approval rewrites or removes (a route change, Yoetz-era entries and
+    # trees, ADR-048): approval covers only what was shown, so they are named here too.
+    for change in plan.replacements:
+        lines.extend(_indent(wrap(f"~ {change}", body - 2), width=2))
+    if plan.policy_ambiguous:
+        lines.extend(
+            _indent(
+                wrap(
+                    "· No approved-check policy is trusted: both .finishup/checks.toml and the "
+                    "earlier .yoetz/checks.toml exist, and neither is used until you remove one",
+                    body - 2,
+                ),
+                width=2,
+            )
+        )
     if plan.already_registered:
         lines.append("  · The MCP server is already registered; it will be verified, not replaced")
     lines.append("")
@@ -362,6 +376,27 @@ def render_integration_technical_details(plan: IntegrationPlan, width: int) -> t
             width=2,
         )
     )
+    if (
+        plan.activation_legacy_removed_block
+        or plan.activation_legacy_cache_versions
+        or plan.activation_legacy_plugin_tree_planned
+    ):
+        # The exact Yoetz-era activation the same digest removes (ADR-048), as the CLI shows it.
+        lines.append("Earlier Yoetz activation removed by this change")
+        if plan.activation_legacy_removed_block:
+            lines.extend(
+                _indent(
+                    tuple(plan.activation_legacy_removed_block.rstrip("\n").split("\n")), width=2
+                )
+            )
+        if plan.activation_legacy_cache_versions:
+            exact("Plugin cache versions", ", ".join(plan.activation_legacy_cache_versions))
+        if plan.activation_legacy_plugin_tree_planned:
+            exact(
+                "Plugin source tree",
+                ".agents/plugins/yoetz (FinishUP-managed; deleted last, once nothing activated "
+                "here reads it)",
+            )
     if plan.planned_check_ids:
         lines.append("")
         lines.append("Proposed approved checks")
@@ -700,6 +735,28 @@ def render_receipt(summary: ReceiptSummary, width: int) -> tuple[str, ...]:
     return tuple(truncate(line, width) for line in lines)
 
 
+def _wrap_keeping_links(value: str, width: int) -> tuple[str, ...]:
+    """Word-wrap ``value``, but give each web address its own line and never split it.
+
+    A hard-split address is no longer one clickable token in a terminal, so an address longer
+    than ``width`` is left whole for the terminal to soft-wrap.
+    """
+
+    lines: list[str] = []
+    words: list[str] = []
+    for word in value.split():
+        if word.startswith(("https://", "http://")):
+            if words:
+                lines.extend(wrap(" ".join(words), width))
+                words = []
+            lines.append(word)
+        else:
+            words.append(word)
+    if words or not lines:
+        lines.extend(wrap(" ".join(words), width))
+    return tuple(lines)
+
+
 def render_doctor(report: DoctorReport, width: int) -> tuple[str, ...]:
     """A read-only diagnosis with safe next steps and no automatic repair."""
 
@@ -722,7 +779,9 @@ def render_doctor(report: DoctorReport, width: int) -> tuple[str, ...]:
         lines.append("")
         lines.append("Suggested next steps")
         for entry in remediations:
-            lines.extend(_indent(wrap(f"· {entry.remediation}", max(width - 4, 20)), width=2))
+            lines.extend(
+                _indent(_wrap_keeping_links(f"· {entry.remediation}", max(width - 4, 20)), width=2)
+            )
         lines.append("")
         lines.extend(
             wrap(

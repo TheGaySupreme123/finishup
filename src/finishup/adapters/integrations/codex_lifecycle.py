@@ -73,7 +73,9 @@ _LOCK_STALE_SECONDS: Final = 30.0
 _MAX_LOCK_TOKEN_BYTES: Final = 128
 _MAX_LOCK_PID_DIGITS: Final = 10
 _CODEX_SESSION_ID_RE: Final = re.compile(r"^[!-~]+$", re.ASCII)
-_SCOPED_CHILD_SESSION_PREFIX: Final = "finishup-child-lane-"
+# Frozen legacy identifier (ADR-048): scoped child-lane session ids are recorded in lifecycle
+# mappings, so their prefix keeps the pre-rename spelling.
+_SCOPED_CHILD_SESSION_PREFIX: Final = "yoetz-child-lane-"
 _SCOPED_CHILD_SESSION_RE: Final = re.compile(
     rf"^{re.escape(_SCOPED_CHILD_SESSION_PREFIX)}[0-9a-f]{{64}}$", re.ASCII
 )

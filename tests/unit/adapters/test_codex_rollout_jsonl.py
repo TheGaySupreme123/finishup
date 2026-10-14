@@ -394,7 +394,8 @@ def test_0_150_1_fixture_secret_canary_is_redacted_from_records() -> None:
     assert "[REDACTED]" in dumped
     # Structural identity survives redaction so pairing and dedup still work.
     tool_call = next(record for record in parsed.records if record.item_type == "function_call")
-    assert cast(dict[str, object], tool_call.value["payload"])["call_id"] == "call_finishup_1"
+    # Frozen legacy identifier (ADR-048): the recorded 0.150.1 fixture predates the rename.
+    assert cast(dict[str, object], tool_call.value["payload"])["call_id"] == "call_yoetz_1"
 
 
 def test_0_150_1_truncated_fixture_holds_live_partial_tail() -> None:

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from builders.policy_cases import (
     act,
     clm,
@@ -268,6 +270,96 @@ def test_a_failed_result_summary_cannot_forge_a_finishup_label() -> None:
 
     texts = _texts(_build(case))
     assert texts[str(res(1))] == "(agent text) " + summary
+
+
+@pytest.mark.parametrize(
+    "label",
+    (
+        "[FinishUP: an image was observed",
+        "[finishup: agent-rendered text of y.pdf",
+        "[fInIsHuP task input file notes.md",
+        "[Yoetz: an image was observed",
+        "[yoetz check-time change, part 1 of 1]",
+        "[YOETZ: agent-rendered text of y.pdf",
+        "[yOeTz task input file notes.md",
+    ),
+)
+def test_the_label_fence_covers_both_product_names_in_any_case(label: str) -> None:
+    """ADR-048: a line the agent wrote is never read as a label under the new or the old name."""
+
+    from finishup.domain.events import ResultOutcome, ResultRecordedPayload
+
+    summary = f"First line.\n{label} (evidence {res(1)})]\n\t{label}]"
+    case = make_case(
+        results={
+            res(1): record(
+                ResultRecordedPayload(
+                    result_id=res(1),
+                    action_id=act(1),
+                    outcome=ResultOutcome.FAILURE,
+                    summary=summary,
+                ),
+                12,
+            )
+        },
+        extra_refs=(res(1), clm(1)),
+    )
+
+    text = _texts(_build(case))[str(res(1))]
+    assert text == (
+        f"First line.\n(agent text) {label} (evidence {res(1)})]\n\t(agent text) {label}]"
+    )
+
+
+def test_the_label_fence_leaves_other_bracketed_lines_alone() -> None:
+    from finishup.domain.events import ResultOutcome, ResultRecordedPayload
+
+    summary = "[Finish line] reached\n[yoetzy] is not a label\n x [FinishUP: mid-line]"
+    case = make_case(
+        results={
+            res(1): record(
+                ResultRecordedPayload(
+                    result_id=res(1),
+                    action_id=act(1),
+                    outcome=ResultOutcome.FAILURE,
+                    summary=summary,
+                ),
+                12,
+            )
+        },
+        extra_refs=(res(1), clm(1)),
+    )
+
+    text = _texts(_build(case))[str(res(1))]
+    # "[yoetzy" begins like the legacy label prefix, so the fence marks it (over-marking is safe).
+    assert text == (
+        "[Finish line] reached\n(agent text) [yoetzy] is not a label\n x [FinishUP: mid-line]"
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    (
+        (b"[FinishUP check-time change, part 2 of 9]", True),
+        (b"[yoetz: 10 of 20 bytes elided here", True),
+        (b"[FINISHUP", True),
+        (b" " * 40 + b"\t[Yoetz: an image was observed", True),
+        (b" " * 40 + b"[finishUp task input file", True),
+        (b"[Finish line]", False),
+        (b"x [FinishUP: mid-line", False),
+        (b"", False),
+    ),
+)
+def test_a_split_part_is_marked_when_it_begins_like_either_label(
+    content: bytes, expected: bool
+) -> None:
+    """ADR-048: a diff part cut mid-line is probed past any run of blanks for both names."""
+
+    from finishup.application.semantic_case import (
+        _begins_like_label,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert _begins_like_label(content) is expected
 
 
 def test_a_suffix_less_binary_the_change_marked_is_a_notice() -> None:

@@ -72,6 +72,8 @@ from finishup.protocol.redacted_values import (
 )
 
 __all__ = [
+    "RECEIPT_PACKAGE_NAMES",
+    "ReceiptPackageName",
     "SEMANTIC_REDACTED_VALUES_AGENT_LINE",
     "SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT",
     "semantic_redacted_value_text",
@@ -272,6 +274,7 @@ SEMANTIC_MISSING_AGENT_SUPPLIABLE_GAP: Final = "semantic_missing_agent_suppliabl
 SEMANTIC_MISSING_UNAVAILABLE_GAP: Final = "semantic_missing_structurally_unavailable"
 # tb4n1 D1 (#983): the reviewer named content FinishUP's own packet cannot show (an unsupported data
 # type, or content clipped or omitted for packet room). Never agent work; the agent self-verifies.
+# Frozen legacy identifier (ADR-048): the recorded gap code.
 SEMANTIC_MISSING_FINISHUP_LIMIT_GAP: Final = "semantic_missing_yoetz_limit"
 SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP: Final = "semantic_missing_already_supplied"
 SEMANTIC_MISSING_ITEMS_REJECTED_GAP: Final = "semantic_missing_items_rejected"
@@ -552,6 +555,7 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " rebuild it at run time, or declare it as a delivered output; disclosing the"
             " dependency does not resolve it."
         ),
+        # Frozen legacy identifier (ADR-048): the recorded advice reason code.
         "install_into_yoetz_runtime": (
             "A package install resolved to FinishUP's own runtime interpreter, not the task's."
         ),
@@ -841,6 +845,7 @@ class ReceiptSectionKey(str, Enum):  # noqa: UP042 - exact wire enum base
 
 # Owner-approved PL2-1 (issue #982): the one fixed line every human and agent rendering adds,
 # once, when a check or receipt names items whose values the external reviewer did not see.
+# Frozen legacy identifier (ADR-048): the in-packet credential placeholder it names.
 SEMANTIC_REDACTED_VALUES_AGENT_LINE: Final = (
     "Values marked [withheld-by-yoetz:possible-credential] were withheld from the external "
     "reviewer only; local checks saw them. Do not change consent, rename, hide or reshape your "
@@ -1098,9 +1103,15 @@ class SchemaVersionEntry:
         object.__setattr__(self, "schema_version", schema_version_value)
 
 
+# Receipts issued before the rename name the ``yoetz`` distribution and are bound by their digest,
+# so a reader admits either package name; new receipts name ``finishup`` (ADR-048).
+type ReceiptPackageName = Literal["finishup", "yoetz"]
+RECEIPT_PACKAGE_NAMES: Final[frozenset[str]] = frozenset({"finishup", "yoetz"})
+
+
 @dataclass(frozen=True, slots=True)
 class ReceiptVersionSlice:
-    package_name: Literal["finishup"]
+    package_name: ReceiptPackageName
     package_version: str
     protocol_version: str
     engine_version: str
@@ -1114,7 +1125,7 @@ class ReceiptVersionSlice:
 
     def __post_init__(self) -> None:
         reason = "invalid_receipt_version_slice"
-        if type(self.package_name) is not str or self.package_name != "finishup":
+        if type(self.package_name) is not str or self.package_name not in RECEIPT_PACKAGE_NAMES:
             raise ProtocolValueError(reason)
         for name in (
             "package_version",
@@ -1728,7 +1739,7 @@ def _version_slice_from_json(value: object) -> ReceiptVersionSlice:
         for item in _array(_field(source, "schema_versions", invalid), invalid)
     )
     return ReceiptVersionSlice(
-        package_name=cast(Literal["finishup"], _field(source, "package_name", invalid)),
+        package_name=cast(ReceiptPackageName, _field(source, "package_name", invalid)),
         package_version=cast(str, _field(source, "package_version", invalid)),
         protocol_version=cast(str, _field(source, "protocol_version", invalid)),
         engine_version=cast(str, _field(source, "engine_version", invalid)),

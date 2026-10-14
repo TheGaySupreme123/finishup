@@ -19,6 +19,12 @@ _HOST_SPELLINGS = (
     "mcp__plugin_finishup_finishup__{name}",
     "finishup:{name}",
     "plugin-finishup-finishup:{name}",
+    # The legacy server name a 0.1-0.2.5 registration and its recorded observations carry
+    # (ADR-048): the policy reads it exactly as the current one.
+    "mcp__yoetz__{name}",
+    "mcp__plugin_yoetz_yoetz__{name}",
+    "yoetz:{name}",
+    "plugin-yoetz-yoetz:{name}",
 )
 _READS = ("status", "receipt", "read_guidance")
 _MUTATIONS = ("start", "publish_work", "check", "respond")
@@ -31,6 +37,7 @@ def test_tool_name_sets_derive_from_the_one_registry_tuple() -> None:
     for name in FINISHUP_WORKFLOW_TOOL_NAMES:
         assert name in FINISHUP_TOOL_NAMES
         assert f"mcp__finishup__{name}" in FINISHUP_TOOL_NAMES
+        assert f"mcp__yoetz__{name}" in FINISHUP_TOOL_NAMES
         for spelling in _HOST_SPELLINGS:
             assert spelling.format(name=name) in FINISHUP_OWNED_TOOL_NAMES
     assert FINISHUP_TOOL_NAMES < FINISHUP_OWNED_TOOL_NAMES
@@ -103,3 +110,5 @@ def test_non_finishup_tools_and_non_tool_phases_are_unchanged() -> None:
     # Names that merely resemble a FinishUP tool are not FinishUP-owned.
     assert self_observation_deliverable("PostToolUse", {"tool_name": "mcp__other__status"}) is True
     assert self_observation_deliverable("PostToolUse", {"tool_name": "status_check"}) is True
+    assert self_observation_deliverable("PostToolUse", {"tool_name": "mcp__yoetzx__status"}) is True
+    assert self_observation_deliverable("PostToolUse", {"tool_name": "yoetz:statusx"}) is True

@@ -40,6 +40,7 @@ __all__ = [
     "record_applied_route",
 ]
 
+# Frozen legacy identifier (ADR-048): the record tag and digest domain are stored and re-verified.
 _SCHEMA: Final = "yoetz.applied-mcp-route/1"
 _HOST: Final = "codex"
 _STORE_DIRNAME: Final = "integrations"
@@ -106,6 +107,8 @@ def _validate_command(value: object, *, allowed: tuple[tuple[str, ...], ...]) ->
             raise ValueError("applied_mcp_route_command_invalid")
         items.append(entry)
     command = tuple(items)
+    # The launcher token may be either bare spelling or an absolute path, so a record an earlier
+    # install wrote with the legacy ``yoetz`` argv keeps validating (ADR-048).
     if mcp_command_profile(command) is None or not any(
         command[1:] == template[1:] for template in allowed
     ):

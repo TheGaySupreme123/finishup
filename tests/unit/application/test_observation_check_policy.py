@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from finishup.application.observation_check_policy import (
+    CHECK_POLICY_PATH,
+    LEGACY_CHECK_POLICY_PATH,
     ObservationCheckPolicyAbsent,
+    ObservationCheckPolicyAmbiguous,
     load_observation_check_policy,
     parse_observation_check_policy,
 )
@@ -105,4 +108,66 @@ def test_policy_reader_treats_dangling_policy_symlink_as_invalid(tmp_path: Path)
     (policy_dir / "checks.toml").symlink_to(tmp_path / "missing.toml")
     with pytest.raises(ProtocolValueError) as caught:
         load_observation_check_policy(tmp_path)
+    assert not isinstance(caught.value, ObservationCheckPolicyAbsent)
+
+
+def _write(workspace: Path, location: Path, raw: bytes) -> None:
+    (workspace / location.parent).mkdir(exist_ok=True)
+    (workspace / location).write_bytes(raw)
+
+
+def test_policy_reader_reads_the_legacy_location_when_it_is_the_only_one(tmp_path: Path) -> None:
+    _write(tmp_path, LEGACY_CHECK_POLICY_PATH, _policy())
+    policy, raw = load_observation_check_policy(tmp_path)
+    assert raw == _policy()
+    assert policy.source_path == Path(".yoetz/checks.toml")
+
+
+def test_policy_reader_names_the_finishup_location_when_it_is_the_only_one(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, CHECK_POLICY_PATH, _policy())
+    policy, _raw = load_observation_check_policy(tmp_path)
+    assert policy.source_path == Path(".finishup/checks.toml")
+
+
+def test_a_moved_policy_keeps_its_byte_bound_trust_identity(tmp_path: Path) -> None:
+    legacy = tmp_path / "legacy"
+    moved = tmp_path / "moved"
+    legacy.mkdir()
+    moved.mkdir()
+    _write(legacy, LEGACY_CHECK_POLICY_PATH, _policy())
+    _write(moved, CHECK_POLICY_PATH, _policy())
+    before, _ = load_observation_check_policy(legacy)
+    after, _ = load_observation_check_policy(moved)
+    assert before.raw_digest == after.raw_digest
+    assert before == after
+
+
+def test_policy_reader_refuses_to_choose_between_both_locations(tmp_path: Path) -> None:
+    _write(tmp_path, CHECK_POLICY_PATH, _policy())
+    _write(tmp_path, LEGACY_CHECK_POLICY_PATH, _policy())
+    with pytest.raises(ObservationCheckPolicyAmbiguous) as caught:
+        load_observation_check_policy(tmp_path)
+    # Every caller that only needs "no usable policy" keeps failing closed.
+    assert caught.value.reason_code == "invalid_approved_check_policy"
+    assert not isinstance(caught.value, ObservationCheckPolicyAbsent)
+
+
+def test_an_empty_legacy_directory_does_not_make_the_policy_ambiguous(tmp_path: Path) -> None:
+    _write(tmp_path, CHECK_POLICY_PATH, _policy())
+    (tmp_path / ".yoetz").mkdir()
+    policy, _raw = load_observation_check_policy(tmp_path)
+    assert policy.source_path == CHECK_POLICY_PATH
+
+
+def test_a_symlinked_legacy_policy_directory_is_invalid(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "checks.toml").write_bytes(_policy())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / ".yoetz").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ProtocolValueError) as caught:
+        load_observation_check_policy(workspace)
     assert not isinstance(caught.value, ObservationCheckPolicyAbsent)

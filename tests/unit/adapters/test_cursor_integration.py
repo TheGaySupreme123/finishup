@@ -127,7 +127,8 @@ def test_cursor_profile_exposes_only_supported_ide_and_cli_cells() -> None:
         "cursor-stale-shared-mcp-runtime.case.json",
     ):
         fixture = json.loads(read_verified_resource(f"fixtures/agent-plugins/{name}"))
-        assert fixture["schema"].startswith("finishup.cursor-")
+        # Frozen legacy identifier (ADR-048): recorded host fixtures keep their schema tags.
+        assert fixture["schema"].startswith("yoetz.cursor-")
         if name.startswith("cursor-sdk-"):
             assert fixture["proof_limits"] == ["metadata_only", "not_a_support_claim"]
 
@@ -278,13 +279,18 @@ def test_isolated_native_artifact_binds_root_in_mcp_and_hook_commands(
 
     assert artifact.isolation_root == str(isolated_root)
     route = json.loads(artifact.members["mcp.json"])["mcpServers"]["finishup"]
-    assert route["env"] == {"FINISHUP_ISOLATED_ROOT": str(isolated_root)}
+    # Both spellings with one value while the deprecated ``yoetz`` alias ships (ADR-048).
+    assert route["env"] == {
+        "FINISHUP_ISOLATED_ROOT": str(isolated_root),
+        "YOETZ_ISOLATED_ROOT": str(isolated_root),
+    }
     assert set(route) == {"args", "command", "env", "type"}
 
     hooks = json.loads(artifact.members["hooks/hooks.json"])["hooks"]
+    quoted = shlex.quote(str(isolated_root))
     for definition in hooks.values():
         command = definition[-1]["command"]
-        assert command.startswith(f"FINISHUP_ISOLATED_ROOT={shlex.quote(str(isolated_root))} ")
+        assert command.startswith(f"FINISHUP_ISOLATED_ROOT={quoted} YOETZ_ISOLATED_ROOT={quoted} ")
         # Cursor executes command hooks as shell strings.  This also proves a path containing
         # spaces and a quote cannot escape the assignment.
         completed = subprocess.run(

@@ -177,6 +177,35 @@ def test_runtime_recovers_exact_console_or_module_launcher_prefix(
     )
 
 
+def test_runtime_keeps_the_pre_rename_module_launcher_spelling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``python -m yoetz`` registration runs the transitional shim beside this package (ADR-048)."""
+
+    import sys
+
+    site = tmp_path / "site-packages"
+    for module in ("finishup", "yoetz"):
+        (site / module).mkdir(parents=True)
+        (site / module / "__main__.py").write_text("", encoding="utf-8")
+    (site / "finishup" / "mcp").mkdir()
+    monkeypatch.setattr(server, "__file__", str(site / "finishup" / "mcp" / "server.py"))
+    executable = str(Path(sys.executable).resolve(strict=True))
+    for module in ("finishup", "yoetz"):
+        monkeypatch.setattr(
+            server.sys,
+            "argv",
+            [str(site / module / "__main__.py"), "mcp", "serve", "--host", "cursor"],
+        )
+        assert server._runtime_launcher_from_argv() == (executable, "-m", module)
+    # Any other ``__main__.py`` is an ordinary file launcher, never a module spelling.
+    other = site / "other" / "__main__.py"
+    other.parent.mkdir()
+    other.write_text("", encoding="utf-8")
+    monkeypatch.setattr(server.sys, "argv", [str(other), "mcp", "serve", "--host", "cursor"])
+    assert server._runtime_launcher_from_argv() == (str(other.resolve()),)
+
+
 def test_symlinked_console_launcher_is_normalized_like_the_project_writer(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

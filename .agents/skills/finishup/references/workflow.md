@@ -18,7 +18,8 @@ tool/schema discovery, and necessary bootstrap clarification. This includes `rea
 and commands needed to read installed references or discover tool schemas. Call `start`
 before substantive research, commands, edits, or delegation. Where the host defers tool schemas
 and lists only names, load the `start` schema by name first (on Claude Code, ToolSearch
-`select:mcp__finishup__start` or the declared plugin-prefixed name); a deferred listing is not a
+`select:mcp__finishup__start`, the declared plugin-prefixed name, or `mcp__yoetz__start` where the
+host still registers the pre-rename server name); a deferred listing is not a
 reason to skip the call. If material work already began before `start` (the server was still
 connecting at the first action, or the session simply started editing), call `start` now, publish
 the transitions so far as a bounded plan, and disclose the uncovered prefix in the receipt.
@@ -96,6 +97,13 @@ version, and the first FinishUP call of the next session the user opens retires 
 and starts the new one. Running processes retain their code, dependencies and resources; their
 settings, permissions, vault and task data stay in the existing installation. The fresh launcher
 must confirm the installed version; exit zero or an unchanged version is not a completed update.
+FinishUP was named Yoetz before 0.3. Notes, skills, and guidance written then name
+`yoetz://guidance/...` URIs and the `yoetz` command: `read_guidance` still reads such a URI and
+answers in that scheme. A `yoetz` command exists only on an install upgraded through the
+transitional `yoetz` package: there, for this release, it is a deprecated alias that runs the same
+subcommands as `finishup`, and `finishup` itself may not be on PATH. On such an install, where
+`finishup` is not found, run the same subcommand with `yoetz` for this release. A fresh install has
+only `finishup`. New requests use `finishup://` and `finishup`.
 The package command is only the package step. On that controlled service
 startup, a compatible 0.2-to-0.3 bundle migration runs backup-first before READY and preserves
 existing task data; the user does not perform a per-task migration ceremony.
@@ -474,7 +482,8 @@ initialize instructions do not say it is a child. Each child's assignment carrie
   `workspace_ref` + `external_ref` pair (the canonical root the child works in; never the
   parent's pair);
 - a distinct child actor id, the bounded scope and write policy, and, after a
-  `terminal_unavailable` result, the `finishup_availability` block;
+  `terminal_unavailable` result, the `finishup_availability` block (also honored under its
+  pre-rename name, `yoetz_availability`);
 - its closure duties: in its own task, publish its plan and obligations, results and evidence,
   and completion claim; `check`; `respond` to each finding it returns, repairing and rechecking
   where the finding requires it; `receipt`; then `work_closed`, because a receipt never closes
@@ -574,7 +583,7 @@ One typed exception: an error carrying `safe_details.continuation: vault_initial
 
 An availability failure belongs to the host binding — this MCP process, its route, and the service endpoint — not to the request that first saw it. When an error carries `safe_details.availability: terminal_unavailable`, the bridge has latched that state: every later call under a new `request_id` returns the same `correlation_id` with `availability_inherited: true` and records no new diagnostic, until the named repair changes the running service, the original `request_id` replays successfully, or — for a `retryable: true` class only — the bridge's own quiet handshake finds the service listening again, in which case the call simply proceeds. That handshake belongs to the bridge, never to you: nobody probes to find out. An inherited answer is not a fresh failure; do not diagnose it again.
 
-When you delegate after that result, carry it into every assignment as a bounded `finishup_availability` block: `state: terminal_unavailable`, the host binding (`host_profile`, `route_profile`), the parent `correlation_id` and original `request_id`, and the proof limit ("no live FinishUP ledger, publication, check, or receipt exists for this task") — never transcript content. A delegate that inherits `terminal_unavailable` makes no FinishUP call for that binding and work item: no `start`, `status`, `check`, diagnostics, or `finishup service` command. It publishes nothing, states that the parent has no live ledger, and returns its work to the coordinator. Only the coordinator runs the one repair the typed result named and replays the original `request_id` once. In the final report, separate the initial integration cause (the parent's correlation) from delegate amplification, and never claim delegate publications, assignments, or attribution without a task and session.
+When you delegate after that result, carry it into every assignment as a bounded `finishup_availability` block: `state: terminal_unavailable`, the host binding (`host_profile`, `route_profile`), the parent `correlation_id` and original `request_id`, and the proof limit ("no live FinishUP ledger, publication, check, or receipt exists for this task") — never transcript content. A delegate given the same block under its pre-rename name, `yoetz_availability`, treats it exactly as `finishup_availability`. A delegate that inherits `terminal_unavailable` makes no FinishUP call for that binding and work item: no `start`, `status`, `check`, diagnostics, or `finishup service` command. It publishes nothing, states that the parent has no live ledger, and returns its work to the coordinator. Only the coordinator runs the one repair the typed result named and replays the original `request_id` once. In the final report, separate the initial integration cause (the parent's correlation) from delegate amplification, and never claim delegate publications, assignments, or attribution without a task and session.
 
 ## Safety and privacy
 

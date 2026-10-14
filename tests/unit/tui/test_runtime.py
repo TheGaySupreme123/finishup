@@ -11,9 +11,9 @@ import pytest
 from builders.tui_runtime import CLI, DESKTOP
 from finishup.adapters.workspace_binding import canonical_workspace_locator
 from finishup.tui.models import HarnessOption
-from finishup.tui.runtime import (  # pyright: ignore[reportPrivateUsage]
+from finishup.tui.runtime import (
     FinishUpRuntime,
-    _WorkSession,
+    _WorkSession,  # pyright: ignore[reportPrivateUsage]
 )
 
 pytestmark = pytest.mark.anyio

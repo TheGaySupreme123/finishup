@@ -72,6 +72,11 @@ def _stdout_json(value: JsonValue) -> None:
     sys.stdout.buffer.flush()
 
 
+def _stderr_text(text: str) -> None:
+    sys.stderr.write(text + "\n")
+    sys.stderr.flush()
+
+
 def _emit(value: Mapping[str, JsonValue], *, json_output: bool) -> None:
     if json_output or not sys.stdout.isatty():
         _stdout_json(dict(value))
@@ -1088,8 +1093,26 @@ async def provider_status_report(
 async def run_provider_status(
     *, json_output: bool, codex_home: Path | None = None, codex_path: str | None = None
 ) -> int:
-    """Emit the readiness report and return a process exit code."""
+    """Emit the readiness report and return a process exit code.
 
-    report = await provider_status_report(codex_home=codex_home, codex_path=codex_path)
+    When FinishUP's local folders cannot be used safely (data under both product names, an
+    unusable isolation root; ADR-048), nothing can be read: the bounded token, its remedy and its
+    continuation go to stderr, ``--json`` gets the same failure shape as the other control
+    failures, and the exit code is the refusal's own (20), never ``internal_error``.
+    """
+
+    from finishup.cli.service_installation import installation_folders, path_refusal_failure
+
+    try:
+        # Resolve the folders first so the refusal is named before any config or service read.
+        installation_folders()
+        report = await provider_status_report(codex_home=codex_home, codex_path=codex_path)
+    except PathSafetyError as error:
+        return path_refusal_failure(
+            error.reason_code,
+            json_output=json_output,
+            stderr_writer=_stderr_text,
+            stdout_writer=_stdout_json,
+        )
     _emit(report, json_output=json_output)
     return 0 if report.get("semantic_ready") is True else 20

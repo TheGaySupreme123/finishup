@@ -20,9 +20,8 @@ the lower/pause/resume path, and apply only after the user accepts that preview.
 returns `capacity_no_cap_unsupported`; See "Change local retention capacity" in [workflow.md](references/workflow.md).
 
 For closure, publish evidence before `check`, answer findings, and request `receipt` last.
-`check` after the plan and each milestone; on a finding, change work or record what it names,
-not just recheck. At `ready_with_limitations`, nothing further is to do: request the receipt without another check;
+`check` after the plan and each milestone; on a finding, repair or record, not just recheck. At `ready_with_limitations`, nothing further is to do: request the receipt without another check;
 `standing_limitations` are disclosed, never tasks. A `respond` does not clear a finding.
 Keep `unresolved_findings_remain`. FinishUP limit: respond `self_verified`, never `finishup-blocker`.
-On a limitation request, if the requirement may be met but cannot be verified here, respond `acknowledged` with the reason; `acknowledged_not_done` only when you know it is not met.
+On a limitation request that may be met but cannot be verified here, respond `acknowledged` with the reason; `acknowledged_not_done` only when you know it is not met.
 Never empty or withdraw a working deliverable over a finding or an "empty if unsolved" clause.

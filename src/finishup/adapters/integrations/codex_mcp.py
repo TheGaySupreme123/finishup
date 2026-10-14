@@ -2,9 +2,15 @@
 
 Automates exactly the runbook's manual check-then-add sequence:
 ``codex mcp get finishup --json`` first, a bounded ``codex mcp list --json``
-fallback when ``get`` fails, and registration of this runtime's proven absolute console script
-after absence is positively observed or an owned re-registration is accepted. Bare and legacy
-entries remain recognizable. A foreign same-name entry is never replaced.
+that proves absence when ``get`` fails and reads the legacy ``yoetz`` key, and registration of
+this runtime's proven absolute console script after absence is positively observed or an owned
+re-registration is accepted. Bare and legacy entries remain recognizable. A foreign same-name
+entry is never replaced.
+
+Registrations written before the rename sit under the legacy ``yoetz`` key (ADR-048). An entry
+there that is provably FinishUP's reads as owned but outdated; integrate migrates it in the same
+preview and consent (write ``finishup``, then remove ``yoetz``), and remove takes both keys. An
+entry under the legacy key that FinishUP cannot prove is its own is reported and never touched.
 """
 
 from __future__ import annotations
@@ -15,20 +21,27 @@ import subprocess
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 from typing import Final, Literal, cast
 
 from finishup.adapters.integrations.codex_launcher import installed_launcher
 from finishup.adapters.integrations.launcher import invoking_launcher
-from finishup.config.paths import ISOLATED_ROOT_ENV, PathSafetyError, isolated_root
+from finishup.config.paths import (
+    ISOLATED_ROOT_ENV,
+    LEGACY_ISOLATED_ROOT_ENV,
+    PathSafetyError,
+    isolated_root,
+)
 from finishup.domain.values import JsonValue
+from finishup.legacy_names import LAUNCHER_NAMES, LEGACY_LAUNCHER_NAME
 from finishup.ports.harness_mcp import (
-    MCP_LEGACY_SERVE_COMMAND,
-    MCP_LEGACY_STRICT_SERVE_COMMAND,
+    MCP_LEGACY_SERVER_NAME,
     MCP_SERVE_COMMAND,
     MCP_SERVER_NAME,
     MCP_STRICT_SERVE_COMMAND,
     HarnessBinary,
+    LegacyRegistration,
     McpRegistrationAction,
     McpRegistrationCommand,
     McpRegistrationError,
@@ -49,6 +62,74 @@ __all__ = [
 
 _COMMAND_TIMEOUT_SECONDS: Final = 10.0
 _OUTPUT_LIMIT_BYTES: Final = 65_536
+# Both spellings of the isolation root a registration may carry (ADR-048). New registrations
+# write both with one value so an older bare ``yoetz`` launcher resolved through PATH still
+# isolates; either one alone, or both equal, is read as the same binding.
+_ISOLATED_ROOT_ENV_NAMES: Final = frozenset({ISOLATED_ROOT_ENV, LEGACY_ISOLATED_ROOT_ENV})
+
+
+@dataclass(frozen=True, slots=True)
+class _Entry:
+    """One registration key's structural classification; never carries host bytes beyond argv."""
+
+    state: McpRegistrationState
+    command: tuple[str, ...] | None = None
+    root: str | None = None
+    # False when an owned isolated entry carries only one spelling of the root (ADR-048).
+    env_current: bool = True
+
+
+_ABSENT: Final = _Entry(McpRegistrationState.ABSENT)
+_FOREIGN: Final = _Entry(McpRegistrationState.FOREIGN_PRESENT)
+
+
+@dataclass(frozen=True, slots=True)
+class _Registrations:
+    """The entries under the ``finishup`` key and the legacy ``yoetz`` key (ADR-048)."""
+
+    current: _Entry
+    legacy: _Entry
+
+    @property
+    def effective(self) -> _Entry:
+        """The entry the FinishUP registration reads as: the new key wins unless it is absent."""
+
+        if (
+            self.current.state is McpRegistrationState.ABSENT
+            and self.legacy.state is McpRegistrationState.FINISHUP_OWNED
+        ):
+            return self.legacy
+        return self.current
+
+    @property
+    def legacy_registration(self) -> LegacyRegistration:
+        if self.legacy.state is McpRegistrationState.ABSENT:
+            return "none"
+        if self.legacy.state is McpRegistrationState.FOREIGN_PRESENT:
+            return "foreign"
+        if self.current.state is McpRegistrationState.FINISHUP_OWNED:
+            return "duplicate"
+        return "legacy_only"
+
+    def legacy_warnings(self) -> tuple[str, ...]:
+        if self.legacy.state is McpRegistrationState.FINISHUP_OWNED:
+            return ("legacy_registration_owned",)
+        if self.legacy.state is McpRegistrationState.FOREIGN_PRESENT:
+            return ("legacy_registration_foreign",)
+        return ()
+
+    def bind_legacy(self, digest_input: dict[str, object]) -> None:
+        """Bind a present legacy entry into a preview digest (schema ``/5``, ADR-048)."""
+
+        if self.legacy.state is McpRegistrationState.ABSENT:
+            return
+        digest_input.update(
+            schema=str(digest_input["schema"]).rsplit("/", 1)[0] + "/5",
+            legacy_server_name=MCP_LEGACY_SERVER_NAME,
+            legacy_state=self.legacy.state.value,
+            legacy_command=None if self.legacy.command is None else list(self.legacy.command),
+            legacy_root=self.legacy.root,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,13 +228,17 @@ def _entry_command_tokens(entry: Mapping[str, object]) -> tuple[str, ...] | None
     return None
 
 
-def _entry_isolated_root(entry: Mapping[str, object]) -> tuple[bool, str | None]:
+def _entry_isolated_root(entry: Mapping[str, object]) -> tuple[bool, str | None, bool]:
     """Read the only environment binding this owned registration may carry.
 
     The command tokens establish FinishUP ownership; this separate parser refuses to bless a
     same-command entry with any other environment key, inherited variable, or malformed root.
     A known but different absolute root remains readable for legacy bare-command repair;
     absolute-launcher classification additionally requires this runtime's exact root.
+
+    The root may be spelled ``FINISHUP_ISOLATED_ROOT``, the legacy ``YOETZ_ISOLATED_ROOT``, or
+    both with one value (ADR-048); two different values are not FinishUP's binding. The third
+    element is False when an isolated entry lacks one of the two spellings a new render writes.
     """
 
     transport = entry.get("transport")
@@ -164,26 +249,49 @@ def _entry_isolated_root(entry: Mapping[str, object]) -> tuple[bool, str | None]
             source = nested
     env_vars = source.get("env_vars")
     if env_vars not in (None, []):
-        return False, None
+        return False, None, True
     environment = source.get("env")
     if environment is None:
-        return True, None
+        return True, None, True
     if not isinstance(environment, Mapping):
-        return False, None
+        return False, None, True
     values = cast(Mapping[object, object], environment)
     if not values:
-        return True, None
-    if set(values) != {ISOLATED_ROOT_ENV}:
-        return False, None
-    raw = values.get(ISOLATED_ROOT_ENV)
+        return True, None, True
+    names = {name for name in _ISOLATED_ROOT_ENV_NAMES if name in values}
+    if len(names) != len(values):
+        return False, None, True
+    # Host-supplied values are type-checked before they are compared: a list or object value is
+    # not FinishUP's binding, never an unhashable crash.
+    if any(type(values[name]) is not str for name in names):
+        return False, None, True
+    roots = {cast(str, values[name]) for name in names}
+    if len(roots) != 1:
+        # Two spellings bound to different roots: ambiguous, so never FinishUP's (ADR-048).
+        return False, None, True
+    raw = roots.pop()
     if (
-        type(raw) is not str
-        or not 1 <= len(raw) <= 4_096
+        not 1 <= len(raw) <= 4_096
         or not Path(raw).is_absolute()
         or any(ord(char) < 32 or ord(char) == 127 for char in raw)
     ):
-        return False, None
-    return True, raw
+        return False, None, True
+    return True, raw, len(names) == len(_ISOLATED_ROOT_ENV_NAMES)
+
+
+def _legacy_distribution_installed() -> bool:
+    """Whether a ``yoetz`` distribution, whose RECORD owns the alias script, is installed.
+
+    An unreadable distribution counts as installed, so its RECORD stays the only proof.
+    """
+
+    try:
+        distribution(LEGACY_LAUNCHER_NAME)
+    except PackageNotFoundError:
+        return False
+    except OSError, ValueError:
+        return True
+    return True
 
 
 class CodexMcpAdapter:
@@ -212,38 +320,55 @@ class CodexMcpAdapter:
             return self._runner(argv)
         return _default_runner(argv, codex_home=self._codex_home)
 
-    def _classify_entry(
-        self,
-        entry: Mapping[str, object],
-    ) -> tuple[McpRegistrationState, tuple[str, ...] | None, str | None]:
+    def _classify_entry(self, entry: Mapping[str, object]) -> _Entry:
         tokens = _entry_command_tokens(entry)
-        if tokens and tokens[0] != "finishup" and mcp_command_profile(tokens) is not None:
-            proof = installed_launcher()
-            readable, root = _entry_isolated_root(entry)
-            if (
-                proof is not None
-                and tokens[0] == proof[0]
-                and readable
-                and (root is None or root == self._expected_isolated_root())
-                and self._unambiguous_absolute_entry(entry)
-            ):
-                return McpRegistrationState.FINISHUP_OWNED, tokens, root
-            return McpRegistrationState.FOREIGN_PRESENT, None, None
-        for command in (
-            MCP_STRICT_SERVE_COMMAND,
-            MCP_SERVE_COMMAND,
-            MCP_LEGACY_STRICT_SERVE_COMMAND,
-            MCP_LEGACY_SERVE_COMMAND,
+        if tokens is None or mcp_command_profile(tokens) is None:
+            # An unreadable or different command is preserved, never replaced.
+            return _FOREIGN
+        readable, root, env_current = _entry_isolated_root(entry)
+        if not readable:
+            return _FOREIGN
+        if tokens[0] in LAUNCHER_NAMES:
+            # A bare launcher under either spelling (ADR-048); the shape check above already
+            # matched one of the four FinishUP serve templates exactly.
+            return _Entry(McpRegistrationState.FINISHUP_OWNED, tokens, root, env_current)
+        if (
+            self._owned_absolute_launcher(tokens[0])
+            and (root is None or root == self._expected_isolated_root())
+            and self._unambiguous_absolute_entry(entry)
         ):
-            if tokens == command:
-                environment_readable, registered_root = _entry_isolated_root(entry)
-                if not environment_readable:
-                    return McpRegistrationState.FOREIGN_PRESENT, None, None
-                # Return the matched constant, not the parsed tokens, so the route mapping below
-                # reads off one source of truth instead of re-comparing the argv.
-                return McpRegistrationState.FINISHUP_OWNED, command, registered_root
-        # An unreadable or different command is preserved, never replaced.
-        return McpRegistrationState.FOREIGN_PRESENT, None, None
+            return _Entry(McpRegistrationState.FINISHUP_OWNED, tokens, root, env_current)
+        return _FOREIGN
+
+    @staticmethod
+    def _owned_absolute_launcher(launcher: str) -> bool:
+        """Whether an absolute launcher is this runtime's proven script or its legacy alias.
+
+        The deprecated ``yoetz`` alias (ADR-048) is proven the same way as ``finishup``: by the
+        transitional ``yoetz`` distribution's installed RECORD, digest and all. While that
+        distribution is installed, nothing else proves the alias: a script its RECORD rejects
+        (modified, symlinked, or loosened) is never FinishUP's. Only when no ``yoetz``
+        distribution is installed does the exact sibling path ``<proven scripts dir>/yoetz``
+        still count, and likewise when the distribution is installed but nothing is at that
+        path. That fallback trusts the location, an owner-only directory this runtime's proven
+        ``finishup`` script lives in, and holds no bytes a RECORD rejected; it exists so the
+        registration an earlier Yoetz install wrote for this same environment stays migratable
+        and removable after the old script itself was uninstalled. Any other path is not
+        FinishUP's.
+        """
+
+        proof = installed_launcher()
+        if proof is not None and launcher == proof[0]:
+            return True
+        legacy_proof = installed_launcher(LEGACY_LAUNCHER_NAME)
+        if legacy_proof is not None:
+            return launcher == legacy_proof[0]
+        if proof is None:
+            return False
+        sibling = Path(proof[0]).with_name(LEGACY_LAUNCHER_NAME)
+        if launcher != str(sibling):
+            return False
+        return not _legacy_distribution_installed() or not os.path.lexists(sibling)
 
     @staticmethod
     def _unambiguous_absolute_entry(entry: Mapping[str, object]) -> bool:
@@ -280,9 +405,7 @@ class CodexMcpAdapter:
             )
         return self._serve_command, None
 
-    def _classify_get(
-        self, output: CommandOutput
-    ) -> tuple[McpRegistrationState, tuple[str, ...] | None, str | None]:
+    def _classify_get(self, output: CommandOutput) -> _Entry:
         if output.exit_code != 0:
             raise McpRegistrationError(McpRegistrationReason.HARNESS_UNAVAILABLE, {})
         try:
@@ -293,9 +416,8 @@ class CodexMcpAdapter:
             raise McpRegistrationError(McpRegistrationReason.PARSE_FAILED, {})
         return self._classify_entry(cast(Mapping[str, object], parsed))
 
-    def _classify_list(
-        self, output: CommandOutput
-    ) -> tuple[McpRegistrationState, tuple[str, ...] | None, str | None]:
+    @staticmethod
+    def _listed_entries(output: CommandOutput) -> list[Mapping[str, object]]:
         if output.exit_code != 0:
             raise McpRegistrationError(McpRegistrationReason.HARNESS_UNAVAILABLE, {})
         try:
@@ -304,42 +426,47 @@ class CodexMcpAdapter:
             raise McpRegistrationError(McpRegistrationReason.PARSE_FAILED, {}) from exc
         if not isinstance(parsed, list):
             raise McpRegistrationError(McpRegistrationReason.PARSE_FAILED, {})
-        matches: list[Mapping[str, object]] = []
+        entries: list[Mapping[str, object]] = []
         for item in cast(list[object], parsed):
             if not isinstance(item, Mapping):
                 raise McpRegistrationError(McpRegistrationReason.PARSE_FAILED, {})
             entry = cast(Mapping[str, object], item)
-            name = entry.get("name")
-            if not isinstance(name, str):
+            if not isinstance(entry.get("name"), str):
                 raise McpRegistrationError(McpRegistrationReason.PARSE_FAILED, {})
-            if name == MCP_SERVER_NAME:
-                matches.append(entry)
+            entries.append(entry)
+        return entries
+
+    def _classify_listed(self, entries: Sequence[Mapping[str, object]], name: str) -> _Entry:
+        matches = [entry for entry in entries if entry.get("name") == name]
         if not matches:
-            return McpRegistrationState.ABSENT, None, None
+            return _ABSENT
         if len(matches) != 1:
             # A same-name duplicate is not a trustworthy absence or ownership observation.
             raise McpRegistrationError(McpRegistrationReason.PARSE_FAILED, {})
         return self._classify_entry(matches[0])
 
-    def _observe_registration_state(
-        self, binary: HarnessBinary
-    ) -> tuple[McpRegistrationState, tuple[str, ...] | None, str | None]:
+    def _observe_registration_state(self, binary: HarnessBinary) -> _Registrations:
         output = self._run((binary.executable_path, "mcp", "get", MCP_SERVER_NAME, "--json"))
-        if output.exit_code == 0:
-            return self._classify_get(output)
+        current = self._classify_get(output) if output.exit_code == 0 else None
         # Codex reports both a missing name and host/config read failures as a nonzero ``get``.
-        # Only a successful structural list may therefore establish positive absence.
-        return self._classify_list(self._run((binary.executable_path, "mcp", "list", "--json")))
+        # Only a successful structural list may therefore establish positive absence; the same
+        # list also reads the legacy ``yoetz`` key, so one probe covers both names (ADR-048).
+        entries = self._listed_entries(self._run((binary.executable_path, "mcp", "list", "--json")))
+        if current is None:
+            current = self._classify_listed(entries, MCP_SERVER_NAME)
+        return _Registrations(current, self._classify_listed(entries, MCP_LEGACY_SERVER_NAME))
 
     async def status_registration(self, binary: HarnessBinary) -> McpRegistrationState:
         self._require_codex(binary)
         self._expected_isolated_root()
-        return self._observe_registration_state(binary)[0]
+        return self._observe_registration_state(binary).effective.state
 
     async def observe_registration(self, binary: HarnessBinary) -> McpRegistrationObservation:
         self._require_codex(binary)
         expected_root = self._expected_isolated_root()
-        state, command, registered_root = self._observe_registration_state(binary)
+        registrations = self._observe_registration_state(binary)
+        effective = registrations.effective
+        state, command, registered_root = effective.state, effective.command, effective.root
         route_profile = None if command is None else mcp_command_profile(command)
         isolation_binding = None
         if state is McpRegistrationState.FINISHUP_OWNED:
@@ -357,6 +484,7 @@ class CodexMcpAdapter:
             route_profile,
             isolation_binding,
             command,
+            registrations.legacy_registration,
         )
 
     @staticmethod
@@ -375,32 +503,46 @@ class CodexMcpAdapter:
         if type(binary) is not HarnessBinary or binary.harness_id is not HarnessId.CODEX:
             raise McpRegistrationError(McpRegistrationReason.HARNESS_UNAVAILABLE, {})
 
+    @staticmethod
+    def _current_is_desired(
+        entry: _Entry, serve_command: tuple[str, ...], expected_root: str | None
+    ) -> bool:
+        return (
+            entry.state is McpRegistrationState.FINISHUP_OWNED
+            and entry.command == serve_command
+            and entry.root == expected_root
+            and entry.env_current
+        )
+
     def _preview_for(
-        self,
-        binary: HarnessBinary,
-        state: McpRegistrationState,
-        current_command: tuple[str, ...] | None,
-        current_root: str | None,
+        self, binary: HarnessBinary, registrations: _Registrations
     ) -> McpRegistrationPreview:
         expected_root = self._expected_isolated_root()
         serve_command, launcher_digest = self._desired_command()
+        effective = registrations.effective
+        state, current_command, current_root = effective.state, effective.command, effective.root
         action = (
             McpRegistrationAction.REGISTER
             if state is McpRegistrationState.ABSENT
             else (
                 McpRegistrationAction.REREGISTER
                 if state is McpRegistrationState.FINISHUP_OWNED
-                and (current_command != serve_command or current_root != expected_root)
+                and (
+                    # An owned legacy-key entry always migrates, even beside a current one.
+                    registrations.legacy.state is McpRegistrationState.FINISHUP_OWNED
+                    or not self._current_is_desired(effective, serve_command, expected_root)
+                )
                 else McpRegistrationAction.NOOP
             )
         )
-        warnings: tuple[str, ...] = ()
+        warnings: list[str] = list(registrations.legacy_warnings())
         if state is McpRegistrationState.FOREIGN_PRESENT:
-            warnings = ("foreign_entry_present",)
+            warnings.append("foreign_entry_present")
         digest_input: dict[str, object] = {
             "action": action.value,
             "executable_path": binary.executable_path,
             "harness": binary.harness_id.value,
+            # Frozen legacy identifier (ADR-048): the preview tag family keeps its namespace.
             "schema": "yoetz.mcp-registration-preview/1",
             "serve_command": list(serve_command),
             "server_name": MCP_SERVER_NAME,
@@ -419,22 +561,48 @@ class CodexMcpAdapter:
         if self._codex_home is not None:
             digest_input["codex_home"] = str(self._codex_home)
             digest_input["schema"] = "yoetz.mcp-registration-preview/4"
+        if not effective.env_current:
+            digest_input["current_env_complete"] = False
+        registrations.bind_legacy(digest_input)
         digest = canonical_digest(cast(JsonValue, digest_input))
         return McpRegistrationPreview(
             binary.harness_id,
             action,
             state,
-            warnings,
+            tuple(sorted(warnings)),
             digest,
             serve_command,
             self._route_profile,
             expected_root,
+            registrations.legacy_registration,
+            None
+            if state is not McpRegistrationState.FINISHUP_OWNED or current_command is None
+            else mcp_command_profile(current_command),
         )
 
     async def preview_registration(self, binary: HarnessBinary) -> McpRegistrationPreview:
         self._require_codex(binary)
-        state, current_command, current_root = self._observe_registration_state(binary)
-        return self._preview_for(binary, state, current_command, current_root)
+        return self._preview_for(binary, self._observe_registration_state(binary))
+
+    def _remove_legacy_entry(self, binary: HarnessBinary, expected: _Entry) -> None:
+        """Remove the owned legacy-key entry the accepted preview named (ADR-048).
+
+        Codex removes by name only, so the entry is re-read immediately before the removal and
+        any change since the preview stops the migration with the new-key entry already written.
+        """
+
+        before = self._observe_registration_state(binary).legacy
+        if before != expected:
+            raise McpRegistrationError(
+                McpRegistrationReason.REGISTRATION_FAILED,
+                {"legacy_state": before.state.value},
+            )
+        try:
+            self._run((binary.executable_path, "mcp", "remove", MCP_LEGACY_SERVER_NAME))
+        except Exception as exc:
+            raise McpRegistrationError(
+                McpRegistrationReason.REGISTRATION_FAILED, {"legacy_state": "unknown"}
+            ) from exc
 
     async def apply_registration(
         self,
@@ -446,7 +614,8 @@ class CodexMcpAdapter:
             raise McpRegistrationError(McpRegistrationReason.CONFIRMATION_REQUIRED, {})
         if not command.explicitly_accepted:
             raise McpRegistrationError(McpRegistrationReason.CONFIRMATION_REQUIRED, {})
-        preview = await self.preview_registration(binary)
+        registrations = self._observe_registration_state(binary)
+        preview = self._preview_for(binary, registrations)
         if command.preview_digest != preview.preview_digest:
             raise McpRegistrationError(McpRegistrationReason.PREVIEW_STALE, {})
         if preview.state_before is McpRegistrationState.FOREIGN_PRESENT:
@@ -459,66 +628,80 @@ class CodexMcpAdapter:
                 preview.state_before,
                 preview.preview_digest,
             )
-        environment_args = (
-            ()
-            if preview.isolated_root is None
-            else ("--env", f"{ISOLATED_ROOT_ENV}={preview.isolated_root}")
-        )
-        add_output = self._run(
-            (
-                binary.executable_path,
-                "mcp",
-                "add",
-                MCP_SERVER_NAME,
-                *environment_args,
-                "--",
-                *preview.serve_command,
+        if not self._current_is_desired(
+            registrations.current, preview.serve_command, preview.isolated_root
+        ):
+            # New registrations bind both spellings of the root to one value (ADR-048).
+            environment_args = (
+                ()
+                if preview.isolated_root is None
+                else (
+                    "--env",
+                    f"{ISOLATED_ROOT_ENV}={preview.isolated_root}",
+                    "--env",
+                    f"{LEGACY_ISOLATED_ROOT_ENV}={preview.isolated_root}",
+                )
             )
-        )
-        if add_output.exit_code != 0:
-            raise McpRegistrationError(
-                McpRegistrationReason.REGISTRATION_FAILED,
-                {"exit_code_class": "nonzero"},
+            add_output = self._run(
+                (
+                    binary.executable_path,
+                    "mcp",
+                    "add",
+                    MCP_SERVER_NAME,
+                    *environment_args,
+                    "--",
+                    *preview.serve_command,
+                )
             )
+            if add_output.exit_code != 0:
+                raise McpRegistrationError(
+                    McpRegistrationReason.REGISTRATION_FAILED,
+                    {"exit_code_class": "nonzero"},
+                )
+        if registrations.legacy.state is McpRegistrationState.FINISHUP_OWNED:
+            # The new key is written first, so a failed removal leaves a working duplicate
+            # rather than no registration at all.
+            self._remove_legacy_entry(binary, registrations.legacy)
         # Verify by re-reading state rather than trusting the add exit code alone.
-        state_after, command_after, root_after = self._observe_registration_state(binary)
-        if (
-            state_after is not McpRegistrationState.FINISHUP_OWNED
-            or command_after != preview.serve_command
-            or root_after != preview.isolated_root
+        after = self._observe_registration_state(binary)
+        if not self._current_is_desired(
+            after.current, preview.serve_command, preview.isolated_root
         ):
             raise McpRegistrationError(
                 McpRegistrationReason.REGISTRATION_FAILED,
-                {"verified_state": state_after.value},
+                {"verified_state": after.current.state.value},
+            )
+        if after.legacy.state is McpRegistrationState.FINISHUP_OWNED:
+            raise McpRegistrationError(
+                McpRegistrationReason.REGISTRATION_FAILED,
+                {"legacy_state": after.legacy.state.value},
             )
         return McpRegistrationResult(
             binary.harness_id,
             preview.action,
             preview.state_before,
-            state_after,
+            after.current.state,
             preview.preview_digest,
         )
 
     def _unregistration_preview_for(
-        self,
-        binary: HarnessBinary,
-        state: McpRegistrationState,
-        current_command: tuple[str, ...] | None,
-        current_root: str | None,
+        self, binary: HarnessBinary, registrations: _Registrations
     ) -> McpRegistrationPreview:
+        effective = registrations.effective
+        state, current_command, current_root = effective.state, effective.command, effective.root
         action = (
             McpRegistrationAction.NOOP
             if state is McpRegistrationState.ABSENT
             else McpRegistrationAction.UNREGISTER
         )
-        warnings: tuple[str, ...] = ()
+        warnings: list[str] = list(registrations.legacy_warnings())
         if state is McpRegistrationState.FOREIGN_PRESENT:
-            warnings = ("foreign_entry_present",)
+            warnings.append("foreign_entry_present")
         elif state is McpRegistrationState.FINISHUP_OWNED:
             # Codex 0.149.x exposes a name-based remove command, not a compare-and-remove token.
             # Apply narrows that host limitation with an immediate ownership recheck below and
             # the preview must surface the remaining non-atomic boundary to the operator.
-            warnings = ("host_remove_not_compare_and_swap",)
+            warnings.append("host_remove_not_compare_and_swap")
         if (
             state is McpRegistrationState.FINISHUP_OWNED
             and current_command is not None
@@ -535,6 +718,7 @@ class CodexMcpAdapter:
             "action": action.value,
             "executable_path": binary.executable_path,
             "harness": binary.harness_id.value,
+            # Frozen legacy identifier (ADR-048): the preview tag family keeps its namespace.
             "schema": "yoetz.mcp-unregistration-preview/1",
             "serve_command": list(serve_command),
             "server_name": MCP_SERVER_NAME,
@@ -543,30 +727,34 @@ class CodexMcpAdapter:
         if current_root is not None:
             digest_input["schema"] = "yoetz.mcp-unregistration-preview/2"
             digest_input["isolated_root"] = current_root
-        if serve_command[0] != "finishup":
+        if serve_command[0] not in LAUNCHER_NAMES:
             proof = installed_launcher()
             digest_input["schema"] = "yoetz.mcp-unregistration-preview/3"
             digest_input["launcher_digest"] = None if proof is None else proof[1]
         if self._codex_home is not None:
             digest_input["codex_home"] = str(self._codex_home)
             digest_input["schema"] = "yoetz.mcp-unregistration-preview/4"
+        if registrations.current.state is not effective.state:
+            # The effective entry is the legacy one; bind the new-key state it stands in for.
+            digest_input["current_state"] = registrations.current.state.value
+        registrations.bind_legacy(digest_input)
         digest = canonical_digest(cast(JsonValue, digest_input))
         return McpRegistrationPreview(
             binary.harness_id,
             action,
             state,
-            warnings,
+            tuple(sorted(warnings)),
             digest,
             serve_command,
             route_profile,
             current_root,
+            registrations.legacy_registration,
         )
 
     async def preview_unregistration(self, binary: HarnessBinary) -> McpRegistrationPreview:
         self._require_codex(binary)
         self._expected_isolated_root()
-        state, current_command, current_root = self._observe_registration_state(binary)
-        return self._unregistration_preview_for(binary, state, current_command, current_root)
+        return self._unregistration_preview_for(binary, self._observe_registration_state(binary))
 
     async def apply_unregistration(
         self,
@@ -578,7 +766,9 @@ class CodexMcpAdapter:
             raise McpRegistrationError(McpRegistrationReason.CONFIRMATION_REQUIRED, {})
         if not command.explicitly_accepted:
             raise McpRegistrationError(McpRegistrationReason.CONFIRMATION_REQUIRED, {})
-        preview = await self.preview_unregistration(binary)
+        self._expected_isolated_root()
+        registrations = self._observe_registration_state(binary)
+        preview = self._unregistration_preview_for(binary, registrations)
         if command.preview_digest != preview.preview_digest:
             raise McpRegistrationError(McpRegistrationReason.PREVIEW_STALE, {})
         if preview.state_before is McpRegistrationState.FOREIGN_PRESENT:
@@ -591,47 +781,57 @@ class CodexMcpAdapter:
                 preview.state_before,
                 preview.preview_digest,
             )
-        state_before_remove, command_before_remove, root_before_remove = (
-            self._observe_registration_state(binary)
-        )
-        if state_before_remove is McpRegistrationState.FOREIGN_PRESENT:
+        before_remove = self._observe_registration_state(binary)
+        if before_remove.effective.state is McpRegistrationState.FOREIGN_PRESENT:
             raise McpRegistrationError(McpRegistrationReason.FOREIGN_ENTRY_PRESENT, {})
-        if (
-            state_before_remove is not McpRegistrationState.FINISHUP_OWNED
-            or command_before_remove != preview.serve_command
-            or root_before_remove != preview.isolated_root
-        ):
+        if before_remove != registrations:
             raise McpRegistrationError(McpRegistrationReason.PREVIEW_STALE, {})
-        try:
-            remove_output = self._run((binary.executable_path, "mcp", "remove", MCP_SERVER_NAME))
-        except Exception as exc:
-            # The name-based command may have mutated registration before a timeout or
-            # harness failure surfaced. Its outcome is therefore unknown, never a
-            # pre-mutation observation error.
-            raise McpRegistrationError(McpRegistrationReason.REGISTRATION_FAILED, {}) from exc
+        # Remove every owned entry: the new key, then the legacy key (ADR-048). A foreign entry
+        # under either key is never removed.
+        names = tuple(
+            name
+            for name, entry in (
+                (MCP_SERVER_NAME, registrations.current),
+                (MCP_LEGACY_SERVER_NAME, registrations.legacy),
+            )
+            if entry.state is McpRegistrationState.FINISHUP_OWNED
+        )
+        nonzero = False
+        for name in names:
+            try:
+                remove_output = self._run((binary.executable_path, "mcp", "remove", name))
+            except Exception as exc:
+                # The name-based command may have mutated registration before a timeout or
+                # harness failure surfaced. Its outcome is therefore unknown, never a
+                # pre-mutation observation error.
+                raise McpRegistrationError(McpRegistrationReason.REGISTRATION_FAILED, {}) from exc
+            nonzero = nonzero or remove_output.exit_code != 0
         # A nonzero exit does not establish that the host left the entry present.
         # Reconcile once through the same bounded positive-absence probe as exit zero;
         # never retry the mutation or echo the host's output.
-        details: dict[str, JsonValue] = (
-            {"exit_code_class": "nonzero"} if remove_output.exit_code != 0 else {}
-        )
+        details: dict[str, JsonValue] = {"exit_code_class": "nonzero"} if nonzero else {}
         try:
-            state_after, _command_after, _root_after = self._observe_registration_state(binary)
+            after = self._observe_registration_state(binary)
         except McpRegistrationError as exc:
             # The name-based remove command already ran. Any unreadable or
             # malformed verification is therefore an outcome-unknown mutation,
             # not the pre-mutation observation reason.
             raise McpRegistrationError(McpRegistrationReason.REGISTRATION_FAILED, details) from exc
-        if state_after is not McpRegistrationState.ABSENT:
+        if after.current.state is not McpRegistrationState.ABSENT:
             raise McpRegistrationError(
                 McpRegistrationReason.REGISTRATION_FAILED,
-                {**details, "verified_state": state_after.value},
+                {**details, "verified_state": after.current.state.value},
+            )
+        if after.legacy.state is McpRegistrationState.FINISHUP_OWNED:
+            raise McpRegistrationError(
+                McpRegistrationReason.REGISTRATION_FAILED,
+                {**details, "legacy_state": after.legacy.state.value},
             )
         return McpRegistrationResult(
             binary.harness_id,
             McpRegistrationAction.UNREGISTER,
             preview.state_before,
-            state_after,
+            McpRegistrationState.ABSENT,
             preview.preview_digest,
-            ("host_remove_returned_nonzero",) if remove_output.exit_code != 0 else (),
+            ("host_remove_returned_nonzero",) if nonzero else (),
         )

@@ -41,6 +41,7 @@ from finishup.adapters.integrations.observation_local import (
 from finishup.adapters.workspace_binding import canonical_workspace_locator
 from finishup.application.observation_check_policy import (
     ObservationCheckPolicyAbsent,
+    ObservationCheckPolicyAmbiguous,
     load_observation_check_policy,
 )
 from finishup.application.observation_drain import (
@@ -2352,6 +2353,9 @@ _CHECK_POLICY_CONTINUATION: Final = (
 def _check_policy_failure(operation: str, error: BaseException) -> int:
     if isinstance(error, ObservationCheckPolicyAbsent):
         reason = "policy_not_configured"
+    elif isinstance(error, ObservationCheckPolicyAmbiguous):
+        # Both `.finishup/checks.toml` and the legacy `.yoetz/checks.toml` exist (ADR-048).
+        reason = "policy_ambiguous"
     elif (
         isinstance(error, ProtocolValueError)
         and error.reason_code == "invalid_approved_check_policy"
@@ -2448,6 +2452,9 @@ def observe_checks_status(
         {
             "workspace_commitment": commitment,
             "policy_digest": policy.raw_digest,
+            # The fixed workspace-relative file in use: `.finishup/checks.toml`, or the legacy
+            # `.yoetz/checks.toml` when only that exists (ADR-048).
+            "policy_file": policy.source_path.as_posix(),
             "state": "trusted" if trusted else "untrusted",
             # Host-level answer, named once here rather than per rejected run (issue #720).
             "sandbox": probe_check_sandbox().as_json(),

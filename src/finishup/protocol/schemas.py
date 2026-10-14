@@ -56,6 +56,8 @@ __all__ = [
     "validate_schema_instance",
 ]
 
+# Frozen legacy identifier (ADR-048): every released schema ``$id`` and the hosted manifest
+# format tag; released schema bytes never change.
 SCHEMA_NAMESPACE: Final = "https://schemas.yoetz.dev/0.1/"
 SCHEMA_MANIFEST_SCHEMA: Final = "yoetz.schema-manifest/1.0.0"
 SCHEMA_MANIFEST_VERSION: Final = "1.0.0"

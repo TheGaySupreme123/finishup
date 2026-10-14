@@ -443,3 +443,23 @@ def test_service_never_records_a_non_codex_route(tmp_path: Path) -> None:
     result = anyio.run(lambda: service.register(foreign, _confirmation(), _state=tmp_path))
     assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     assert read_applied_route(_state=tmp_path) is None
+
+
+@pytest.mark.parametrize(
+    "launcher", ["yoetz", "/opt/runtime/bin/yoetz", "finishup", "/opt/runtime/bin/finishup"]
+)
+def test_record_written_with_either_launcher_spelling_reads_back(
+    tmp_path: Path, launcher: str
+) -> None:
+    """Stored records from before the rename name the ``yoetz`` launcher (ADR-048)."""
+
+    command = [launcher, *MCP_SERVE_COMMAND[1:]]
+    record = record_applied_route("policy", command, command, _DIGEST, _state=tmp_path)
+    assert read_applied_route(_state=tmp_path) == record
+    assert record["applied_serve_command"] == command
+
+
+def test_record_refuses_an_unknown_bare_launcher(tmp_path: Path) -> None:
+    command = ["yoetz-server", *MCP_SERVE_COMMAND[1:]]
+    with pytest.raises(ValueError, match="applied_mcp_route_command_invalid"):
+        record_applied_route("policy", command, command, _DIGEST, _state=tmp_path)

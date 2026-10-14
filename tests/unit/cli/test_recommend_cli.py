@@ -7,7 +7,7 @@ from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
 import anyio
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 import finishup.cli.recommend as recommend_module
 from finishup.application.package_update import (
@@ -170,6 +170,24 @@ def test_package_accept_prints_pypi_upgrade_command_only(
     assert result.exit_code == 0, result.output
     assert "finishup upgrade" in result.stdout
     assert "npm" not in result.stdout
+
+
+def test_package_accept_names_the_transitional_yoetz_command(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """A transitional ``yoetz`` install has only ``yoetz`` on PATH (ADR-048)."""
+
+    _patch_state_root(monkeypatch, tmp_path)
+    _patch_pending_context(monkeypatch, "package-update")
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "finishup.cli.recommend.installed_package_name", lambda: "yoetz"
+    )
+
+    result = _RUNNER.invoke(app, ["recommend", "accept", "package-update"])
+
+    assert result.exit_code == 0, result.output
+    assert "run: yoetz upgrade" in result.stdout
+    assert "finishup upgrade" not in result.stdout
 
 
 def test_list_renders_pending_actions(monkeypatch: object) -> None:
@@ -425,6 +443,9 @@ def test_activation_accept_repreviews_and_applies_exact_digest(
         config_preimage_digest="sha256:" + "f" * 64,
         cache_mutation_planned=True,
         inspection=SimpleNamespace(inventory_verified=False),
+        legacy_removed_block="",
+        legacy_cache_versions=(),
+        legacy_plugin_tree_planned=False,
     )
 
     _patch_pending_context(monkeypatch, "codex-plugin-activation")
@@ -532,6 +553,9 @@ def test_activation_store_failure_prevents_host_mutation(
         config_preimage_digest="sha256:" + "f" * 64,
         cache_mutation_planned=True,
         inspection=SimpleNamespace(inventory_verified=False),
+        legacy_removed_block="",
+        legacy_cache_versions=(),
+        legacy_plugin_tree_planned=False,
     )
     applied = False
 
@@ -665,6 +689,9 @@ def test_activation_preview_requires_explicit_post_preview_confirmation(
         config_preimage_digest="sha256:" + "0" * 64,
         cache_mutation_planned=False,
         inspection=SimpleNamespace(inventory_verified=False),
+        legacy_removed_block="",
+        legacy_cache_versions=(),
+        legacy_plugin_tree_planned=False,
     )
 
     expected_home = codex_home.resolve()
@@ -713,6 +740,144 @@ def test_activation_preview_requires_explicit_post_preview_confirmation(
     assert result.exit_code == 2
     assert preview.preview_digest in result.stdout
     assert "activation_not_approved" in result.output
+    assert applied == []
+
+
+def _legacy_activation_preview(executable: Path, codex_home: Path, **legacy: object) -> object:
+    executable.write_bytes(b"codex-testing")
+    return SimpleNamespace(
+        marketplace_bytes=b"{}\n",
+        config_toml_block='[plugins."finishup@finishup"]\nenabled = true\n',
+        preview_digest="sha256:" + "b" * 64,
+        codex_home=codex_home,
+        plugin_install_path=codex_home / "plugins" / "cache" / "finishup",
+        plugin_source_digest="sha256:" + "c" * 64,
+        plugin_install_digest="sha256:" + "d" * 64,
+        executable_path=executable,
+        executable_digest="sha256:" + "e" * 64,
+        codex_version="0.148.0-alpha.6",
+        probe_command=("--version",),
+        inventory_command=("plugin", "list", "--marketplace", "finishup", "--json"),
+        install_command=("plugin", "add", "finishup@finishup", "--json"),
+        probe_environment="temporary_owner_private_home",
+        activation_environment=(
+            ("CODEX_HOME", str(codex_home)),
+            ("CODEX_TESTING_HOME", str(codex_home)),
+        ),
+        marketplace_preimage_digest="sha256:" + "f" * 64,
+        config_preimage_digest="sha256:" + "0" * 64,
+        cache_mutation_planned=True,
+        inspection=SimpleNamespace(inventory_verified=False),
+        **legacy,
+    )
+
+
+def _invoke_activation(
+    tmp_path: Path, monkeypatch: object, preview: object, applied: list[str]
+) -> Result:
+    def make_preview(*_args: object, **_kwargs: object) -> object:
+        return preview
+
+    def apply(*_args: object, approved_digest: str, **_kwargs: object) -> None:
+        applied.append(approved_digest)
+
+    adapter = SimpleNamespace(preview_activation=make_preview, apply_activation=apply)
+
+    def import_adapter(_name: str) -> object:
+        return adapter
+
+    monkeypatch.setattr(  # type: ignore[attr-defined]
+        "finishup.cli.recommend.importlib.import_module", import_adapter
+    )
+    return _RUNNER.invoke(
+        app,
+        [
+            "recommend",
+            "accept",
+            "codex-plugin-activation",
+            "--codex-path",
+            str(tmp_path / "codex-testing-bin"),
+            "--codex-home",
+            str(tmp_path / "codex-testing"),
+        ],
+        input="y\n",
+    )
+
+
+def test_activation_preview_names_every_bound_legacy_deletion(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """The digest binds the Yoetz-era deletions, so consent text shows each one (ADR-048)."""
+
+    _patch_state_root(monkeypatch, tmp_path)
+    _patch_pending_context(monkeypatch, "codex-plugin-activation")
+    codex_home = (tmp_path / "codex-testing").resolve()
+    legacy_block = (
+        f'[marketplaces.yoetz]\nsource_type = "local"\nsource = "{tmp_path}"\n\n'
+        '[plugins."yoetz@yoetz"]\nenabled = true\n'
+    )
+    preview = _legacy_activation_preview(
+        tmp_path / "codex-testing-bin",
+        codex_home,
+        legacy_removed_block=legacy_block,
+        legacy_cache_versions=("0.2.5",),
+        legacy_plugin_tree_planned=True,
+    )
+    applied: list[str] = []
+
+    result = _invoke_activation(tmp_path, monkeypatch, preview, applied)
+
+    assert result.exit_code == 0, result.output
+    stdout = result.stdout
+    shown, _, _after = stdout.partition("preview digest:")
+    assert "Earlier Yoetz activation removed by this change:" in shown
+    assert "  [marketplaces.yoetz]" in shown
+    assert '  [plugins."yoetz@yoetz"]' in shown
+    assert "plugin cache versions: 0.2.5" in shown
+    assert "plugin source tree: .agents/plugins/yoetz" in shown
+    assert applied == ["sha256:" + "b" * 64]
+
+
+def test_activation_without_legacy_pieces_names_no_legacy_removal(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    _patch_state_root(monkeypatch, tmp_path)
+    _patch_pending_context(monkeypatch, "codex-plugin-activation")
+    preview = _legacy_activation_preview(
+        tmp_path / "codex-testing-bin",
+        (tmp_path / "codex-testing").resolve(),
+        legacy_removed_block="",
+        legacy_cache_versions=(),
+        legacy_plugin_tree_planned=False,
+    )
+    applied: list[str] = []
+
+    result = _invoke_activation(tmp_path, monkeypatch, preview, applied)
+
+    assert result.exit_code == 0, result.output
+    assert "Earlier Yoetz" not in result.stdout
+
+
+def test_activation_refuses_a_preview_without_its_legacy_facts(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """An unreadable legacy field could hide a bound deletion, so nothing is approved."""
+
+    _patch_state_root(monkeypatch, tmp_path)
+    _patch_pending_context(monkeypatch, "codex-plugin-activation")
+    preview = _legacy_activation_preview(
+        tmp_path / "codex-testing-bin",
+        (tmp_path / "codex-testing").resolve(),
+        legacy_removed_block="",
+        legacy_cache_versions=(),
+    )
+    applied: list[str] = []
+
+    result = _invoke_activation(tmp_path, monkeypatch, preview, applied)
+
+    assert result.exit_code == 2
+    assert "activation_preview_invalid" in result.output
+    assert "Apply exactly" not in result.output
     assert applied == []
 
 

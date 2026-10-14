@@ -160,6 +160,14 @@ def _run_ceremony(operation: Callable[[], Awaitable[object]]) -> None:
     run_async(wrapped)
 
 
+# Fixed words for what the legacy ``yoetz`` MCP key holds (ADR-048); never host-supplied text.
+_LEGACY_REGISTRATION_TEXT: Final = {
+    "legacy_only": "registered under the earlier name yoetz (setup migrates it)",
+    "duplicate": "also registered under the earlier name yoetz (setup removes it)",
+    "foreign": "the earlier name yoetz holds an entry FinishUP cannot prove is its own (kept)",
+}
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _Overview:
     service_line: str
@@ -199,6 +207,9 @@ async def _harness_summary() -> tuple[str, ...]:
             state = observation.state.value
             if observation.isolation_binding is not None:
                 state += f", isolation: {observation.isolation_binding}"
+            legacy = _LEGACY_REGISTRATION_TEXT.get(observation.legacy_registration)
+            if legacy is not None:
+                state += f", {legacy}"
         except McpRegistrationError as error:
             state = f"unknown ({error.reason.value})"
         lines.append(f"codex ({version}) — MCP registration: {state}")

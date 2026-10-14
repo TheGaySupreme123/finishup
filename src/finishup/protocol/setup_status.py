@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 type Digest = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
 type SetupHost = Literal["codex", "claude", "cursor-ide", "cursor-cli"]
+# Frozen legacy identifier (ADR-048): ``yoetz_owned`` is a released setup-status wire value.
 type RegistrationState = Literal["absent", "yoetz_owned", "foreign_present"]
 type RouteProfile = Literal["policy", "strict"]
 type RegistrationError = Literal[
@@ -168,5 +169,6 @@ class SetupStatus(BaseModel):
     integration: SetupIntegrationStatus
     marker_present: bool
     platform: SetupPlatformStatus
+    # Frozen legacy identifier (ADR-048): the protocol 0.1 tag namespace.
     schema_tag: Literal["yoetz.setup-status/2"] = Field(alias="schema")
     service: SetupServiceStatus

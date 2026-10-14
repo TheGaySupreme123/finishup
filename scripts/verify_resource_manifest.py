@@ -101,6 +101,7 @@ class ResourceManifestError(Exception):
 
 _PACKAGE_NAME: Final = "finishup"
 _RESOURCE_SET_VERSION: Final = "0.1.0"
+# Frozen legacy identifier (ADR-048): resource-manifest format tag (lockstep with version.py).
 _MANIFEST_SCHEMA: Final = "yoetz.resource-manifest/1"
 _PACKAGE_RESOURCE_ROOT: Final = "src/finishup/resources"
 _ALLOWED_SOURCE_ROOTS: Final = (
@@ -400,6 +401,7 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         True,
     ),
     (
+        # Frozen legacy identifier (ADR-048): released canonical vector path and media type.
         "fixtures/canonical/OBS-001-captured-evidence.case.json",
         "canonical_vector",
         "application/vnd.yoetz.fixture-case+json",
@@ -463,6 +465,7 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "application/schema+json",
         True,
     ),
+    # Frozen legacy identifier (ADR-048): released config schema family "yoetz-config".
     (
         "schemas/config/yoetz-config-1.0.0.schema.json",
         "json_schema",
@@ -1868,6 +1871,7 @@ def build_codex_skill_manifest(*, repo_root: Path) -> bytes:
     if not isinstance(parsed, Mapping):
         raise ResourceManifestError("codex_skill_manifest_invalid", detail=str(path))
     source = cast(Mapping[str, JsonValue], parsed)
+    # Frozen legacy identifier (ADR-048): codex skill manifest format tag.
     if (
         source.get("schema") != "yoetz.codex-skill-manifest/1"
         or source.get("skill") != "finishup"

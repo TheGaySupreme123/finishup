@@ -80,6 +80,8 @@ READ_ONLY_CHECK_MODES: Final[frozenset[str]] = frozenset({"inspect"})
 _MAX_DIRECTIVE_BYTES: Final = 232
 _MAX_NUDGE_BYTES: Final = 128
 _MAX_REMEDY_BYTES: Final = 420
+# A directive is new output, so it names the current scheme only; a legacy ``yoetz://`` URI is
+# accepted where a caller reads guidance, never emitted here (ADR-048).
 _GUIDANCE_URI_PATTERN: Final = re.compile(
     r"^finishup://guidance/[a-z][a-z0-9-]*\.md(?:#[a-z0-9][a-z0-9-]*)?$", re.ASCII
 )
@@ -687,6 +689,8 @@ _LOCAL_REASON_CONTINUATIONS: Final[Mapping[str, str]] = MappingProxyType(
         "test_fake_forbids_provider": "config_correction_required",
         "unknown_config_env_var": "config_correction_required",
         "unknown_config_key": "config_correction_required",
+        # A FINISHUP_ variable and its legacy YOETZ_ spelling disagree (ADR-048).
+        "config_env_conflict": "config_correction_required",
         # Human ceremony and consent (issues #147, #489, #519).
         "ceremony_service_unavailable": "local_service_unavailable",
         "ceremony_unsupported": "ceremony_refusal_terminal",
@@ -734,11 +738,23 @@ _LOCAL_REASON_CONTINUATIONS: Final[Mapping[str, str]] = MappingProxyType(
         "instance_root_too_long": "instance_request_correction",
         "instance_service_running": "service_holder_busy",
         "isolation_root_conflict": "instance_identity_repair",
+        # The two isolation-root spellings disagree (ADR-048): an environment correction, never
+        # an instance repair.
+        "isolation_root_env_conflict": "config_correction_required",
+        "isolation_root_invalid": "config_correction_required",
         "runtime_pin_conflict": "instance_identity_repair",
         "runtime_pin_invalid": "instance_identity_repair",
         # Local storage, workspace, and service lifecycle (issues #237, #428).
         "git_config_limit_exceeded": "local_state_repair",
+        # Ambient roots under both the FinishUP and the legacy Yoetz names (ADR-048).
+        "installation_root_ambiguous": "local_state_repair",
+        "path_contains_symlink": "local_state_repair",
+        "path_in_repository": "local_state_repair",
+        "path_in_sync_folder": "local_state_repair",
+        "path_not_owned": "local_state_repair",
         "path_on_network_filesystem": "local_state_repair",
+        "path_shared_temp": "local_state_repair",
+        "permissions_too_broad": "local_state_repair",
         "service_already_running": "service_holder_busy",
         "session_monitor_unavailable": "local_service_unavailable",
         "storage_unavailable": "local_state_repair",

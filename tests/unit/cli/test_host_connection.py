@@ -143,6 +143,30 @@ def test_launch_preserves_the_selected_finishup_runtime_on_path(
     assert environment["PATH"] == "/opt/instance/bin:/usr/bin:/bin"
 
 
+def test_launch_names_the_isolated_root_under_both_spellings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A host that resolves an older ``yoetz`` launcher still stays isolated (ADR-048, #604)."""
+
+    from finishup.adapters.integrations.host_discovery import HostInstallation
+    from finishup.cli import host_connection
+
+    monkeypatch.setattr(host_connection, "invoking_launcher", lambda: None)
+    monkeypatch.setattr(host_connection, "isolated_root", lambda: Path("/opt/instance/state"))
+    selected = HostInstallation(
+        "claude", Path("/opt/claude"), "2.1.0", Path("/workspace/profile"), "Claude Code"
+    )
+    launch = host_connection.launch_details(selected, Path("/workspace/project"))
+    environment = launch["environment"]
+    assert isinstance(environment, dict)
+    assert environment["FINISHUP_ISOLATED_ROOT"] == "/opt/instance/state"
+    assert environment["YOETZ_ISOLATED_ROOT"] == "/opt/instance/state"
+    shell_command = launch["shell_command"]
+    assert isinstance(shell_command, str)
+    assert "FINISHUP_ISOLATED_ROOT=/opt/instance/state" in shell_command
+    assert "YOETZ_ISOLATED_ROOT=/opt/instance/state" in shell_command
+
+
 @pytest.mark.parametrize("host", ["claude", "cursor-ide", "cursor-cli", "codex"])
 def test_setup_keeps_os_password_ceremony_on_main_thread(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, host: str
