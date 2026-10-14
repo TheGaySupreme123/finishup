@@ -17,7 +17,7 @@ Coverage
   no AI-powered review
 
 Findings
-  P2 unsupported_claim (deterministic): no evidence links the claim
+  P2 unsupported_claim (local): no evidence links the claim
 
 Limitations
   semantic_review_unavailable

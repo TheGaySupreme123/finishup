@@ -30,6 +30,7 @@ from finishup.application.status_faults import (
     status_stage,
 )
 from finishup.application.task_views import LineageStatusSnapshot, ProjectStatusSnapshot
+from finishup.domain.events import ReviewMode
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingOrigin
 from finishup.domain.observation import AdviceSnapshot
 from finishup.domain.privacy import ProjectionItemAuthorship
@@ -57,7 +58,14 @@ from finishup.kernel.deterministic_checks import (
 )
 from finishup.kernel.fact_lineage import lineage_to_wire
 from finishup.kernel.gap_effect import UNCLASSIFIED_GAP_PREFIX, GapEffectKind
+from finishup.kernel.projections import ProjectionState
 from finishup.kernel.receipt_prediction import predict_receipt_conclusion
+from finishup.kernel.review_mode import (
+    ConversationReviewContext,
+    ConversationReviewMode,
+    conversation_review_mode_from_switches,
+    review_mode_switches,
+)
 from finishup.observability.logging import record_unexpected_exception_without_raising
 from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.host_lineage import HostLineageRegistryPort
@@ -271,6 +279,9 @@ class StatusInternalResult:
     # ``(repository, machine_default)`` possible-credential filter state, composed by the service
     # from the owner's privacy policy (issue #982); ``None`` when not composed.
     credential_heuristic: tuple[str, str] | None = None
+    # ADR-049: the conversation's review mode, the owner's setting and the latest switch,
+    # composed from the head projection and the owner's policy; ``None`` when not composed.
+    review_mode: dict[str, JsonValue] | None = None
 
     def as_json(self) -> dict[str, JsonValue]:
         # Unset optional non-null leaves (today: obligation ``acceptance_criteria``, structural
@@ -314,7 +325,106 @@ class StatusInternalResult:
                     }
                 }
             ),
+            **({} if self.review_mode is None else {"review_mode": dict(self.review_mode)}),
         }
+
+
+async def _task_review_mode(
+    app: object,
+    runtime: TaskRuntime,
+    route_profile: Literal["policy", "strict"] | None,
+) -> tuple[ConversationReviewMode, ConversationReviewContext] | None:
+    """The task's review mode at the head on this route (ADR-049); ``None`` when unreadable.
+
+    Read-only: the owner's setting and review availability from the application's reader, and
+    the switches from the head projection (status reads the head, never ``at_frontier``). A read
+    failure leaves status readable.
+    """
+
+    reader = getattr(app, "conversation_review_context", None)
+    if not callable(reader):
+        return None
+    try:
+        context = await cast(
+            Callable[[TaskRuntime], Awaitable[ConversationReviewContext | None]], reader
+        )(runtime)
+        if type(context) is not ConversationReviewContext:
+            return None
+        # The full head projection: the compact view's items carry no decisions.
+        stored = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
+        switches = (
+            review_mode_switches(stored.state)
+            if stored is not None and type(stored.state) is ProjectionState
+            else ()
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc, component="status", operation="conversation_review_read_failed"
+        )
+        return None
+    conversation = conversation_review_mode_from_switches(
+        switches,
+        context.setting,
+        ai_review_available=context.ai_review_available,
+        setting_explicit=context.setting_explicit,
+        route_allows_review=route_profile != "strict",
+    )
+    return conversation, context
+
+
+def _status_review_mode_body(
+    resolved: tuple[ConversationReviewMode, ConversationReviewContext] | None,
+) -> dict[str, JsonValue] | None:
+    if resolved is None:
+        return None
+    conversation, context = resolved
+    body: dict[str, JsonValue] = {
+        "mode": conversation.mode.value,
+        "requested": conversation.requested.value,
+        "setting": conversation.setting.value,
+        "ai_review_available": context.ai_review_available,
+    }
+    if conversation.local_reason is not None:
+        body["local_reason"] = conversation.local_reason
+    latest = conversation.latest_switch
+    if latest is not None:
+        body["switch_event_id"] = latest.event_id
+        body["switch_sequence"] = str(latest.sequence)
+    return body
+
+
+async def status_review_mode(
+    app: object,
+    runtime: TaskRuntime,
+    *,
+    route_profile: Literal["policy", "strict"] | None = None,
+) -> dict[str, JsonValue] | None:
+    """The task's review mode for status (ADR-049); ``None`` when it cannot be read.
+
+    ``mode`` is what the next check that names no mode runs in on this route.
+    """
+
+    return _status_review_mode_body(await _task_review_mode(app, runtime, route_profile))
+
+
+def _task_local_by_choice(
+    resolved: tuple[ConversationReviewMode, ConversationReviewContext] | None,
+) -> bool:
+    """Whether the task's next check runs local by its owner's setting or its own switch.
+
+    Such a check records a route that did not require AI-powered review (ADR-049), so closure
+    readiness must not ask for a review it will never run. A policy that predates the setting,
+    with no switch, keeps the released requirement, exactly as its checks do.
+    """
+
+    if resolved is None:
+        return False
+    conversation, context = resolved
+    return conversation.mode is ReviewMode.LOCAL and (
+        context.setting_explicit or bool(conversation.switches)
+    )
 
 
 def _error(code: PublicErrorCode, message: str) -> PublicOperationError:
@@ -1763,7 +1873,8 @@ async def current_closure_readiness(
         request_id,
         lineage_gaps=lineage_gaps,
         lineage_self_verified=lineage_self_verified,
-        semantic_review_required=_semantic_review_required(app, route_profile),
+        semantic_review_required=_semantic_review_required(app, route_profile)
+        and not _task_local_by_choice(await _task_review_mode(app, runtime, route_profile)),
         check_in_flight=frontier == head and await _check_in_flight(runtime),
     )
     return frontier, readiness
@@ -2176,6 +2287,7 @@ async def execute_status(
                     else coverage.ledger_freshness
                 ),
             )
+        task_review_mode = await _task_review_mode(app, runtime, route_profile)
         closure_readiness = await _closure_readiness(
             runtime,
             frontier,
@@ -2183,9 +2295,11 @@ async def execute_status(
             request.request_id,
             lineage_gaps=lineage_gaps,
             lineage_self_verified=lineage_self_verified,
-            semantic_review_required=_semantic_review_required(app, route_profile),
+            semantic_review_required=_semantic_review_required(app, route_profile)
+            and not _task_local_by_choice(task_review_mode),
             check_in_flight=frontier == head and await _check_in_flight(runtime),
         )
+        review_mode = _status_review_mode_body(task_review_mode)
         return StatusInternalResult(
             "0.1",
             "1.0.0",
@@ -2208,6 +2322,7 @@ async def execute_status(
             import_status,
             closure_readiness,
             item_authorship,
+            review_mode=review_mode,
         )
     except (StatusFault, TypeError, ValueError) as exc:
         # The request passed schema validation and every caller-shape rejection above is explicit,

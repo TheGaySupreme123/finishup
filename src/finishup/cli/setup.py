@@ -64,6 +64,7 @@ from finishup.cli.agent_start import AGENT_START_HANDOFF
 from finishup.config.load import load_config
 from finishup.config.models import ConfigError
 from finishup.config.paths import PathSafetyError, setup_marker_path
+from finishup.domain.privacy import ConversationReview
 from finishup.domain.values import RequestId, request_id
 from finishup.ports.harness_mcp import (
     HarnessBinary,
@@ -648,30 +649,57 @@ def _is_interactive_terminal() -> bool:
         return False
 
 
-def _choose_review_mode() -> Literal["local_only", "semantic"]:
-    """Let first run choose its complete privacy posture before registration.
+type ReviewChoice = Literal["agent_opt_in", "local_only", "ai_powered"]
 
-    AI-powered review is offered first and is the default answer. That is a choice about this
-    prompt, not about what an installation seeds: the durable policy is still ``local_only``,
-    and this branch only leads to the provider binding, credential, and separately
-    reauthenticated policy commit that egress actually requires. Accepting it here configures
-    nothing on its own.
+# The owner's three first-run answers (ADR-049). Each maps to the conversation setting the drafted
+# privacy policy carries; all three register the ``policy`` MCP route, so the owner can widen
+# later without re-registering, and the privacy policy alone decides what may be sent.
+_REVIEW_CHOICES: Final[tuple[tuple[ReviewChoice, str], ...]] = (
+    (
+        "agent_opt_in",
+        "FinishUP (recommended): local checks; your agent can turn on AI-powered review for a "
+        "task when it helps",
+    ),
+    ("local_only", "FinishUP, local only (agents may not opt in)"),
+    ("ai_powered", "AI-powered review on every task"),
+)
+
+
+def review_choice_conversation_setting(choice: ReviewChoice) -> ConversationReview:
+    """The privacy-policy conversation setting one first-run answer stands for (ADR-049)."""
+
+    return {
+        "agent_opt_in": ConversationReview.LOCAL_AGENT_OPT_IN,
+        "local_only": ConversationReview.LOCAL_ONLY,
+        "ai_powered": ConversationReview.AI_POWERED,
+    }[choice]
+
+
+def _choose_review_mode() -> ReviewChoice:
+    """Let first run choose how tasks use AI-powered review before registration (ADR-049).
+
+    Every task starts with FinishUP's local checks unless the owner picks AI-powered review on
+    every task. The recommended first answer is the owner's standing permission for an agent to
+    turn on AI-powered review for one task when it helps; the second keeps every task local and
+    refuses agent opt-in; the third reviews every task. The answer configures nothing on its own:
+    reaching egress still needs the reviewer, its credential, and the separately reauthenticated
+    privacy decision, and an answer that leads to AI-powered review is drafted into that policy.
     """
 
     typer.echo("")
     typer.echo("Choose how FinishUP should review work:")
-    typer.echo("  1. AI-powered review (recommended) — configure a provider, API key, and policy")
+    for number, (_choice, text) in enumerate(_REVIEW_CHOICES, 1):
+        typer.echo(f"  {number}. {text}")
     typer.echo(
-        "  2. Local only — local checks, no AI-powered review; task content stays on this computer "
-        "(the next prompt separately decides PyPI update checks)"
+        "Local checks run on every task. AI-powered review sends work only within the privacy "
+        "policy you approve next, and you can change this later with "
+        "'finishup privacy conversations'."
     )
     while True:
         raw = typer.prompt("Review mode", default="1").strip()
-        if raw == "1":
-            return "semantic"
-        if raw == "2":
-            return "local_only"
-        typer.echo("Please enter 1 or 2.")
+        if raw in {"1", "2", "3"}:
+            return _REVIEW_CHOICES[int(raw) - 1][0]
+        typer.echo("Please enter 1, 2, or 3.")
 
 
 def _write_setup_marker(outcome: str) -> bool:
@@ -2601,14 +2629,56 @@ def _emit_provider_setup_layer_report(*, privacy_outcome: str) -> None:
     )
 
 
+async def _run_local_only_privacy_setup(project: Path | None) -> int:
+    """Record the owner's "local only; agents may not opt in" answer (ADR-049).
+
+    The Private recipe with the explicit ``local_only`` conversation setting, through the same
+    trusted questionnaire every privacy change uses. It narrows, so it applies without the
+    widening ceremony. Without it a policy-route registration would keep the released check
+    behaviour of an installation that never chose.
+    """
+
+    from finishup.cli.privacy_setup import run_privacy_setup
+    from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.ports.control import ControlError
+
+    service = await _service_reachability(start_if_absent=True)
+    if not service.get("reachable"):
+        typer.echo("privacy_setup_failed: service_unavailable", err=True)
+        return 20
+    try:
+        result = await run_privacy_setup(
+            recipe_hint="private",
+            workspace_locator=None if project is None else _canonical_setup_workspace(project),
+            conversation_review=ConversationReview.LOCAL_ONLY,
+        )
+    except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
+        typer.echo(
+            f"privacy_setup_failed: {_privacy_block_reason(getattr(error, 'reason', None))}",
+            err=True,
+        )
+        return 20
+    if result.outcome in {"configured", "unchanged"}:
+        return 0
+    typer.echo(f"privacy_setup_failed: {_privacy_block_reason(result.reason)}", err=True)
+    return 20
+
+
 async def run_provider_setup(
     *,
     fireworks: bool = False,
     grok: bool = False,
     provider: str | None = None,
     model: str | None = None,
+    conversation_review: ConversationReview | None = None,
+    project: Path | None = None,
 ) -> int:
-    """Run only the simple local provider setup path used by ``finishup --set``."""
+    """Run only the simple local provider setup path used by ``finishup --set``.
+
+    ``conversation_review`` is a first-run answer already taken (ADR-049): the drafted privacy
+    policy carries it and the privacy step does not ask again. ``project`` is the folder the
+    privacy step governs; the current directory when omitted.
+    """
 
     if (fireworks or grok) and provider is not None:
         return _usage_failure("provider shortcuts and --provider are mutually exclusive")
@@ -2616,7 +2686,6 @@ async def run_provider_setup(
         return _usage_failure("--fireworks and --grok are mutually exclusive")
     provider_choice = "fireworks" if fireworks else ("grok" if grok else provider)
     if provider_choice is not None:
-        from finishup.config.models import ConfigError
         from finishup.config.write import provider_preset
 
         try:
@@ -2664,6 +2733,8 @@ async def run_provider_setup(
                 recipe_hint="assisted_review",
                 offer_recommended=True,
                 credential_probe_authorized=credential_probe_authorized,
+                conversation_review=conversation_review,
+                workspace_locator=project,
             )
         except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
             typer.echo(f"privacy_setup_failed: {type(error).__name__}", err=True)
@@ -2858,10 +2929,12 @@ async def run_setup_wizard(
     """Run the guided first-run setup and report each step honestly.
 
     ``route_profile`` is the explicit MCP route input (``--route-profile``). When
-    absent, an interactive run derives the route from the human's review-mode
-    answer as before, and a non-interactive run preserves the observed profile of
-    an existing finishup-owned registration (strict only for a fresh registration) —
-    ``--accept`` alone never changes an existing route (#389).
+    absent, an interactive run registers the ``policy`` route for every review answer
+    (ADR-049: the answer is drafted into the privacy policy as its conversation setting,
+    and the policy alone decides what may be sent), and a non-interactive run, which
+    answers nothing, preserves the observed profile of an existing finishup-owned
+    registration (strict only for a fresh registration) — ``--accept`` alone never
+    changes an existing route (#389).
     """
 
     interactive = not non_interactive and _is_interactive_terminal()
@@ -2921,8 +2994,13 @@ async def run_setup_wizard(
                 typer.echo("workspace_locator_invalid")
                 typer.echo(_NEXT_PROJECT)
             return 1
-        selected_route = route_profile or (
-            "policy" if interactive and _choose_review_mode() == "semantic" else "strict"
+        # ADR-049: every interactive answer registers the policy route; the privacy policy, not
+        # the route, decides what may be sent. A run that asks nothing keeps the strict default.
+        host_review: ReviewChoice | None = (
+            _choose_review_mode() if interactive and route_profile is None else None
+        )
+        host_route: Literal["policy", "strict"] = route_profile or (
+            "policy" if host_review is not None else "strict"
         )
 
         def connect() -> int:
@@ -2931,7 +3009,7 @@ async def run_setup_wizard(
                 executable=host_path,
                 config_root=host_config_root,
                 project=connected_project,
-                route=selected_route,
+                route=host_route,
                 accept=accept,
                 interactive=interactive,
                 request_value=request_value,
@@ -2943,8 +3021,19 @@ async def run_setup_wizard(
         # Codex's legacy composition owns an AnyIO loop and must stay off this loop.
         result = await run_sync(connect) if host == "codex" else connect()
         if result == 0 and interactive:
-            if selected_route == "policy":
-                result = await run_provider_setup()
+            # The privacy step governs the project just connected, which may be a folder the
+            # owner typed rather than the current directory.
+            if host_review == "local_only":
+                result = await _run_local_only_privacy_setup(connected_project)
+            elif host_route == "policy":
+                result = await run_provider_setup(
+                    conversation_review=(
+                        None
+                        if host_review is None
+                        else review_choice_conversation_setting(host_review)
+                    ),
+                    project=connected_project,
+                )
             if result == 0:
                 _write_setup_marker("complete")
         return result
@@ -2979,8 +3068,12 @@ async def run_setup_wizard(
         else:
             codex_home = suggested
 
+    review_choice: ReviewChoice | None = _choose_review_mode() if interactive else None
+    # The released report vocabulary: ``semantic`` for an answer that sets up AI-powered review.
     review_mode: Literal["local_only", "semantic", "deferred"] = (
-        _choose_review_mode() if interactive else "deferred"
+        "deferred"
+        if review_choice is None
+        else ("local_only" if review_choice == "local_only" else "semantic")
     )
     update_checks_choice = (
         typer.confirm(
@@ -2996,7 +3089,9 @@ async def run_setup_wizard(
         if route_profile is not None:
             selected_route: Literal["policy", "strict"] | None = route_profile
         elif interactive:
-            selected_route = "policy" if review_mode == "semantic" else "strict"
+            # ADR-049: all three answers register the policy route, so the owner can let an
+            # agent opt in later without re-registering; the privacy policy decides egress.
+            selected_route = "policy"
         else:
             # No explicit input and no human answer: the step preserves an
             # existing finishup-owned route and registers strict only when fresh.
@@ -3050,6 +3145,11 @@ async def run_setup_wizard(
                     offer_recommended=True,
                     credential_probe_authorized=credential_probe_authorized,
                     update_checks_override=update_checks_choice,
+                    conversation_review=(
+                        None
+                        if review_choice is None
+                        else review_choice_conversation_setting(review_choice)
+                    ),
                 )
             except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
                 reason = getattr(error, "reason", None)
@@ -3108,6 +3208,8 @@ async def run_setup_wizard(
             privacy_result = await run_privacy_setup(
                 recipe_hint="private",
                 update_checks_override=update_checks_choice,
+                # ADR-049: the owner's explicit "local only; agents may not opt in".
+                conversation_review=ConversationReview.LOCAL_ONLY,
             )
             privacy = {
                 "outcome": privacy_result.outcome,

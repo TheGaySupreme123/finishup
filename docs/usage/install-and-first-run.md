@@ -209,9 +209,18 @@ Setup is a linear path inside the interface, each finished step collapsing into 
    trusted terminal: input is masked with `*`, must be 16–1024 UTF-8 bytes with no control
    characters, and the helper re-prompts after invalid or mismatched input. Later changes use
    `finishup service rotate-passphrase` (or **Change the passphrase** under `/service`).
-7. **Review mode** — finish in complete local-only mode, or configure AI-powered review.
-8. **AI-powered review setup, when selected** — provider/model, hidden API-key entry, then one exact
-   recommended privacy policy. **Assisted review** is recommended only for an exact provider route
+7. **Review mode** — how your tasks use AI-powered review. Every answer keeps FinishUP's local
+   checks on every task:
+   1. **FinishUP (recommended)**: local checks; your agent can turn on AI-powered review for a
+      task when it helps. Choosing this is your standing permission for that; the privacy policy
+      you approve next still decides what may be sent.
+   2. **FinishUP, local only**: agents may not turn on AI-powered review. No reviewer is set up.
+   3. **AI-powered review on every task**: every task is reviewed, as in earlier releases.
+
+   All three connect your agent the same way, so you can change your mind later with
+   `finishup privacy conversations` without reconnecting.
+8. **AI-powered review setup, for the first and third answers** — provider/model, hidden API-key
+   entry, then one exact recommended privacy policy, which records your answer. **Assisted review** is recommended only for an exact provider route
    with current reviewed no-training evidence and retention no longer than 30 days; it is bounded
    to the current repository and does not re-prompt for ordinary attempts after approval. Branches
    and linked worktrees share that grant; an independent clone does not. Otherwise
@@ -278,11 +287,18 @@ Two different things are called a default here, and only one of them is a policy
 policy** is `local_only`: every installation starts with external LLM disclosure denied, and
 nothing moves it without a provider binding, a stored credential, and a separately reauthenticated
 policy commit. The
-**recommended answer** to first run's "How should FinishUP review work?" is AI-powered review, because
-an installation that never reaches it can only ever report local-check coverage. Accepting the
-recommendation opens those steps; it does not perform them, and local-only needs no provider and
-stays one keystroke away. Setup is not marked complete if a chosen AI-powered review path's provider
-credential or privacy decision is incomplete.
+**recommended answer** to first run's "How should FinishUP review work?" is FinishUP with agent
+opt-in: tasks start with local checks, and your agent turns on AI-powered review for a task when it
+judges it worth it (a change across several modules, security- or data-sensitive code, logic the
+local checks cannot judge, repeated failed attempts, or a final review of a substantial change).
+Accepting the recommendation opens the reviewer and privacy steps; it does not perform them, and
+local only needs no provider and stays one keystroke away. Setup is not marked complete if a
+chosen AI-powered review path's provider credential or privacy decision is incomplete; the
+terminal interface then offers to finish as local only.
+
+Installations set up before this release keep their behaviour: one that reviews every task keeps
+reviewing every task, and one without AI-powered review keeps its local checks, until you choose a
+setting with `finishup privacy conversations`.
 
 The official Codex App exists on macOS and Windows. Linux setup uses the same flow for the
 standalone Codex CLI and does not fabricate an app installation that OpenAI does not publish.

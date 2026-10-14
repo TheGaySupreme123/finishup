@@ -591,7 +591,7 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
         assert {
             schema.version for schema in PAYLOAD_TYPES if schema.name == family
         } == expected_versions
-    for family in ("plan_published", "plan_revised", "obligation_published"):
+    for family in ("plan_published", "plan_revised", "obligation_published", "decision_recorded"):
         assert {schema.version for schema in PAYLOAD_TYPES if schema.name == family} == {
             SCHEMA_VERSION,
             "1.1.0",
@@ -603,6 +603,7 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
         not in {
             "check_recorded",
             "claim_recorded",
+            "decision_recorded",
             "evidence_recorded",
             "finding_recorded",
             "obligation_published",

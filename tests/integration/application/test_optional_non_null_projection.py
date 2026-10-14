@@ -72,6 +72,7 @@ from finishup.protocol.models import (
     CheckProjectedFindingModel,
     CheckRequest,
     CheckResultModel,
+    CheckReviewModeModel,
     CheckSuccessModel,
     CheckVerifiedItemModel,
     ChildDependencySnapshotModel,
@@ -112,6 +113,7 @@ from finishup.protocol.models import (
     StatusRequest,
     StatusRequestedItemModel,
     StatusResultItemModel,
+    StatusReviewModeModel,
     StatusSemanticProgressModel,
     StatusStructuralSubjectStateModel,
     StatusVersionSliceModel,
@@ -234,9 +236,15 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "semantic_route_required",
                 # ADR-045: absent when the check carries no derived fact.
                 "fact_lineage",
+                # ADR-049: absent when the owner's conversation setting was not read.
+                "review_mode",
             }
         ),
     ),
+    # ADR-049: a reason only on a check asked for AI-powered review that ran local; a switch id
+    # only when the conversation's own switch chose the mode.
+    (CheckReviewModeModel, frozenset({"local_reason", "switch_event_id"})),
+    (StatusReviewModeModel, frozenset({"local_reason", "switch_event_id", "switch_sequence"})),
     (CheckAwaitingHumanModel, frozenset({"specification_preflight"})),
     # Issue #1048 (ADR-047): the read-only inspection branch.
     (CheckInspectionModel, frozenset({"observations_awaited"})),
@@ -1441,6 +1449,8 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
         assert "review_input_manifest" not in projected_check
         # ADR-045: a check with no derived fact lists no lineage (absent, not an empty list).
         assert "fact_lineage" not in projected_check
+        # ADR-049: a composition that cannot read the conversation setting records no mode.
+        assert "review_mode" not in projected_check
         # Issue #961: reviewer output is absent on a deterministic check; frozen-work totals and
         # the overall continuation are filled on every new check but stay optional for legacy rows.
         assert not {"semantic_conclusion", "review_summary", "verified"} & projected_check.keys()
@@ -1463,6 +1473,7 @@ async def test_root_start_and_check_omit_unset_multi_agent_fields() -> None:
             "semantic_redacted_values",
             "observations_awaited",
             "fact_lineage",
+            "review_mode",
         ):
             unset = {key: value for key, value in projected_check.items() if key != field}
             model = CheckSuccessModel.model_validate(unset)
@@ -1918,11 +1929,16 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
                 "observations_awaited",
                 "semantic_route_required",
                 "fact_lineage",
+                "review_mode",
             ),
         ),
     ):
         for field in fields:
             covered[model, field] = "test_root_start_and_check_omit_unset_multi_agent_fields"
+    for field in CheckReviewModeModel.optional_non_null_fields:
+        covered["CheckReviewModeModel", field] = "test_review_mode_omits_unset_reason_and_switch"
+    for field in StatusReviewModeModel.optional_non_null_fields:
+        covered["StatusReviewModeModel", field] = "test_review_mode_omits_unset_reason_and_switch"
     for field in FactLineageModel.optional_non_null_fields:
         covered["FactLineageModel", field] = "test_fact_lineage_omits_every_unset_field"
     covered["CheckAwaitingHumanModel", "specification_preflight"] = (
@@ -2040,6 +2056,46 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         f"unset-projection coverage drifted: missing={expected - set(covered)} "
         f"extra={set(covered) - expected}"
     )
+
+
+def test_review_mode_omits_unset_reason_and_switch() -> None:
+    """ADR-049: a conversation-default review mode omits its reason and switch; null is refused."""
+
+    check_mode = CheckReviewModeModel.model_validate(
+        {"mode": "ai_powered", "source": "conversation_default"}
+    )
+    assert check_mode.model_dump(mode="json", exclude_unset=True) == {
+        "mode": "ai_powered",
+        "source": "conversation_default",
+    }
+    for field in CheckReviewModeModel.optional_non_null_fields:
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            CheckReviewModeModel.model_validate(
+                {"mode": "local", "source": "conversation_default", field: None}
+            )
+    status_mode = StatusReviewModeModel.model_validate(
+        {
+            "mode": "local",
+            "requested": "local",
+            "setting": "local_agent_opt_in",
+            "ai_review_available": True,
+        }
+    )
+    assert (
+        not StatusReviewModeModel.optional_non_null_fields
+        & status_mode.model_dump(mode="json", exclude_unset=True).keys()
+    )
+    for field in StatusReviewModeModel.optional_non_null_fields:
+        with pytest.raises(ValidationError, match="optional_field_must_not_be_null"):
+            StatusReviewModeModel.model_validate(
+                {
+                    "mode": "local",
+                    "requested": "local",
+                    "setting": "local_agent_opt_in",
+                    "ai_review_available": True,
+                    field: None,
+                }
+            )
 
 
 def test_respond_closure_after_omits_unset_fields() -> None:

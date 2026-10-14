@@ -538,7 +538,7 @@ DETERMINISTIC_FINDING_TEMPLATES: Final[
             "Record a coordination disposition, then run a qualifying check to resolve the overlap.",
         ),
         FindingKind.CODE_DEFECT: DeterministicFindingTemplate(
-            "A code defect was recorded without a qualifying deterministic repair.",
+            "A code defect was recorded without a qualifying repair that local checks confirm.",
             "Record the repair evidence or revise the code-defect finding.",
         ),
         FindingKind.TASK_REQUIREMENT_UNMET: DeterministicFindingTemplate(

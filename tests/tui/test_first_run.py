@@ -48,12 +48,16 @@ async def answer_review(pilot: object, mode: str = "local") -> None:
     """Answer the review-mode question, which now precedes any registration.
 
     Kept in one place because it encodes the option order: moving the recommendation changes
-    which keystroke means which posture, and every caller should follow automatically.
+    which keystroke means which posture, and every caller should follow automatically. ADR-049
+    order: the recommended hybrid (``semantic``), local only (``local``), AI-powered review on
+    every task (``ai_powered``).
     """
 
     press = getattr(pilot, "press")
     if mode == "semantic":
         await press("enter")  # first row, where the cursor rests
+    elif mode == "ai_powered":
+        await press("down", "down", "enter")
     else:
         await press("down", "enter")
     await getattr(pilot, "pause")()
@@ -574,7 +578,7 @@ async def test_setup_finishes_with_an_honest_summary_and_records_the_marker(
         assert app.markers_written == ["registered"]  # type: ignore[attr-defined]
 
 
-async def test_semantic_review_is_the_recommended_answer_and_where_the_cursor_rests(
+async def test_the_hybrid_is_the_recommended_answer_and_where_the_cursor_rests(
     make_app: MakeApp,
 ) -> None:
     """The recommendation is a property of this question, not of what an install seeds.
@@ -582,6 +586,7 @@ async def test_semantic_review_is_the_recommended_answer_and_where_the_cursor_re
     Pressing enter here chooses a wizard branch. It binds no provider, stores no credential,
     and commits no policy -- each of those is a separate step with its own gate -- so the
     seeded zero-egress ``local_only`` policy is unaffected by which row the cursor starts on.
+    ADR-049: the same three answers as ``finishup setup run``.
     """
 
     runtime = FakeRuntime()
@@ -596,11 +601,14 @@ async def test_semantic_review_is_the_recommended_answer_and_where_the_cursor_re
         assert view is not None
         assert view.view_name == "review-mode"
         assert [option.label for option in _options(view)] == [
-            "Add AI-powered review",
-            "Local only",
+            "FinishUP (recommended)",
+            "FinishUP, local only",
+            "AI-powered review on every task",
         ]
-        assert _selected(view).key == "semantic"
-        assert "Recommended." in _selected(view).description
+        assert _selected(view).key == "agent_opt_in"
+        assert "your agent can turn on AI-powered review for a task when it helps" in (
+            _selected(view).description
+        )
 
 
 async def test_the_review_answer_decides_the_route_and_both_halves_use_it(
@@ -613,7 +621,8 @@ async def test_the_review_answer_decides_the_route_and_both_halves_use_it(
     halves agree is what keeps the question and the registration connected.
     """
 
-    for mode, expected in (("semantic", "policy"), ("local", "strict")):
+    # ADR-049: every answer registers the policy route; the privacy policy decides egress.
+    for mode, expected in (("semantic", "policy"), ("local", "policy"), ("ai_powered", "policy")):
         runtime = FakeRuntime()
         app = make_app(first_run=True, runtime=runtime)
         async with app.run_test(size=WIDE) as pilot:
@@ -638,9 +647,10 @@ async def test_abandoning_semantic_setup_offers_a_coherent_local_only_finish(
 ) -> None:
     """Backing out of the provider step must not leave a half-configured install.
 
-    AI-powered review was chosen, so the policy route is already registered. Without this the flow
-    returns with that route in place, no provider behind it, and no marker written -- an
-    install that is neither local-only nor AI-powered, and says so nowhere.
+    AI-powered review was chosen and its setup did not complete. Without this the flow returns
+    with no provider behind the route and no marker written -- an install that is neither
+    local-only nor AI-powered, and says so nowhere. ADR-049: the policy route stays registered
+    and the privacy policy records local checks only.
     """
 
     runtime = FakeRuntime()
@@ -663,10 +673,10 @@ async def test_abandoning_semantic_setup_offers_a_coherent_local_only_finish(
         assert view.view_name == "semantic-incomplete"
         await pilot.press("enter")  # "Yes, finish as local only"
         await pilot.pause()
-        await pilot.press("enter")  # approve the strict re-registration
-        await pilot.pause()
-        # The install ends on the route it actually has, and setup is marked complete.
-        assert runtime.applied_routes == ["policy", "strict"]
+        # No re-registration: the install keeps the policy route, records local checks only in
+        # its privacy policy, and setup is marked complete.
+        assert runtime.applied_routes == ["policy"]
+        assert runtime.ceremonies[-1] == "privacy:private+conversations:local_only"
         assert app.markers_written == ["registered"]  # type: ignore[attr-defined]
 
 
@@ -694,10 +704,10 @@ async def test_declining_the_local_only_finish_says_setup_is_unfinished(
         assert "Setup was not completed." in transcript(app)
 
 
-async def test_the_approval_screen_shows_the_local_only_serve_command(
+async def test_the_approval_screen_shows_the_policy_serve_command_for_local_only(
     make_app: MakeApp,
 ) -> None:
-    """Choosing local only must not show the command that permits AI-powered review."""
+    """ADR-049: local only registers the policy route; the privacy policy keeps every task local."""
 
     runtime = FakeRuntime()
     app = make_app(first_run=True, runtime=runtime)
@@ -711,7 +721,8 @@ async def test_the_approval_screen_shows_the_local_only_serve_command(
         view = app.open_view
         assert view is not None
         details = "\n".join(view.technical_details)
-        assert "finishup mcp serve --semantic off" in details
+        assert "finishup mcp serve" in details
+        assert "--semantic off" not in details
 
 
 async def test_choosing_local_only_setup_never_touches_the_project(
@@ -727,5 +738,7 @@ async def test_choosing_local_only_setup_never_touches_the_project(
         await pilot.press("escape")  # skip storage
         await pilot.pause()
         assert runtime.applied == []
+        # ADR-049: the answer is recorded as the owner's explicit local-only setting.
+        assert runtime.ceremonies == ["privacy:private+conversations:local_only"]
         assert app.markers_written == ["local_only"]  # type: ignore[attr-defined]
         assert "FinishUP is ready" in transcript(app)

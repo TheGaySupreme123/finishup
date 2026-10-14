@@ -182,7 +182,7 @@ def test_check_summary_marks_preview_and_non_verdict_advice() -> None:
             "advisory_notes": [{"kind": "live_member_present"}],
         }
     )
-    assert "No issue detected within deterministic coverage" in text
+    assert "No issue detected within local coverage" in text
     assert "children (preview): 1" in text
     assert "project advice (non-verdict): 1" in text
     assert len(text.encode()) <= MAX_SUMMARY_BYTES

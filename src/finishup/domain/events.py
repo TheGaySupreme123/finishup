@@ -188,6 +188,10 @@ __all__ = [
     "CoordinationGapCode",
     "ClaimRevisionMismatch",
     "ClientKind",
+    "CHECK_REVIEW_MODE_LOCAL_REASONS",
+    "CHECK_REVIEW_MODE_SOURCES",
+    "CheckReviewMode",
+    "DECISION_REVIEW_MODE_SCHEMA_VERSION",
     "DecisionRecordedPayload",
     "DelegationCancelledPayload",
     "DelegationDeclaredPayload",
@@ -217,6 +221,7 @@ __all__ = [
     "ObligationPublishedPayload",
     "ObligationResolutionMismatch",
     "ObligationStatus",
+    "ReviewMode",
     "obligation_meaning_field_diffs",
     "public_error_for_obligation_resolution_mismatch",
     "public_error_for_no_obligations_reason_mismatch",
@@ -288,6 +293,11 @@ CLAIM_SCHEMA_VERSION: Final = "1.1.0"
 # single writer choice (1.1.0 iff one of those is present), so every FinishUP-drafted obligation
 # without them keeps its exact 1.0.0 bytes and old ledgers replay unchanged.
 OBLIGATION_SCHEMA_VERSION: Final = "1.1.0"
+# ``decision_recorded`` 1.0.0 is released and frozen. 1.1.0 is an additive superset that admits
+# one optional ``review_mode`` (ADR-049): the conversation's switch between local checks only
+# (``local``) and AI-powered review (``ai_powered``). A decision rides 1.1.0 iff it carries the
+# switch, so every other decision keeps its released 1.0.0 bytes and old ledgers replay unchanged.
+DECISION_REVIEW_MODE_SCHEMA_VERSION: Final = "1.1.0"
 OBLIGATION_BASE_SCHEMA_VERSION: Final = "1.0.0"
 # 1.3.0 (unreleased on the 0.3 line) also carries the optional per-finding reviewer rulings of
 # issue #905; a check without rulings keeps its earlier 1.3.0 bytes.
@@ -433,6 +443,17 @@ class ObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
     # ``obligation_published`` 1.1.0 only (issue #997, ADR-032 slice C): the agent will not do
     # this obligation and says why. Not open, not resolved; disclosed as not done.
     ACKNOWLEDGED_NOT_DONE = "acknowledged_not_done"
+
+
+class ReviewMode(str, Enum):  # noqa: UP042 - exact wire enum base
+    """A conversation's review mode, switched by ``decision_recorded`` 1.1.0 (ADR-049).
+
+    ``local`` is FinishUP's local checks only; ``ai_powered`` asks for AI-powered review under the
+    owner's standing privacy policy. The switch is a request: it never grants disclosure.
+    """
+
+    LOCAL = "local"
+    AI_POWERED = "ai_powered"
 
 
 class NoObligationsReason(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -940,6 +961,8 @@ def _locator_key_kind(schema: EventSchema) -> str:
         schema == EventSchema("claim_recorded", CLAIM_SCHEMA_VERSION)
         # Role- and directory-bearing obligations project as the same obligation (issue #1002).
         or schema == EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION)
+        # A decision carrying a review-mode switch projects as the same decision (ADR-049).
+        or schema == EventSchema("decision_recorded", DECISION_REVIEW_MODE_SCHEMA_VERSION)
         # A plan carrying a revised task statement projects as the same plan (issue #908).
         or schema
         in {
@@ -2114,6 +2137,8 @@ class DecisionRecordedPayload:
     alternatives: tuple[str, ...] = ()
     affected_obligation_ids: tuple[ObligationId, ...] = ()
     supersedes_event_id: EventId | None = None
+    # ``decision_recorded`` 1.1.0 only (ADR-049): this conversation's review-mode switch.
+    review_mode: ReviewMode | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "statement", _bounded_text(self.statement, MAX_TEXT_BYTES))
@@ -2139,6 +2164,8 @@ class DecisionRecordedPayload:
                 "supersedes_event_id",
                 event_id(self.supersedes_event_id),
             )
+        if self.review_mode is not None:
+            object.__setattr__(self, "review_mode", _exact_enum(self.review_mode, ReviewMode))
 
 
 @dataclass(frozen=True, slots=True)
@@ -3124,6 +3151,71 @@ def validate_deliverable_states(value: object) -> tuple[DeliverableState, ...]:
     return states
 
 
+CHECK_REVIEW_MODE_SOURCES: Final = frozenset(
+    {"conversation_default", "conversation_switch", "check_request"}
+)
+CHECK_REVIEW_MODE_LOCAL_REASONS: Final = frozenset(
+    {"owner_local_only", "route_local_only", "ai_review_not_set_up"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class CheckReviewMode:
+    """Which review mode one check ran in and why (ADR-049, check_recorded 1.4.0 only).
+
+    ``mode`` is ``local`` (FinishUP's local checks only) or ``ai_powered``. ``source`` says what
+    chose it: the conversation's default from the owner's setting, the conversation's latest
+    ``decision_recorded`` switch (``switch_event_id``), or the check's own explicit mode.
+    ``local_reason`` is present only when AI-powered review was asked for and the check still ran
+    local: the owner set the repository to local only, the host connection is registered on the
+    strict route, or AI-powered review is not set up.
+    Closed tokens and an event id only; never prose.
+    """
+
+    mode: ReviewMode
+    source: str
+    local_reason: str | None = None
+    switch_event_id: EventId | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mode", _exact_enum(self.mode, ReviewMode))
+        if self.source not in CHECK_REVIEW_MODE_SOURCES:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.local_reason is not None and (
+            self.local_reason not in CHECK_REVIEW_MODE_LOCAL_REASONS
+            or self.mode is not ReviewMode.LOCAL
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.switch_event_id is not None:
+            object.__setattr__(self, "switch_event_id", event_id(self.switch_event_id))
+        if (self.switch_event_id is not None) != (self.source == "conversation_switch"):
+            raise ProtocolValueError("invalid_event_value_type")
+
+    def as_wire(self) -> dict[str, JsonValue]:
+        wire: dict[str, JsonValue] = {"mode": self.mode.value, "source": self.source}
+        if self.local_reason is not None:
+            wire["local_reason"] = self.local_reason
+        if self.switch_event_id is not None:
+            wire["switch_event_id"] = self.switch_event_id
+        return wire
+
+    @classmethod
+    def from_wire(cls, value: object) -> CheckReviewMode:
+        source = _closed_object(
+            freeze_json(cast(JsonValue, value)),
+            required=frozenset({"mode", "source"}),
+            optional=frozenset({"local_reason", "switch_event_id"}),
+        )
+        local_reason = _optional(source, "local_reason")
+        switch = _optional(source, "switch_event_id")
+        return cls(
+            _enum_from_json(_field(source, "mode"), ReviewMode),
+            cast(str, _field(source, "source")),
+            None if local_reason is None else cast(str, local_reason),
+            None if switch is None else event_id(switch),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class CheckRecordedPayload:
     mode: CheckMode
@@ -3178,6 +3270,9 @@ class CheckRecordedPayload:
     # what the check concluded from it and from the earlier checks of the same path. Empty when
     # the check read no declared output file, so those checks keep their bytes.
     deliverable_states: tuple[DeliverableState, ...] = ()
+    # ADR-049 (1.4.0 only): the conversation review mode this check ran in and why. Absent on
+    # checks that predate it and where the owner's conversation setting could not be read.
+    review_mode: CheckReviewMode | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", _exact_enum(self.mode, CheckMode))
@@ -3332,6 +3427,8 @@ class CheckRecordedPayload:
             and type(self.semantic_route_required) is not bool
         ):
             raise ProtocolValueError("invalid_event_value_type")
+        if self.review_mode is not None and type(self.review_mode) is not CheckReviewMode:
+            raise ProtocolValueError("invalid_event_value_type")
         object.__setattr__(
             self, "deliverable_states", validate_deliverable_states(self.deliverable_states)
         )
@@ -3430,6 +3527,9 @@ PAYLOAD_TYPES: Final[Mapping[EventSchema, type[EventPayload]]] = MappingProxyTyp
         EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION): ObligationPublishedPayload,
         EventSchema("assignment_recorded", SCHEMA_VERSION): AssignmentRecordedPayload,
         EventSchema("decision_recorded", SCHEMA_VERSION): DecisionRecordedPayload,
+        EventSchema(
+            "decision_recorded", DECISION_REVIEW_MODE_SCHEMA_VERSION
+        ): DecisionRecordedPayload,
         EventSchema("action_recorded", SCHEMA_VERSION): ActionRecordedPayload,
         EventSchema("result_recorded", SCHEMA_VERSION): ResultRecordedPayload,
         **{
@@ -4293,6 +4393,7 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
                     "semantic_route_required",
                     "deliverable_states",
                     "review_input_manifest",
+                    "review_mode",
                     "totals",
                 }
             ),
@@ -4443,6 +4544,8 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         optional = frozenset({*optional, "digest_binding"})
     if schema == EventSchema("claim_recorded", CLAIM_SCHEMA_VERSION):
         required = frozenset({*required, "limitation_refs", "supersedes_claim_refs"})
+    if schema == EventSchema("decision_recorded", DECISION_REVIEW_MODE_SCHEMA_VERSION):
+        required = frozenset({*required, "review_mode"})
     source = _closed_object(frozen, required=required, optional=optional)
 
     if schema.name == "child_dependencies_recorded":
@@ -4576,7 +4679,8 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         alternatives = _optional(source, "alternatives")
         affected = _optional(source, "affected_obligation_ids")
         supersedes = _optional(source, "supersedes_event_id")
-        return DecisionRecordedPayload(
+        review_mode = _optional(source, "review_mode")
+        decision = DecisionRecordedPayload(
             statement=cast(str, _field(source, "statement")),
             rationale=cast(str, _field(source, "rationale")),
             authority=actor_id(_field(source, "authority")),
@@ -4587,7 +4691,10 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 () if affected is None else cast(tuple[ObligationId, ...], tuple(_array(affected)))
             ),
             supersedes_event_id=None if supersedes is None else event_id(supersedes),
+            review_mode=(None if review_mode is None else _enum_from_json(review_mode, ReviewMode)),
         )
+        _validate_event_schema_payload(schema, decision)
+        return decision
     if schema.name == "action_recorded":
         command = _optional(source, "command")
         state = _optional(source, "subject_state")
@@ -4823,6 +4930,11 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 _optional(source, "review_input_manifest")
             ),
             semantic_route_required=cast(bool | None, _optional(source, "semantic_route_required")),
+            review_mode=(
+                None
+                if (recorded_mode := _optional(source, "review_mode")) is None
+                else CheckReviewMode.from_wire(recorded_mode)
+            ),
             deliverable_states=tuple(
                 DeliverableState.from_wire(item)
                 for item in _array(_optional(source, "deliverable_states") or ())
@@ -5162,6 +5274,11 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             cast(tuple[object, ...], value.affected_obligation_ids),
         )
         _optional_value(result, "supersedes_event_id", value.supersedes_event_id)
+        _optional_value(
+            result,
+            "review_mode",
+            None if value.review_mode is None else value.review_mode.value,
+        )
         return _json_object(result)
     if payload_type is ActionRecordedPayload:
         value = cast(ActionRecordedPayload, payload)
@@ -5374,6 +5491,11 @@ def encode_payload(payload: EventPayload) -> JsonValue:
         )
         _optional_value(result, "review_input_manifest", value.review_input_manifest)
         _optional_value(result, "semantic_route_required", value.semantic_route_required)
+        _optional_value(
+            result,
+            "review_mode",
+            None if value.review_mode is None else cast(JsonValue, value.review_mode.as_wire()),
+        )
         _optional_tuple(
             result, "deliverable_states", tuple(item.as_wire() for item in value.deliverable_states)
         )
@@ -5413,6 +5535,12 @@ def _validate_event_schema_payload(
     schema: EventSchema,
     payload: EventPayload | None,
 ) -> None:
+    if type(payload) is DecisionRecordedPayload:
+        # ADR-049: the review-mode switch is 1.1.0-only; 1.0.0 is released and frozen.
+        if (payload.review_mode is not None) != (
+            schema.version == DECISION_REVIEW_MODE_SCHEMA_VERSION
+        ):
+            raise ProtocolValueError("invalid_event_schema")
     if type(payload) is SessionOpenedPayload:
         has_lineage = any(
             value is not None for value in (payload.parent_task_id, payload.depth, payload.origin)
@@ -5455,6 +5583,7 @@ def _validate_event_schema_payload(
             or bool(payload.semantic_redacted_values)
             or payload.semantic_route_required is not None
             or bool(payload.deliverable_states)
+            or payload.review_mode is not None
         )
         if has_review_output:
             if schema.version != REVIEW_CHECK_EVENT_SCHEMA_VERSION:

@@ -184,7 +184,7 @@ Accepted children with unresolved actionable findings prevent clean completion w
 children and informational findings annotate. Open work, lost contact, abandonment, write-off,
 cancellation, and missing, unreadable, quarantined, or revoked child data remain named gaps.
 These limits do not prevent an honest incomplete receipt, and they do not prevent an unrelated
-qualifying repair of the parent's own deterministic findings. An issued receipt is immutable:
+qualifying repair of the parent's own local findings. An issued receipt is immutable:
 later child completion needs a new recorded manifest, qualifying parent check, and new receipt.
 
 A child receipt does not prove incorporation or successful integration. Those outcomes belong
@@ -623,7 +623,7 @@ request and report the unresolved start. These continuations do not authorize a 
 
 ### Unrelated command gaps and action-result repairs
 
-A readable deterministic `action_without_result` finding can resolve after a qualifying check
+A readable local `action_without_result` finding can resolve after a qualifying check
 of its accepted linked result when its explicit action relation is provably disjoint from every
 selected plan obligation requesting a command. The relation includes both the action's direct
 `obligation_refs` and a selected obligation's `resolution_evidence_refs → result → action` link.

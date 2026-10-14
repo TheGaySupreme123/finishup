@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
+from typing import cast
 
 import anyio
 import pytest
@@ -61,9 +62,16 @@ def _record_connections(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
         connected.append(project)
         return 0
 
+    async def no_privacy_step(*_args: object, **_kwargs: object) -> int:
+        return 0
+
     monkeypatch.setattr(host_connection, "run_host_connection", connect)
     monkeypatch.setattr(wizard, "_write_setup_marker", _ignore)
     monkeypatch.setattr(wizard, "_choose_review_mode", lambda: "local_only")
+    # The privacy and provider steps after a connection are covered elsewhere; never start a
+    # service from these cases.
+    monkeypatch.setattr(wizard, "_run_local_only_privacy_setup", no_privacy_step)
+    monkeypatch.setattr(wizard, "run_provider_setup", no_privacy_step)
     return connected
 
 
@@ -121,6 +129,43 @@ def test_a_terminal_user_can_name_the_project_folder_instead(
 
     assert _wizard(home) == 0
     assert connected == [project.resolve()]
+
+
+@pytest.mark.parametrize("review", ["local_only", "agent_opt_in", "ai_powered"])
+def test_the_privacy_step_governs_the_folder_the_user_typed(
+    monkeypatch: pytest.MonkeyPatch, home: Path, tmp_path: Path, review: str
+) -> None:
+    # Run from the home folder, the owner names the project; the privacy policy that follows must
+    # be the one for that project, not for the current directory.
+    connected = _record_connections(monkeypatch)
+    governed: list[Path | None] = []
+
+    async def local_only(project: Path | None) -> int:
+        governed.append(project)
+        return 0
+
+    async def provider(**kwargs: object) -> int:
+        project = kwargs.get("project")
+        assert project is None or isinstance(project, Path)
+        governed.append(project)
+        return 0
+
+    monkeypatch.setattr(wizard, "_run_local_only_privacy_setup", local_only)
+    monkeypatch.setattr(wizard, "run_provider_setup", provider)
+    monkeypatch.setattr(wizard, "_choose_review_mode", lambda: review)
+    project = tmp_path / "project"
+    project.mkdir()
+    answers = iter([str(project)])
+    monkeypatch.setattr(wizard, "_is_interactive_terminal", lambda: True)
+
+    def answer(*_args: object, **_kwargs: object) -> str:
+        return next(answers)
+
+    monkeypatch.setattr("typer.prompt", answer)
+
+    assert _wizard(home) == 0
+    assert connected == [project.resolve()]
+    assert governed == [project.resolve()]
 
 
 def test_the_offered_codex_is_the_one_a_plain_codex_command_runs(
@@ -193,3 +238,40 @@ def test_a_failed_codex_subscription_setup_names_the_next_step(
     assert "Reason: codex_model_unavailable" in out
     assert "Next: " in out
     assert "--model" in out
+
+
+def test_an_unreadable_configuration_keeps_the_api_key_question(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The provider step reads the configuration to tell a Codex subscription (no key) from an API
+    # key provider. An unreadable configuration must fall back to the API-key question, not fail
+    # on the error class itself (a function-local import used to shadow it, leaving it unbound).
+    from finishup.cli import privacy_setup
+    from finishup.config.models import ConfigError
+
+    async def reachable(**_kwargs: object) -> dict[str, object]:
+        return {"reachable": True, "state": "ready"}
+
+    def unreadable(*_args: object, **_kwargs: object) -> object:
+        raise ConfigError("config_value_invalid")
+
+    async def privacy(**_kwargs: object) -> object:
+        return type("Report", (), {"outcome": "configured", "reason": None})()
+
+    async def provider_setup(
+        service: dict[str, object], **kwargs: object
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        before_credential = cast(Callable[[], Awaitable[str | None]], kwargs["before_credential"])
+        assert await before_credential() is None
+        return service, {"binding": "configured", "credential": "stored"}
+
+    monkeypatch.setattr(wizard, "_is_interactive_terminal", lambda: True)
+    monkeypatch.setattr(wizard, "_service_reachability", reachable)
+    monkeypatch.setattr(wizard, "load_config", unreadable)
+    monkeypatch.setattr(wizard, "_prompt_credential_probe_authorization", lambda: False)
+    monkeypatch.setattr(privacy_setup, "run_privacy_setup", privacy)
+    monkeypatch.setattr(wizard, "_interactive_provider_setup", provider_setup)
+    monkeypatch.setattr(wizard, "_emit_provider_setup_layer_report", _ignore)
+
+    assert anyio.run(wizard.run_provider_setup) == 0
+    assert "before the API key can be tested" in capsys.readouterr().out
