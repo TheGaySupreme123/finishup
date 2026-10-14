@@ -32,8 +32,17 @@ from builders.privacy_widenings import llm_channel
 from finishup.application.egress import (
     PrivacyCoordinator,
     SemanticEgressAwaitingHuman,
+    conversation_review_refuses,
+    semantic_policy_refusal,
 )
-from finishup.domain.privacy import ConsentSource, ConversationReview, PrivacyPolicy
+from finishup.domain.privacy import (
+    AuthorizationScopeKind,
+    ConsentSource,
+    ConversationReview,
+    PrivacyOutcome,
+    PrivacyPolicy,
+    PrivacyReason,
+)
 from finishup.ports.clock import ClockPort
 from finishup.ports.ids import IdPort
 from finishup.ports.privacy import (
@@ -130,3 +139,86 @@ async def test_owner_approval_makes_every_review_wait_for_the_owner(
     assert result.privacy_proposal_id == _PROPOSAL
     assert dispatched == []
     assert awaiting == [_PROPOSAL]
+
+
+class _NarrowingStore(_Store):
+    """A policy store whose owner narrows to local only once the case is being prepared."""
+
+    def narrow(self) -> None:
+        self._policy = _policy(ConversationReview.LOCAL_ONLY)
+
+
+class _NarrowingClassifier(_Classifier):
+    def __init__(self, store: _NarrowingStore) -> None:
+        self._store = store
+
+    def minimize_and_scan(self, classified: Any, decision: Any) -> Any:
+        self._store.narrow()
+        return super().minimize_and_scan(classified, decision)
+
+
+async def _evaluate_with(
+    monkeypatch: pytest.MonkeyPatch, store: _Store, classifier: _Classifier, policy: PrivacyPolicy
+) -> tuple[object, list[Any]]:
+    binding = llm_channel(policy).provider_binding
+    assert binding is not None
+    coordinator = PrivacyCoordinator(
+        cast(PrivacyPolicyStorePort, store),
+        cast(PrivacyClassifierPort, classifier),
+        cast(PrivacyAuditPort, _PreparingAudit()),
+        cast(OutboundGatewayPort, _Gateway()),
+        cast(ClockPort, _Clock()),
+        cast(IdPort, _Ids()),
+        human_authority=_human_authority(),
+    )
+    dispatched: list[Any] = []
+
+    async def dispatch(_self: object, *args: object, **kwargs: object) -> object:
+        dispatched.append(args[4])
+        del kwargs
+        return "dispatched"
+
+    async def predispatch(
+        _self: object, _candidate: object, _effective: object, *args: object, **kwargs: object
+    ) -> object:
+        del kwargs
+        return ("blocked", args[0], args[1])
+
+    monkeypatch.setattr(PrivacyCoordinator, "_dispatch_approved", dispatch)
+    monkeypatch.setattr(PrivacyCoordinator, "_complete_semantic_predispatch", predispatch)
+    return await coordinator.evaluate_semantic(_candidate(binding), _deadline()), dispatched
+
+
+@pytest.mark.anyio
+async def test_an_explicit_local_only_owner_refuses_every_review_at_the_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review round 1 (P3): enforced at dispatch, not only when a check resolves its mode."""
+
+    policy = _policy(ConversationReview.LOCAL_ONLY)
+    result, dispatched = await _evaluate_with(monkeypatch, _Store(policy), _Classifier(), policy)
+    assert result == ("blocked", PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyReason.POLICY_DENIED)
+    assert dispatched == []
+    assert semantic_policy_refusal(
+        policy,
+        cast(Any, llm_channel(policy).provider_binding),
+        "semantic-review",
+        AuthorizationScopeKind.TASK,
+    ) == (PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyReason.POLICY_DENIED)
+    # The fixed-literal credential probe is governed by its own consent, not this setting.
+    assert not conversation_review_refuses(policy, "credential-probe")
+    # A policy that predates the setting keeps its released behaviour.
+    assert not conversation_review_refuses(_policy(None), "semantic-review")
+
+
+@pytest.mark.anyio
+async def test_a_narrowing_while_the_case_is_prepared_stops_the_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = _policy(ConversationReview.LOCAL_AGENT_OPT_IN)
+    store = _NarrowingStore(policy)
+    result, dispatched = await _evaluate_with(
+        monkeypatch, store, _NarrowingClassifier(store), policy
+    )
+    assert result == ("blocked", PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyReason.POLICY_DENIED)
+    assert dispatched == []

@@ -6795,9 +6795,13 @@ async def provide_service_ready_context(
         # The exact binding, purpose and scope the dispatch below sends, judged by the egress
         # pipeline's own static policy leg (938-R1): a granted authority that does not name this
         # binding or purpose would be refused at dispatch, so it admits nothing here either.
+        # ADR-049 (review round 1): nor does a repository whose tasks start local, which the
+        # dispatch refuses too, so the hybrid writes no advice row.
         return (
             authority.grant_state == "granted"
             and candidate_binding is not None
+            and authority.effective.policy.effective_conversation_review
+            is ConversationReview.AI_POWERED
             and semantic_policy_refusal(
                 authority.effective.policy,
                 candidate_binding,

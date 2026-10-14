@@ -480,8 +480,14 @@ async def privacy_propose_policy(
         compound: list[PolicyTransitionMember] = []
         # The credential-heuristic opt-out belongs to the repository grant (owner decision,
         # 2026-10-07): a repository-bound proposal never moves the installation-wide default.
+        # Nor does the conversation setting (ADR-049, review round 1): widening one repository's
+        # tasks to AI-powered review must not become every new repository's default unasked.
         machine_candidate = _policy_for_scope(
-            replace(candidate, credential_heuristic=machine.policy.credential_heuristic),
+            replace(
+                candidate,
+                credential_heuristic=machine.policy.credential_heuristic,
+                conversation_review=machine.policy.conversation_review,
+            ),
             machine_scope,
             policy_id=machine.policy.policy_id,
             version=machine.policy.version + 1,

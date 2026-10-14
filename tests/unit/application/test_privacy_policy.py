@@ -500,6 +500,60 @@ def test_heuristic_opt_out_is_proposed_on_the_grant_and_never_moves_the_machine_
     assert members[0].candidate_policy.credential_heuristic is CredentialHeuristic.DISABLED
 
 
+def test_a_repository_conversation_widening_never_moves_the_machine_default() -> None:
+    """ADR-049 review round 1 (P2-7): the setting belongs to the repository grant.
+
+    Widening one repository's tasks to AI-powered review on every task leaves the installation
+    row's setting where it was, so a new repository inherits nothing it was not asked about.
+    """
+
+    from dataclasses import replace as _replace
+
+    from finishup.domain.privacy import ConversationReview
+
+    state = MemoryPrivacyCatalogState()
+    store = MemoryPrivacyPolicyStore(state, _Clock())
+    repository_scope = AuthorizationScope(
+        AuthorizationScopeKind.WORKSPACE, _INSTALLATION, _REPOSITORY
+    )
+    app = PrivacyPolicyApplication(
+        store,
+        _Audit(),  # type: ignore[arg-type]
+        _Gateway([]),  # type: ignore[arg-type]
+        _Clock(),
+        _Ids(),
+        _scope(),
+    )
+    machine_seed = _replace(
+        _external_policy(), conversation_review=ConversationReview.LOCAL_AGENT_OPT_IN
+    )
+    candidate = _replace(_external_policy(), conversation_review=ConversationReview.AI_POWERED)
+
+    async def run() -> object:
+        await store.seed_if_absent(machine_seed)
+        authority = await store.repository_authority(repository_scope)
+        return await privacy_propose_policy(
+            app,
+            ProposePrivacyPolicyRequest(
+                authority.effective.effective_digest,
+                candidate,
+                authority.authority_digest,
+                repository_scope,
+            ),
+        )
+
+    result = asyncio.run(run())
+    assert type(result) is PolicyDecisionRequired
+    members = result.prepared.proposal.members
+    machine = [m for m in members if m.scope.kind is AuthorizationScopeKind.MACHINE]
+    assert all(
+        m.candidate_policy.conversation_review is ConversationReview.LOCAL_AGENT_OPT_IN
+        for m in machine
+    )
+    (repository,) = (m for m in members if m.scope.kind is AuthorizationScopeKind.WORKSPACE)
+    assert repository.candidate_policy.conversation_review is ConversationReview.AI_POWERED
+
+
 def test_status_reports_the_grant_a_pending_migration_will_create() -> None:
     """Issue #982 review: a repository awaiting carry-forward reports that grant's outcome."""
 

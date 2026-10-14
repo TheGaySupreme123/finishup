@@ -47,6 +47,7 @@ from finishup.domain.observation import (
 from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
+    ConversationReview,
     EgressChannel,
     PrivacyPolicy,
 )
@@ -3197,6 +3198,14 @@ async def test_background_advice_is_admitted_only_while_a_provider_is_usable(
                 ),
             )
             gaps = await build(21 if narrowed.provider_binding == foreign_binding else 22)
+            assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+            assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in gaps
+            assert rows() == []
+        # ADR-049 review round 1: a repository whose tasks start local admits no advice either
+        # (the dispatch refuses it), so the hybrid writes no row that ends authorization_missing.
+        for setting in (ConversationReview.LOCAL_AGENT_OPT_IN, ConversationReview.LOCAL_ONLY):
+            repository_policy = replace(current_policy, conversation_review=setting)
+            gaps = await build(23 if setting is ConversationReview.LOCAL_ONLY else 24)
             assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
             assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in gaps
             assert rows() == []
