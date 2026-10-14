@@ -8,10 +8,14 @@ project's disconnect may remove them.
 
 This module keeps the one structural record of which projects connected through Yoetz setup:
 ``<config root>/.<server name>-connected-projects.json``, canonical JSON
-``{"projects": [<absolute project roots>]}``, owner-only, written atomically under the caller's
-lock and only when its bytes still equal the snapshot the approved plan was built from. A project
-root is the canonical path setup resolved. Two entries naming one directory through different
-paths are never admitted: the caller refuses with ``project_connected_via_other_path``.
+``{"projects": [<absolute project roots>]}`` plus ``"unknown_members": true`` when the shared
+pieces were found without a record (an earlier release, or a lost record), so other projects may
+use them that no record names. The file is owner-only (a group- or world-readable or writable
+record is refused), replaced atomically with the parent directory synced, and written only while
+the caller holds ``host_config_lock`` and its bytes still equal the snapshot the approved plan
+was built from. A project root is the canonical path setup resolved. Two entries naming one
+directory through different paths are never admitted: the caller refuses with
+``project_connected_via_other_path``.
 """
 
 from __future__ import annotations
@@ -20,7 +24,8 @@ import json
 import os
 import stat
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Generator, Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, cast
@@ -33,6 +38,7 @@ __all__ = [
     "HostProjectsError",
     "duplicate_of",
     "encode_projects",
+    "host_config_lock",
     "live_projects",
     "load_connected_projects",
     "same_directory",
@@ -62,6 +68,8 @@ class ConnectedProjects:
     path: Path
     raw: bytes | None
     projects: tuple[str, ...]
+    # Other projects may use the shared pieces without being named here (#1058 round 2).
+    unknown_members: bool = False
 
     def with_project(self, project: Path) -> tuple[str, ...]:
         return tuple(sorted({*self.projects, str(project)}))
@@ -79,12 +87,14 @@ def _valid_root(value: object) -> bool:
     )
 
 
-def encode_projects(projects: Iterable[str]) -> bytes:
+def encode_projects(projects: Iterable[str], *, unknown_members: bool = False) -> bytes:
     """The canonical record bytes for ``projects`` (sorted, unique)."""
 
-    ordered = sorted(set(projects))
+    document: dict[str, object] = {"projects": sorted(set(projects))}
+    if unknown_members:
+        document["unknown_members"] = True
     return (
-        json.dumps({"projects": ordered}, ensure_ascii=False, separators=(",", ":")).encode()
+        json.dumps(document, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
         + b"\n"
     )
 
@@ -102,7 +112,7 @@ def _read_bounded(path: Path) -> bytes | None:
         if (
             not stat.S_ISREG(facts.st_mode)
             or facts.st_size > _MAX_BYTES
-            or facts.st_mode & 0o022
+            or facts.st_mode & 0o077
             or (hasattr(os, "geteuid") and facts.st_uid != os.geteuid())
         ):
             raise HostProjectsError("registry_invalid")
@@ -133,9 +143,15 @@ def load_connected_projects(config_root: Path) -> ConnectedProjects:
         parsed = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError) as exc:
         raise HostProjectsError("registry_invalid") from exc
-    if not isinstance(parsed, dict) or set(cast(dict[str, object], parsed)) != {"projects"}:
+    document = cast(dict[str, object], parsed) if isinstance(parsed, dict) else None
+    if document is None or not (
+        set(document) == {"projects"}
+        or (
+            set(document) == {"projects", "unknown_members"} and document["unknown_members"] is True
+        )
+    ):
         raise HostProjectsError("registry_invalid")
-    items = cast(dict[str, object], parsed)["projects"]
+    items = document["projects"]
     if type(items) is not list or len(cast(list[object], items)) > _MAX_PROJECTS:
         raise HostProjectsError("registry_invalid")
     values = cast(list[object], items)
@@ -144,7 +160,9 @@ def load_connected_projects(config_root: Path) -> ConnectedProjects:
     projects = cast(list[str], values)
     if len(set(projects)) != len(projects):
         raise HostProjectsError("registry_invalid")
-    return ConnectedProjects(path, raw, tuple(sorted(projects)))
+    return ConnectedProjects(
+        path, raw, tuple(sorted(projects)), document.get("unknown_members") is True
+    )
 
 
 def same_directory(left: Path, right: Path) -> bool:
@@ -187,11 +205,50 @@ def live_projects(projects: Iterable[str], *, excluding: Path) -> tuple[str, ...
     return tuple(live)
 
 
-def write_connected_projects(snapshot: ConnectedProjects, projects: Iterable[str]) -> None:
+def _sync_directory(directory: Path) -> None:
+    try:
+        descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError as exc:
+        raise HostProjectsError("write_failed") from exc
+    try:
+        os.fsync(descriptor)
+    except OSError as exc:
+        raise HostProjectsError("write_failed") from exc
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def host_config_lock(config_root: Path) -> Generator[None]:
+    """Serialize every setup apply for one host configuration root (#1058 round 2).
+
+    The lock is an exclusive ``flock`` on the root's existing parent directory, so it needs no
+    file of its own and also covers the first connect that creates the root. It is held across
+    plan revalidation, the shared host changes, and the record update.
+    """
+
+    import fcntl
+
+    parent = config_root.absolute().parent
+    try:
+        descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError as exc:
+        raise HostProjectsError("write_failed") from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def write_connected_projects(
+    snapshot: ConnectedProjects, projects: Iterable[str], *, unknown_members: bool = False
+) -> None:
     """Replace the record with ``projects`` only if it still holds ``snapshot.raw``.
 
-    An empty set removes the record. The caller holds its host's activation lock; this
-    compare-and-swap additionally refuses a record changed since the approved plan read it.
+    An empty set without unknown members removes the record. The caller holds
+    ``host_config_lock``; this compare-and-swap additionally refuses a record changed since the
+    approved plan read it.
     """
 
     ordered = tuple(sorted(set(projects)))
@@ -200,7 +257,7 @@ def write_connected_projects(snapshot: ConnectedProjects, projects: Iterable[str
     path = snapshot.path
     if _read_bounded(path) != snapshot.raw:
         raise HostProjectsError("registry_stale")
-    if not ordered:
+    if not ordered and not unknown_members:
         if snapshot.raw is not None:
             try:
                 path.unlink()
@@ -208,8 +265,9 @@ def write_connected_projects(snapshot: ConnectedProjects, projects: Iterable[str
                 pass
             except OSError as exc:
                 raise HostProjectsError("write_failed") from exc
+            _sync_directory(path.parent)
         return
-    payload = encode_projects(ordered)
+    payload = encode_projects(ordered, unknown_members=unknown_members)
     if payload == snapshot.raw:
         return
     try:
@@ -227,3 +285,4 @@ def write_connected_projects(snapshot: ConnectedProjects, projects: Iterable[str
     except OSError as exc:
         temporary.unlink(missing_ok=True)
         raise HostProjectsError("write_failed") from exc
+    _sync_directory(path.parent)

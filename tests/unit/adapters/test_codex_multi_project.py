@@ -346,3 +346,41 @@ def test_malformed_record_is_refused_not_overwritten(tmp_path: Path) -> None:
     assert caught.value.reason is IntegrationReason.SOURCE_INVALID
     assert record.read_text() == '{"projects": "not-a-list"}\n'
     assert inspect_activation(target, codex_home=home).state is ActivationState.FOREIGN
+
+
+def test_lost_record_takes_trusted_projects_that_serve_the_manifest(tmp_path: Path) -> None:
+    """CHECK_MULTIPROJ_R1 P2-1 (Codex): a lost record is not proof this is the last project."""
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    target_b, root_b = _project(tmp_path, "b")
+    _connect(target_a, home)
+    _connect(target_b, home)
+    (home / CONNECTED_PROJECTS_FILE).unlink()
+    with (home / "config.toml").open("a", encoding="utf-8") as handle:
+        handle.write(
+            f'\n[projects."{root_a}"]\ntrust_level = "trusted"\n\n'
+            f'[projects."{root_b}"]\ntrust_level = "trusted"\n'
+        )
+
+    preview = preview_removal(target_a, codex_home=home)
+    assert preview.outcome is RemovalOutcome.DETACH
+    assert preview.shared_with == (str(root_b),)
+    assert _disconnect(target_a, home) is RemovalOutcome.DETACH
+    assert inspect_activation(target_b, codex_home=home).state is ActivationState.ACTIVE
+
+
+def test_connect_after_a_lost_record_keeps_trusted_members(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    target_b, root_b = _project(tmp_path, "b")
+    target_c, root_c = _project(tmp_path, "c")
+    _connect(target_a, home)
+    _connect(target_b, home)
+    (home / CONNECTED_PROJECTS_FILE).unlink()
+    with (home / "config.toml").open("a", encoding="utf-8") as handle:
+        handle.write(f'\n[projects."{root_b}"]\ntrust_level = "trusted"\n')
+
+    _connect(target_c, home)
+
+    assert connected_projects(home) == tuple(sorted(str(p) for p in (root_a, root_b, root_c)))

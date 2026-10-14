@@ -22,6 +22,7 @@ from yoetz.adapters.integrations.host_projects import (
     ConnectedProjects,
     HostProjectsError,
     duplicate_of,
+    host_config_lock,
     live_projects,
     load_connected_projects,
     same_directory,
@@ -240,6 +241,7 @@ class SharedProjectsStep:
         observed: tuple[str, ...] | None = None,
         recorded: bool = True,
         remove_shared: bool = False,
+        shared_present: bool = False,
     ) -> None:
         self._project = project
         self._recorded = recorded
@@ -260,6 +262,13 @@ class SharedProjectsStep:
         self.affected: tuple[str, ...] = live_projects(known, excluding=project)
         self.remove_shared = remove_shared and action == "disconnect"
         self.others: tuple[str, ...] = () if self.remove_shared else self.affected
+        # Shared pieces found without a record (an earlier release, or a lost record) may serve
+        # projects no record names; that stays unknown through later connects (#1058 round 2).
+        self.unknown_members = recorded and (
+            (self._snapshot is not None and self._snapshot.unknown_members)
+            or ((self._snapshot is None or self._snapshot.raw is None) and shared_present)
+        )
+        self.keeps_shared = not self.remove_shared and (bool(self.others) or self.unknown_members)
         self._config_root = config_root
 
     def record_change(self, action: ConnectionAction) -> str | None:
@@ -271,7 +280,9 @@ class SharedProjectsStep:
             same_directory(Path(item), self._project) or item == str(self._project)
             for item in self._snapshot.projects
         )
-        if action == "connect" and not listed:
+        if action == "connect" and (
+            not listed or (self.unknown_members and not self._snapshot_unknown())
+        ):
             return "record_connected_project"
         if action == "disconnect" and (
             listed or (self.remove_shared and self._snapshot is not None and self._snapshot.raw)
@@ -279,9 +290,14 @@ class SharedProjectsStep:
             return "forget_connected_project"
         return None
 
+    def _snapshot_unknown(self) -> bool:
+        return self._snapshot is not None and self._snapshot.unknown_members
+
     def disclose(self, disclosure: dict[str, JsonValue]) -> None:
         if self.others:
             disclosure["shared_with"] = cast(list[JsonValue], list(self.others))
+        if self.unknown_members:
+            disclosure["membership_unknown"] = True
         if self.remove_shared:
             disclosure["remove_shared"] = True
             if self.affected:
@@ -304,6 +320,7 @@ class SharedProjectsStep:
                 snapshot = load_connected_projects(self._config_root)
             except HostProjectsError as error:
                 raise ConnectionError("connection_outcome_unknown") from error
+        unknown = self.unknown_members and not self.remove_shared
         if action == "connect":
             projects = snapshot.with_project(self._project)
         elif self.remove_shared:
@@ -315,7 +332,7 @@ class SharedProjectsStep:
                 if not same_directory(Path(item), self._project)
             )
         try:
-            write_connected_projects(snapshot, projects)
+            write_connected_projects(snapshot, projects, unknown_members=unknown)
         except HostProjectsError as error:
             raise ConnectionError(
                 "connection_preview_stale"
@@ -334,7 +351,16 @@ class SharedProjectsStep:
             return {}
         if not self._recorded:
             return {}
-        return {"connected_projects": cast(list[JsonValue], list(current))}
+        return {
+            "connected_projects": cast(list[JsonValue], list(current)),
+            **({"membership_unknown": True} if self._current_unknown() else {}),
+        }
+
+    def _current_unknown(self) -> bool:
+        try:
+            return load_connected_projects(self._config_root).unknown_members
+        except HostProjectsError:
+            return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -356,6 +382,37 @@ class ConnectionPlan:
 
     def apply_reviewed_steps(self) -> None:
         self._apply()
+
+
+def _cursor_observed_members(
+    shared_status: dict[str, JsonValue],
+    config_root: Path,
+    selected: mcp.CursorProjectMcpTarget,
+    launcher: tuple[str, ...],
+    isolation_root: str | None,
+) -> dict[str, JsonValue]:
+    """Recorded members whose own project MCP entry is still Yoetz's (P3, #1058 round 2).
+
+    A recorded member without it keeps the shared plugin but is not observed connected; its
+    reconciliation is ``setup disconnect`` for that project, which forgets it.
+    """
+
+    recorded = shared_status.get("connected_projects")
+    if not isinstance(recorded, list):
+        return {}
+    observed: list[JsonValue] = []
+    for item in recorded:
+        try:
+            state: JsonValue = mcp.status_cursor_project_mcp(
+                mcp.CursorProjectMcpTarget(Path(str(item)), config_root, selected.project_binding),
+                launcher=launcher,
+                isolation_root=isolation_root,
+            )["state"]
+        except mcp.CursorProjectMcpError, OSError, ValueError:
+            continue
+        if state == "yoetz_owned":
+            observed.append(item)
+    return {"connected_projects_observed": observed}
 
 
 def prepare_connection(
@@ -511,7 +568,11 @@ def prepare_connection(
         # The user plugin (hooks, skill) serves every project under this config root; only the
         # project MCP entry is per project. The record names who still needs the plugin (#1058).
         shared = SharedProjectsStep(
-            installation.config_root, project, action, remove_shared=remove_shared
+            installation.config_root,
+            project,
+            action,
+            remove_shared=remove_shared,
+            shared_present=observed.state is not PluginArtifactState.ABSENT,
         )
         cursor_action = (
             PluginArtifactAction.REMOVE
@@ -523,7 +584,7 @@ def prepare_connection(
         cursor_preview = (
             None
             if action == "disconnect"
-            and (observed.state is PluginArtifactState.ABSENT or bool(shared.others))
+            and (observed.state is PluginArtifactState.ABSENT or shared.keeps_shared)
             else cursor.preview_cursor_plugin(
                 request, cursor_target, cursor_action, cursor_artifact, project_root=project
             )
@@ -577,6 +638,13 @@ def prepare_connection(
                 "reload_required": action == "connect",
                 "project_mcp": registration,
                 **shared.status(),
+                **_cursor_observed_members(
+                    shared.status(),
+                    installation.config_root,
+                    project_target,
+                    launcher,
+                    isolation_root,
+                ),
                 **admission.status(),
             }
 
@@ -658,14 +726,24 @@ def apply_connection(
     authority: ArtifactAuthority | None,
     review: PluginMutationReviewPort,
 ) -> dict[str, JsonValue]:
-    """Revalidate the complete plan, consume one review, then run only its exact steps."""
-    current = refresh()
-    if current.digest != plan.digest or current.digest != accepted_digest:
-        raise ConnectionError("connection_preview_stale")
-    if not current.unchanged:
-        if current.body.get("requires_os_presence") is not False:
-            if authority is None or authority.target_digest != current.digest:
-                raise ConnectionError("connection_authority_required")
-            review.consume_artifact_review(authority, current.digest)
-        current.apply_reviewed_steps()
-    return current.status()
+    """Revalidate the complete plan, consume one review, then run only its exact steps.
+
+    One lock per host configuration root is held from revalidation through the shared changes
+    and the connected-projects update, so two setups for one root never both act on the same
+    membership (#1058 round 2): the later one finds the earlier one's changes and is stale.
+    """
+    try:
+        lock = host_config_lock(Path(str(plan.body["config_root"])))
+        with lock:
+            current = refresh()
+            if current.digest != plan.digest or current.digest != accepted_digest:
+                raise ConnectionError("connection_preview_stale")
+            if not current.unchanged:
+                if current.body.get("requires_os_presence") is not False:
+                    if authority is None or authority.target_digest != current.digest:
+                        raise ConnectionError("connection_authority_required")
+                    review.consume_artifact_review(authority, current.digest)
+                current.apply_reviewed_steps()
+            return current.status()
+    except HostProjectsError as error:
+        raise ConnectionError("connection_outcome_unknown") from error

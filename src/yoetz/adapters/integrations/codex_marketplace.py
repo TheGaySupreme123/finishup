@@ -696,6 +696,20 @@ def _marketplace_relation(config: Mapping[str, object], project: Path) -> tuple[
     return ("missing" if state == "missing" else "foreign"), source
 
 
+def _trusted_serving(config: Mapping[str, object], project: Path) -> tuple[str, ...]:
+    """Projects this home trusts, other than ``project``, that serve the exact Yoetz manifest."""
+
+    trusted = config.get("projects")
+    if not isinstance(trusted, Mapping):
+        return ()
+    keys = [key for key in cast(Mapping[str, object], trusted) if Path(key).is_absolute()]
+    return tuple(
+        key
+        for key in live_projects(keys, excluding=project)
+        if _anchor_manifest_state(Path(key)) == "serves"
+    )
+
+
 def _anchor(config: Mapping[str, object], project: Path) -> Path:
     """The project whose manifest Codex resolves the shared marketplace from."""
 
@@ -1266,6 +1280,10 @@ def _activation_plan(
     if relation == "shared":
         # A home bound before #1058 has no record; its bound project stays connected.
         projects_after = tuple(sorted({*projects_after, source}))
+    if projects_before.raw is None:
+        # A lost record: import the trusted projects that still serve the exact Yoetz manifest,
+        # so the new record does not silently drop them (#1058 round 2).
+        projects_after = tuple(sorted({*projects_after, *_trusted_serving(config, project)}))
     block = _activation_block(project, config)
     plugin_source_digest = _plugin_source_digest(codex_version=binary.codex_version)
     cache_members = _source_cache_members(target, codex_version=binary.codex_version)
@@ -2160,6 +2178,11 @@ def _removal_plan(
     projects_before = _load_projects(home)
     # Other connected projects that can still anchor the home's shared marketplace (#1058).
     candidates = {*projects_before.projects, *((source,) if relation == "shared" else ())}
+    if projects_before.raw is None:
+        # No record (an earlier single-project release, or a lost record): projects this home
+        # trusts that still serve the exact Yoetz manifest are taken as connected, so a lost
+        # record never turns another project's shared pieces into this one's (#1058 round 2).
+        candidates.update(_trusted_serving(config, project))
     remaining = tuple(
         candidate
         for candidate in live_projects(candidates, excluding=project)

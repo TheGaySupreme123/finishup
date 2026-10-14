@@ -183,18 +183,24 @@ def connection_summary(plan: ConnectionPlan) -> tuple[str, ...]:
 def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
     """Name the other projects that share this configuration's Yoetz pieces (#1058)."""
 
-    others = body.get("shared_with")
-    if not isinstance(others, list) or not others:
-        return ()
-    names = ", ".join(str(item) for item in others)
-    if body.get("action") == "disconnect":
-        return (
-            "Other connected projects keep using the shared Yoetz pieces, so only this "
-            f"project's pieces are removed: {names}",
+    lines: list[str] = []
+    if body.get("membership_unknown") is True:
+        lines.append(
+            "Yoetz's shared pieces here were set up before it recorded connected projects (or "
+            "that record was lost), so other projects may still use them: an ordinary "
+            "disconnect keeps them. Only --remove-shared removes them for every project."
         )
-    return (
-        f"This configuration already serves other connected projects, which keep working: {names}",
-    )
+    others = body.get("shared_with")
+    if isinstance(others, list) and others:
+        names = ", ".join(str(item) for item in others)
+        lines.append(
+            "Other connected projects keep using the shared Yoetz pieces, so only this "
+            f"project's pieces are removed: {names}"
+            if body.get("action") == "disconnect"
+            else "This configuration already serves other connected projects, which keep "
+            f"working: {names}"
+        )
+    return tuple(lines)
 
 
 def _admission_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
@@ -225,7 +231,7 @@ def _admission_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
     if isinstance(inspected, int):
         lines.append(
             f"Only {inspected} of {body.get('admission_other_projects_known')} projects this "
-            "Codex home knows were checked; others may also use the registration."
+            "Codex home knows were checked; others may also use the registration, so it stays."
         )
     return tuple(lines)
 
@@ -378,11 +384,26 @@ def _refusal_step(reason: str, status: dict[str, JsonValue]) -> str | None:
             "keep Yoetz connected."
         )
     if reason == "connection_other_projects_need_registration":
+        partial = isinstance(status.get("admission_other_projects_known"), int)
         return (
-            "Nothing was changed. Other projects' Codex configuration uses the Yoetz MCP "
-            "registration (listed in status), so removing it for every project would stop "
-            "Codex loading there. Revoke or remove their Yoetz approval tables first (status "
-            "shows the command where Yoetz can do it), or disconnect without --remove-shared."
+            "Nothing was changed. "
+            + (
+                "Other projects' Codex configuration uses the Yoetz MCP registration (listed "
+                "in status), so removing it for every project would stop Codex loading there. "
+                "Revoke or remove their Yoetz approval tables first (status shows the command "
+                "where Yoetz can do it), or disconnect without --remove-shared."
+                if status.get("admission_other_projects")
+                else ""
+            )
+            + (
+                f" Only {status.get('admission_other_projects_inspected')} of "
+                f"{status.get('admission_other_projects_known')} projects this Codex home "
+                "knows were checked, so removing the registration for every project cannot be "
+                "shown safe. Remove trust entries for projects you no longer use from the "
+                "Codex home's config.toml, or disconnect without --remove-shared."
+                if partial
+                else ""
+            )
         )
     return None
 

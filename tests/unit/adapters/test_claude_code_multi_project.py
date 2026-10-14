@@ -203,3 +203,103 @@ def test_disconnecting_one_project_keeps_the_shared_marketplace_for_the_other(
     assert any(args[:3] == ("plugin", "marketplace", "remove") for _, args in commands.calls)
     assert not Path(project_b.marketplace_root).exists()
     assert _state(project_b, commands) is PluginArtifactState.ABSENT
+
+
+def _declaration(target: ClaudeCodePluginTarget) -> object:
+    path = Path(target.project_root) / ".claude" / "settings.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text()).get("extraKnownMarketplaces", {}).get("yoetz-local")
+
+
+class _RealisticClaude(_SharedClaude):
+    """Uninstall keeps the project's declaration, as Claude Code 2.1.299 does."""
+
+    def run(
+        self, target: ClaudeCodePluginTarget, arguments: Sequence[str]
+    ) -> ClaudeCodeCommandResult:
+        args = tuple(arguments)
+        if args[:2] == ("plugin", "uninstall"):
+            self.calls.append((target.project_root, args))
+            self.rows.pop(target.project_root, None)
+            path = Path(target.project_root) / ".claude" / "settings.json"
+            document = json.loads(path.read_text())
+            document["enabledPlugins"] = {}
+            path.write_text(json.dumps(document))
+            return ClaudeCodeCommandResult(0, b"ok", b"")
+        return super().run(target, arguments)
+
+
+def test_first_detached_project_reconnects_after_the_last_disconnect_either_order(
+    tmp_path: Path,
+) -> None:
+    """CHECK_MULTIPROJ_R1 P2-4: a scoped detach removes this project's own declaration."""
+
+    for first_name in ("a", "b"):
+        base = tmp_path / first_name
+        base.mkdir()
+        project_a, project_b = _pair(base)
+        commands = _RealisticClaude(
+            render_claude_code_plugin(
+                mcp_ownership=McpOwnership.PLUGIN_MANAGED, route_profile="strict"
+            )
+        )
+        _apply(project_a, ClaudeCodePluginAction.CONNECT, commands)
+        _apply(project_b, ClaudeCodePluginAction.CONNECT, commands)
+        first, last = (project_a, project_b) if first_name == "a" else (project_b, project_a)
+
+        assert _apply(first, ClaudeCodePluginAction.REMOVE, commands) is (
+            PluginOperationState.COMPLETED
+        )
+        assert _declaration(first) is None
+        assert _state(last, commands) is PluginArtifactState.NATIVE_MANAGED
+        assert _apply(last, ClaudeCodePluginAction.REMOVE, commands) is (
+            PluginOperationState.COMPLETED
+        )
+
+        assert _apply(first, ClaudeCodePluginAction.CONNECT, commands) is (
+            PluginOperationState.COMPLETED
+        )
+        assert _state(first, commands) is PluginArtifactState.NATIVE_MANAGED
+
+
+def test_declaration_left_by_an_earlier_detach_is_repairable_but_an_edited_one_is_not(
+    tmp_path: Path,
+) -> None:
+    from yoetz.adapters.integrations.claude_code_integration import ClaudeCodeIntegrationError
+
+    project_a, project_b = _pair(tmp_path)
+    commands = _RealisticClaude(
+        render_claude_code_plugin(mcp_ownership=McpOwnership.PLUGIN_MANAGED, route_profile="strict")
+    )
+    _apply(project_a, ClaudeCodePluginAction.CONNECT, commands)
+    _apply(project_b, ClaudeCodePluginAction.CONNECT, commands)
+    settings = Path(project_a.project_root) / ".claude" / "settings.json"
+    kept = settings.read_text()
+    _apply(project_a, ClaudeCodePluginAction.REMOVE, commands)
+    _apply(project_b, ClaudeCodePluginAction.REMOVE, commands)
+    # The state an earlier release left: A still declares the now-absent shared source.
+    document = json.loads(kept)
+    document["enabledPlugins"] = {}
+    settings.write_text(json.dumps(document))
+
+    assert _apply(project_a, ClaudeCodePluginAction.CONNECT, commands) is (
+        PluginOperationState.COMPLETED
+    )
+    _apply(project_a, ClaudeCodePluginAction.REMOVE, commands)
+
+    # An edited declaration stays the owner's and still refuses.
+    document["extraKnownMarketplaces"]["yoetz-local"]["note"] = "mine"
+    settings.write_text(json.dumps(document))
+    try:
+        preview_claude_code_plugin(
+            _REQUEST,
+            project_a,
+            ClaudeCodePluginAction.CONNECT,
+            commands.artifact,
+            commands=commands,
+        )
+    except ClaudeCodeIntegrationError as error:
+        assert error.reason.value == "destination_conflict"
+    else:
+        raise AssertionError("edited declaration was not protected")

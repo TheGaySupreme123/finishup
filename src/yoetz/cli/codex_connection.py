@@ -187,13 +187,16 @@ def prepare_codex_connection(
         # without a transport of its own) also keep it, connected through Yoetz or not.
         needing, enumeration = _other_projects_needing_transport(installation.config_root, project)
         removes_transport = not detach and registration.action.value != "noop"
-        if removes_transport and needing and remove_shared:
+        # An incomplete read is not proof that no other project needs the transport
+        # (CHECK_MULTIPROJ_R1 P2-3): keep it on an ordinary disconnect, refuse it home-wide.
+        unproven = bool(enumeration)
+        if removes_transport and (needing or unproven) and remove_shared:
             # An explicit home-wide disconnect still never breaks Codex in another project.
             raise ConnectionError(
                 "connection_other_projects_need_registration",
                 status={"admission_other_projects": needing, **enumeration},
             )
-        keep_transport = removes_transport and bool(needing)
+        keep_transport = removes_transport and (bool(needing) or unproven)
         if removes_transport and not keep_transport:
             own = project_transport_dependence(project, after_sweep=True)
             if own == "depends":
@@ -235,8 +238,11 @@ def prepare_codex_connection(
         if keep_transport:
             cast(list[JsonValue], body["retained"]).append(
                 "Yoetz MCP registration used by other projects' Codex configuration"
+                if needing
+                else "Yoetz MCP registration, because not every project this home knows was checked"
             )
-            admission.disclosure["admission_other_projects"] = needing
+            if needing:
+                admission.disclosure["admission_other_projects"] = needing
             warnings.append("mcp_registration_kept_for_other_projects")
         if removes_transport and enumeration:
             # Not every known project was read: absence from the list is not proof.
@@ -385,18 +391,19 @@ def _other_projects_needing_transport(
         candidates.update(connected_projects(codex_home))
     except IntegrationError:
         pass
+    # Missing directories and other paths to this same project are filtered before the bound,
+    # so stale trust entries do not use up the read window.
     eligible = sorted(
         candidate
         for candidate in candidates
-        if Path(candidate).is_absolute() and Path(candidate) != project
+        if Path(candidate).is_absolute()
+        and Path(candidate).is_dir()
+        and not same_directory(Path(candidate), project)
     )
     inspected = eligible[:_OTHER_PROJECTS_LIMIT]
     found: list[JsonValue] = []
     for candidate in inspected:
         root = Path(candidate)
-        if not root.is_dir() or same_directory(root, project):
-            # An old or symlinked path to this same project is this project, not another one.
-            continue
         dependence = project_transport_dependence(root, after_sweep=False)
         if dependence == "none":
             continue

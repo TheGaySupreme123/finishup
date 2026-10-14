@@ -1213,6 +1213,78 @@ def _json_file(path: Path) -> tuple[Mapping[str, JsonValue] | None, bool]:
     )
 
 
+def _exact_project_declaration(target: ClaudeCodePluginTarget) -> bool:
+    """This project's ``extraKnownMarketplaces`` entry is exactly the one setup writes."""
+
+    settings, observed = _json_file(Path(target.project_root) / ".claude" / "settings.json")
+    if not observed or settings is None:
+        return False
+    marketplaces = settings.get("extraKnownMarketplaces")
+    if not isinstance(marketplaces, Mapping):
+        return False
+    entry = cast(Mapping[str, JsonValue], marketplaces).get(_MARKETPLACE_NAME)
+    return entry == {"source": {"source": "directory", "path": target.marketplace_root}}
+
+
+def _remove_project_declaration(target: ClaudeCodePluginTarget) -> bool:
+    """Remove only this project's exact marketplace declaration (scoped detach, #1058 r2).
+
+    Claude Code's project-scope uninstall keeps the declaration; the unscoped marketplace
+    removal that would clear it also uninstalls every other project. An edited or foreign
+    declaration, or an unsafe file, is left alone. Returns whether the file changed.
+    """
+
+    path = Path(target.project_root) / ".claude" / "settings.json"
+    if not _exact_project_declaration(target):
+        return False
+    try:
+        raw = path.read_bytes()
+        mode = path.stat().st_mode & 0o777
+        document = strict_json_parse(raw)
+    except OSError, ProtocolValueError, UnicodeError:
+        return False
+    if not isinstance(document, Mapping):
+        return False
+    updated = dict(cast(Mapping[str, JsonValue], document))
+    marketplaces = dict(cast(Mapping[str, JsonValue], updated["extraKnownMarketplaces"]))
+    del marketplaces[_MARKETPLACE_NAME]
+    updated["extraKnownMarketplaces"] = marketplaces
+    import json
+
+    payload = (json.dumps(updated, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".settings.json.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, mode)
+        if path.read_bytes() != raw:
+            # Changed since it was read: leave the owner's newer bytes alone.
+            temporary.unlink(missing_ok=True)
+            return False
+        os.replace(temporary, path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        return False
+    return True
+
+
+def _repairable_prior_declaration(target: ClaudeCodePluginTarget, discovered: bool) -> bool:
+    """A project detached before this fix: its exact declaration names a source that is gone.
+
+    Setup may connect over it (``marketplace add`` re-declares the same entry). An edited or
+    foreign declaration, or a present source, is not this case (#1058 round 2).
+    """
+
+    return (
+        not discovered
+        and not os.path.lexists(target.marketplace_root)
+        and _exact_project_declaration(target)
+    )
+
+
 def _host_state_digest(target: ClaudeCodePluginTarget) -> str:
     rows: list[dict[str, JsonValue]] = []
     for name, path in (
@@ -1862,7 +1934,10 @@ def preview_claude_code_plugin(
         # mutation may even be previewed, let alone consume authority.
         raise _error(PluginArtifactReason.RECOVERY_REQUIRED)
     if action is ClaudeCodePluginAction.CONNECT:
-        if status.state is not PluginArtifactState.ABSENT:
+        if status.state is not PluginArtifactState.ABSENT and not (
+            status.state is PluginArtifactState.PARTIAL
+            and _repairable_prior_declaration(target, status.discovered)
+        ):
             if not status.marker_valid or status.state not in {
                 PluginArtifactState.NATIVE_MANAGED,
                 PluginArtifactState.PARTIAL,
@@ -2310,6 +2385,11 @@ def apply_claude_code_plugin(
             rows, observed = _list_plugins(target, command_port)
             others = _other_project_paths(target, rows) if observed else None
             shared_kept = not remove_shared and (others is None or bool(others))
+            if shared_kept and others:
+                # The other projects keep the marketplace; this project's own declaration of
+                # it goes, so a later reconnect starts from a clean project.
+                if _remove_project_declaration(target):
+                    changed = (*changed, ".claude/settings.json")
         if command_ok and not shared_kept:
             command_ok = _run_mutation(
                 target,

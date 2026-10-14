@@ -1,6 +1,7 @@
 """Connection composition against real isolated adapter state, without a live host."""
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -307,3 +308,178 @@ def test_cursor_second_path_to_a_connected_project_is_refused(tmp_path: Path) ->
     (moved / ".cursor" / "mcp.json").unlink()
     _cursor_step(installation, moved, "disconnect", launcher, review)
     assert _cursor_step(installation, moved, "connect", launcher, review)["configured"] is True
+
+
+def _cursor_install(tmp_path: Path, host: str) -> tuple[HostInstallation, Path]:
+    from typing import cast
+
+    from yoetz.adapters.integrations.host_discovery import SetupHost
+
+    launcher = tmp_path / "yoetz"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o700)
+    return (
+        HostInstallation(
+            cast(SetupHost, host), launcher, "2026.09.19", tmp_path / "cursor", "Cursor"
+        ),
+        launcher,
+    )
+
+
+@pytest.mark.parametrize("host", ["cursor-ide", "cursor-cli"])
+def test_cursor_upgrade_without_record_keeps_the_older_projects_plugin(
+    tmp_path: Path, host: str
+) -> None:
+    """CHECK_MULTIPROJ_R1 P2-1: a missing record is unknown membership, not an empty one."""
+
+    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+
+    installation, launcher = _cursor_install(tmp_path, host)
+    project_a, project_b = tmp_path / "a", tmp_path / "b"
+    project_a.mkdir(mode=0o700)
+    project_b.mkdir(mode=0o700)
+    review = Review()
+    _cursor_step(installation, project_b, "connect", launcher, review)
+    # B was connected by an earlier release (or the record was lost).
+    (installation.config_root / CONNECTED_PROJECTS_FILE).unlink()
+
+    preview_a = prepare_connection(
+        REQUEST,
+        installation,
+        project_a,
+        action="connect",
+        route="strict",
+        launcher=(str(launcher),),
+    )
+    assert preview_a.disclosure["membership_unknown"] is True
+    _cursor_step(installation, project_a, "connect", launcher, review)
+
+    plan = prepare_connection(
+        REQUEST,
+        installation,
+        project_a,
+        action="disconnect",
+        route="strict",
+        launcher=(str(launcher),),
+    )
+    assert "remove_plugin" not in cast(list[str], plan.body["changes"])
+    assert plan.disclosure["membership_unknown"] is True
+    _cursor_step(installation, project_a, "disconnect", launcher, review)
+
+    status_b = prepare_connection(
+        REQUEST,
+        installation,
+        project_b,
+        action="connect",
+        route="strict",
+        launcher=(str(launcher),),
+    ).status()
+    assert status_b["installed"] is True and status_b["configured"] is True
+    assert status_b["membership_unknown"] is True
+
+    # Only the explicit home-wide disconnect removes the shared plugin, with disclosure.
+    def prepare_shared():
+        return prepare_connection(
+            REQUEST,
+            installation,
+            project_b,
+            action="disconnect",
+            route="strict",
+            launcher=(str(launcher),),
+            remove_shared=True,
+        )
+
+    shared = prepare_shared()
+    assert "remove_plugin" in cast(list[str], shared.body["changes"])
+    assert shared.disclosure["remove_shared"] is True
+    result = apply_connection(
+        shared,
+        accepted_digest=shared.digest,
+        refresh=prepare_shared,
+        authority=ArtifactAuthority("review_only", shared.digest, "test"),
+        review=review,
+    )
+    assert result["installed"] is False
+    assert not (installation.config_root / CONNECTED_PROJECTS_FILE).exists()
+
+
+def test_concurrent_cursor_connects_never_lose_a_member(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """CHECK_MULTIPROJ_R1 P2-2: the second apply waits, then is stale; its retry joins."""
+
+    import threading
+
+    from yoetz.adapters.integrations import host_projects
+    from yoetz.adapters.integrations.host_projects import load_connected_projects
+    from yoetz.application import host_connection as composition
+
+    installation, launcher = _cursor_install(tmp_path, "cursor-cli")
+    project_a, project_b, project_c = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    for root in (project_a, project_b, project_c):
+        root.mkdir(mode=0o700)
+    review = Review()
+    _cursor_step(installation, project_c, "connect", launcher, review)
+
+    def prepare(project: Path):
+        return lambda: prepare_connection(
+            REQUEST,
+            installation,
+            project,
+            action="connect",
+            route="strict",
+            launcher=(str(launcher),),
+        )
+
+    plans = {name: prepare(root)() for name, root in (("a", project_a), ("b", project_b))}
+    a_inside = threading.Event()
+    b_waiting = threading.Event()
+    real_lock = host_projects.host_config_lock
+    from contextlib import contextmanager
+
+    @contextmanager
+    def observed_lock(root: Path):
+        name = threading.current_thread().name
+        if name == "b":
+            b_waiting.set()  # B is about to block on the lock A holds.
+        with real_lock(root):
+            if name == "a":
+                a_inside.set()
+                assert b_waiting.wait(timeout=30)
+            yield
+
+    monkeypatch.setattr(composition, "host_config_lock", observed_lock)
+    outcomes: dict[str, object] = {}
+
+    def run(name: str, project: Path) -> None:
+        if name == "b":
+            assert a_inside.wait(timeout=30)
+        plan = plans[name]
+        try:
+            outcomes[name] = apply_connection(
+                plan,
+                accepted_digest=plan.digest,
+                refresh=prepare(project),
+                authority=ArtifactAuthority("review_only", plan.digest, "test"),
+                review=review,
+            )
+        except ConnectionError as error:
+            outcomes[name] = str(error)
+
+    threads = [
+        threading.Thread(target=run, args=("a", project_a), name="a"),
+        threading.Thread(target=run, args=("b", project_b), name="b"),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+
+    assert isinstance(outcomes["a"], dict)
+    # B's preview predates A's record change: refused before any change, never a lost member.
+    assert outcomes["b"] == "connection_preview_stale"
+    assert not (project_b / ".cursor" / "mcp.json").exists()
+    _cursor_step(installation, project_b, "connect", launcher, review)
+    assert load_connected_projects(installation.config_root).projects == tuple(
+        sorted(str(root) for root in (project_a, project_b, project_c))
+    )

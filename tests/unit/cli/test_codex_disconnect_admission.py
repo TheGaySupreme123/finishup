@@ -376,25 +376,70 @@ def test_plugin_only_or_own_transport_projects_do_not_hold_the_registration(
     assert "admission_other_projects" not in plan.disclosure
 
 
-def test_enumeration_bound_is_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    home, project, installation = _layout(tmp_path)
-    other = tmp_path / "zz-other"
-    other.mkdir(mode=0o700)
-    _grant(other)
-    trusted = [tmp_path / f"p{index:02d}" for index in range(40)]
+def _crowded_home(tmp_path: Path, home: Path, *, stale: int, live: int) -> Path:
+    """A home whose trust list has stale and live entries sorting before a dependent project."""
+
+    dependent = tmp_path / "zz-dependent"
+    dependent.mkdir(mode=0o700)
+    _grant(dependent)
+    live_roots = [tmp_path / f"live{index:02d}" for index in range(live)]
+    for root in live_roots:
+        root.mkdir(mode=0o700)
+    stale_roots = [tmp_path / f"gone{index:02d}" for index in range(stale)]
     (home / "config.toml").write_text(
-        "".join(f'[projects."{root}"]\ntrust_level = "trusted"\n\n' for root in [*trusted, other])
+        "".join(
+            f'[projects."{root}"]\ntrust_level = "trusted"\n\n'
+            for root in [*stale_roots, *live_roots, dependent]
+        )
     )
+    return dependent
+
+
+def test_incomplete_scan_keeps_the_transport(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """CHECK_MULTIPROJ_R1 P2-3: an unread project may depend; an incomplete scan is no proof."""
+
+    home, project, installation = _layout(tmp_path)
+    _crowded_home(tmp_path, home, stale=0, live=40)
     fake = FakeCodex(home, project)
     _wire(monkeypatch, fake, list[str]())
 
     plan = _plan(installation, project)
 
-    # The dependent project sorts after the bound, so it was not read; the bound is surfaced
-    # instead of reading absence from the list as "nobody depends".
+    assert "remove_mcp_registration" not in _items(plan.body["changes"])
     assert plan.disclosure["admission_other_projects_known"] == 41
     assert plan.disclosure["admission_other_projects_inspected"] == 32
-    assert any("were checked" in line for line in connection_summary(plan))
+    assert "other_projects_partially_checked" in _items(plan.body["warnings"])
+    assert any("so it stays" in line for line in connection_summary(plan))
+    plan.apply_reviewed_steps()
+    assert fake.registered
+    assert not any(call[1:3] == ("mcp", "remove") for call in fake.calls)
+
+    with pytest.raises(ConnectionError, match="connection_other_projects_need_registration"):
+        codex_connection.prepare_codex_connection(
+            installation,
+            project,
+            action="disconnect",
+            route="strict",
+            request_value=REQUEST,
+            remove_shared=True,
+        )
+
+
+def test_stale_trust_entries_do_not_use_up_the_read_window(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home, project, installation = _layout(tmp_path)
+    dependent = _crowded_home(tmp_path, home, stale=40, live=0)
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+
+    plan = _plan(installation, project)
+
+    others = _items(plan.disclosure["admission_other_projects"])
+    assert [item["project_root"] for item in others] == [str(dependent)]
+    assert "admission_other_projects_known" not in plan.disclosure
 
 
 def test_remove_shared_refuses_while_another_project_needs_the_registration(
