@@ -63,7 +63,8 @@ unreleased above reverse-chronological released versions.
   with the reason, and a task that asked and still runs local gets the exact command to run (one-time
   reviewer setup, the owner's local-only choice, or re-registering a local-only host connection).
   A receipt names each switch by sequence, event id and who recorded it, only for a task that
-  switched. A switch is a request, never a grant. Guidance `review.md` says when to turn it on and
+  switched. A local task's checks complete at local coverage, and its closure readiness and the
+  Stop gate ask for no AI-powered review it will never run. A switch is a request, never a grant. Guidance `review.md` says when to turn it on and
   when to stay local, with the exact draft; the startup card points at it. Same MCP path on Codex,
   Claude Code and Cursor (#1073, ADR-049).
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
