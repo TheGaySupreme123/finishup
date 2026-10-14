@@ -315,9 +315,11 @@ open and both test targets had passed. Two causes, two changes:
 
 The `status` descriptor and the mapped SessionStart context now say "After resume or compaction,
 read status once; keep the returned obligations and findings, then do the work — do not reread
-status between ordinary steps." The mandatory startup surface is unchanged (Codex 7,766, Cursor
-7,694, portable 7,711, Claude Code 7,252 of 8,192); the mapped SessionStart context, shared by the
-three hosts, grows from 1,048 to 1,193 bytes, inside its 2,000-character hook bound.
+status between ordinary steps." The SessionStart copy spells the dash as a semicolon because that
+context is ASCII-only (its character bound equals its byte bound, ADR-044). The mandatory startup
+surface is unchanged (Codex 7,766, Cursor 7,694, portable 7,711, Claude Code 7,252 of 8,192); the
+mapped SessionStart context, shared by the three hosts, grows from 1,048 to 1,190 bytes, inside
+its 2,000-character hook bound.
 
 A protocol-level alternative (a typed `next_write` on the status result) was not taken: it would
 need a status-result schema change, and the text line carries the same instruction.

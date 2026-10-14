@@ -1254,7 +1254,7 @@ def _active_context(mapping: LifecycleMapping, frontier: str | None) -> str:
         f"session_id {mapping.yoetz_session_id} before substantive material work. "
         "Then read status with the returned session/writer ids; for compaction in an "
         "already-started host session, use your held current ids. After resume or compaction, "
-        "read status once; keep the returned obligations and findings, then do the work — do not "
+        "read status once; keep the returned obligations and findings, then do the work; do not "
         "reread status between ordinary steps. Do not call start with "
         "mode=create_or_attach and a new workspace_ref/external_ref pair, which creates a "
         "sibling task. " + _STARTUP_RECOVERY_CONTEXT
