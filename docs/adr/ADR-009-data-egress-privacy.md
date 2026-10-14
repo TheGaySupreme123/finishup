@@ -183,6 +183,24 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    structural fields and omission markers, while the current route is revalidated and the outer
    control correlation is freshly stamped. Any plaintext event summary prevents caching and uses
    the ordinary reserve/complete path again.
+   **Amended 2026-10-14 — receipt prose ceiling (N5 privacy).** The maintainer explicitly
+   requested this scoped repair, acknowledging the privacy/egress design gate. A `full_local`
+   profile is a local storage/rendering choice, never agent disclosure authority.
+
+   Receipt prose delivered to `agent_context` requires both its ordinary content category and
+   `repository_excerpt` approval. This applies to every receipt profile (`full_local` included),
+   JSON document prose, and the complete markdown/text rendering. Prose has no durable source-level
+   proof that it contains only the ordinary category, so the ceiling covers all prose, rather than
+   matching known file names. If the excerpt decision withholds it, each prose leaf reads
+   `(receipt prose withheld: repository_excerpt)` and `privacy_projection.omitted_pointers` identifies
+   the actual leaf. Structural conclusion, counts, IDs, frontiers and coverage/gap codes remain.
+   A denied ordinary prose category keeps its existing omission behavior; JSON fails closed when
+   that denial would require an object marker inside the receipt document. The digest and object ID
+   identify the unchanged stored owner receipt, not the projected presentation. Earlier stored
+   receipts pass through the same current gate when reread; no event or receipt migration is needed.
+   An attached controlling-terminal human view retains the full local detail. No format, redaction
+   profile, host, CLI redirection, or UI client grants an agent access to that human view.
+
 4. **Data classes:** structural public data, ordinary task/user content, sensitive/confidential
    content, and secrets/cryptographic material are distinct. Classification combines source-owned
    structural labels, scope validation, and deterministic secret scanning. Unknown or conflicting

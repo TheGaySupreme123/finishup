@@ -559,3 +559,16 @@ is consumed, cancellation cannot prove that nothing was sent. The gateway record
 receipt before dispatch so a later service startup can reconcile an interrupted attempt, before
 admitting new attempts. Reconciliation never sends again or restores spent authority. The
 background result remains cancelled and retains available attempt and provider provenance.
+
+## Receipt text your agent can read
+
+Your agent's receipt follows your privacy policy in JSON, markdown and text. Receipt prose can
+quote repository content, so it needs permission for repository excerpts as well as for finding or
+obligation text. If your policy withholds excerpts, the prose reads
+`(receipt prose withheld: repository_excerpt)`. The structured conclusion, coverage limits,
+counts, gap codes and receipt identity remain available. The list of omitted fields tells your
+agent what was withheld. This is also true for a full local receipt requested by an agent.
+
+Your full receipt keeps its detail locally. Read it in an attached local terminal to inspect it;
+requesting another format or a full local profile does not grant your agent more access. Older
+receipts follow the current privacy policy when read again.

@@ -10010,3 +10010,29 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `_RESULT_OUTCOME_HINT` (closed outcome set, no `blocked`, the blocker line) to the MCP error text.
 - **Scope.** The requested-output read runs only in `check`; status candidate findings and semantic
   assessment matching call `work_integrity_findings(case)` without `absent_outputs`.
+
+### Receipt prose and the agent-context ceiling (N5 privacy, 2026-10-14)
+
+Receipt prose delivered to `agent_context` requires both its ordinary content category and
+`repository_excerpt` approval. This applies to every receipt profile (`full_local` included),
+JSON document prose, and the complete markdown/text rendering. Prose has no durable source-level
+proof that it contains only the ordinary category, so the ceiling covers all prose, rather than
+matching known file names. If the excerpt decision withholds it, each prose leaf reads
+`(receipt prose withheld: repository_excerpt)` and `privacy_projection.omitted_pointers` identifies
+the actual leaf. Structural conclusion, counts, IDs, frontiers and coverage/gap codes remain.
+A denied ordinary prose category keeps its existing omission behavior; JSON fails closed when
+that denial would require an object marker inside the receipt document. The digest and object ID
+identify the unchanged stored owner receipt, not the projected presentation. Earlier stored
+receipts pass through the same current gate when reread; no event or receipt migration is needed.
+An attached controlling-terminal human view retains the full local detail. No format, redaction
+profile, host, CLI redirection, or UI client grants an agent access to that human view.
+
+The shared `Application.project_result_for_client` offers each receipt prose string twice, under
+`repository_excerpt`, and its fixed fallback under the ordinary leaf classification, with opaque
+independent candidate pointers. Either category can withhold it; only the excerpt item may carry
+original prose into the authorized sink payload. Excerpt omissions map back to real response pointers and
+use the fixed string above, keeping the existing receipt document schema valid. Other method results
+keep their existing classifications. MCP receipt/status/closure summaries use structural fields,
+never raw stored receipt prose; CLI and TUI use the service-projected result. Codex, Claude Code and
+Cursor share this boundary. Hook Stop text derives counts/codes and projects undeclared paths through
+its existing status gate; it never bypasses the gate by rendering the stored full receipt.

@@ -311,3 +311,19 @@ is consumed, cancellation cannot prove that nothing was sent. The gateway record
 receipt before dispatch so a later service startup can reconcile an interrupted attempt, before
 admitting new attempts. Reconciliation never sends again or restores spent authority. The
 background result remains cancelled and retains available attempt and provider provenance.
+
+## Receipt prose delivered to agents
+
+Receipt prose delivered to `agent_context` requires both its ordinary content category and
+`repository_excerpt` approval. This applies to every receipt profile (`full_local` included),
+JSON document prose, and the complete markdown/text rendering. Prose has no durable source-level
+proof that it contains only the ordinary category, so the ceiling covers all prose, rather than
+matching known file names. If the excerpt decision withholds it, each prose leaf reads
+`(receipt prose withheld: repository_excerpt)` and `privacy_projection.omitted_pointers` identifies
+the actual leaf. Structural conclusion, counts, IDs, frontiers and coverage/gap codes remain.
+A denied ordinary prose category keeps its existing omission behavior; JSON fails closed when
+that denial would require an object marker inside the receipt document. The digest and object ID
+identify the unchanged stored owner receipt, not the projected presentation. Earlier stored
+receipts pass through the same current gate when reread; no event or receipt migration is needed.
+An attached controlling-terminal human view retains the full local detail. No format, redaction
+profile, host, CLI redirection, or UI client grants an agent access to that human view.

@@ -412,6 +412,12 @@ reverse-chronological released versions.
 
 ### Fixed
 
+- Agent-facing receipts now apply the repository-excerpt ceiling to all receipt prose, including
+  `full_local` JSON, markdown and text. Withheld prose uses a stable token and exact omitted field
+  pointers while structural coverage remains available. The owner’s local full receipt keeps its
+  detail, and earlier stored receipts follow the same rule when reread. Finding/obligation prose
+  classifications and alternate client renderings cannot bypass this privacy decision.
+
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `yoetz-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so
   that line could never answer it there. Cursor agents are told instead to confirm a met criterion

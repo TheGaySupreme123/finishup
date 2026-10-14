@@ -2111,3 +2111,13 @@ and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the 
 through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
 the tb4n4 exports themselves were not replayed, and a live Cursor transcript on macOS, Linux and
 WSL 2 is not recorded for this change.
+
+### Receipt privacy ceiling (N5)
+
+Supported through the shared service projection: receipt JSON prose and markdown/text require
+both ordinary-category and repository-excerpt disclosure. A denied excerpt reads
+`(receipt prose withheld: repository_excerpt)` with exact omitted pointers and structural coverage.
+`full_local` is not an agent grant. MCP status/closure summaries never quote unprojected stored
+receipt prose, and Stop continues to use the existing privacy-projected status/count/code path.
+The same rule covers agent-facing CLI and UI results; an attached human terminal keeps full local
+detail. It applies on macOS, Linux and Windows through WSL 2 without a host-specific grant.

@@ -2981,6 +2981,13 @@ class Application:
             for item in items
             if item.item_id.startswith(("coordination-resource-", "coordination-advice-resource-"))
         )
+        # Receipt prose can quote repository content even when its ordinary category is
+        # finding_summary or obligation_text. Require BOTH decisions; a rendering/profile
+        # and a prose classification cannot grant repository-excerpt disclosure (ADR-009).
+        # Separate opaque candidate pointers keep the two decisions independently auditable.
+        # The ordinary-category item contains only the safe fallback; repository-bearing
+        # prose must not enter the authorized sink payload under that category either.
+        receipt_excerpt_items: dict[str, str] = {}
         for ordinal, (pointer, value) in enumerate(_leaves(source), start=1):
             if any(pointer.startswith(prefix) for prefix in coordination_resource_prefixes):
                 continue
@@ -2997,13 +3004,28 @@ class Application:
             )
             if classification == "public_structural":
                 continue
+            receipt_prose = method is ControlMethod.RECEIPT and type(value) is str
+            if receipt_prose:
+                excerpt_id = f"leaf-{ordinal}-excerpt"
+                receipt_excerpt_items[f"/{excerpt_id}"] = pointer
+                items.append(
+                    CandidateContextItem(
+                        excerpt_id,
+                        DataCategory.REPOSITORY_EXCERPT,
+                        scope,
+                        excerpt_id,
+                        canonical_encode(value),
+                    )
+                )
             items.append(
                 CandidateContextItem(
                     f"leaf-{ordinal}",
                     classification,
                     scope,
                     pointer,
-                    canonical_encode(value),
+                    canonical_encode(
+                        "(receipt prose withheld: repository_excerpt)" if receipt_prose else value
+                    ),
                 )
             )
         source_request_id = source.get("request_id")
@@ -3067,21 +3089,37 @@ class Application:
 
             assert self.project_application is not None
             await revalidate_status_advice_sources(self.project_application, source, sink)
-        # Digest-bound JSON receipt documents cannot be partly rewritten with omission
-        # markers; fail closed when any present document content leaf is blocked.
-        # Distinct from transient privacy_projection_unavailable (LocalDisclosureUnavailable).
+        excerpt_withheld = frozenset(
+            receipt_excerpt_items[omission.json_pointer]
+            for omission in completed.omissions
+            if omission.json_pointer in receipt_excerpt_items
+        )
+        marking_omissions = tuple(
+            omission
+            for omission in completed.omissions
+            if omission.json_pointer not in receipt_excerpt_items
+        )
+        # JSON receipt content denied in its ordinary category still fails closed. An
+        # excerpt-ceiling denial substitutes fixed prose strings instead of object markers,
+        # preserving the receipt document schema and structural coverage. The digest always
+        # identifies the stored owner document, not the privacy-projected presentation.
         if (
             method is ControlMethod.RECEIPT
             and source.get("format") == "json"
             and any(
                 omission.json_pointer == "/document"
                 or omission.json_pointer.startswith("/document/")
-                for omission in completed.omissions
+                for omission in marking_omissions
             )
         ):
             raise ControlError("privacy_projection_blocked", retryable=False)
         projected: JsonValue = source
-        for omission in completed.omissions:
+        marked = {omission.json_pointer for omission in marking_omissions}
+        for pointer in sorted(excerpt_withheld - marked, key=str.encode):
+            projected = _replace_pointer(
+                projected, pointer, "(receipt prose withheld: repository_excerpt)"
+            )
+        for omission in marking_omissions:
             # An omission whose pointer does not resolve means the privacy decision and the body
             # disagree. `_replace_pointer` raises a bounded, named ValueError rather than a bare
             # KeyError or IndexError; either way the projection stops before a response exists, so
@@ -3106,7 +3144,18 @@ class Application:
             "policy_digest": receipt.policy.policy_digest,
             "included_categories": tuple(item.value for item in receipt.approved_categories),
             "blocked_categories": tuple(item.value for item in receipt.blocked_categories),
-            "omitted_pointers": tuple(item.json_pointer for item in completed.omissions),
+            # Excerpt-ceiling omissions identify the real result leaf, never the opaque item.
+            "omitted_pointers": tuple(
+                sorted(
+                    {
+                        receipt_excerpt_items.get(item.json_pointer, item.json_pointer)
+                        for item in completed.omissions
+                    },
+                    key=str.encode,
+                )
+            )
+            if receipt_excerpt_items
+            else tuple(item.json_pointer for item in completed.omissions),
             "projection_commitment": completed.case_or_projection_commitment,
         }
         complete = {**dict(projected.items()), "privacy_projection": projection}
