@@ -6,6 +6,18 @@ reverse-chronological released versions.
 
 ## Unreleased
 
+- **Behaviour change:** background AI-powered advice now actually sends the approved, minimized
+  advice packet to your configured reviewer when external review is configured and your privacy
+  policy allows unattended requests (#1019). The background switch was already on by default, but
+  an invalid review envelope meant nothing was sent before. Set
+  `observation.semantic_advice_enabled = false` to stop background sends on every host.
+- Background advice is skipped under policies that require you to preview each request (the
+  Metadata only recipe, or `preview_required` on the AI-powered review channel). It shows
+  `advice_semantic_preview_required`; nothing is queued or sent, no approval waits for you, and no
+  provider attempt or retry backoff is recorded. Explicit checks keep their preview. The advice
+  packet follows your review-context choice, and `yoetz privacy receipts get|list` now marks
+  refused receipts whose category approvals were never sent (#1019).
+
 ### Added
 
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no

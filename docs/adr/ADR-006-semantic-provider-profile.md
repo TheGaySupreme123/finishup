@@ -1932,3 +1932,14 @@ in the check-time change, which follow-ups could not draw from.
   are unchanged, so a request whose remaining parts do not fit stays unanswered and is returned to
   the agent with its availability class. Each round's `semantic_review_follow_up` diagnostic also
   counts `semantic_follow_up_parts_added`.
+
+### Background advice and preview-required privacy (2026-10-14, #1019 round 2)
+
+Admission gains a third readiness leg after the provider and route legs (#923): when the
+effective repository policy needs a human preview, background advice is skipped with the typed
+reason `preview_required` and the `advice_semantic_preview_required` gap beside
+`advice_semantic_unavailable` (semantic state `disabled`). No row, revisit, provider identity,
+backoff or disclosure proposal results. A row queued before the policy changed closes at dispatch
+as `authorization_missing` without provider identity, so it neither charges the session interval
+nor grows the provider-failure backoff. The advice packet follows the effective review-context
+profile. The privacy decision is recorded in ADR-009.

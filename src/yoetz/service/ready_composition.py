@@ -101,6 +101,7 @@ from yoetz.application.egress import (
     SemanticEgressProviderOutcome,
     SemanticEgressSuccess,
     semantic_policy_refusal,
+    semantic_preview_required,
 )
 from yoetz.application.lineage import (
     LineageConfig,
@@ -243,6 +244,7 @@ from yoetz.domain.privacy import (
     PrivacyOutcome,
     PrivacyPolicy,
     PrivacyProfile,
+    PrivacyReason,
     ProviderBinding,
     ReviewContextProfile,
     ReviewSelectionPolicy,
@@ -6671,6 +6673,39 @@ async def provide_service_ready_context(
             privacy.recover_started_request if type(privacy) is PrivacyCoordinator else None,
         )
 
+    async def _advice_preview_required(session_id: str) -> bool:
+        """Whether the session's effective repository policy needs a human preview (#1019).
+
+        Background advice has nobody to preview its packet. ``confirm_every_request``
+        (metadata-only) or an LLM channel with ``preview_required`` therefore skips it with a
+        typed reason instead of leaving an awaiting-human proposal. Read from the policy store
+        without the privacy admission lock, like the route probe; a route that cannot reach a
+        repository authority is the route probe's ``provider_unreachable``, not this.
+        """
+
+        route = await catalog.resolve_route(session_id)
+        if (
+            route is None
+            or route.repository_privacy_commitment is None
+            or privacy_application is None
+        ):
+            return False
+        authority = await privacy_application.policy_store.repository_authority(
+            AuthorizationScope(
+                AuthorizationScopeKind.TASK,
+                installation_id,
+                route.repository_privacy_commitment,
+                route.task_id,
+            )
+        )
+        return semantic_preview_required(authority.effective.policy)
+
+    async def _advice_preview_required_now(session_id: str) -> bool:
+        try:
+            return await _advice_preview_required(session_id)
+        except Exception:  # noqa: BLE001 - unreadable policy keeps the ordinary failure record
+            return False
+
     async def _dispatch_observation_advice_semantic(
         attempt: ObservationAdviceSemanticAttempt,
     ) -> ObservationAdviceSemanticOutcome:
@@ -6708,6 +6743,23 @@ async def provide_service_ready_context(
             return ObservationAdviceSemanticOutcome(
                 status="unavailable", failure_reason="authorization_missing"
             )
+        # No readable effective policy is no authority for an unattended disclosure.
+        advice_policy: PrivacyPolicy | None = None
+        if privacy_application is not None:
+            with contextlib.suppress(Exception):
+                advice_policy = (
+                    await privacy_application.policy_store.effective_policy(repository_scope)
+                ).policy
+        if advice_policy is None:
+            return ObservationAdviceSemanticOutcome(
+                status="unavailable", failure_reason="authorization_missing"
+            )
+        if semantic_preview_required(advice_policy):
+            # Queued before the owner switched to a preview-required policy (#1019): close it
+            # with no provider identity or proposal; admission now reports ``preview_required``.
+            return ObservationAdviceSemanticOutcome(
+                status="unavailable", failure_reason="authorization_missing"
+            )
         binding = await resolve_provider_binding()
         if binding is None:
             return ObservationAdviceSemanticOutcome(
@@ -6719,6 +6771,11 @@ async def provide_service_ready_context(
                 request_id=ids.new(IdKind.REQUEST),
                 scope=repository_scope,
                 provider_binding=binding,
+                # The owner's review-context profile shapes advice like an explicit check.
+                review_context_profile=advice_policy.review_context_profile,
+                include_finding_prose=review_selection_for_delivery(
+                    advice_policy
+                ).include_finding_prose,
             )
         except TypeError, ValueError, UnicodeDecodeError:
             return ObservationAdviceSemanticOutcome(
@@ -6732,6 +6789,18 @@ async def provide_service_ready_context(
         advice_semantic_inflight[attempt.attempt_id] = (candidate.request_id, binding.provider_id)
         result = await cast(PrivacyCoordinator, privacy).evaluate_semantic(candidate, deadline)
         advice_semantic_inflight.pop(attempt.attempt_id, None)
+        if (
+            type(result) is SemanticEgressBlocked
+            and result.reason is PrivacyReason.POLICY_DENIED
+            and await _advice_preview_required_now(attempt.yoetz_session_id)
+        ):
+            # The policy turned preview-required between the read above and the egress
+            # pipeline's own refusal: nothing was sent, so no provider identity or backoff.
+            return ObservationAdviceSemanticOutcome(
+                status="unavailable",
+                failure_reason="authorization_missing",
+                attempt_receipt=result.receipt_id,
+            )
         if type(result) is not SemanticEgressSuccess:
             return ObservationAdviceSemanticOutcome(
                 status="failed",
@@ -6845,6 +6914,7 @@ async def provide_service_ready_context(
         route_ready=_advice_semantic_route_ready,
         revisit=advice_semantic_supervisor.schedule_revisit,
         provider_ready=advice_semantic_provider_ready,
+        preview_required=_advice_preview_required,
     )
 
     verification_supervisor = ObservationVerificationSupervisor(

@@ -31,6 +31,7 @@ from yoetz.application.egress import (
     PrivacyCoordinator,
     SemanticEgressBlocked,
     SemanticEgressSuccess,
+    semantic_preview_required,
 )
 from yoetz.application.observation_advice import minimized_semantic_evidence_packet
 from yoetz.application.observation_advice_semantic import (
@@ -50,6 +51,7 @@ from yoetz.domain.privacy import (
     EgressAuthorization,
     EgressChannel,
     EgressOriginOperation,
+    PrivacyProfile,
     PrivacyReason,
     ProviderBinding,
     ReviewContextProfile,
@@ -158,7 +160,12 @@ class _FakeProvider(_Gateway):
         return result
 
 
-def _candidate(packet: bytes | None = None) -> CandidateContext:
+def _candidate(
+    packet: bytes | None = None,
+    *,
+    profile: ReviewContextProfile = ReviewContextProfile.ASSISTED,
+    include_finding_prose: bool = True,
+) -> CandidateContext:
     scope = AuthorizationScope(
         AuthorizationScopeKind.TASK,
         minimal_external_policy().effective_scope.installation_id,
@@ -203,7 +210,12 @@ def _candidate(packet: bytes | None = None) -> CandidateContext:
         1,
     )
     return observation_advice_to_candidate_context(
-        attempt, request_id=_REQUEST, scope=scope, provider_binding=binding
+        attempt,
+        request_id=_REQUEST,
+        scope=scope,
+        provider_binding=binding,
+        review_context_profile=profile,
+        include_finding_prose=include_finding_prose,
     )
 
 
@@ -259,12 +271,14 @@ async def test_approved_advice_reaches_fake_provider_with_retained_content(
     profile: ReviewContextProfile,
     summaries: bool,
 ) -> None:
-    result, _audit, provider = await _evaluate(_candidate(), profile=profile, summaries=summaries)
+    result, _audit, provider = await _evaluate(
+        _candidate(profile=profile), profile=profile, summaries=summaries
+    )
     assert isinstance(result, SemanticEgressSuccess)
     (case,) = provider.cases
     payload = strict_json_parse(case.payload)
     assert isinstance(payload, dict)
-    assert payload["review_context_profile"] == "custom"
+    assert payload["review_context_profile"] == profile.value
     rows = cast(list[dict[str, JsonValue]], payload["items"])
     assert any("source_lag" in str(row["content"]) for row in rows)
     assert b"failed_command_unresolved" in case.payload
@@ -361,7 +375,7 @@ async def test_advice_golden_vector_is_the_exact_approved_packet(summaries: bool
     )
     assert isinstance(fixture, dict)
     source = cast(dict[str, JsonValue], fixture["input"])
-    candidate = _candidate(canonical_encode(source["packet"]))
+    candidate = _candidate(canonical_encode(source["packet"]), profile=ReviewContextProfile.CUSTOM)
     assert [
         {
             "item_id": item.item_id,
@@ -426,3 +440,48 @@ async def test_forbidden_summary_denies_only_its_actual_category() -> None:
     assert result.reason is PrivacyReason.NEVER_SEND_DETECTED
     assert provider.cases == []
     assert audit.receipts[0].blocked_categories == (DataCategory.FINDING_SUMMARY,)
+
+
+@pytest.mark.anyio
+async def test_structural_profile_advice_carries_no_finding_prose() -> None:
+    """The owner's review-context profile shapes the advice packet like an explicit check."""
+
+    candidate = _candidate(profile=ReviewContextProfile.STRUCTURAL, include_finding_prose=False)
+    assert all(item.category is not DataCategory.FINDING_SUMMARY for item in candidate.items)
+    result, _audit, provider = await _evaluate(candidate, profile=ReviewContextProfile.STRUCTURAL)
+    assert isinstance(result, SemanticEgressSuccess)
+    (case,) = provider.cases
+    payload = strict_json_parse(case.payload)
+    assert isinstance(payload, dict)
+    assert payload["review_context_profile"] == "structural"
+    assert b"A retained finding summary" not in case.payload
+    assert b"failed_command_unresolved" in case.payload
+
+
+def test_preview_requirement_covers_confirm_every_request_and_channel_preview() -> None:
+    external = minimal_external_policy()
+    assert not semantic_preview_required(external)
+    assert semantic_preview_required(with_llm(external, preview_required=True))
+    # Metadata-only is ``confirm_every_request``, which the policy itself binds to preview.
+    assert semantic_preview_required(
+        replace(
+            with_llm(external, preview_required=True),
+            profile=PrivacyProfile.CONFIRM_EVERY_REQUEST,
+        )
+    )
+
+
+@pytest.mark.anyio
+async def test_preview_required_advice_never_creates_a_proposal() -> None:
+    """Background advice has no human to preview it: refuse before any proposal (#1019)."""
+
+    result, audit, provider = await _evaluate(_candidate(), preview_required=True)
+    assert isinstance(result, SemanticEgressBlocked)
+    assert result.reason is PrivacyReason.POLICY_DENIED
+    assert audit.proposal is None
+    assert provider.cases == []
+    (receipt,) = audit.receipts
+    # Nothing was classified for sending, so the receipt asserts no approval at all.
+    assert receipt.approved_categories == ()
+    assert receipt.counts.approved_items == 0
+    assert receipt.counts.included_items == 0

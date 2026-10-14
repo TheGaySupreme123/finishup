@@ -29,6 +29,7 @@ from yoetz.domain.privacy import (
     DisclosureProvenance,
     EgressAuthorization,
     EgressChannel,
+    EgressOriginOperation,
     EgressReceipt,
     ForbiddenDataKind,
     HumanPrivacyDecision,
@@ -107,6 +108,7 @@ __all__ = [
     "SemanticEgressResult",
     "SemanticEgressSuccess",
     "semantic_policy_refusal",
+    "semantic_preview_required",
 ]
 
 type LocalDisclosureResult = (
@@ -255,6 +257,12 @@ _SCOPE_KIND_RANK = {
     AuthorizationScopeKind.TASK: 2,
     AuthorizationScopeKind.REQUEST: 3,
 }
+
+
+def semantic_preview_required(policy: PrivacyPolicy) -> bool:
+    """The same human-preview decision for foreground checks and background admission."""
+    llm = next(c for c in policy.channel_policies if c.channel is EgressChannel.LLM_INFERENCE)
+    return policy.profile is PrivacyProfile.CONFIRM_EVERY_REQUEST or llm.preview_required
 
 
 def semantic_policy_refusal(
@@ -1585,6 +1593,16 @@ class PrivacyCoordinator:
                 PrivacyReason.POLICY_DENIED,
             )
 
+        # Background advice has no human to preview it and no continuation to resume. Refuse it
+        # before classification, so no proposal is reserved and the receipt asserts no category
+        # approval, even if the policy changed after the service's own preflight (#1019).
+        if egress_origin_operation(
+            candidate.purpose, (i.item_id for i in candidate.items)
+        ) is EgressOriginOperation.OBSERVATION_ADVICE and semantic_preview_required(policy):
+            return await self._complete_semantic_predispatch(
+                candidate, effective, PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyReason.POLICY_DENIED
+            )
+
         classified = self._classifier.classify(candidate, effective)
         decision = self._semantic_decision(classified, effective, binding)
         if decision.outcome is not PrivacyOutcome.COMPLETED:
@@ -1828,9 +1846,7 @@ class PrivacyCoordinator:
             )
 
         proposal = prepared.proposal
-        preview_required = (
-            policy.profile is PrivacyProfile.CONFIRM_EVERY_REQUEST or llm.preview_required
-        )
+        preview_required = semantic_preview_required(policy)
         subject_digest = prepared.reservation.subject_digest
         if preview_required:
             return await self._handle_human_gate(

@@ -971,3 +971,32 @@ here.
 - Disclosure: carried rows are listed in the review input manifest and the egress receipt like any
   other excerpt; nothing new is hidden from the owner, and the behaviour is service-side and the
   same on Codex, Claude Code and Cursor.
+
+### Background advice under preview-required policies (2026-10-14, issue #1019 round 2)
+
+Maintainer acknowledgement: the owner requested this scoped follow-up to the amendment above.
+
+- Background advice now actually sends the approved, minimized advice packet when external review
+  is configured and the effective repository policy permits unattended disclosure. The background
+  switch was already on by default; before #1019 an invalid envelope meant nothing was sent. This
+  is a behaviour change, recorded in the changelog and release notes.
+- Background advice has nobody to preview a packet and no continuation to resume. When the
+  effective repository policy needs a human preview (profile `confirm_every_request`, which the
+  metadata-only recipe selects, or an LLM channel with `preview_required`), admission skips advice
+  with the typed reason `preview_required` (gap `advice_semantic_preview_required`). Nothing is
+  queued, no disclosure proposal waits for the owner, no provider identity is recorded and no
+  backoff accrues. A row queued before the policy changed closes as `authorization_missing` with no
+  provider identity. As defence in depth, the egress pipeline refuses an `observation_advice`
+  candidate under such a policy before classification, so its receipt asserts no category
+  approval. Explicit checks keep their preview and resume ceremony unchanged.
+- Per recipe: `private` sends nothing; `metadata_only` skips background advice; `assisted_review`,
+  `expanded_review` and a custom policy without preview send only within the repository grant,
+  allowed categories and review-context selection. The advice envelope names the effective
+  review-context profile, and finding-summary prose is offered only when that profile's selection
+  includes finding prose (never under `structural`).
+- A refused request can still carry classification approvals in `approved_categories` and
+  `counts.approved_items`. The released receipt shape is closed, so the CLI's human rendering of
+  privacy receipts adds a `not sent:` line for network receipts that never reached a provider;
+  `--json` and the wire are unchanged.
+- Shared service behaviour for Codex, Claude Code and Cursor on macOS, Linux and Windows through
+  WSL 2. No migration: the skip writes no row, and a race closes with an existing reason.

@@ -3954,7 +3954,10 @@ denials (#1019). Request-level scope/destination/channel refusal and failure to 
 context do not by themselves deny any category. `approved_categories` and `counts.approved_items`
 record classification approval, never provider delivery; before classification neither approval
 nor denial is asserted. `safe_failure_reason` independently names the actual failure. Stored older
-receipts preserve their original category accounting.
+receipts preserve their original category accounting. Because the released receipt shape is
+closed, the human rendering of `yoetz privacy receipts get|list` (not `--json`) adds one stderr
+line per network receipt with no `dispatch_id` that still carries approvals: `not sent: privacy
+receipt <receipt_id> (<outcome>) never reached a provider; ...` (#1019 r2).
 
 `EgressReceipt` and `LocalDisclosureReceipt` share one closed outcome/reason compatibility matrix:
 `completed` forbids `safe_failure_reason`; every other outcome requires exactly one reason permitted
@@ -4336,10 +4339,13 @@ status/reason pair with no provenance.
 `review_item_catalog(items)` and `review_envelope_to_candidate_context(envelope, items, ...)`
 (`application.semantic_case`) are the shared catalog/classification projection for explicit checks
 and automatic advice. They offer the structural `review-packet` envelope and only catalogued
-content as separate categorized candidates. `observation_advice_to_candidate_context(attempt, ...)`
-(`application.observation_advice_semantic`) validates the frozen advice packet through
-`validate_semantic_evidence_packet` (`application.observation_advice`), keeps rule metadata and gaps
-structural, and separates finding-summary prose. Both producers use
+content as separate categorized candidates. `observation_advice_to_candidate_context(attempt, ...,
+review_context_profile, include_finding_prose)` (`application.observation_advice_semantic`)
+validates the frozen advice packet through `validate_semantic_evidence_packet`
+(`application.observation_advice`), keeps rule metadata and gaps structural, and separates
+finding-summary prose. The service passes the effective repository policy's
+`review_context_profile` (named in the envelope) and offers finding-summary prose only when
+`review_selection_for_delivery(policy).include_finding_prose` (never under `structural`). Both producers use
 `assemble_filtered_review_packet` to retain only privacy-approved content. Advice does not invent a
 cooperative ledger frontier, source excerpts, or task-check coverage (#1019, ADR-009).
 
@@ -4955,7 +4961,16 @@ Shared closed types:
   without both no row
   is written, no provider is contacted, and the snapshot adds `advice_semantic_unavailable` once
   with semantic state `disabled`, never `advice_semantic_pending`; only a completed review of the
-  same identity is still reused. Only a `succeeded` row with validated finding ids adds
+  same identity is still reused. When both pass but the effective repository policy needs a human
+  preview (`semantic_preview_required`, `application.egress`: profile `confirm_every_request`,
+  i.e. the metadata-only recipe, or an LLM channel with `preview_required`), the scheduler's
+  `preview_required` probe skips the same way with the typed addon reason `preview_required`: no
+  row, revisit, provider identity, backoff or disclosure proposal; the snapshot adds
+  `advice_semantic_preview_required` beside `advice_semantic_unavailable` with semantic state
+  `disabled` (gap rule G5b, disclosed). A row queued before such a policy change closes at dispatch
+  as `unavailable` / `authorization_missing` with no provider identity, and `PrivacyCoordinator`
+  refuses an `observation_advice` candidate under such a policy before classification
+  (`blocked_by_policy` / `policy_denied`, no proposal, no category approval) (#1019 r2). Only a `succeeded` row with validated finding ids adds
   `semantic_model_derived`; a succeeded attempt that returned no challenges is an honest receipt and
   no finding.
 

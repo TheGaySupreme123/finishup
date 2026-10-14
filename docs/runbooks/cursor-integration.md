@@ -1942,7 +1942,10 @@ Background review never engages a declared fallback endpoint, so its readiness r
 primary. Without them
 the service writes no advice rows and reports `advice_semantic_unavailable`, not
 `advice_semantic_pending`; rows queued earlier close as `provider_unavailable` without provider
-work. A foreground-cancelled call that may have started names its provider on the `cancelled` row
+work. Under a preview-required policy (the metadata-only recipe, or `preview_required` on the LLM
+channel) background advice is skipped with `advice_semantic_preview_required`: no row, no pending
+approval, no provider identity (#1019 round 2). Supported identically on this host; the host
+adapter is unchanged. A foreground-cancelled call that may have started names its provider on the `cancelled` row
 (usage unknown). This is service-side and identical on every host and supported OS; hook advice
 rendering is unchanged.
 

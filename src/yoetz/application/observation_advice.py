@@ -52,6 +52,8 @@ __all__ = [
     "ADVICE_SEMANTIC_DEFERRED_GAP",
     "ADVICE_SEMANTIC_DEFERRED_REASON",
     "ADVICE_SEMANTIC_PENDING_GAP",
+    "ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP",
+    "ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON",
     "ADVICE_SEMANTIC_UNREACHABLE_REASON",
     "ADVICE_SEMANTIC_UNAVAILABLE_GAP",
     "semantic_state_from_addon",
@@ -100,6 +102,12 @@ ADVICE_SEMANTIC_DEFERRED_REASON: Final = "deferred"
 # enqueued and no provider is contacted; the condition surfaces once as
 # ``advice_semantic_unavailable`` and never as pending work.
 ADVICE_SEMANTIC_UNREACHABLE_REASON: Final = "provider_unreachable"
+# Preview-required privacy (#1019): the effective repository policy asks the owner to preview
+# every LLM disclosure (``confirm_every_request``/metadata-only, or ``preview_required``).
+# Background advice has nobody to preview it, so it is skipped before any row, proposal or
+# provider attempt and surfaces as this gap beside ``advice_semantic_unavailable``.
+ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON: Final = "preview_required"
+ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP: Final = "advice_semantic_preview_required"
 _SEMANTIC_SUMMARY_FALLBACK: Final = "Model-derived observation note"
 _SEMANTIC_DETAIL_FALLBACK: Final = "Additive AI-powered advice over minimized evidence"
 _VALID_ADVICE_NEXT_ACTIONS: Final[frozenset[str]] = frozenset(
@@ -239,9 +247,13 @@ def semantic_state_from_addon(
     validation and left no usable finding; ADR-006 records that as ``failed`` (a terminal attempt
     without validated output), not ``ready``. With no reachable provider no attempt was
     requested, so the state is ``disabled`` (#923); the addon still carries the unavailable gap.
+    A preview-required policy is the same not-requested condition (#1019).
     """
 
-    if addon is None or addon.failure_reason == ADVICE_SEMANTIC_UNREACHABLE_REASON:
+    if addon is None or addon.failure_reason in {
+        ADVICE_SEMANTIC_UNREACHABLE_REASON,
+        ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON,
+    }:
         return "disabled"
     if addon.failure_reason is None:
         return "ready" if output_usable else "failed"
@@ -966,6 +978,11 @@ def build_observation_advice_snapshot(
             (
                 ADVICE_SEMANTIC_UNAVAILABLE_GAP,
                 semantic_unavailable,
+            ),
+            (
+                ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP,
+                semantic is not None
+                and semantic.failure_reason == ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON,
             ),
             (
                 ADVICE_SEMANTIC_DEFERRED_GAP,

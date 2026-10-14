@@ -14,7 +14,12 @@ from yoetz.application.observation_advice_semantic import (
     observation_advice_to_candidate_context,
 )
 from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind
-from yoetz.domain.privacy import AuthorizationScope, AuthorizationScopeKind, ProviderBinding
+from yoetz.domain.privacy import (
+    AuthorizationScope,
+    AuthorizationScopeKind,
+    ProviderBinding,
+    ReviewContextProfile,
+)
 from yoetz.kernel.policies.observation_advice import ObservationAdviceCandidate
 from yoetz.protocol.canonical import (
     JsonValue,
@@ -73,6 +78,10 @@ def document() -> dict[str, JsonValue]:
         provider_binding=ProviderBinding(
             "fixture", "fixture/model", "fixture-external", "1.0.0", "external"
         ),
+        # A custom profile that includes finding prose: the frozen vector predates profile
+        # threading (#1019 r2) and keeps its exact bytes; runtime tests cover each profile.
+        review_context_profile=ReviewContextProfile.CUSTOM,
+        include_finding_prose=True,
     )
     # The builder envelope is the golden vector; runtime tests apply the real classifier and
     # approval filter to it, with the denial expectations pinned independently below.
