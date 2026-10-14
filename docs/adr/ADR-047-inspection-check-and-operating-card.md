@@ -296,8 +296,10 @@ open and both test targets had passed. Two causes, two changes:
 - **Self-observation (bug).** The Codex rollout's completed `McpToolCall` item had no hook phase,
   so the #564 delivery policy delivered every successful Yoetz `status` read: each read appended
   action, result and evidence and moved the frontier the agent was polling. The item is now read in
-  the `PostToolUse` phase, held items are settled locally on release, and Cursor's ordinary
-  `MCP:<workflow tool>` spelling is read as Yoetz's own. Explicit failures and denials, Yoetz
+  the `PostToolUse` phase and held items are settled locally on release. Cursor's ordinary
+  `MCP:<tool>` names no server, so it is Yoetz's only when the bridge recorded serving that exact
+  read (commitment to tool, session, writer and `request_id`, written before the result returns);
+  an unproven event, including every pre-event, is delivered as ordinary evidence. Explicit failures and denials, Yoetz
   writes and other tools are delivered as before. Host runbooks record the per-host decision.
 - **Status loop (text only).** The MCP bridge keeps, per process (one host session), the number of
   consecutive first-page `status` reads per `(session_id, actor_id)` since that session's last

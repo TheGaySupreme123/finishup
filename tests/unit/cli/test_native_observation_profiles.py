@@ -1112,61 +1112,107 @@ def test_unknown_runtime_authority_never_extracts_native_content(
     assert pending[0].content_object_refs == ()
 
 
-def test_cursor_ordinary_yoetz_status_read_stays_local_while_other_mcp_calls_deliver(
+_YOETZ_ARGS: dict[str, JsonValue] = {
+    "request_id": "req_7d1e5c2a-3b4f-4a6e-9c8d-1f2e3a4b5c6d",
+    "session_id": "ses_1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b",
+    "writer_id": "wri_2c3d4e5f-6071-4829-9bac-1d2e3f4a5b6c",
+    "view": "obligations",
+}
+
+
+def _cursor_ordinary_emit(
     tmp_path: Path,
+    event: str,
+    call_id: str,
+    tool_name: str,
+    tool_input: Mapping[str, JsonValue],
+    output: JsonValue,
 ) -> None:
-    """tb4 n5: Cursor's ``MCP:status`` read is not appended to the ledger it read."""
+    payload: dict[str, JsonValue] = {
+        "hook_event_name": event,
+        "session_id": "cursor-n5-ordinary",
+        "conversation_id": "cursor-n5-conversation",
+        "tool_name": tool_name,
+        "tool_use_id": call_id,
+        "tool_input": JsonObject(tool_input),
+    }
+    if event != "preToolUse":
+        payload["tool_output"] = output
+    assert (
+        observe_hooks.handle_cursor_observe(
+            event_name=event,
+            stdin_bytes=canonical_encode(payload),
+            stdout=io.BytesIO(),
+            workspace=str(tmp_path),
+            _state=tmp_path / "state",
+            skip_service=True,
+            observation_profile=CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
+        )
+        == 0
+    )
+
+
+def _cursor_delivered(tmp_path: Path, commitment: str) -> set[tuple[str, object, object]]:
+    store = LocalObservationStore(_state=tmp_path / "state")
+    return {
+        (
+            row.envelope.event_kind,
+            row.envelope.structural_payload.get("tool_name"),
+            row.envelope.structural_payload.get("tool_call_id"),
+        )
+        for row in store.list_pending_outbox_rows(commitment)
+        if row.envelope.event_kind in {"PreToolUse", "PostToolUse"}
+    }
+
+
+def test_cursor_ordinary_foreign_status_tool_is_still_delivered(tmp_path: Path) -> None:
+    """tb4 n5 round 2: ``MCP:status`` names no server; another server's ``status`` is evidence."""
 
     store = LocalObservationStore(_state=tmp_path / "state")
     commitment = store.workspace_commitment(str(tmp_path.resolve()))
     store.grant_consent(commitment)
+    unhealthy = (
+        '{"content":[{"type":"text","text":"Cluster is unhealthy: 3 pods failing readiness'
+        ' checks"}],"isError":false}'
+    )
+    _cursor_ordinary_emit(
+        tmp_path, "preToolUse", "cur-foreign", "MCP:status", {"cluster": "prod"}, None
+    )
+    _cursor_ordinary_emit(
+        tmp_path, "postToolUse", "cur-foreign", "MCP:status", {"cluster": "prod"}, unhealthy
+    )
+    delivered = _cursor_delivered(tmp_path, commitment)
+    assert {kind for kind, _tool, _call in delivered} == {"PreToolUse", "PostToolUse"}
 
-    def emit(event: str, call_id: str, tool_name: str) -> None:
-        payload: dict[str, JsonValue] = {
-            "hook_event_name": event,
-            "session_id": "cursor-n5-ordinary",
-            "conversation_id": "cursor-n5-conversation",
-            "tool_name": tool_name,
-            "tool_use_id": call_id,
-            "tool_output": None if event == "preToolUse" else '{"isError":false}',
-        }
-        assert (
-            observe_hooks.handle_cursor_observe(
-                event_name=event,
-                stdin_bytes=canonical_encode(payload),
-                stdout=io.BytesIO(),
-                workspace=str(tmp_path),
-                _state=tmp_path / "state",
-                skip_service=True,
-                observation_profile=CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
-            )
-            == 0
-        )
 
-    for call_id, tool_name in (
-        ("cursor-n5-status", "MCP:status"),
-        ("cursor-n5-publish", "MCP:publish_work"),
-        ("cursor-n5-foreign", "MCP:fixture_echo"),
-    ):
-        emit("preToolUse", call_id, tool_name)
-        emit("postToolUse", call_id, tool_name)
+def test_cursor_ordinary_yoetz_status_read_proven_by_the_bridge_stays_local(tmp_path: Path) -> None:
+    """tb4 n5: a served Yoetz read is not appended to the ledger it read; nothing else changes."""
 
-    reopened = LocalObservationStore(_state=tmp_path / "state")
-    delivered = {
+    from yoetz.adapters.integrations import yoetz_call_rejections as rejections
+
+    store = LocalObservationStore(_state=tmp_path / "state")
+    commitment = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(commitment)
+    # The bridge records serving the read before returning its result to Cursor.
+    assert rejections.record_served_yoetz_read("status", _YOETZ_ARGS, state_root=tmp_path / "state")
+    ok = '{"content":[],"isError":false}'
+    for call, tool, args in (
+        ("cur-yoetz-status", "MCP:status", _YOETZ_ARGS),
+        ("cur-yoetz-publish", "MCP:publish_work", _YOETZ_ARGS),
         (
-            row.envelope.event_kind,
-            row.envelope.structural_payload.get("tool_name"),
-        )
-        for row in reopened.list_pending_outbox_rows(commitment)
-        if row.envelope.event_kind in {"PreToolUse", "PostToolUse"}
-    }
-    assert delivered == {
-        ("PostToolUse", "MCP:publish_work"),
-        ("PreToolUse", "MCP:fixture_echo"),
-        ("PostToolUse", "MCP:fixture_echo"),
-    }
-    local = {
-        envelope.structural_payload.get("tool_name")
-        for envelope in reopened.list_envelopes(commitment)
-    }
-    assert {"MCP:status", "MCP:publish_work", "MCP:fixture_echo"} <= local
+            "cur-other-status",
+            "MCP:status",
+            {**_YOETZ_ARGS, "request_id": "req_00000000-0000-4000-8000-0000000000ff"},
+        ),
+    ):
+        _cursor_ordinary_emit(tmp_path, "preToolUse", call, tool, args, None)
+        _cursor_ordinary_emit(tmp_path, "postToolUse", call, tool, args, ok)
+    delivered = _cursor_delivered(tmp_path, commitment)
+    # The proven read's post stays local; its pre cannot be proven yet and is delivered as before.
+    assert ("PostToolUse", "MCP:status", "cur-yoetz-status") not in delivered
+    assert ("PreToolUse", "MCP:status", "cur-yoetz-status") in delivered
+    # A write, and a read the bridge never served, are delivered as before.
+    assert ("PostToolUse", "MCP:publish_work", "cur-yoetz-publish") in delivered
+    assert ("PostToolUse", "MCP:status", "cur-other-status") in delivered
+    local = {e.structural_payload.get("tool_call_id") for e in store.list_envelopes(commitment)}
+    assert "cur-yoetz-status" in local

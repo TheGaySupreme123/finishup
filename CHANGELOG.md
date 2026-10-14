@@ -428,8 +428,10 @@ reverse-chronological released versions.
   and evidence, so the task the agent was reading changed under every read and a closing loop could
   keep growing it; on the tb4 n5 trial one hour of `status` polling grew the record by about twelve
   events per read. A failed or denied Yoetz call, Yoetz's own writes and every other server's tools
-  are still recorded as before. The same applies to Cursor's ordinary-work hooks, which name a
-  Yoetz call `MCP:status`, and to a held Codex log entry released later (tb4 n5).
+  are still recorded as before, and so is a held Codex log entry released later. On Cursor's
+  ordinary-work hooks, which name every MCP call `MCP:<tool>` without its server, a read is kept
+  out only when Yoetz's own server recorded serving that exact call; another server's tool named
+  `status` is still recorded (tb4 n5).
 
 - In a repository holding another Git repository inside it (an `api` directory with its own
   `.git`), Yoetz's local, names-only read of what changed no longer fails: it reads the nested

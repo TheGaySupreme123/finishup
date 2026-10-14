@@ -37,16 +37,23 @@ except ImportError:  # pragma: no cover - non-POSIX platforms do not host hooks
     fcntl = None  # type: ignore[assignment]
 
 from yoetz.config.paths import state_dir
-from yoetz.domain.yoetz_tools import YOETZ_MCP_TOOL_NAMES, yoetz_tool_spelling
+from yoetz.domain.yoetz_tools import (
+    YOETZ_MCP_TOOL_NAMES,
+    YOETZ_READ_TOOL_BASENAMES,
+    yoetz_tool_spelling,
+)
 from yoetz.protocol.ids import IdKind, is_valid_id, safe_request_id_from
 
 __all__ = [
     "REJECTED_CALLS_FILENAME",
+    "SERVED_READS_FILENAME",
     "RejectedYoetzCall",
     "consume_rejected_yoetz_call",
     "read_rejected_yoetz_calls",
     "record_rejected_yoetz_call",
+    "record_served_yoetz_read",
     "rejected_call_commitment",
+    "served_yoetz_read",
     "yoetz_tool_basename",
 ]
 
@@ -59,6 +66,15 @@ _DOMAIN: Final = b"yoetz/rejected-call/v2\x00"
 _MAX_ENTRIES: Final = 256
 _MAX_FILE_BYTES: Final = 64 * 1024
 _NAMES: Final = frozenset(YOETZ_MCP_TOOL_NAMES)
+# Served reads (round 2 of tb4 n5): Cursor's ordinary hooks name a Yoetz call ``MCP:<tool>`` with no
+# server, so a hook cannot tell Yoetz's ``status`` from another server's ``status``. The bridge
+# records each successful Yoetz read it served under the same commitment; a post-event whose
+# commitment is recorded is provably Yoetz's own call. The record precedes the response the host
+# acts on, so the post-event always finds it; anything unproven is delivered as ordinary evidence.
+SERVED_READS_FILENAME: Final = "yoetz-served-reads.json"
+_SERVED_LOCK_FILENAME: Final = ".yoetz-served-reads.lock"
+_SERVED_SCHEMA: Final = "yoetz.served-reads/1"
+_READ_NAMES: Final = frozenset(YOETZ_READ_TOOL_BASENAMES)
 
 
 # ``(commitment, rejected at in Unix milliseconds, claimant or None)``: the claimant is the opaque
@@ -112,7 +128,7 @@ def _directory(state_root: Path | None) -> Path:
     return (state_dir() if state_root is None else state_root) / "observation"
 
 
-def _parse(raw: bytes) -> list[_Entry]:
+def _parse(raw: bytes, schema: str = _SCHEMA) -> list[_Entry]:
     try:
         document = json.loads(raw.decode("utf-8"))
     except UnicodeDecodeError, ValueError:
@@ -121,7 +137,7 @@ def _parse(raw: bytes) -> list[_Entry]:
         return []
     body = cast(Mapping[str, object], document)
     entries = body.get("entries")
-    if body.get("schema") != _SCHEMA or not isinstance(entries, list):
+    if body.get("schema") != schema or not isinstance(entries, list):
         return []
     result: list[_Entry] = []
     for entry in cast(list[object], entries)[-_MAX_ENTRIES:]:
@@ -143,7 +159,7 @@ def _parse(raw: bytes) -> list[_Entry]:
     return result
 
 
-def _read(path: Path) -> list[_Entry]:
+def _read(path: Path, schema: str = _SCHEMA) -> list[_Entry]:
     flags = os.O_RDONLY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -159,22 +175,27 @@ def _read(path: Path) -> list[_Entry]:
         os.close(descriptor)
     if len(raw) > _MAX_FILE_BYTES:
         return []
-    return _parse(raw)
+    return _parse(raw, schema)
 
 
-def _write(directory: Path, entries: list[_Entry]) -> bool:
+def _write(
+    directory: Path,
+    entries: list[_Entry],
+    name: str = REJECTED_CALLS_FILENAME,
+    schema: str = _SCHEMA,
+) -> bool:
     payload = json.dumps(
         {
             "entries": [
                 {"at_ms": at_ms, "claimant": claimant, "commitment": commitment}
                 for commitment, at_ms, claimant in entries[-_MAX_ENTRIES:]
             ],
-            "schema": _SCHEMA,
+            "schema": schema,
         },
         separators=(",", ":"),
         sort_keys=True,
     ).encode("ascii")
-    temporary = directory / f".{REJECTED_CALLS_FILENAME}.{os.urandom(8).hex()}.tmp"
+    temporary = directory / f".{name}.{os.urandom(8).hex()}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
@@ -185,7 +206,7 @@ def _write(directory: Path, entries: list[_Entry]) -> bool:
     finally:
         os.close(descriptor)
     try:
-        os.replace(temporary, directory / REJECTED_CALLS_FILENAME)
+        os.replace(temporary, directory / name)
     except OSError:
         with contextlib.suppress(OSError):
             temporary.unlink()
@@ -194,11 +215,11 @@ def _write(directory: Path, entries: list[_Entry]) -> bool:
 
 
 @contextlib.contextmanager
-def _locked(directory: Path) -> Generator[None]:
+def _locked(directory: Path, lock_name: str = _LOCK_FILENAME) -> Generator[None]:
     flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
-    lock = os.open(directory / _LOCK_FILENAME, flags, 0o600)
+    lock = os.open(directory / lock_name, flags, 0o600)
     try:
         if fcntl is not None:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -210,14 +231,20 @@ def _locked(directory: Path) -> Generator[None]:
         os.close(lock)
 
 
-def _update(directory: Path, change: Callable[[list[_Entry]], list[_Entry] | None]) -> bool:
+def _update(
+    directory: Path,
+    change: Callable[[list[_Entry]], list[_Entry] | None],
+    name: str = REJECTED_CALLS_FILENAME,
+    schema: str = _SCHEMA,
+    lock_name: str = _LOCK_FILENAME,
+) -> bool:
     """Apply one change to the record under its lock; ``None`` from ``change`` writes nothing."""
 
     if not directory.is_dir() or directory.is_symlink():
         return False
-    with _locked(directory):
-        updated = change(_read(directory / REJECTED_CALLS_FILENAME))
-        return updated is not None and _write(directory, updated)
+    with _locked(directory, lock_name):
+        updated = change(_read(directory / name, schema))
+        return updated is not None and _write(directory, updated, name, schema)
 
 
 def read_rejected_yoetz_calls(observation_root: Path) -> tuple[RejectedYoetzCall, ...]:
@@ -275,5 +302,53 @@ def record_rejected_yoetz_call(
             _directory(state_root),
             lambda entries: [*entries, (commitment, at_ms, None)][-_MAX_ENTRIES:],
         )
+    except Exception:
+        return False
+
+
+def _served_read_commitment(tool: object, arguments: object) -> str | None:
+    if yoetz_tool_basename(tool) not in _READ_NAMES:
+        return None
+    return rejected_call_commitment(tool, arguments)
+
+
+def record_served_yoetz_read(
+    tool: object,
+    arguments: object,
+    *,
+    state_root: Path | None = None,
+    now_ms: int | None = None,
+) -> bool:
+    """Record that the Yoetz MCP server answered one read (``status`` and kin) successfully.
+
+    Never raises. Nothing is written for a write tool, a call without a valid ``request_id``, or
+    where observation was never set up. Only the call commitment and a time are written.
+    """
+
+    try:
+        commitment = _served_read_commitment(tool, arguments)
+        if commitment is None:
+            return False
+        at_ms = int(time.time() * 1000) if now_ms is None else now_ms
+        return _update(
+            _directory(state_root),
+            lambda entries: [*entries, (commitment, at_ms, None)][-_MAX_ENTRIES:],
+            SERVED_READS_FILENAME,
+            _SERVED_SCHEMA,
+            _SERVED_LOCK_FILENAME,
+        )
+    except Exception:
+        return False
+
+
+def served_yoetz_read(tool: object, arguments: object, *, state_root: Path | None = None) -> bool:
+    """Whether the bridge recorded serving exactly this Yoetz read call. Never raises."""
+
+    try:
+        commitment = _served_read_commitment(tool, arguments)
+        if commitment is None:
+            return False
+        entries = _read(_directory(state_root) / SERVED_READS_FILENAME, _SERVED_SCHEMA)
+        return any(entry[0] == commitment for entry in entries)
     except Exception:
         return False

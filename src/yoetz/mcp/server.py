@@ -31,7 +31,10 @@ from yoetz.adapters.integrations.cursor_project_mcp import (
     CursorProjectMcpRegistrationSnapshot,
     inspect_project_mcp_registration,
 )
-from yoetz.adapters.integrations.yoetz_call_rejections import record_rejected_yoetz_call
+from yoetz.adapters.integrations.yoetz_call_rejections import (
+    record_rejected_yoetz_call,
+    record_served_yoetz_read,
+)
 from yoetz.adapters.mcp_stdio import MAX_JSON_FRAME_BYTES, bounded_stdio_server
 from yoetz.adapters.workspace_binding import (
     MAX_WORKSPACE_LOCATOR_BYTES,
@@ -3682,7 +3685,25 @@ async def _handle_call_tool_request(
     else:
         result = await call_tool(name, arguments, runtime)
     _record_rejected_call(name, arguments, result)
+    _record_served_read(runtime, name, arguments, result)
     return types.ServerResult(result)
+
+
+def _record_served_read(
+    runtime: BridgeRuntime,
+    name: str,
+    arguments: Mapping[str, object],
+    result: types.CallToolResult,
+) -> None:
+    """On Cursor, record a successful Yoetz read so its hook can prove it is Yoetz's (tb4 n5).
+
+    Cursor's ordinary hooks name this call ``MCP:<tool>`` with no server. The record is written
+    before the host receives this result, so the call's post-event always finds it. Other hosts
+    name the server in every hook, so nothing is written for them. Never raises.
+    """
+
+    if runtime.host_profile == "cursor" and result.isError is not True:
+        record_served_yoetz_read(name, arguments)
 
 
 def _record_rejected_call(

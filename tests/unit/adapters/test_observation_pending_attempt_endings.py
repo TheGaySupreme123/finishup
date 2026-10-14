@@ -390,3 +390,42 @@ def test_a_rejection_in_another_task_scope_closes_nothing(tmp_path: Path) -> Non
     clock.now += 30
     _prune(store, workspace, session)
     assert store.pending_attempt_endings(workspace)["open"] == 1
+
+
+def test_served_yoetz_read_record_proves_only_the_exact_served_read(tmp_path: Path) -> None:
+    """tb4 n5 round 2: the bridge's served-read record is the proof Cursor's hook relies on."""
+
+    (tmp_path / "observation").mkdir(mode=0o700)
+    assert rejections.record_served_yoetz_read("status", _ARGS, state_root=tmp_path)
+    assert rejections.served_yoetz_read("MCP:status", _ARGS, state_root=tmp_path)
+    assert rejections.served_yoetz_read("mcp__yoetz__status", _ARGS, state_root=tmp_path)
+    # Another call, another tool, or a foreign tool's own arguments prove nothing.
+    other = {**_ARGS, "request_id": "req_00000000-0000-4000-8000-0000000000ff"}
+    assert not rejections.served_yoetz_read("MCP:status", other, state_root=tmp_path)
+    assert not rejections.served_yoetz_read("MCP:receipt", _ARGS, state_root=tmp_path)
+    assert not rejections.served_yoetz_read("MCP:status", {"cluster": "prod"}, state_root=tmp_path)
+    # Writes are never recorded as served reads.
+    assert not rejections.record_served_yoetz_read("check", _ARGS, state_root=tmp_path)
+    assert not rejections.served_yoetz_read("MCP:check", _ARGS, state_root=tmp_path)
+    # Without observation set up nothing is written.
+    assert not rejections.record_served_yoetz_read("status", _ARGS, state_root=tmp_path / "x")
+
+
+def test_the_bridge_records_served_reads_only_for_cursor_successes() -> None:
+    from mcp import types
+
+    from yoetz.mcp import server
+
+    root = rejections.state_dir()
+    (root / "observation").mkdir(parents=True, exist_ok=True)
+    error = types.CallToolResult(content=[], structuredContent={"ok": False}, isError=True)
+    success = types.CallToolResult(content=[], structuredContent={"ok": True}, isError=False)
+    codex = server.build_bridge_runtime("policy", host_profile="codex")
+    cursor = server.build_bridge_runtime("policy", host_profile="cursor")
+
+    server._record_served_read(codex, "status", _ARGS, success)
+    server._record_served_read(cursor, "status", _ARGS, error)
+    assert not rejections.served_yoetz_read("MCP:status", _ARGS)
+    server._record_served_read(cursor, "status", _ARGS, success)
+    assert rejections.served_yoetz_read("MCP:status", _ARGS)
+    assert _REQUEST not in (root / "observation" / rejections.SERVED_READS_FILENAME).read_text()

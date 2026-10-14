@@ -5330,7 +5330,13 @@ of the one pending attempt that consumed it, 256 newest. A hook pre-event of a Y
 the same commitment on its pending attempt (`_OpenPre.request_commitment`); the Claude Code and
 Cursor adapters compute it from the host payload and pass it to the shared ingress as
 `_request_commitment`. `consume_rejected_yoetz_call` claims an entry installation-wide under the
-record's lock and is idempotent for its claimant.
+record's lock and is idempotent for its claimant. On the Cursor host profile only, the bridge also
+records each successful Yoetz read it served (`record_served_yoetz_read`,
+`observation/yoetz-served-reads.json`, schema `yoetz.served-reads/1`, its own lock): the same
+commitment and a millisecond time, 256 newest, written before the result returns. The Cursor
+adapter passes `_proven_yoetz_read` to the shared ingress only for a `postToolUse` of
+`MCP:<tool>` whose own `tool_input` matches an entry (`served_yoetz_read`); the self-observation
+policy then reads it as `yoetz:<tool>`. Nothing else treats `MCP:<tool>` as Yoetz-owned (tb4 n5).
 
 `LocalObservationStore.pending_selection_losses(workspace)` returns at most 64 retained,
 fully validated and routed lanes; `selection_loss_workspaces(task_id)` filters the returned
