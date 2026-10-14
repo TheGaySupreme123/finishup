@@ -2407,8 +2407,13 @@ def apply_claude_code_plugin(
             target, command_port, ("plugin", "disable", _PLUGIN_ID, "--scope", "project")
         )
     elif action is ClaudeCodePluginAction.REMOVE:
-        before = status_claude_code_plugin(target, artifact, commands=command_port)
-        if before.discovered:
+        listed, listed_observed = _list_plugins(target, command_port)
+        own_row = any(
+            row.get("id") == _PLUGIN_ID and row.get("projectPath") == target.project_root
+            for row in listed
+        )
+        # Skip only when the inventory was read and shows no install for this project.
+        if own_row or not listed_observed:
             command_ok = _run_mutation(
                 target,
                 command_port,

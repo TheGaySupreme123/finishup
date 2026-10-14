@@ -525,14 +525,12 @@ def prepare_connection(
             )
         )
         shared.disclose(admission.disclosure)
-        route_before = claude.installed_claude_route_profile(target)
-        if (
-            action == "connect"
-            and not noop
-            and route_before is not None
-            and route_before != route
-            and shared.others
-        ):
+        route_before = (
+            claude.installed_claude_route_profile(target)
+            if action == "connect" and not noop and shared.others
+            else None
+        )
+        if route_before is not None and route_before != route:
             # The shared source carries the plugin MCP server's review mode for every project's
             # install: re-rendering it changes theirs too (#1058 review P2-3).
             admission.disclosure["route_profile_before"] = route_before

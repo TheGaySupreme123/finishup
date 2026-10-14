@@ -413,6 +413,11 @@ def test_never_connected_clone_is_not_an_anchor_and_removing_it_keeps_b(tmp_path
     assert preview.outcome is RemovalOutcome.DETACH
     assert preview.rebind_to == str(root_b)
     assert preview.possible_users == (str(root_f),)
+    # `integrate codex plugin preview` shows them too (#1058 review P3).
+    from yoetz.cli.codex_plugin import _preview_body  # pyright: ignore[reportPrivateUsage]
+
+    body = _preview_body(preview)
+    assert body["possible_users"] == [str(root_f)] and body["membership_unknown"] is True
     assert _disconnect(target_a, home) is RemovalOutcome.DETACH
     assert _binding(home) == str(root_b)
 
