@@ -123,6 +123,17 @@ identity along with it, and nothing validates or proves it.
    detect the old shape by the absent tag); `finishup instance status` carries the same
    `path_identity` block; parity reports must be rebuilt at version 4. Nothing persisted changes.
 
+**Amended 2026-10-14 (ADR-048).** The variable keeps its pre-rename spelling `YOETZ_ISOLATED_ROOT`
+as an alias: it is read only when `FINISHUP_ISOLATED_ROOT` is unset, both set to one root is
+accepted, and two different roots fail closed as `isolation_root_env_conflict` (continuation
+`config_correction_required`: set both to one root or unset `YOETZ_ISOLATED_ROOT`; the instance
+itself needs no disposal). `isolation_root_conflict` keeps its meaning of a variable that
+disagrees with the runtime pin. While the deprecated
+`yoetz` launcher ships, everything that exports the root (the Codex external registration in
+decision 6, Cursor artifacts and hooks, the detached service and child processes, instance
+exports) writes both names with the same value, so an older launcher found through `PATH` still
+isolates (#604). Readers accept either name alone or both equal.
+
 ## Reverse states and rollback
 
 Unsetting `FINISHUP_ISOLATED_ROOT` restores ambient resolution with no residue: every artifact an

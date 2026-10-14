@@ -53,10 +53,21 @@ What happens, in order:
 5. `<base>/<tag>/provenance.json` records the tag, lifecycle, installation id, source revision and
    state, package version and digest, and digest-only identities of the runtime and root.
 
-The command prints the launcher path and the environment export. Because the runtime is pinned,
-`<base>/<tag>/runtime/bin/finishup` resolves that root even when `FINISHUP_ISOLATED_ROOT` is unset or
-dropped by a host, hook, or shell; exporting the variable to the same root is fine, and exporting
-it to a different root is refused (`isolation_root_conflict`) rather than obeyed.
+The command prints the launcher path and the environment export, which names the root under both
+spellings, `FINISHUP_ISOLATED_ROOT=<root> YOETZ_ISOLATED_ROOT=<root>` (ADR-048): a pre-rename
+`yoetz` launcher that ends up on `PATH` then still resolves the same root instead of the everyday
+install (#604). Because the runtime is pinned, `<base>/<tag>/runtime/bin/finishup` resolves that
+root even when the variables are unset or dropped by a host, hook, or shell; exporting them to the
+same root is fine. Exporting either one to a different root than the pin is refused
+(`isolation_root_conflict`), and exporting the two to different roots is refused
+(`isolation_root_env_conflict`: set both to one root or unset `YOETZ_ISOLATED_ROOT`; the instance
+needs no disposal), rather than obeyed.
+
+Instances built from a revision before the FinishUP rename (for upgrade tests) ship only
+`runtime/bin/yoetz` and the `yoetz` package and read `YOETZ_ISOLATED_ROOT`. Every
+`provision_test_instance.py` command probes `runtime/bin/finishup` first, then `runtime/bin/yoetz`,
+and drives whichever package that runtime ships, including the retained-runtime clean-up in
+`dispose`. Substitute `bin/yoetz` for `bin/finishup` in the commands below for such an instance.
 
 Verify before use:
 

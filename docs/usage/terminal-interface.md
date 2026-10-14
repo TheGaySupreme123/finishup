@@ -81,7 +81,10 @@ line above the active one:
    applies to.
 4. **The exact proposed change**, in words, with a `Safety` block stating what will *not* happen.
    `D` shows the executable path, managed paths, MCP command, preview digest, policy digest, and
-   planned file count.
+   planned file count. When the change also rewrites or removes an existing entry (a review-route
+   change, a registration under the former Yoetz name, an earlier Yoetz plugin activation and its
+   cache versions, or Yoetz-era plugin or skill folders), each one is listed as a `~` line before
+   you approve.
 5. **Installation activity**, step by step. A step is only reported as done once its postcondition
    was checked.
 6. **Secure storage** — system keyring (macOS Keychain, or a running Secret Service on Linux),
@@ -277,15 +280,20 @@ terminal handoff as first-time setup: input is masked with `*`, the helper state
 UTF-8 byte contract, and it re-prompts after invalid or mismatched input. The shell equivalent is
 `finishup service rotate-passphrase`.
 
-`/doctor` runs bounded read-only checks across runtime, package version, the platform cell
+`/doctor` runs bounded read-only checks across runtime, package version, installation folders
+(FinishUP folders, an isolated root, or Yoetz-era folders used in place, which must be kept), the
+platform cell
 (certified, or untested such as Linux aarch64), the approved-check sandbox (Seatbelt on macOS,
 bubblewrap on Linux, with the install step named when it is missing or blocked), system secure
 storage (with the reason when it is unusable), discovery, registration, managed files, hooks,
 consent, policy digest, service reachability, vault, provider, and privacy, then suggests safe
 next steps. When policy permits package update checks and a newer release is
-known, the package line is optional with remediation `uv tool upgrade finishup`; when the check is
-allowed but fails, the line is unproven with "could not check for updates." **It never changes
-anything.**
+known, the package line is optional with remediation `finishup upgrade` (`yoetz upgrade` on an
+installation upgraded through the transitional `yoetz` package, where only `yoetz` is on `PATH`);
+when the check is allowed but fails, the line is unproven with "could not check for updates." When
+FinishUP finds folders under both its current and its former name, the installation folders line
+is blocked with the [upgrade guide's remedy](upgrading.md#if-something-refuses-after-the-rename)
+and the checks that would need those folders are skipped. **It never changes anything.**
 
 ### `/observe`
 

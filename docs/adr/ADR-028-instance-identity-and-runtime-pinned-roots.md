@@ -55,7 +55,11 @@ instances; every dogfood run re-derived a private layout.
    `config/paths.isolated_root()` resolves the environment variable when set; otherwise the pin,
    under the same validation; both present and different is `isolation_root_conflict` and fails
    closed; neither is ambient. A pinned runtime whose root was removed is `isolation_root_invalid`,
-   never ambient. Only owner-written, non-group/world-writable, exactly-shaped pins are honoured
+   never ambient. That token therefore has two sources, and its remedy names the action for each:
+   a set isolation-root variable (`FINISHUP_ISOLATED_ROOT` or the older `YOETZ_ISOLATED_ROOT`,
+   ADR-048) that is empty, relative or not an existing directory is corrected or unset; with
+   neither variable set, a pin naming a root that is gone is resolved by recreating the instance,
+   or by `finishup instance dispose --root <root>` to remove the stale pin. Only owner-written, non-group/world-writable, exactly-shaped pins are honoured
    (`runtime_pin_invalid` otherwise), because a pin anyone else could write is a way to redirect
    one installation to another. `isolation_binding()` names the source
    (`ambient|environment|runtime_pin|environment_and_pin`) and `finishup service isolation --json`

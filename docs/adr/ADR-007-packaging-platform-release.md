@@ -19,7 +19,9 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    invocation prints help in every case except the bounded first-run TTY exception on the root
    command only (interactive terminal, setup marker absent), which launches `finishup setup run`.
 4. **Console script:** distribution and executable both `finishup`
-   (`finishup.cli.app:main`). `python -m finishup` delegates to the same entry.
+   (`finishup.cli.entry:main`). `python -m finishup` delegates to the same entry. Amended by ADR-048:
+   through 0.2.5 both were `yoetz`; the `finishup` wheel declares only `finishup`, and a separate
+   transitional `yoetz` distribution carries the deprecated `yoetz` command for one release.
 5. **Wheel strategy:** finishup itself is a pure-Python wheel; platform specificity comes from
    the pinned APSW dependency wheels. Advertised platform matrix remains macOS 11.0+ arm64
    (`macosx_11_0_arm64`) and glibc 2.28+ x86-64 (`manylinux_2_28_x86_64`) until exact release
@@ -36,8 +38,9 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    nor claimed. Certifying that cell requires a real `ubuntu-24.04-arm` release runner and
    release evidence, at which point the certified-cell table in `finishup.version` and this list
    change together.
-   Primary install:
-   `uv tool install --managed-python --python 3.14.6 "finishup==0.1.0"`.
+   Primary install (v0.1.0, under the former name):
+   `uv tool install --managed-python --python 3.14.6 "yoetz==0.1.0"`; from 0.3.0 the package is
+   `finishup` (ADR-048).
 6. **Keys, AI-powered review readiness, and compatibility extras:** the certified standard install
    includes direct pinned `cryptography` (AES-GCM, RFC 3394 AES Key Wrap, HKDF/HMAC) and `keyring`
    plus the approved secure-backend dependencies for each advertised cell because object/vault
@@ -55,7 +58,8 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    requirements. Amended by ADR-012: the npm launcher now exists at `support/npm-launcher/` with
    its own provenance/delegation/upgrade contract — a dependency-free delegator to
    `uvx finishup==<version>`. Maintainer release decision (2026-08-20, issue #366): v0.1.0 publishes
-   that launcher as the public `finishup` npm package through the protected tagged workflow, after
+   that launcher as the public npm package (then `yoetz`, `finishup` from 0.3.0 per ADR-048)
+   through the protected tagged workflow, after
    PyPI publication and with trusted-publisher provenance plus byte-for-byte download verification.
 8. **Release artifacts:** sdist + wheel, SHA-256 checksums, CycloneDX SBOM via `uv export`,
    dependency lock, support matrix, conformance summary, known limitations, changelog, security

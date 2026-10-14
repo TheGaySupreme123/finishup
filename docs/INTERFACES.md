@@ -20,6 +20,62 @@ change; the product words are their human names.
 "Deterministic" elsewhere in this registry keeps its ordinary meaning — reproducible ordering,
 replay, digests, and equality — and is not a check kind.
 
+## Product name and legacy Yoetz identifiers (ADR-048)
+
+The product was named Yoetz through 0.2.5. The shared spellings, current and legacy, live in
+`finishup.legacy_names` (`PRODUCT_NAME`/`LEGACY_PRODUCT_NAME`, `APP_NAME`/`LEGACY_APP_NAME`,
+`LAUNCHER_NAME`/`LEGACY_LAUNCHER_NAME`/`LAUNCHER_NAMES`, `ENV_PREFIX`/`LEGACY_ENV_PREFIX`,
+`MCP_SERVER_NAME`/`LEGACY_MCP_SERVER_NAME`/`MCP_SERVER_NAMES`,
+`GUIDANCE_SCHEME`/`LEGACY_GUIDANCE_SCHEME`, `REPOSITORY_DIRECTORY`/`LEGACY_REPOSITORY_DIRECTORY`).
+New output uses only the current spelling. Kept literals in code carry the label
+`# Frozen legacy identifier (ADR-048): <why>`.
+
+**Frozen under protocol 0.1** (never renamed; ADR-048 §2 has the reasons): `"protocol": "yoetz"`,
+`yoetz.event`, projection `yoetz/0.1.0`, `yoetz-object/1`, `application/vnd.yoetz.*+json`, the
+`yoetz-<format>/1` vault, keyring and recovery format tags, `vault-root-state.yzr`, frame magics
+`YZO1`/`YZV1`/`YZH1`/`YZS1`, SQLite `application_id` `0x594F4554`, every `yoetz/<name>/v<n>` domain
+separator, `hmac-sha256/yoetz-privacy-egress-request-v1`, `yoetz-semantic-case-1.0.0`, keyring
+services `yoetz.vault-root.v1` and `yoetz.auto-unlock.v1`, every byte under `migrations/`, the
+columns `yoetz_session_id|yoetz_task_id|yoetz_writer_id`, the wire values
+`yoetz_engine|yoetz_cli|yoetz_owned|yoetz_runtime|yoetz_own_call|yoetz_process_state`, the
+`yoetz_limit_*` prefix and the check-inspection `owner` value `yoetz`, the whole
+`yoetz.<name>/<n>` schema and record tag namespace, actor ids `yoetz:<role>`, the 154 schema files
+released at v0.2.5 (titles, consts and `$id`s under `https://schemas.yoetz.dev/0.1/`),
+`yoetz.schema-manifest/1.0.0`, the `yoetz-config` family and owning model `YoetzConfig`, marker
+files `.yoetz-*-install.json`, `.yoetz-marketplace-activation.lock`, marker keys `yoetz_version`
+and `yoetz_launcher`, crash-residue prefixes `.yoetz.*`/`.yoetz-*`, `yoetz-instance-pin.json`,
+`yoetz-release-runtime.json`, `[withheld-by-yoetz:possible-credential]`, `_yoetz_spool_id`, the
+capture headers `# yoetz edit outcome:`/`# yoetz edit source:`, the nested-cell mark `yoetz`, and
+the single `checks.toml` format value `yoetz.approved-check-policy/1`. Python member names around
+frozen values may change (`McpRegistrationState.FINISHUP_OWNED = "yoetz_owned"`,
+`ActorType.FINISHUP_ENGINE = "yoetz_engine"`, `LaterMaterialClass.FINISHUP_OWN_CALL =
+"yoetz_own_call"`).
+
+**Recognized under both spellings** (readers accept the legacy form; writers emit the current one):
+
+| Surface | Current | Legacy | Names and tokens |
+|---|---|---|---|
+| Platform folders | `finishup` | `yoetz` | `config.paths.installation_naming()` → `InstallationNaming` `finishup\|legacy_yoetz` (ambient roots only); anchors `data/catalog.sqlite3`, `data/vault`, `config/config.toml`, `state/service.lock`; `PathSafetyError("installation_root_ambiguous")` (public code `STORAGE_UNSAFE`, recovery `local_state_repair`). A lone `config/config.toml` counts as an anchor; the remedy keeps the folders holding the vault and catalog and moves a lone settings file into the folders that hold the vault and catalog; when both names hold a vault or catalog, it keeps the installation in use and moves the other name's folders aside without deleting them, and a leftover `service.lock` from a stopped older service is moved aside the same way (no path is named). `cli/service_installation.py`: `InstallationFolders` `finishup\|legacy_yoetz\|isolated`, `installation_folders()`, `LEGACY_FOLDERS_NOTE`, `installation_naming_line()`, `report_installation_naming(stderr_writer)` (human `service status` prints the note on stderr; stdout and `--json` unchanged), `path_refusal_failure(...)` (exit 20 with token, remedy and continuation) and `path_refusal_agent_message(reason)`; `service.client.path_refusal_reason(error)`. A connect refused for a folder reason is named on every surface: CLI `control_failure`, `setup status --next`, plain `setup status` (stdout keeps the released setup-status 2.0.0 report with `service.reachable` false; the token, remedy and continuation go to stderr and the exit code is 20; seam `cli.setup._service_reachability_observed()`), `provider status` (exit 20 instead of `internal_error`; with `--json`, the `path_refusal_failure` payload on stdout), MCP public code `STORAGE_UNSAFE` (not retryable; `safe_details.reason_code` stays `endpoint_unsafe`, `diagnostic_reason` is the token) and the TUI client. Path-safety tokens `path_contains_symlink`, `path_in_repository`, `path_in_sync_folder`, `path_not_owned`, `path_shared_temp`, `permissions_too_broad` continue as `local_state_repair`. The TUI doctor entry `installation_folders` (BLOCKED on ambiguity, skipping the package-update check and status snapshot). |
+| Environment | `FINISHUP_*` | `YOETZ_*` | `config.env` (`ENV_PREFIXES`, `read_env`, `canonical_env_name`, `env_names`, `EnvNameConflictError`); `ConfigError("config_env_conflict")` with `safe_name` = the `FINISHUP_` name (recovery `config_correction_required`); `paths.ISOLATED_ROOT_ENV_NAMES`, `LEGACY_ISOLATED_ROOT_ENV`, `isolated_root_variable()`; the two spellings set to different roots raise `PathSafetyError("isolation_root_env_conflict")` (public code `STORAGE_UNSAFE`, recovery `config_correction_required`; no instance disposal), while `isolation_root_conflict` stays a variable that disagrees with the runtime pin (`instance_identity_repair`); `isolation_root_invalid` → `config_correction_required`, raised from two sources whose remedy names both actions: a set variable (either spelling) that is empty, relative or not an existing directory (correct it, or unset it), or, with neither variable set, a runtime pin naming a root that is gone (recreate the instance, or run `finishup instance dispose --root <root>` to remove the stale pin; a pinned runtime never falls back to the everyday installation); `load.environment_config_path()`. `FINISHUP_MCP_DEADLINE_MS` and `FINISHUP_MCP_DEADLINE_MS_{CHECK,PUBLISH_WORK,RECEIPT,RESPOND,START,STATUS}` are allowlisted names. |
+| Check policy | `.finishup/checks.toml` | `.yoetz/checks.toml` | `CHECK_POLICY_PATH`, `LEGACY_CHECK_POLICY_PATH`, `CHECK_POLICY_PATHS`, `ObservationCheckPolicyAmbiguous` (a subclass of the `invalid_approved_check_policy` failure), `ObservationCheckPolicy.source_path`; CLI reason `observation_checks_<op>_failed:policy_ambiguous`; `observe checks status` field `policy_file`. |
+| Host registrations | `finishup` key and artifacts | `yoetz` key and artifacts | `legacy_registration` (MCP key) and `legacy_installation` (plugin, marketplace or tree), each `none\|legacy_only\|duplicate\|foreign` (port type `LegacyInstallation`, `LEGACY_INSTALLATIONS`); preview warnings `legacy_registration_owned`, `legacy_registration_foreign`, `legacy_installation_owned`, `legacy_installation_foreign`, `legacy_skill_tree_owned`, `legacy_skill_tree_retained`; notes `legacy_plugin_tree_present`, `legacy_plugin_tree_retained`, `legacy_marketplace_retained` (Claude: the shared `yoetz-local` tree and Claude's user-level registration are kept); Claude preview warnings `legacy_project_registration_removed` (this project's `.claude/settings.json` `extraKnownMarketplaces.yoetz-local`/`enabledPlugins["yoetz@yoetz-local"]` entries go) and `legacy_marketplace_replaced` (in-place update of the old folder only), with the Claude `legacy_marketplace` preview binding's `declaration` (settings key → canonical digest of the legacy entry); `McpRegistrationPreview.route_profile_before`; `McpRegistrationError` safe detail `legacy_state` (`yoetz_owned\|foreign_present\|absent\|unknown`); preview digest tags `yoetz.mcp-registration-preview/5` and `yoetz.mcp-unregistration-preview/5`; `ActivationInspection.legacy_activation`; `ActivationPreview`/`RemovalPreview` `legacy_removed_block`, `legacy_cache_versions`, `ActivationPreview.legacy_plugin_tree_planned` (the digest binds the `.agents/plugins/yoetz` deletion; kept unless every repository marketplace row is FinishUP's exact row), `RemovalPreview.legacy_marketplace_json_planned`; `recommend accept codex-plugin-activation` refusal `activation_preview_invalid` when the preview lacks a legacy field; TUI `IntegrationPlan` fields `route_profile_before`, `legacy_registration`, `activation_legacy_removed_block`, `activation_legacy_cache_versions`, `activation_legacy_plugin_tree_planned`, `legacy_skill_tree_planned`, `policy_ambiguous` and property `replacements`; removal conflict details `legacy_config_marketplace`, `legacy_config_plugin`; Claude conflict details `legacy_marketplace_shared` and (on `mcp_ownership_conflict`) `legacy_registration`; connection plan changes `migrate_legacy_plugin`, `remove_legacy_plugin`, and on Codex `remove_legacy_plugin_sources` and `remove_legacy_project_skill` (either keeps a connection from reading as complete); `LEGACY_AGENT_PLUGIN_ROOT` (`.agents/plugins/yoetz`), `CURSOR_LEGACY_PLUGIN_RELATIVE_ROOT` (`plugins/local/yoetz`); `adapters/integrations/legacy_launchers.py`; `sync_committed_agent_trees.py` failure `legacy_agent_tree <path>`. |
+| Host admission | `finishup` forms | exact `yoetz` forms | `HostAdmissionEntry.legacy_entries`, `HostAdmissionObservation.legacy_entries_present`, status `legacy_grant` (`absent\|in_use\|stale\|unverified`), preview warnings `legacy_entries_removed` and `legacy_entries_retained`, refusals `legacy_registration_active` and `host_admission_preview_stale` (legacy entries changed between the CLI's observation and the preview's). Codex: `adapters.integrations.host_admission.CODEX_LEGACY_PLUGIN_ADMISSION_HEADER`; `cli.host_admission.AdmissionFacts.legacy_plugin_activation` and `AdmissionFacts.legacy_name_for(entries)`; status/preview JSON `route.legacy_plugin_activation` (`true\|false\|null`, always `null` off Codex). |
+| Tool and skill names | `mcp__finishup__*`, `mcp__plugin_finishup_finishup__*`, `finishup:*`, `plugin-finishup-finishup:*` | the same with `yoetz` | `domain/finishup_tools.py`: `FINISHUP_TOOL_SERVER_NAMES`, `FINISHUP_SCOPED_TOOL_PREFIXES`, `FINISHUP_PREFIXED_TOOL_PREFIXES`, `FINISHUP_SKILL_NAMES`, `finishup_scoped_tool_basename`, `finishup_tool_spelling`. Permanent. |
+| Guidance URIs | `finishup://guidance/` | `yoetz://guidance/` | `protocol/guidance_uris.py`: `GUIDANCE_URI_PREFIX`, `LEGACY_GUIDANCE_URI_PREFIX`, `LEGACY_GUIDANCE_ANCHORS`, `LEGACY_ALL_GUIDANCE_URIS`, `canonical_guidance_uri`, `legacy_guidance_uri`, `is_legacy_guidance_uri`, `guidance_uri_in_scheme_of`. `resources/list` advertises `finishup://` only. |
+| Agent text markers | `finishup-blocker:`, `finishup-assumption:`, `finishup-verification-limit:`, `finishup-no-material-work:`, `finishup:test-change:` | `yoetz-` / `yoetz:` spellings | `task_facts.LEGACY_BLOCKER_MARKER`, `LEGACY_DISCLOSURE_MARKERS`; `task_statement.LEGACY_NO_MATERIAL_WORK_MARKER`, `NO_MATERIAL_WORK_MARKERS`. Permanent. The `yoetz_availability` delegation block is honored like `finishup_availability`. |
+| Command heads | `finishup ...` | `yoetz ...` | `consent.ConsentCommandHead`, `consent.CONSENT_COMMAND_HEADS` (`pending-agent/6` → `yoetz`, `/7` → `finishup`, `/7` also admits `yoetz`); `consent prepare\|status\|catalog` emit `/7` with the head of the invoking launcher (`yoetz` through the deprecated alias; `cli/elevated._consent_command_head()`), via `projection_for_status(..., command_head=None)`, `catalog_payload(*, command_head="finishup")`, `status_payload(*, command_head="finishup")`; a `pending/4` file holding an operation's exact pre-rename danger text (`provider_credential_set`, `provider_credential_rotate`, `repository_privacy_grant`) under a matching digest is a valid pending; validation reasons `consent_command_head_mixed`, `consent_command_head_invalid`; `observation_capacity_policy.canonical_safe_command`; unreleased `command[0]` enums `[finishup, yoetz]` in consent 7.0.0, `check-result` 1.3.0/1.4.0 and `status-result` 1.4.0. |
+| Package name | `finishup` | `yoetz` | `receipts.RECEIPT_PACKAGE_NAMES` / `ReceiptPackageName`; unreleased `receipt-document`/`receipt-result` 1.3.0 `package_name` enum `[finishup, yoetz]`. |
+| Launchers | `finishup`, `python -m finishup` | `yoetz`, `python -m yoetz` | `launcher.invoked_through_legacy_alias()`, `launcher.LEGACY_MODULE_NAME`, `codex_launcher.installed_launcher(name)`, `package_update.installed_package_name()`; `entry.LEGACY_ALIAS_NOTICE` (stderr, interactive only); `exits.UPGRADING_FROM_YOETZ_GUIDE`; `application/upgrade.build_upgrade_plan(launcher=..., legacy_extras=...)` step "Move from the yoetz name" (install command `PACKAGE_INSTALL_COMMAND`, shell-quoted, with the extras `legacy_tool_extras(receipt)` proves from a plain `yoetz` uv receipt; `adapters.package_upgrade.PACKAGE_EXTRAS`, `plain_uv_tool_receipt(receipt, name)` and `read_uv_receipt(prefix)` (a bounded regular file, never followed through a symlink) are the one check the in-place `upgrade --accept` also uses, refusing a non-plain receipt as `refused_custom_uv_installation`) and `ValueError("upgrade_launcher_invalid")`/`ValueError("upgrade_extras_invalid")`; `package_update.upgrade_command_for(package=...)` (`yoetz upgrade` for a transitional install, used by status, setup, TUI tips and `recommend accept package-update`); `tui.app.relaunch_command(package)` (the command the TUI's upgrade handoff says to re-run); update checks `PYPI_LEGACY_JSON_URL` and `ValueError("package_invalid")`; one update cache file per identity (`package-update-cache.json` for `yoetz`, `package-update-cache-finishup.json` for `finishup`) with an optional `package` member (`finishup\|yoetz`; absent means a pre-rename `yoetz` poll). One release. |
+| Diagnostics | `finishup.<module>:<line>` | `yoetz.<module>:<line>` | Origin pattern in `observability/privacy.py`. |
+| Review labels | `[FinishUP` | `[Yoetz` | The forged-label fence in `application/semantic_case.py`, any ASCII case. |
+
+Renamed internal names that are not wire values: the gap-effect families `finishup_review_budget`,
+`finishup_advice_pipeline`, `finishup_detail_bound` and `finishup_review_call`, the later-material
+rule `finishup_tool_call`, `kernel.review_frame.finishup_process_state_only`, the credential
+authority `finishup_vault_api_credential`, the stderr prefix `finishup_observation_detail:`, the
+bundled advertised-schema `$defs` key prefix `__def_`, and thread-name prefixes
+`finishup-obs-sweep`, `finishup-obs-local` and `finishup-hook-spool`.
+
 ## 1. Identifiers (`protocol/ids.py`)
 
 All FinishUP-generated public IDs: `<prefix>_<lowercase canonical RFC 4122 UUIDv4>` from the OS
@@ -3531,8 +3587,13 @@ state. A genuine pre-commit proposal or decision failure still reports
 `repository_privacy_grant_failed` with no grant.
 
 The current public JSON Schema contracts are `catalog`, `pending-agent`, `prepare-result`,
-`review-result`, and `status`, each at version `6.0.0` under `schemas/consent/`; frozen versions
-`2.0.0` through `5.0.0` remain shipped for compatibility. The current version report is
+`review-result`, and `status`, each at version `7.0.0` under `schemas/consent/`; frozen versions
+`2.0.0` through `6.0.0` remain shipped for compatibility. `consent prepare` and `consent status`
+emit `pending-agent/7` for every operation, naming the launcher the command was invoked through
+(`finishup`, or `yoetz` through the deprecated transitional alias; ADR-048); released `/6`
+projections (head `yoetz`) and `/7` projections from a pre-rename service are still read. A pending
+record written before the rename keeps its pre-rename danger text and stays valid (ADR-015
+amendment). The current version report is
 `version/version-manifest-2.0.0.schema.json`; its released `1.0.0` predecessor remains byte-frozen.
 `yoetz.chat-user-attestation/1` is version 1.0.0.
 `review_only` irreversible
@@ -4847,7 +4908,9 @@ Independent verification support (local control, not MCP):
   Windows the launched tree is terminated (`taskkill /T /F`, falling back to TerminateProcess)
   under CREATE_NEW_PROCESS_GROUP console isolation.
 - `.finishup/checks.toml` — fixed schema `yoetz.approved-check-policy/1`; raw bytes produce the trust
-  digest. Repository content proposes no authority. One trusted-local exact-digest confirmation is
+  digest. The legacy `.yoetz/checks.toml` is read when it is the only policy file; both present
+  raises `ObservationCheckPolicyAmbiguous` (`policy_ambiguous`, ADR-048), and status names the file
+  used as `policy_file`. Because trust binds to the bytes, a byte-identical move keeps it. Repository content proposes no authority. One trusted-local exact-digest confirmation is
   retained as an encrypted workspace-scoped record. Any byte change is untrusted.
   A missing `.finishup/checks.toml` (or missing `.finishup/`) raises `ObservationCheckPolicyAbsent`, a
   subclass of the `invalid_approved_check_policy` failure, so trust gates still fail closed while
@@ -6074,7 +6137,8 @@ MCP server registration is a sibling port, never an `IntegrationsPort` overload 
 `apply_registration`, `preview_unregistration`, and `apply_unregistration`, each taking a
 `HarnessBinary` (harness ID, redacted-repr executable path,
 optional reported version, `supported|untested` compatibility). Shared names are
-`MCP_SERVER_NAME` (exactly `finishup`), `MCP_SERVE_COMMAND` (exactly
+`MCP_SERVER_NAME` (exactly `finishup`; `MCP_LEGACY_SERVER_NAME` `yoetz` is read, never written,
+ADR-048), `MCP_SERVE_COMMAND` (exactly
 `("finishup", "mcp", "serve", "--host", "codex")`), `MCP_STRICT_SERVE_COMMAND` (exactly
 `("finishup", "mcp", "serve", "--host", "codex", "--semantic", "off")`),
 `McpRegistrationState` (`absent|yoetz_owned|foreign_present`), `McpRegistrationAction`
@@ -6125,11 +6189,15 @@ This is a client-local report; it adds no MCP tool, hook event, ledger receipt f
 The interactive approval surface prints the exact command, route, isolated root, warnings,
 and preview digest. The preview binds the exact command, `policy|strict` route profile, and exact
 ADR-026 isolated root when present. Ambient external registrations carry no environment. Isolated
-external Codex registrations carry exactly one native `--env` pair,
-`FINISHUP_ISOLATED_ROOT=<validated-root>`; a missing root is re-registration drift, as is a different
+external Codex registrations carry exactly two native `--env` pairs naming one root,
+`FINISHUP_ISOLATED_ROOT=<validated-root>` and `YOETZ_ISOLATED_ROOT=<validated-root>` (ADR-048, so a
+pre-rename launcher found through `PATH` still isolates); an entry with either name alone or both
+equal reads as the same binding and re-registers to the two-name form, two different values are
+not FinishUP's; a missing root is re-registration drift, as is a different
 known root on a legacy bare registration,
 while any arbitrary key, inherited-variable declaration, or malformed root makes the same-name
-entry foreign and preserves it. The route profile is
+entry foreign and preserves it. The legacy `yoetz` key is read in the same observation and
+reported as `legacy_registration` (ADR-048 §3). The route profile is
 explicit input:
 `finishup setup run` and `finishup integrate <harness> mcp preview|install` accept
 `--route-profile strict|policy`. Without that input, an existing finishup-owned registration keeps
@@ -6565,8 +6633,9 @@ Native hooks **and the plugin-owned `mcp.json`** launch that one recorded launch
 the MCP entry is `command = launcher[0]`, `args = [*launcher[1:], "mcp", "serve", "--host",
 "cursor"(, "--semantic", "off")]`, never a bare `finishup` that Cursor's sanitized desktop PATH may
 resolve to another installation. In isolated mode the entry carries exactly
-`env = {"FINISHUP_ISOLATED_ROOT": "<validated-root>"}` and every native hook command carries the
-same shell-safe assignment; ambient artifacts omit both. Because these entries are managed
+`env = {"FINISHUP_ISOLATED_ROOT": "<validated-root>", "YOETZ_ISOLATED_ROOT": "<validated-root>"}`
+(both names, one value; ADR-048) and every native hook command carries the same shell-safe
+assignments; ambient artifacts omit both. Readers accept either name alone or both equal. Because these entries are managed
 members, their bytes are part of the artifact digest and marker inventory. Route-shape recognition
 accepts a hand-written bare `finishup` or one of the known launchers — this artifact's and the
 installed marker's — followed by the exact serve arguments, optionally with that one structurally
@@ -7400,8 +7469,12 @@ facade and are never MCP tools.
 - `config/write.py` / `config/privacy_desired.py`: atomic nonsecret TOML writers and privacy
   desired-state export/apply classification (widen never silent).
 - `config/paths.py`: platformdirs-based `bundle_root()`, `catalog_path()`, path safety checks
-  (rejects repo/sync/network/world-readable locations). Owns the one exact-target isolation
-  contract (`ISOLATED_ROOT_ENV` = `FINISHUP_ISOLATED_ROOT`, ADR-026, issue #518): when set, every
+  (rejects repo/sync/network/world-readable locations). Ambient roots use one application name for
+  every root: `finishup`, or `yoetz` for a Yoetz-era installation adopted in place
+  (`installation_naming()`, `installation_root_ambiguous`; ADR-048). Owns the one exact-target isolation
+  contract (`ISOLATED_ROOT_ENV` = `FINISHUP_ISOLATED_ROOT`, ADR-026, issue #518; the legacy
+  `YOETZ_ISOLATED_ROOT` is read when it is unset, and two different values raise
+  `isolation_root_env_conflict`, ADR-048): when set, every
   identity root — `config_file_path()`, default `bundle_root()`, `state_dir()` (service
   lock/generation), `runtime_dir()` (control/secret/human-control endpoints), `cache_dir()`,
   `log_dir()` — derives from the validated `isolated_root()`; a set but unusable root fails
@@ -7478,7 +7551,8 @@ facade and are never MCP tools.
 
 ## 14. Version identities
 
-`version.py` exposes `VersionManifest`: package, protocol (`0.1`), local control protocol (`1.0`),
+`version.py` exposes `VersionManifest`: package (`finishup`; manifests and receipts written before
+the rename say `yoetz`, ADR-048), protocol (`0.1`), local control protocol (`1.0`),
 privacy-policy schema (`1.1.0`), egress-receipt schema (`1.0.0`), engine (`0.1.0`), policy pack
 versions, projection (`yoetz/0.1.0`), object format (`yoetz-object/1`), storage schema identities
 (`catalog_schema_version` `5`, `bundle_schema_version` `14` — hand-versioned positive-decimal

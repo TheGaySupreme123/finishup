@@ -45,6 +45,7 @@ ADR wins; when an ADR and the code disagree, that is a bug in one of them and wo
 | [045](ADR-045-derived-facts-history-and-lineage.md) | Derived facts carry history (path-keyed deliverable state) and lineage; canonical command commitments; attempts; binary by content first |
 | [046](ADR-046-one-closure-verdict.md) | One closure verdict: finding and obligation classes with receipt effects, one gap-effect table, a predicted receipt conclusion every surface prints |
 | [047](ADR-047-inspection-check-and-operating-card.md) | The read-only inspection check (`mode: inspect`): what is left and why, what hooks observed, whether evidence links to declared items; no mandatory status read or dry run; an operating card instead of a startup reading list |
+| [048](ADR-048-finishup-rebrand-and-frozen-legacy-identifiers.md) | FinishUP rebrand: identifiers frozen under protocol 0.1, legacy Yoetz spellings recognized beside the new ones, the transitional `yoetz` distribution and its one-release alias window |
 
 Unresolved gates are centralized in [`docs/OPEN_QUESTIONS.md`](../OPEN_QUESTIONS.md), not scattered
 through individual ADRs.

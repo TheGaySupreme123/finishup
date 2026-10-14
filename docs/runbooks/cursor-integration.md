@@ -529,6 +529,69 @@ before its frozen opaque branch can classify the new pair. Fully restart the exa
 and re-prove descriptor plus correlated model use after upgrading before reporting the capability
 as active.
 
+## Legacy Yoetz registrations
+
+FinishUP was named Yoetz through 0.2.5 (ADR-048). A Cursor configuration connected by Yoetz carries
+the user plugin `~/.cursor/plugins/local/yoetz` (frozen marker `.yoetz-cursor-plugin-install.json`),
+MCP entries under the `yoetz` key (project `.cursor/mcp.json`, user `mcp.json`, or the plugin's own
+`mcp.json`), isolated-mode hook commands that set only `YOETZ_ISOLATED_ROOT`, and admission entries
+under the `yoetz` server name. FinishUP reads these; it writes only `plugins/local/finishup`, the
+`finishup` key and both isolation-root names. Until migration the old plugin keeps working: tool
+calls named `yoetz:<tool>` and `plugin-yoetz-yoetz:<tool>` (each only beside its own server key),
+the start binding, the startup gate, and `yoetz`/`yoetz.exe` children in the runtime classifier are
+all recognized as FinishUP.
+
+**Status.** `finishup integrate cursor plugin status --json`, its previews and `finishup setup
+status --host cursor-ide|cursor-cli` report `legacy_installation` for the plugin tree; the MCP block
+and `integrate cursor project-mcp` status, preview and apply report `legacy_registration` for the
+`yoetz` key. Both use `none`, `legacy_only` (owned but outdated), `duplicate` (owned under both
+names) and `foreign` (not provably FinishUP's; reported, never touched). A legacy plugin tree is
+owned only with a valid frozen marker; its recorded launcher then also proves ownership of MCP
+entries that name it.
+
+**Plugin migration.** The guided connection and `finishup integrate cursor plugin install` (after an
+install or `--action replace` preview) migrate an owned `plugins/local/yoetz` in the same reviewed
+preview, which binds the legacy tree's digest (warning `legacy_installation_owned`; connection plan
+change `migrate_legacy_plugin`), and keep the startup mode (`optional` or `required`) it was
+installed with. Remove and disconnect also take a legacy-only install (`remove_legacy_plugin`). If a
+lost result has to be reconciled after a migration, the legacy digest is gone and reconciliation
+fails closed with `destination_conflict`; status shows the real state.
+
+**Project MCP migration.** A project entry under `yoetz` that launches this installation (its
+`finishup` script, its `yoetz` alias, or a launcher a FinishUP marker recorded) is owned but
+outdated. Project MCP install rewrites it as `finishup` and drops `yoetz` in one preview (warning
+`legacy_registration_owned`); remove deletes both keys; owned entries under both keys read as
+`duplicate`, not unreadable. A `yoetz` entry in the user or plugin source is reported but only the
+project file's entry is migrated. A FinishUP server still registered under `yoetz` in
+`~/.cursor/mcp.json`, or in a not-yet-migrated `plugins/local/yoetz`, is an existing FinishUP
+source: project MCP install refuses (`external_source`, or `multiple_sources` when the project file
+also holds an owned entry) rather than adding a second server, and setup readiness says that
+connect will not edit that earlier-name entry. Migrate or remove it first; for the plugin, the
+Cursor plugin install or replace migrates it. A foreign project `yoetz` entry is not counted as a
+source. New plugin `mcp.json` entries, hook commands and project entries
+export both `FINISHUP_ISOLATED_ROOT` and `YOETZ_ISOLATED_ROOT` with one value while the `yoetz`
+alias ships; readers accept either name alone or both equal, and two different values are not
+FinishUP's binding.
+
+**Admission.** Grant writes only the `finishup` forms. The exact legacy entries `yoetz:check` (IDE),
+`Mcp(yoetz:check)` and `Mcp(plugin-yoetz-yoetz:check)` (Agent CLI) are reported as `legacy_entries`,
+removed by `admission revoke` and the removal sweeps, and retired by a grant once nothing FinishUP
+owns uses the `yoetz` name. A grant is refused with `legacy_registration_active` while Cursor serves
+FinishUP only under `yoetz`.
+
+**Manual steps for state FinishUP cannot prove.** Anything under the legacy name without proof is
+`foreign` and stays; inspect it and remove it yourself only if it is a leftover:
+
+- A `plugins/local/yoetz` tree with a missing or modified marker: delete the directory after
+  checking it holds nothing you want.
+- A `yoetz` MCP entry that names a launcher FinishUP cannot prove, for example an old runtime path
+  that no longer exists: delete the `yoetz` key from that `mcp.json`.
+- Order matters when you run the explicit commands instead of the guided connection: running
+  `integrate cursor plugin install` (which migrates and deletes the legacy tree and its marker)
+  before `integrate cursor project-mcp install` loses the marker-recorded launcher, so a legacy
+  project entry naming a moved old launcher reads `foreign`. Run the project MCP step first, or use
+  the guided connection, which captures the recorded launchers before the plugin step.
+
 ## Multitask delegation after an outage
 
 The #499 lifecycle repair applies to cooperative Cursor children: activity renews session health,

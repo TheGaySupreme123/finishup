@@ -52,28 +52,29 @@ Keep the PR, live-state, and exact consent boundaries below.
 ## Ways to hurt yourself
 
 1. **The live install is real.** The user data directory (`finishup.config.paths.state_dir()`; on
-   macOS `~/Library/Application Support/finishup/`) holds the maintainer's vault, catalog, task
-   ledgers, and the running service's singleton lock. Never start a service, run tests, or open a
-   ledger read-write against it. For realistic data, copy into an isolated state directory:
-   SQLite files travel with their `-wal`/`-shm` siblings (a live copy without them is a corrupt
-   copy); the copy must sit in a symlink-free, mode-0700 directory — not `/tmp`, which macOS
-   resolves through a symlink and the runtime refuses as `path_contains_symlink`. Copy in, never
-   symlink, never copy back. Copying vault material needs maintainer sign-off first.
-   For anything that needs an installed launcher, a running service, a host registration, or an
-   upgrade path, provision an independent test instance instead
-   (`scripts/provision_test_instance.py`, [`docs/runbooks/test-instances.md`](docs/runbooks/test-instances.md),
-   ADR-028): it builds a wheel from the exact revision, installs it into its own runtime, and pins
-   that runtime to its own root, service, and vault, so a dropped `FINISHUP_ISOLATED_ROOT`, a hook,
-   or a `PATH` that lists the test runtime first can no longer reach the live singleton. Setting
-   `FINISHUP_ISOLATED_ROOT` alone (ADR-026) still isolates an explicitly exported process tree but
-   not a bare launcher; a bare `finishup` resolved through `PATH` in a host registration is how the
-   live service got superseded by a test build (issue #604). Register hosts with absolute
-   launcher paths.
-2. **Never kill the service by pattern.** `pkill -f finishup`, `pgrep | kill`, or killing a PID matched
-   on a path also hits the user's real service and the hook/bridge processes, whose argv carries
-   this checkout's path. Stop only a PID you spawned, or use the sanctioned path: `finishup service
-   restart` supersedes an incompatible holder through the lock stamp, and `finishup service status`
-   reports the holder.
+   macOS `~/Library/Application Support/finishup/`, or `~/Library/Application Support/yoetz/` for an
+   install first made as Yoetz and adopted in place, ADR-048) holds the maintainer's vault, catalog,
+   task ledgers, and the running service's singleton lock. Treat both folders as live. Never start a
+   service, run tests, or open a ledger read-write against it. For realistic data, copy into an
+   isolated state directory: SQLite files travel with their `-wal`/`-shm` siblings (a live copy
+   without them is a corrupt copy); the copy must sit in a symlink-free, mode-0700 directory — not
+   `/tmp`, which macOS resolves through a symlink and the runtime refuses as
+   `path_contains_symlink`. Copy in, never symlink, never copy back. Copying vault material needs
+   maintainer sign-off first. For anything that needs an installed launcher, a running service, a
+   host registration, or an upgrade path, provision an independent test instance instead
+   (`scripts/provision_test_instance.py`,
+   [`docs/runbooks/test-instances.md`](docs/runbooks/test-instances.md), ADR-028): it builds a wheel
+   from the exact revision, installs it into its own runtime, and pins that runtime to its own root,
+   service, and vault, so a dropped isolation root, a hook, or a `PATH` that lists the test runtime
+   first can no longer reach the live singleton. Setting `FINISHUP_ISOLATED_ROOT` (or its legacy
+   `YOETZ_ISOLATED_ROOT`) alone (ADR-026) still isolates an explicitly exported process tree but not
+   a bare launcher; a bare `finishup` resolved through `PATH` in a host registration is how the live
+   service got superseded by a test build (issue #604). Register hosts with absolute launcher paths.
+2. **Never kill the service by pattern.** `pkill -f finishup` (or `yoetz`), `pgrep | kill`, or
+   killing a PID matched on a path also hits the user's real service and the hook/bridge processes,
+   whose argv carries this checkout's path. Stop only a PID you spawned, or use the sanctioned path:
+   `finishup service restart` supersedes an incompatible holder through the lock stamp, and
+   `finishup service status` reports the holder.
 3. **Git worktrees have sharp edges.** Always `uv run` inside the worktree: bare `pytest` from the
    primary checkout's `.venv` resolves `finishup` to the primary checkout and silently tests the wrong
    tree. `finishup state capture` requires `.git` to be a directory, so it rejects a worktree
@@ -145,18 +146,18 @@ asked; CI owns it.
   concurrently with another pytest run, and re-run a failure solo before believing it. That
   restriction is unchanged by ADR-028: instance pinning makes the *instances* independent, not
   the shared `~/.yz-*` base those tests still create and delete.
-- Run any test that spawns a real service (`tests/subprocess/`, `tests/packaging/`) with
-  `FINISHUP_ISOLATED_ROOT` unset in the invoking shell (`env -u FINISHUP_ISOLATED_ROOT uv run pytest
-  …`) unless the test itself owns that root: an inherited root makes the spawned children
-  resolve someone else's instance. Pinned test-instance launchers are immune; the checkout's
+- Run any test that spawns a real service (`tests/subprocess/`, `tests/packaging/`) with both
+  root variables unset in the invoking shell (`env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT
+  uv run pytest …`) unless the test itself owns that root: an inherited root makes the spawned
+  children resolve someone else's instance. Pinned test-instance launchers are immune; the checkout's
   `.venv` is unpinned by design.
 - The `endpoint_unsafe` family (`tests/integration/service/test_local_control_channel.py` and
   friends) is environment-dependent, not a standing baseline: re-run from a short checkout path
   before blaming a change.
 
 Material work in this checkout dogfoods the product: when a session will edit files, run
-state-changing commands, or delegate, call the FinishUP `start` tool before that work (load its schema
-by name first if the host lists only tool names), publish material transitions, and end with a
+state-changing commands, or delegate, call the FinishUP `start` tool before that work (load its
+schema by name first if the host lists only tool names), publish material transitions, and end with a
 `receipt`. If work began before `start`, call it now and disclose the uncovered prefix. This is
 an expectation, not an enforcement gate (#692 owns that); questions answered from reading skip it.
 

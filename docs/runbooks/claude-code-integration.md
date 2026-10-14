@@ -330,6 +330,101 @@ latches that availability failure for the process and serializes the first on-de
 concurrent tool calls share one diagnostic (issues #469, #476); that behaviour is shared across
 hosts that use this bridge, not Claude-Code-specific.
 
+## Legacy Yoetz registrations
+
+FinishUP was named Yoetz through 0.2.5 (ADR-048). A project connected by Yoetz carries the
+`yoetz-local` marketplace (a private source tree at `<config>/plugins/marketplaces/yoetz-local` with
+the frozen marker `.yoetz-claude-marketplace-install.json`), the plugin `yoetz@yoetz-local`, the
+skill `/yoetz:yoetz`, and possibly owner-written MCP entries under the `yoetz` key. FinishUP reads
+these; it writes only `finishup-local`, `finishup@finishup-local` and the `finishup` server name.
+Until migration the old plugin keeps working: hooks, start binding, the startup gate and tool
+classification accept `mcp__yoetz__*`, `mcp__plugin_yoetz_yoetz__*` and the `yoetz` skill ids.
+
+**Status.** `finishup integrate claude plugin status --json`, its previews and `finishup setup
+status --host claude` report `legacy_installation` for the plugin and marketplace, and the MCP block
+reports `legacy_registration` for the `yoetz` key:
+
+| Value | Meaning |
+|---|---|
+| `none` | Nothing under the legacy name for this project. |
+| `legacy_only` | The only FinishUP install still uses the legacy name: owned but outdated. |
+| `duplicate` | Owned installs under both names. |
+| `foreign` | Something under the legacy name FinishUP cannot prove is its own; reported, never touched. |
+
+A legacy install is this project's and FinishUP's only when the project's settings register
+`yoetz-local` or Claude lists `yoetz@yoetz-local` for this project, and the marketplace tree at the
+accepted location (beside the managed root) carries a valid marker naming `yoetz-local`. The preview
+binds that tree's digest. When the project's `.claude` directory is a symlink, the legacy install
+reads `foreign` (preview warning `legacy_installation_foreign`) and is never uninstalled or edited,
+because FinishUP does not rewrite settings through a symlinked `.claude`. Before the rename is migrated, setup's activation cues read the plugin in
+`yoetz-local`.
+
+**Migration.** The guided connection (`finishup setup run --host claude`) and `finishup integrate
+claude plugin install|update|remove` (and disconnect) migrate an owned legacy install in the same
+reviewed preview (warning `legacy_installation_owned`; connection plan change
+`migrate_legacy_plugin`, or `remove_legacy_plugin` on disconnect). Before writing the new source,
+FinishUP retires this project's legacy install only, doing what the preview observed. When Claude
+lists the legacy plugin for this project, it runs:
+
+```text
+claude plugin uninstall yoetz@yoetz-local --scope project --keep-data
+```
+
+FinishUP then removes exactly `extraKnownMarketplaces["yoetz-local"]` and
+`enabledPlugins["yoetz@yoetz-local"]` from this project's `.claude/settings.json` (warning
+`legacy_project_registration_removed`) and leaves every other setting, its order and the file mode
+as they are; the file is rewritten with 2-space indentation, as Claude writes it. The preview binds
+each of those entries' digests: if either changed after the preview, the file is left untouched and
+the result is `outcome_unknown`, so preview again.
+
+The migration never runs Claude's unscoped `claude plugin marketplace remove yoetz-local`, which
+would delete the shared `<config>/plugins/marketplaces/yoetz-local` tree, Claude's user-level
+`known_marketplaces.json` entry and every other project's `yoetz@yoetz-local` install. That tree and
+that user-level registration stay for the other projects of the same Claude configuration root;
+status and previews note them as `legacy_marketplace_retained`, and each project migrates on its own
+connect. Update keeps the legacy plugin's enabled state, connect enables the renamed plugin, and
+install leaves it disabled as install always does.
+
+The one exception is an in-place update: `plugin update --marketplace-root <.../yoetz-local>` (the
+upgrade plan's form for an old install) names the old folder itself, which the renamed tree then
+replaces. Only there does FinishUP also run `claude plugin marketplace remove yoetz-local`, so
+Claude's registration does not point at a folder that now holds `finishup-local`; the preview warns
+`legacy_marketplace_replaced`. It runs and announces that remove only while this project's
+`.claude/settings.json` or Claude's user-level `known_marketplaces.json` still registers the old
+folder; with no registration left it neither runs nor announces it. While Claude lists the legacy plugin for another project or scope,
+that update is refused as `destination_conflict` with detail `legacy_marketplace_shared`: migrate
+those projects first, or prefer the default `finishup-local` root.
+
+**MCP.** FinishUP never edits Claude's own MCP configuration. Owner-written `yoetz` entries are
+recognized and reported (`legacy_only`, `duplicate`); rename them yourself. A legacy-only entry maps
+to no host-admission rule, and a plugin-managed connect over it is refused with
+`mcp_ownership_conflict` (detail `legacy_registration`), as before the rename.
+
+**Hooks and admission.** The rendered `PermissionDenied` matcher is
+`^mcp__(finishup|yoetz|plugin_finishup_finishup)__check$`. Claude hooks carry no isolation
+environment. Admission grant writes only the `finishup` forms; the exact legacy entries
+`mcp__yoetz__check` and `mcp__plugin_yoetz_yoetz__check` are reported as `legacy_entries`, removed
+by `admission revoke` and the removal sweeps, and retired by a grant once nothing FinishUP owns uses
+the `yoetz` name. A grant is refused with `legacy_registration_active` while Claude serves FinishUP
+only under `yoetz`.
+
+**Manual steps for state FinishUP cannot prove.** A `yoetz-local` registration or a listed
+`yoetz@yoetz-local` plugin without a marker-valid legacy tree (deleted or modified) is `foreign` and
+is never touched. Remove it yourself, for that project only:
+
+```text
+claude plugin uninstall yoetz@yoetz-local --scope project
+```
+
+then remove `yoetz-local` from `extraKnownMarketplaces` and `yoetz@yoetz-local` from
+`enabledPlugins` in that project's `.claude/settings.json` (or run `claude plugin marketplace remove
+yoetz-local --scope project` on a Claude version that supports `--scope` there). Do not run the bare
+`claude plugin marketplace remove yoetz-local` while another project still uses it: it removes the
+shared tree, the user-level registration and every project's legacy install. Once no project lists
+`yoetz@yoetz-local` any more (`claude plugin list`), the retained
+`<config>/plugins/marketplaces/yoetz-local` tree and its user-level registration can be removed by
+hand; FinishUP never deletes them.
+
 ## Static and host validation
 
 Run Claude's validator against the exact generated marketplace root:
@@ -617,7 +712,7 @@ and `transcript_path`; stop additionally carried `agent_transcript_path` and `pe
 Neither event carried a parent tool-call id, so child-only correlation is a required supported input
 shape.
 
-The final exact-wheel cell used `finishup-0.1.0-py3-none-any.whl` at SHA256
+The final exact-wheel cell used `yoetz-0.1.0-py3-none-any.whl` at SHA256
 `8d54a73c87e5e49b0b6179ad58f673d2b2f40b1a93c80c4393ce56ae36e82988` from source commit
 `2e8b0b48`, with 216 packaged resources (`sha256:1e4cc667456c1cf9ac579d7bc1db186937c29abd9637025c42569ffc7701895c`)
 and a strict plugin export (`sha256:f2f7249ef47e43cde1fb0004d2bb770125665c7fc15664c8c6d116242dec6fdb`) loaded

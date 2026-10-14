@@ -44,9 +44,9 @@ generate and store one locally without any secret-bearing agent channel.
 
 2. **Agent-safe preparation.** `finishup consent prepare` creates one owner-only
    `yoetz.elevated-bootstrap.pending/4` record. Its agent projection is
-   `yoetz.consent.pending-agent/6` and contains only operation, risk class, bounded danger text,
+   `yoetz.consent.pending-agent/7` and contains only operation, risk class, bounded danger text,
    exact danger and target digests, expiry, pending ID, an exact bounded repository recipe when
-   applicable, the fixed `["finishup","consent","review"]` command, and an authorize command only
+   applicable, the fixed `[<head>,"consent","review"]` command, and an authorize command only
    for operations that permit agent-chat authorization. For `import_publication` it also carries
    a closed structural preview: exact source/manifest/plan/target digests, task/session/writer and
    profile identity, counts and caps, plus explicit false facts for complete-transcript inclusion,
@@ -61,6 +61,20 @@ generate and store one locally without any secret-bearing agent channel.
    never deletes or reinterprets it and continues to return `review_in_progress`. This preserves
    the existing fail-closed interrupted-review boundary until a separately designed recovery path
    can prove the claimant is gone.
+
+   **Amended 2026-10-14 (ADR-048, issue #1055) — command head and pre-rename records.**
+   `consent prepare` and `consent status` emit `pending-agent/7` for every operation. Its command
+   `<head>` is the launcher the process was invoked through: `finishup`, or `yoetz` when run
+   through the deprecated transitional alias, whose installs put only `yoetz` on `PATH`; `consent
+   catalog` prepare hints follow the same head. One projection never mixes heads
+   (`consent_command_head_mixed`). Released `/6` projections (head fixed to `yoetz`) and `/7`
+   projections from a pre-rename service are still read. A `pending/4` record written before the
+   rename keeps the danger text its owner was shown, so for the three operations whose text changed
+   (`provider_credential_set`, `provider_credential_rotate`, `repository_privacy_grant`) the load
+   check accepts exactly that operation's pre-rename text, still bound by its danger digest. Such a
+   record is reviewed with its stored text, expires, and is cleared like any other; any other text
+   or digest mismatch still reads as `pending_tampered`. New records always store the current
+   text, which names `finishup` whichever launcher prepared them.
 
 3. **Two approval surfaces.** `finishup consent review` takes no authority-bearing arguments. Before
    opening a console or claiming pending state, it requires an independently authenticated,

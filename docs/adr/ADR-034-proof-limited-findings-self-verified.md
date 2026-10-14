@@ -1,7 +1,7 @@
 # ADR-034 — Proof-limited findings: the `self_verified` respond disposition
 
 **Status:** Accepted for [issue #984](https://github.com/TheGaySupreme123/finishup/issues/984). The
-owner chose this design on 2026-10-07 while reviewing TB4 run tb4n1: "I prefer this even if finishup
+owner chose this design on 2026-10-07 while reviewing TB4 run tb4n1: "I prefer this even if yoetz
 can't find, let the agent respond and populate it." This counts as the maintainer
 acknowledgement for this design-gated protocol change. It grants no runtime, credential,
 disclosure or destructive-action authority.

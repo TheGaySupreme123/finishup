@@ -155,7 +155,7 @@ affected claim, and for the first non-alpha release regardless.
 | E-009 | Not applicable (narrowed) — the shipped skill examples remain as authored with the explicit-activation preference; no activation-quality or materiality-threshold claim ships. |
 | E-010 | Narrowed — local service endpoint, lifecycle, and secret-boundary behavior is evidenced by the per-PR subprocess suites on the CI platforms; no broader platform relock/keyring/memory-protection matrix ships. |
 | E-011 | Narrowed — privacy enforcement claims are bounded to the per-PR conformance, property, integration, and subprocess evidence; no live-profile claim ships. |
-| E-012 | Closed by decision (2026-08-20, issue #366) — GitHub private vulnerability reporting is enabled, `finishup.dev` is registered with active MX records, and the maintained `support@finishup.dev` mailbox exists. The maintainer accepts those routes for the public alpha without making a delivery-time, response-time, availability, or monitored-SLA claim; a completed delivery/response drill is required before any later release makes one. `https://schemas.yoetz.dev/0.1/` is deployed from the exact candidate before tagging and every hosted byte is re-fetched and compared by the tagged workflow. |
+| E-012 | Closed by decision (2026-08-20, issue #366) — GitHub private vulnerability reporting is enabled, `yoetz.dev` is registered with active MX records, and the maintained `support@yoetz.dev` mailbox exists. The maintainer accepts those routes for the public alpha without making a delivery-time, response-time, availability, or monitored-SLA claim; a completed delivery/response drill is required before any later release makes one. `https://schemas.yoetz.dev/0.1/` is deployed from the exact candidate before tagging and every hosted byte is re-fetched and compared by the tagged workflow. |
 | E-013 | Not applicable (narrowed) — no trigger arm and no observation arm ships; every capability cell remains `None`/empty, `hook_observed` is unearnable in v0.1.0, and unprofiled harnesses stay cooperative-only. |
 | E-014 | Closed by decision — publication-ceremony guidance remains qualitative, informed by bounded dogfood use; no numeric budget or grouping-threshold claim ships, and measurement is required before any later budget claim. |
 | E-015 | Narrowed — `finishup state capture` ships fail-closed with no advertised capability cells; `support.structural_subject_state_capture` stays `not_yet_evidenced`. |
@@ -267,6 +267,18 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
 - In-place repair of a quarantined route; v0.1 recovery builds/verifies a new target and switches
   routes through the catalog state machine.
 
+### FinishUP rebrand release gates (ADR-048) — 2026-10-14
+
+The rename (#1055) is implemented with full backward compatibility; the steps code cannot take
+are release gates tracked on #1056: registering `finishup.dev` and proving its mail; keeping
+`yoetz.dev` (and `https://schemas.yoetz.dev/0.1/`) registered and serving permanently; renaming the
+repository to `TheGaySupreme123/finishup` and never recreating one named `yoetz`; claiming the
+`finishup` PyPI and npm names; Trusted Publishing for both `finishup` and the existing `yoetz`
+PyPI project and npm package; a release-workflow dry run of the transitional jobs; and a live
+upgrade of a real 0.2.5 installation with each host's reconnect and disconnect. Removing the
+`yoetz` alias is a later-release decision gated on status reporting no legacy launcher bindings.
+Schema `$id`s can move to a FinishUP host only with a future protocol namespace bump.
+
 ### Resolved founder and working decisions reflected across the tree
 
 - **v0.1.0 public-alpha reconciliation (2026-08-20):** every empirical gate carries a
@@ -303,12 +315,16 @@ stopped isolated instance is observation, not certification. Whether 0.153.4 emi
   replaced; privacy setup and provider credentials remain their existing trusted ceremonies, which
   the wizard points to but never automates.
 - **F-006 (amended 2026-08-20):** Private vulnerability reporting uses GitHub's private
-  vulnerability-reporting surface, with the single maintained private mailbox `support@finishup.dev`
+  vulnerability-reporting surface, with the single maintained private mailbox `support@yoetz.dev`
   as fallback; private conduct reports use the same mailbox with a "Code of conduct" subject;
   ordinary support and bug reports use repository issues. The original decision named distinct
   `security@`/`conduct@` routes; the maintainer consolidated to one monitored mailbox for the
   solo-maintained v0.1 era — the routes may split again without a claim change. The v0.1.0 alpha
   makes no mailbox delivery-time, response-time, availability, or monitored-SLA claim.
+  Amended 2026-10-14 (ADR-048, #1055): the rename moves this mailbox to `support@finishup.dev`
+  (conduct issue-template route `conduct@finishup.dev`), and the public documents already name it.
+  Proving that address receives and is monitored, and re-running the E-012 drill against it, is a
+  release gate on #1056; `yoetz.dev` and its mail stay alive.
 - The persistent per-user local service is in v0.1 and is the sole owner of keys, decrypted state,
   durable writers, privacy policy enforcement, and outbound dispatch. CLI, MCP, and UI are clients.
 - **F-007:** v0.1 keeps vault keys, provider-credential handles, and decrypted state inside the

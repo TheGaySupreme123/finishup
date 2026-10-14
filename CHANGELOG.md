@@ -1,10 +1,52 @@
 # Changelog
 
-All notable user-visible changes to FinishUP are documented in this file. Format is a lightweight,
-project-native heading style that marks the pending version as unreleased above
-reverse-chronological released versions.
+All notable user-visible changes to FinishUP (named Yoetz through 0.2.5) are documented in this
+file. Format is a lightweight, project-native heading style that marks the pending version as
+unreleased above reverse-chronological released versions.
 
 ## Unreleased
+
+### Yoetz is now FinishUP
+
+- **The product is renamed FinishUP** (#1055, [ADR-048](docs/adr/ADR-048-finishup-rebrand-and-frozen-legacy-identifiers.md)).
+  The PyPI and npm package and the command are `finishup`; new output, receipts, guidance and the
+  files written into agent hosts use the new name. Existing installations need no migration:
+  - An installation first made as Yoetz keeps its data, vault, keyring binding and settings in its
+    Yoetz-era folders, used in place; nothing is moved or rewritten. `finishup service status` and
+    `/doctor` say when those folders are in use. Folders under both names (a lone `config.toml` counts)
+    are refused as `installation_root_ambiguous` rather than guessed; service commands, `setup
+    status`, `provider status`, agent tools and the terminal interface name that refusal and its
+    remedy instead of reporting the service as unavailable.
+  - Every `YOETZ_*` variable is still read when its `FINISHUP_*` twin is unset; two different values
+    fail as `config_env_conflict` (`isolation_root_env_conflict` for the isolated root). New host
+    registrations carry both isolated-root names. `.yoetz/checks.toml` is still read when it is the
+    only policy (`policy_ambiguous` when both exist).
+  - Codex, Claude Code and Cursor registrations, plugins, skills and admission grants made by Yoetz
+    keep working and are reported as `legacy_only`, `duplicate` or `foreign`; integrate and the
+    guided connection migrate an owned one in one reviewed preview that lists every earlier-name
+    item it removes, disconnect removes both spellings, and anything FinishUP cannot prove is its
+    own is left untouched. Migrating one Claude Code project leaves the shared `yoetz-local`
+    marketplace for other projects; Codex deletes `.agents/plugins/yoetz` only once nothing
+    activated still reads it.
+  - `yoetz://` guidance URIs, `mcp__yoetz__*` tool names, `yoetz-blocker:`-style decision markers,
+    `yoetz` command heads in results from an older service, and receipts naming package `yoetz`
+    are still recognized.
+- **A transitional `yoetz` distribution** is published to PyPI and npm at the same version for one
+  release. It installs `finishup` and keeps a deprecated `yoetz` command, so released `yoetz upgrade`
+  lands on FinishUP in place and hosts connected through the old tool keep running. The alias
+  prints a one-line notice in interactive terminals only. Until you move, any `finishup` command
+  shown works as `yoetz` with the same subcommand, and update tips, the upgrade plan and consent
+  requests started through `yoetz` name `yoetz`. Move with
+  `uv tool install --managed-python --python 3.14.6 finishup` (plus any extras; `yoetz upgrade`
+  prints the command), reconnect each host, then `uv tool uninstall yoetz`; see
+  [Upgrading from Yoetz](docs/usage/upgrading.md#upgrading-from-yoetz).
+- **Some identifiers stay spelled `yoetz` permanently** under protocol 0.1, because they live inside
+  stored or released bytes: ledger protocol tags, object and vault formats, crypto domain
+  separators, keyring service names, the SQL schema, wire enum values such as `yoetz_owned`, the
+  `yoetz.<name>/<n>` tag namespace, actor ids, marker file names, and the released schemas with
+  their `$id`s under `https://schemas.yoetz.dev/0.1/`. They are not leftovers.
+- A consent prepared before the upgrade stays reviewable after it, with the warning it was prepared
+  with, and expires within 15 minutes as usual.
 
 ### Added
 
@@ -726,6 +768,8 @@ Prepared public-alpha release candidate; publication remains gated by #785. See
   lifecycle writes. Every remaining pre-admission refusal names its stage with a same-identity
   replay directive and `retry_after_ms`, and `status view=operation` reports that stage on the
   `absent` page (issue #838).
+
+Entries for 0.2.5 and earlier describe the product under its former name, Yoetz.
 
 ## 0.2.5 — 2026-09-23
 

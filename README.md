@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://finishup.dev"><img src="https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/landing/public/assets/finishup-logo.png" alt="FinishUP" width="320"></a>
+  <a href="https://finishup.dev"><img src="https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/landing/public/assets/finishup-lockup.png" alt="FinishUP" width="320"></a>
 </p>
 
 <h1 align="center">Agents claim they're done.<br>FinishUP checks if they actually did.</h1>
@@ -20,6 +20,10 @@
   <a href="https://github.com/TheGaySupreme123/finishup/releases">Releases</a> ·
   <a href="https://github.com/TheGaySupreme123/finishup/blob/main/CHANGELOG.md">Changelog</a>
 </p>
+
+> [!NOTE]
+> **FinishUP was formerly named Yoetz.** Existing Yoetz installations keep their data, settings and
+> connected agents; see [Upgrading from Yoetz](docs/usage/upgrading.md#upgrading-from-yoetz).
 
 FinishUP is a local-first, open-source system for recording structured work evidence, checking it
 with local checks, and producing **honest receipts about what was and was not verified**.
@@ -162,7 +166,8 @@ say.
 A fresh installation's unconfigured seed is **zero-egress and local-only**: nothing leaves your
 machine before first-run setup commits a policy, and FinishUP is fully useful in that state. Setup's
 proposed privacy policy states whether FinishUP may check PyPI for package updates (default yes, with an
-opt-out). That bounded check carries only the `finishup` package identity and version, never task or
+opt-out). That bounded check carries only the installation's package identity (`finishup`, or
+`yoetz` for an installation still updated under its former name) and version, never task or
 user content, and it never upgrades the package for you; decline it for a zero-network installation.
 Rerunning setup does not suspend or revoke an existing standing policy: ordinary activity remains
 governed by that policy until the user commits a replacement.

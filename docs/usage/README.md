@@ -27,7 +27,9 @@ the decisions behind it see [`docs/adr/`](../adr/).
 - [Providers and credentials](providers.md) — reviewed presets, owner-declared endpoints, and the
   credential ceremony.
 - [Upgrade FinishUP](upgrading.md) — update the package while preserving existing tasks, settings,
-  permissions, host integrations, and compatible bundle data.
+  permissions, host integrations, and compatible bundle data;
+  [upgrading from Yoetz](upgrading.md#upgrading-from-yoetz), FinishUP's former name; and
+  [where your data lives](upgrading.md#where-your-data-lives) when you uninstall.
 - [When your agent's context is compacted](after-compaction.md) — the recap FinishUP adds when a host
   restarts the agent after a compaction, what each line means, and where it appears.
 - [Receipts and coverage](receipts-and-coverage.md) — how to read a receipt and why the wording is

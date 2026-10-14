@@ -49,7 +49,8 @@ crash diagnostics, update checks, and capability testing have separate policies.
 channel never enables another. A separate global network ceiling authorizes nothing by itself.
 `local_only` governs LLM disclosure and may coexist with a separately consented bounded structural
 non-LLM channel. **Package update checks** may contact the allowlisted PyPI JSON endpoint for the
-`finishup` distribution when the durable `update_checks` channel is enabled (product default: on;
+`finishup` distribution (or, for an installation from the transitional `yoetz` distribution, the
+`yoetz` one) when the durable `update_checks` channel is enabled (product default: on;
 opt-out in first-run setup or privacy custom section 5). That path carries only package name/version
 identity — never task or user content — and never auto-upgrades. On a fresh, unconfigured
 installation, pre-policy advisory paths are local/cache-only and network-disabled, so nothing

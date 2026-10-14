@@ -733,7 +733,7 @@ fractional leaf refused the whole line as `json_profile_unsupported`. No structu
 maps is ever a float, and the line's commitment is still taken over its raw bytes.
 
 **2026-09-16 v2 observation cell (`multi_agent_v2=true`, read-only, not a certification).** Source
-`12796f74` (PR #752 head), wheel `finishup-0.2.1`, pinned test instance `df507f`, Codex `0.153.4`,
+`12796f74` (PR #752 head), wheel `yoetz-0.2.1`, pinned test instance `df507f`, Codex `0.153.4`,
 originator `Codex Desktop`. Read from the stopped instance's artifacts after the run:
 
 | Fact | Observed |
@@ -1090,6 +1090,120 @@ descriptor advertises `publish-work-request/1.1.0`, which admits `claim_recorded
 descriptors remain limited to the frozen v1.0 draft union. The CLI command uses the same public
 request and service boundary. Neither Codex hooks nor imported observations synthesize, replace,
 or supersede claims.
+
+## Legacy Yoetz registrations
+
+FinishUP was named Yoetz through 0.2.5 (ADR-048). A Codex home and project connected by Yoetz carry
+the MCP key `yoetz`, the `[marketplaces.yoetz]` and `[plugins."yoetz@yoetz"]` tables, the cache
+`plugins/cache/yoetz/yoetz/<version>`, the project trees `.agents/plugins/yoetz` and
+`.agents/skills/yoetz`, and admission entries under the `yoetz` server name. FinishUP reads all of
+them; it writes only the `finishup` spelling. Owned-but-outdated state keeps working until it is
+migrated: the hooks, start binding and tool classification accept `mcp__yoetz__*` and the `yoetz`
+launcher.
+
+**MCP registration.** Each observation reads the `finishup` key and the legacy `yoetz` key together
+(`codex mcp get finishup --json`, then `codex mcp list --json`). `finishup integrate codex mcp
+status --json` keeps the released `state` values (`yoetz_owned` still means "FinishUP's own") and
+adds `legacy_registration`:
+
+| `legacy_registration` | Meaning | What FinishUP does |
+|---|---|---|
+| `none` | No `yoetz` entry. | Nothing. |
+| `legacy_only` | The only FinishUP-owned entry uses the `yoetz` key: owned but outdated. | Integrate (or the guided connection) migrates it under one preview: it writes `finishup`, re-checks the legacy entry, then removes `yoetz`. Preview warning `legacy_registration_owned`. |
+| `duplicate` | Owned entries under both keys. | Integrate removes the owned `yoetz` entry; remove and disconnect take both. |
+| `foreign` | A `yoetz` entry FinishUP cannot prove is its own. | Reported (warning `legacy_registration_foreign`) and never touched. |
+
+A `yoetz` entry is owned only with proof: a bare `finishup` or `yoetz` launcher, this runtime's
+proven launcher, or this runtime's `yoetz` alias. `<scripts>/yoetz` is FinishUP's when the
+transitional `yoetz` distribution's installed RECORD proves it, digest included; while any `yoetz`
+distribution is installed nothing else proves it, so a modified, symlinked or loosened script is
+foreign. The exact sibling of the proven `finishup` script counts by location alone only when no
+`yoetz` distribution is installed or nothing is at that path. Isolated entries may carry
+`FINISHUP_ISOLATED_ROOT`, `YOETZ_ISOLATED_ROOT`, or both with the same value; new registrations
+write both, a single-name entry re-registers to the both-name form, and two different values are not
+FinishUP's. A migration-only re-registration keeps the existing `policy` or `strict` route
+(`route_profile_before` in the preview). A legacy entry bound into a preview digest uses the tags
+`yoetz.mcp-registration-preview/5` and `yoetz.mcp-unregistration-preview/5`. If the legacy-key
+removal cannot be verified, or the entry changed after preview, the error's safe details carry
+`legacy_state` (`yoetz_owned|foreign_present|absent|unknown`).
+
+**Plugin activation.** The project's Yoetz-era activation (the exact legacy
+`.agents/plugins/marketplace.json`, byte-identical `[marketplaces.yoetz]` and
+`[plugins."yoetz@yoetz"]` tables in the selected Codex home, and the marker-validated
+`plugins/cache/yoetz/yoetz/<version>`) is reported as `legacy_activation` and is replaced in the
+same digest-bound activation preview. As its last step, after the legacy tables, document and cache
+are gone, that activation also deletes a marker-consistent `.agents/plugins/yoetz` tree, and the
+preview digest binds that deletion. The tree is kept whenever any row of the activated repository
+marketplace document is not exactly FinishUP's own row (named `finishup`, source `{"source":
+"local", "path": "./.agents/plugins/finishup"}`), whatever that row's name, source form or path
+spelling, and whenever the activation step is skipped (no `--codex-home`, or a non-interactive
+`--accept` without activation approval). `finishup integrate codex` and plugin install never delete
+it on their own.
+
+Every surface that approves an activation shows these deletions before approval: the interactive
+setup preview and `finishup recommend accept codex-plugin-activation` print the exact legacy tables,
+the plugin cache versions and the plugin source tree line (the recommendation refuses with
+`activation_preview_invalid` when the preview lacks one of them), and the terminal interface's
+connect preview lists them as `~` lines. The guided connection plan (`finishup setup run --host
+codex`) adds the change token `remove_legacy_plugin_sources` when the approval deletes
+`.agents/plugins/yoetz` and `remove_legacy_project_skill` when it deletes an owned
+`.agents/skills/yoetz`, even on a tree-only Yoetz 0.2 install with no legacy registration or
+activation; either keeps the connection from reading as already complete. The removal preview
+(`finishup integrate codex plugin preview --json`) reports the legacy activation it also deactivates
+as `legacy_removed_block`, `legacy_cache_versions` and `legacy_marketplace_json_planned`. A legacy
+table for this project that is not byte-identical is refused as a conflict
+(`legacy_config_marketplace`, `legacy_config_plugin`). Another project's legacy activation,
+unmanaged cache content and a modified legacy tree (`legacy_plugin_tree_retained`) are left alone.
+FinishUP removes the legacy tables and cache directly; it does not run `codex plugin remove
+yoetz@yoetz` or `codex plugin marketplace remove yoetz`, and other Codex-internal state for the
+legacy plugin is not observed. A live check on a real 0.2.x activation is open on #1056.
+
+**Project skill.** Skill install and remove also take a `.agents/skills/yoetz` tree that matches its
+own install marker (preview warning `legacy_skill_tree_owned`; disconnect removes it too, change
+`remove_legacy_project_skill`). Anything else under that name is reported as
+`legacy_skill_tree_retained` and kept.
+
+**Admission.** Grant writes only `[mcp_servers.finishup.tools.check]` or
+`[plugins."finishup@finishup".mcp_servers.finishup.tools.check]`. The exact legacy forms
+`[mcp_servers.yoetz.tools.check]` and `[plugins."yoetz@yoetz".mcp_servers.yoetz.tools.check]` are
+reported as `legacy_entries` and `legacy_grant` (`absent|in_use|stale|unverified`). The external
+form is judged on the legacy MCP key alone. The plugin form reads `stale` only when no Yoetz-era
+plugin activation can be enabled: FinishUP reads the default Codex home's `config.toml` and the
+project's `.codex/config.toml` without running Codex. A `[plugins."yoetz@yoetz"]` table counts as
+an activation when it sets `enabled = true` (what a Yoetz-era activation wrote), or when it holds
+keys other than the `mcp_servers` subtable the plugin-form admission entry implies and does not set
+`enabled = false`; another project's activation counts too. The admission entry alone is not an
+activation, so with no other activation it reads `stale` and a grant retires it. TOML cannot tell an explicit but otherwise
+empty `[plugins."yoetz@yoetz"]` header written next to that admission subtable from the implicit
+table the subtable creates, so that pair also reads as no activation; an explicit empty table on its
+own still counts. If one may be enabled it reads `in_use`; if a config cannot be read, or the
+`yoetz@yoetz` entry is not a table, it reads `unverified` and a grant keeps the table.
+`admission status|preview --json` reports that fact as `route.legacy_plugin_activation` (`true`,
+`false` or `null`; always `null` on other hosts). Revoke and the MCP and plugin removal sweeps
+remove the legacy forms; a grant retires them once nothing FinishUP owns uses the `yoetz` name
+(preview warning `legacy_entries_removed`; otherwise `legacy_entries_retained`), refuses with
+`legacy_registration_active` while Codex still serves FinishUP only under `yoetz` (migrate the
+registration first), and refuses with `host_admission_preview_stale` if the legacy entries change
+between the command's own observation and the preview's. A non-exact legacy table is not FinishUP's
+and stays. These facts come from the default Codex home; a Codex run under another `CODEX_HOME` is
+not observed, and the result fails safe (legacy entries kept, or `unverified`).
+
+**Write scope.** The `.agents/plugins/yoetz` and `.agents/skills/yoetz` trees and `yoetz_receipt.*`
+or `yoetz-export.*` artifacts are still classified as FinishUP's own (`yoetz_owned`, non-counting).
+
+**Manual steps for state FinishUP cannot prove.** FinishUP never removes these; inspect each one and
+remove it yourself only if it is a leftover:
+
+- A `foreign` `yoetz` MCP entry, including one whose absolute launcher points at a runtime that no
+  longer exists (for example a pre-upgrade tool path): `codex mcp remove yoetz`.
+- An owned registration under `yoetz` while the `finishup` key holds a foreign entry: register and
+  remove both refuse with `foreign_entry_present`. Remove or rename the foreign `finishup` entry
+  first, then integrate again.
+- A non-identical legacy table, a modified `.agents/plugins/yoetz` or `.agents/skills/yoetz` tree,
+  or unmanaged content under `plugins/cache/yoetz/`: review and edit or delete it by hand.
+
+Because the observation now always runs `codex mcp list --json` after a successful `get`, a Codex
+build whose list fails reports `harness_unavailable` or `parse_failed` instead of a state.
 
 ## Tool outcomes (issue #910)
 

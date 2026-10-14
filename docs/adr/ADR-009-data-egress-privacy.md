@@ -77,6 +77,19 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    returns `channel_unavailable` without persistence or I/O, and forced enabled state yields a
    pre-dispatch `channel_unavailable` decision receipt with no DNS/socket I/O. Absence of a channel
    is not silently replaced by a generic HTTP client.
+
+   **Amended 2026-10-14 (ADR-048, issue #1055) — the transitional `yoetz` identity.** The
+   allowlist holds exactly two URLs: `https://pypi.org/pypi/finishup/json` and, for an install that
+   came from the deprecated transitional `yoetz` distribution (the `yoetz` distribution is installed
+   at exactly the running version), `https://pypi.org/pypi/yoetz/json`. Such an install upgrades
+   through that same name, so its check asks about that identity and its advisory names
+   `yoetz upgrade`; every other install asks about `finishup`. Each request still carries only that
+   one package identity, under the same channel gate, caps and response use. Each identity has its
+   own cache file in the state directory (`package-update-cache.json` for `yoetz`, which released
+   Yoetz readers also read and treat as a `yoetz` poll, and `package-update-cache-finishup.json`
+   for `finishup`), so each keeps its own 24-hour TTL and makes at most one request per TTL; an
+   entry recording the other identity is never answered from, and an entry with no package member
+   is a pre-rename `yoetz` poll. The second URL leaves the allowlist when the alias is removed.
 3. **Local disclosure sinks:** `local_model`, `agent_context`, `local_human_view`, and
    `trusted_human_control` are not network-egress channels. They receive only policy-approved
    minimized content and are covered by the never-send fence. The trusted human surface may render an

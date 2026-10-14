@@ -121,7 +121,8 @@ The five independent `EgressChannel` values are `llm_inference`, `product_teleme
 `crash_diagnostics`, `update_checks`, and `capability_testing`. Enabling one never enables another.
 The four non-LLM channels accept only their reviewed bounded structural/synthetic schemas and can
 never carry task/user content. **v0.1 ships a production transport for `update_checks` only**
-(allowlisted PyPI JSON GET of the `finishup` distribution version; interactive advisory surfaces
+(allowlisted PyPI JSON GET of the `finishup` distribution version, or of `yoetz` for an installation
+from the transitional `yoetz` distribution, ADR-048; interactive advisory surfaces
 only). The other three non-LLM channels still have no production transport: an attempted use
 terminates before dispatch with outcome `channel_unavailable`, writes a no-dispatch structural
 decision receipt, and makes no DNS or socket attempt.

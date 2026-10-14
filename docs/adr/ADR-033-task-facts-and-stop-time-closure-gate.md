@@ -338,7 +338,7 @@ agent must not be able to stop silently with known work left.
 ## Amendment (2026-10-06): a recorded blocker is re-asked once and checked once
 
 TB4 validation run tb4v1 found a loophole in decision 4. A deterministic agent on
-pretrain-shard-corruption recorded `finishup-blocker:dependency_unavailable` for "no original snapshot
+pretrain-shard-corruption recorded `yoetz-blocker:dependency_unavailable` for "no original snapshot
 found", although the task said the data was recoverable. Any well-formed line was honoured, the
 obligation became the standing `obligation_blocked_outside_agent_control`, and the Stop gate went
 quiet. The owner decided the following, with no prerequisite such as a prior failed attempt:

@@ -180,9 +180,9 @@ uv run python scripts/provision_test_instance.py create \
   --base "$HOME/.yz-instances" --tag obs689 --lifecycle disposable --expires-in 8 \
   --revision 55c81ed1ae6f10878f6c6ea4aaee86bfa3189428
 
-env -u FINISHUP_ISOLATED_ROOT "$HOME/.yz-instances/obs689/runtime/bin/python" \
+env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT "$HOME/.yz-instances/obs689/runtime/bin/python" \
   scripts/benchmark_observation_hooks.py --fanout 8 --retained
-env -u FINISHUP_ISOLATED_ROOT "$HOME/.yz-instances/obs689/runtime/bin/python" \
+env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT "$HOME/.yz-instances/obs689/runtime/bin/python" \
   scripts/benchmark_observation_hooks.py --fanout 8
 ```
 
@@ -273,9 +273,9 @@ To reproduce, with the baseline in a separate clean worktree:
 
 ```text
 BASELINE=/path/to/clean/f0693e93e35e58a6b77f7dee30937e82cdd73963
-PYTHONPATH="$BASELINE/src" env -u FINISHUP_ISOLATED_ROOT uv run python \
+PYTHONPATH="$BASELINE/src" env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT uv run python \
   scripts/benchmark_observation_hooks.py --retained --fanout 16 --drain
-env -u FINISHUP_ISOLATED_ROOT uv run python \
+env -u FINISHUP_ISOLATED_ROOT -u YOETZ_ISOLATED_ROOT uv run python \
   scripts/benchmark_observation_hooks.py --retained --fanout 8 --pending-rows 2000 --drain
 ```
 
