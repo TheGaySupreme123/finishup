@@ -272,9 +272,9 @@ async def test_mcp_refuses_deadline_conflicts_before_reaching_a_service(
     elif operation == "check":
         arguments.update(mode=mode, expected_frontier={"sequence": "0", "head_digest": "genesis"})
     elif operation == "closure_prepare":
-        arguments = {
-            name: arguments[name] for name in ("session_id", "writer_id")
-        } | {"selection": {"phase": "inventory"}}
+        arguments = {name: arguments[name] for name in ("session_id", "writer_id")} | {
+            "selection": {"phase": "inventory"}
+        }
     elif operation == "publish_work":
         # This otherwise reaches the recovery oracle even though its events fail validation.
         arguments.update(events="invalid", dry_run=False)
