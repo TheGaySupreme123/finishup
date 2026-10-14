@@ -45,7 +45,15 @@ What happens, in order:
 2. `uv build --no-sources` produces the wheel into `<base>/<tag>/dist/`; its SHA-256 becomes the
    instance's `package_digest`.
 3. `uv venv` plus `uv pip install <wheel>` creates `<base>/<tag>/runtime/`, a runtime holding
-   only that wheel.
+   only that wheel, installed with `--compile-bytecode` and `SOURCE_DATE_EPOCH` in the install
+   child's environment, so uv writes checked-hash bytecode the retained runtime reuses (the epoch
+   also reaches any build backend uv runs for an sdist dependency in that install, nothing else). Every uv
+   command runs under umask 022 and the script then clears group and other write on the runtime
+   it created (uv may hard-link files from a cache written under a looser umask), so an operator with Ubuntu's umask 0002 gets a runtime Yoetz accepts. Because
+   such files are hard links, clearing their group write also changes the matching files in
+   uv's cache (for example 0664 to 0644); that only tightens the operator's own cache. A
+   previously downloaded uv-managed interpreter that a shared group can write is not changed;
+   the instance's service then names `release_runtime_group_writable` and its repair.
 4. The snapshot's own launcher runs `yoetz instance create --root <base>/<tag>/state --lifecycle
    ... --source-ref <sha> --package-digest <sha256> --bind-runtime`, which creates the root
    (owner-only), seals `state/instance-identity.json`, and writes `yoetz-instance-pin.json` into
@@ -192,10 +200,11 @@ is explicit home, `CODEX_HOME`, `CODEX_TESTING_HOME`, then `~/.codex`. Both home
 to the selected value for each Codex subprocess. Plugin removal still requires an explicit home;
 use it for MCP removal and reconnection too. Do not retarget the process by changing only one
 ambient variable. A foreign home is preserved; use a newly created mode-0700 home for a separate
-installation, and inspect any project marketplace conflict independently. When discovery finds more
-than one Codex executable, provider status stays unread for the agent route and prints a quoted
-continuation with `--codex-path <exact-executable>` and the selected `--codex-home`; pass the same
-selector to every follow-up probe. The continuation retains the invoking launcher and isolation
+installation, and inspect any project marketplace conflict independently. When discovery finds several Codex executables, provider status reads each against the selected
+home. Agreeing registrations are usable; disagreement or failed readings print a quoted
+continuation with `--codex-path <exact-executable>` and the selected `--codex-home`. The configured
+Codex runtime is read first when discoverable, otherwise the newest reported version. Pass the same
+selectors to admission preview and grant and to every follow-up probe. The continuation retains the invoking launcher and isolation
 root. An explicitly missing selector reports the same bounded next action without echoing the path.
 
 A service-dependent approval first probes the selected service without starting it. Known

@@ -1584,8 +1584,9 @@ async def test_unknown_predisclosure_event_prevents_case_bytes_crossing_stdin(
 async def test_linux_missing_bubblewrap_config_warning_fails_before_disclosure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The exact notice Codex 0.157.1 emitted after initialize on Linux x86_64 without a system
-    # bubblewrap on PATH. It stays outside the pre-disclosure allowlist: no case byte crosses.
+    # A notice shaped like Codex 0.157.1's missing-bubblewrap warning but not byte-identical to
+    # the reviewed 0.162.1 text, from an unreviewed release. It stays outside the pre-disclosure
+    # allowlist: no case byte crosses.
     runtime = _Runtime(
         _profile(),
         predisclosure_event={
@@ -2995,7 +2996,7 @@ async def test_readiness_probe_stays_ready_with_only_reviewed_notices(
     )
 
 
-# -- the one admitted configWarning: Codex's Linux sandbox without user namespaces --------------
+# -- the two admitted configWarnings: Codex's Linux sandbox without user namespaces or bwrap ----
 
 # Verbatim ``USER_NAMESPACE_WARNING`` from codex-rs/sandboxing/src/bwrap.rs at rust-v0.162.1, in
 # the exact ``ConfigWarningNotification`` envelope app-server writes (``details`` serialises as
@@ -3008,20 +3009,42 @@ _SANDBOX_UNAVAILABLE_EVENT: dict[str, object] = {
     "params": {"summary": _USER_NAMESPACE_WARNING, "details": None},
     "emittedAtMs": 1791958274243,
 }
+# Verbatim ``MISSING_BWRAP_WARNING`` from the same file, also present byte for byte in the shipped
+# 0.162.1 linux-x64 ``codex`` binary (sha256 628e3548...). app-server writes it, in the same
+# envelope, when no system ``bwrap`` is on PATH (an official task container without the
+# distribution ``bubblewrap`` package).
+_MISSING_BWRAP_WARNING = (
+    "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. "
+    "See the sandbox prerequisites: "
+    "https://developers.openai.com/codex/concepts/sandboxing#prerequisites. "
+    "Codex will use the bundled bubblewrap in the meantime."
+)
+_BWRAP_MISSING_EVENT: dict[str, object] = {
+    "method": "configWarning",
+    "params": {"summary": _MISSING_BWRAP_WARNING, "details": None},
+    "emittedAtMs": 1791958274243,
+}
+# Each admitted warning with the reason Yoetz discloses for it.
+_ADMITTED_SANDBOX_WARNINGS: list[tuple[dict[str, object], str]] = [
+    (_SANDBOX_UNAVAILABLE_EVENT, "user_namespaces_unavailable"),
+    (_BWRAP_MISSING_EVENT, "bubblewrap_missing"),
+]
 # Look-alikes that are different warnings and must stay refused before disclosure.
 _NOT_THE_SANDBOX_WARNING: list[dict[str, object]] = [
     {
         "method": "configWarning",
-        "params": {
-            "summary": (
-                "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS "
-                "package manager. See the sandbox prerequisites: "
-                "https://developers.openai.com/codex/concepts/sandboxing#prerequisites. "
-                "Codex will use the bundled bubblewrap in the meantime."
-            ),
-            "details": None,
-        },
+        "params": {"summary": _MISSING_BWRAP_WARNING, "details": "private-canary"},
     },
+    {
+        "method": "configWarning",
+        "params": {"summary": _MISSING_BWRAP_WARNING + " ", "details": None},
+    },
+    {
+        "method": "configWarning",
+        "params": {"summary": _MISSING_BWRAP_WARNING, "details": None, "range": None},
+    },
+    {"method": "configWarning", "params": {"summary": _MISSING_BWRAP_WARNING}},
+    {"method": "warning", "params": {"message": _MISSING_BWRAP_WARNING, "threadId": "t"}},
     {
         "method": "configWarning",
         "params": {
@@ -3074,14 +3097,15 @@ def test_the_sandbox_warning_is_reviewed_only_for_source_verified_releases() -> 
     assert module.SANDBOX_UNAVAILABLE_REVIEWED_RELEASES == frozenset({"0.162.1"})
 
 
+@pytest.mark.parametrize(("event", "reason"), _ADMITTED_SANDBOX_WARNINGS)
 async def test_capability_probe_admits_the_exact_sandbox_unavailable_warning(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], reason: str
 ) -> None:
     profile = _reviewed_profile()
     lines = await _release_responses(
         profile,
         (0, "initialize"),
-        _SANDBOX_UNAVAILABLE_EVENT,
+        event,
         (1, "account/read"),
         (30, "thread/start"),
         (32, "account/read"),
@@ -3092,6 +3116,7 @@ async def test_capability_probe_admits_the_exact_sandbox_unavailable_warning(
     await module.codex_capability_probe(profile)
 
     assert runtime.sandbox_unavailable is True
+    assert runtime.sandbox_unavailable_reason == reason
     assert all(message.get("method") != "turn/start" for message in stdin.messages)
 
 
@@ -3114,16 +3139,18 @@ async def test_capability_probe_still_refuses_every_other_config_warning(
     with pytest.raises(ValueError, match="codex_app_server_predisclosure_event_forbidden"):
         await module.codex_capability_probe(profile)
     assert runtime.sandbox_unavailable is False
+    assert runtime.sandbox_unavailable_reason is None
 
 
+@pytest.mark.parametrize(("event", "reason"), _ADMITTED_SANDBOX_WARNINGS)
 async def test_readiness_reports_the_unavailable_sandbox_and_stays_ready(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], reason: str
 ) -> None:
     profile = _reviewed_profile()
     lines = await _release_responses(
         profile,
         (0, "initialize"),
-        _SANDBOX_UNAVAILABLE_EVENT,
+        event,
         (1, "account/read"),
         (10, "model/list"),
         (32, "account/read"),
@@ -3138,6 +3165,7 @@ async def test_readiness_reports_the_unavailable_sandbox_and_stays_ready(
         True,
         True,
     )
+    assert status.sandbox_unavailable_reason == reason
 
 
 async def test_readiness_without_the_warning_reports_no_unavailable_sandbox(
@@ -3150,17 +3178,19 @@ async def test_readiness_without_the_warning_reports_no_unavailable_sandbox(
     runtime, _stdin = _stream_runtime(profile, lines)
     _launch_stream(monkeypatch, runtime)
 
-    assert (await module.codex_account_status(profile)).sandbox_unavailable is False
+    status = await module.codex_account_status(profile)
+    assert (status.sandbox_unavailable, status.sandbox_unavailable_reason) == (False, None)
 
 
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
 async def test_an_attempt_discloses_the_case_despite_the_sandbox_unavailable_warning(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], _reason: str
 ) -> None:
     profile = _reviewed_profile()
     lines = await _release_responses(
         profile,
         (0, "initialize"),
-        _SANDBOX_UNAVAILABLE_EVENT,
+        event,
         (1, "account/read"),
         (10, "model/list"),
         (30, "thread/start"),
@@ -3188,14 +3218,15 @@ _UNREVIEWED_RELEASES = ["0.159.0", "1.0.0"]
 
 
 @pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
 async def test_capability_probe_refuses_the_sandbox_warning_from_an_unreviewed_release(
-    monkeypatch: pytest.MonkeyPatch, version: str
+    monkeypatch: pytest.MonkeyPatch, version: str, event: dict[str, object], _reason: str
 ) -> None:
     profile = _reviewed_profile(version)
     lines = await _release_responses(
         profile,
         (0, "initialize"),
-        _SANDBOX_UNAVAILABLE_EVENT,
+        event,
         (1, "account/read"),
         (30, "thread/start"),
         (32, "account/read"),
@@ -3209,14 +3240,15 @@ async def test_capability_probe_refuses_the_sandbox_warning_from_an_unreviewed_r
 
 
 @pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
 async def test_readiness_refuses_the_sandbox_warning_from_an_unreviewed_release(
-    monkeypatch: pytest.MonkeyPatch, version: str
+    monkeypatch: pytest.MonkeyPatch, version: str, event: dict[str, object], _reason: str
 ) -> None:
     profile = _reviewed_profile(version)
     lines = await _release_responses(
         profile,
         (0, "initialize"),
-        _SANDBOX_UNAVAILABLE_EVENT,
+        event,
         (1, "account/read"),
         (10, "model/list"),
         (32, "account/read"),
@@ -3229,14 +3261,15 @@ async def test_readiness_refuses_the_sandbox_warning_from_an_unreviewed_release(
 
 
 @pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
 async def test_an_attempt_on_an_unreviewed_release_never_discloses_after_the_warning(
-    monkeypatch: pytest.MonkeyPatch, version: str
+    monkeypatch: pytest.MonkeyPatch, version: str, event: dict[str, object], _reason: str
 ) -> None:
     profile = _reviewed_profile(version)
     lines = await _release_responses(
         profile,
         (0, "initialize"),
-        _SANDBOX_UNAVAILABLE_EVENT,
+        event,
         (1, "account/read"),
         (10, "model/list"),
         (30, "thread/start"),

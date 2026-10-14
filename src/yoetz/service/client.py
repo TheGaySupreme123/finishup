@@ -78,7 +78,7 @@ from yoetz.ports.privacy import (
     PrivacyReceiptView,
 )
 from yoetz.protocol.canonical import parse_canonical_integer_string
-from yoetz.protocol.errors import SERVICE_HANDSHAKE_PHASES
+from yoetz.protocol.errors import SERVICE_HANDSHAKE_PHASES, SERVICE_START_TIMEOUT_PHASE
 from yoetz.protocol.ids import IdKind, new_id, validate_id, validate_opaque_item_id
 from yoetz.protocol.models import (
     CheckRequest,
@@ -632,6 +632,29 @@ def _unanswered_hello(workspace_locator: WorkspaceLocator | None) -> ControlErro
         phase="handshake_git_version" if git_too_old else "handshake",
         correlation_id=correlation_id,
     )
+
+
+def start_timed_out(error: BaseException) -> bool:
+    """True when a service of this installation was starting but did not answer in budget."""
+
+    return (
+        isinstance(error, ControlError)
+        and error.reason == "service_unavailable"
+        and error.phase == SERVICE_START_TIMEOUT_PHASE
+    )
+
+
+def starting_service_pid() -> int | None:
+    """The pid of a live singleton holder whose lock is held, or None.
+
+    The stamp alone is advisory; the flock corroborates that a service process really holds the
+    singleton (it may still be importing or unlocking before it accepts connections).
+    """
+
+    holder = service_holder_identity()
+    if holder is None or _singleton_holder_lock_is_held() is not True:
+        return None
+    return holder.pid
 
 
 def handshake_failure(error: BaseException) -> str | None:
@@ -1916,4 +1939,11 @@ async def connect_service_on_demand(
             if startup_failure is not None:
                 raise startup_failure from last_error
             spawned = None
+    if (spawned is not None and spawned.process.poll() is None) or starting_service_pid():
+        # A service is alive and holds the singleton but never completed a handshake within the
+        # budget: still starting, not absent. A slow machine or the first start after an install
+        # or update takes longer; naming that keeps callers from a supervisor or restart remedy.
+        raise ControlError(
+            "service_unavailable", retryable=True, phase=SERVICE_START_TIMEOUT_PHASE
+        ) from last_error
     raise ControlError("service_unavailable", retryable=True) from last_error

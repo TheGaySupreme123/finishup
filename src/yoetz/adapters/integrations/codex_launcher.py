@@ -13,6 +13,7 @@ from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
 
 from yoetz import __version__
+from yoetz.config.foreign_write import writable_by_others
 from yoetz.config.installation import (
     InstanceIdentityError,
     read_instance_identity,
@@ -51,7 +52,7 @@ def installed_launcher() -> tuple[str, str] | None:
             return None
         for path in (candidate, *candidate.parents):
             facts = path.lstat()
-            if stat.S_ISLNK(facts.st_mode) or facts.st_mode & 0o022:
+            if stat.S_ISLNK(facts.st_mode) or writable_by_others(facts):
                 return None
             if facts.st_uid not in {0, os.geteuid()}:
                 return None

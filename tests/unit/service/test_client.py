@@ -2132,3 +2132,33 @@ async def test_hook_startup_spawns_after_an_unheld_holder_stamp(
     assert connected is expected
     assert calls == 2
     assert spawned == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("alive", [True, False])
+async def test_on_demand_names_a_service_still_starting_at_the_deadline(
+    monkeypatch: pytest.MonkeyPatch, alive: bool
+) -> None:
+    """WSL: a slow first start outlived the budget and was reported as plainly absent."""
+
+    import yoetz.service.client as client_module
+
+    async def unavailable(_kind: ControlClientKind, **_kwargs: object) -> object:
+        raise ControlError("service_unavailable", retryable=True)
+
+    def spawn() -> object:
+        return client_module._SpawnedService(  # pyright: ignore[reportPrivateUsage]
+            cast(subprocess.Popen[bytes], _ExitedProcess(None if alive else 1)),
+            new_id(IdKind.CORRELATION),
+        )
+
+    monkeypatch.setattr(client_module, "_connect_service_attempt", unavailable)
+    monkeypatch.setattr(client_module, "_spawn_service_process", spawn)
+    monkeypatch.setattr(client_module, "service_holder_identity", lambda: None)
+    monkeypatch.setattr(client_module, "_SERVICE_START_POLL_SECONDS", 0.01)
+    with pytest.raises(ControlError) as raised:
+        await connect_service_on_demand(ControlClientKind.MCP_BRIDGE, timeout_seconds=0.2)
+    assert raised.value.reason == "service_unavailable"
+    assert raised.value.retryable is True
+    assert raised.value.phase == ("handshake_timeout" if alive else None)
+    assert client_module.start_timed_out(raised.value) is alive

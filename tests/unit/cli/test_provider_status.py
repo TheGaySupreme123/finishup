@@ -1291,3 +1291,61 @@ async def test_provider_status_shows_the_same_filter_pair_as_status(
     # A no-grant repository whose composed (installation) policy is off is not told to run the
     # repository `enable`: that would only answer `repository_privacy_grant_missing`.
     assert "Turn it back on here" not in pair["summary"]
+
+
+@pytest.mark.parametrize("bound", [False, True])
+async def test_multiple_codex_versions_read_consistent_registration_in_preferred_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, bound: bool
+) -> None:
+    from yoetz.application.harness_mcp import HarnessMcpService
+    from yoetz.ports.harness_mcp import HarnessBinary, McpRegistrationState
+    from yoetz.ports.integrations import HarnessId
+
+    _install(monkeypatch, tmp_path, provider=_provider())
+    monkeypatch.setattr(module, "mcp_route_observation", _REAL_ROUTE_OBSERVATION)
+    old = tmp_path / "old-codex"
+    new = tmp_path / "new-codex"
+    old.touch()
+    new.touch()
+    binaries = (
+        HarnessBinary(HarnessId.CODEX, str(old), "0.150.1", "untested"),
+        HarnessBinary(HarnessId.CODEX, str(new), "0.159.0", "untested"),
+    )
+    monkeypatch.setattr(
+        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: binaries
+    )
+    monkeypatch.setattr(
+        module, "_configured_runtime_executable", lambda: str(old) if bound else None, raising=False
+    )
+    seen: list[str] = []
+
+    async def observe(_self: object, binary: HarnessBinary) -> Any:
+        seen.append(binary.executable_path)
+        return SimpleNamespace(state=McpRegistrationState.YOETZ_OWNED, route_profile="policy")
+
+    monkeypatch.setattr(HarnessMcpService, "observe", observe)
+    report = await module.provider_status_report(_state=tmp_path, codex_home=tmp_path)
+    route = cast(dict[str, object], report["mcp_route"])
+    assert route["observed"] is True
+    assert route["binary_selection"] == "consistent"
+    assert route["selected_codex_version"] == ("0.150.1" if bound else "0.159.0")
+    assert seen[0] == str(old if bound else new)
+    assert report["agent_route_semantic_ready"] is True
+
+
+async def test_disagreeing_codex_versions_report_selector_and_no_readiness(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _install(
+        monkeypatch,
+        tmp_path,
+        provider=_provider(),
+        mcp_route={**_route("policy"), "binary_selection": "inconsistent"},
+    )
+    report = await module.provider_status_report(_state=tmp_path)
+    assert report["agent_route_semantic_ready"] is False
+    blockers = cast(tuple[dict[str, object], ...], report["blockers"])
+    assert any(
+        row.get("state") == "inconsistent" and "--codex-path" in str(row.get("next_command"))
+        for row in blockers
+    )

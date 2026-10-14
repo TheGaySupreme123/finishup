@@ -2959,11 +2959,23 @@ class DeliverableState:
     # an ambiguous file name (a declared file shares it, or nothing ties it to the file's
     # directory), so the check did not treat them as dependencies. A count, never a name.
     undeclared_reference_ambiguous: int | None = None
+    # Read-compatibility only: intermediate tb4n5 builds (857a712de) recorded this flag, true
+    # beside the references it qualified, before the created-in-task provenance was withdrawn
+    # (38ecb467d). Such payloads still decode and re-encode byte-identically; nothing produces the
+    # flag any more and nothing consults it, so it grants no disclosure.
+    undeclared_references_created_in_task: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
         object.__setattr__(self, "item_index", _bounded_integer(self.item_index, 0, 63))
         if type(self.unreviewable) is not bool:
+            raise ProtocolValueError("invalid_event_value_type")
+        if type(self.undeclared_references_created_in_task) is not bool or (
+            self.undeclared_references_created_in_task
+            and not self.undeclared_references
+            and self.undeclared_reference_count is None
+        ):
+            # As recorded: present only beside the references it qualified.
             raise ProtocolValueError("invalid_event_value_type")
         if self.undeclared_reference_ambiguous is not None:
             object.__setattr__(
@@ -3020,6 +3032,8 @@ class DeliverableState:
             wire["unreviewable"] = True
         if self.undeclared_references:
             wire["undeclared_references"] = self.undeclared_references
+        if self.undeclared_references_created_in_task:
+            wire["undeclared_references_created_in_task"] = True
         for name in (
             "undeclared_reference_count",
             "undeclared_reference_ambiguous",
@@ -3062,6 +3076,7 @@ class DeliverableState:
                     "undeclared_references",
                     "undeclared_reference_count",
                     "undeclared_reference_ambiguous",
+                    "undeclared_references_created_in_task",
                 }
             ),
         )
@@ -3086,11 +3101,15 @@ class DeliverableState:
         basis = _field(source, "basis")
         obligation = _field(source, "obligation_id")
         unreviewable = source.get("unreviewable", False)
+        created_in_task = source.get("undeclared_references_created_in_task", False)
         if (
             type(item_index) is not int
             or type(basis) is not str
             or type(obligation) is not str
             or type(unreviewable) is not bool
+            or type(created_in_task) is not bool
+            # The wire carried the flag only when it was true (``const: true``).
+            or ("undeclared_references_created_in_task" in source and not created_in_task)
         ):
             raise ProtocolValueError("invalid_event_value_type")
         prior_event = text("prior_event_id")
@@ -3119,6 +3138,7 @@ class DeliverableState:
             ),
             undeclared_reference_count=integer("undeclared_reference_count"),
             undeclared_reference_ambiguous=integer("undeclared_reference_ambiguous"),
+            undeclared_references_created_in_task=created_in_task,
         )
 
 

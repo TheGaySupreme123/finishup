@@ -16,6 +16,7 @@ from jsonschema.exceptions import ValidationError
 
 from yoetz import __version__
 from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+from yoetz.config.foreign_write import writable_by_others
 from yoetz.domain.values import RequestId
 from yoetz.domain.values import request_id as validate_request_id
 from yoetz.ports.plugin_artifacts import (
@@ -696,7 +697,7 @@ def _validate_project(target: ArtifactTarget) -> tuple[Path, str]:
         raise _error(PluginArtifactReason.TARGET_UNSAFE) from exc
     if hasattr(os, "geteuid") and facts.st_uid != os.geteuid():
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
-    if facts.st_mode & 0o022:
+    if writable_by_others(facts):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
     return root, canonical_digest(
         {"device": facts.st_dev, "inode": facts.st_ino, "mode": facts.st_mode & 0o777}
@@ -717,7 +718,7 @@ def _plugin_parent(root: Path, *, create: bool) -> Path:
         if candidate.is_symlink() or not candidate.is_dir():
             raise _error(PluginArtifactReason.TARGET_UNSAFE)
         facts = candidate.stat()
-        if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or facts.st_mode & 0o022:
+        if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or writable_by_others(facts):
             raise _error(PluginArtifactReason.TARGET_UNSAFE)
         current = candidate
     return current

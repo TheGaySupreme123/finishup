@@ -223,16 +223,17 @@ _SUBSCRIPTION_REMEDIATIONS: Final[Mapping[str, str]] = {
         "('codex app-server generate-json-schema'); select another Codex installation"
     ),
     "codex_sandbox_unavailable_unreviewed_runtime": (
-        "this Codex release reports that its Linux sandbox cannot create user namespaces here. "
-        "Yoetz accepts that only from Codex releases it has reviewed, and this one is not "
-        "reviewed, so it is not admitted. Install a reviewed release (for example 'npm install "
-        "-g @openai/codex@0.162.1'), or run where unprivileged user namespaces are allowed (not "
-        f"gVisor or a restrictive container seccomp profile), then run {_REPAIR_COMMAND}"
+        "this Codex release reports that its Linux sandbox cannot create user namespaces here, "
+        "or that no system bubblewrap is installed. Yoetz accepts that only from Codex releases "
+        "it has reviewed, and this one is not reviewed, so it is not admitted. Install a "
+        "reviewed release (for example 'npm install -g @openai/codex@0.162.1'), or run where "
+        "bubblewrap is installed and unprivileged user namespaces are allowed (not gVisor or a "
+        f"restrictive container seccomp profile), then run {_REPAIR_COMMAND}"
     ),
     "codex_app_server_predisclosure_event_forbidden": (
-        "the selected Codex sent an event Yoetz does not admit before any review content exists "
-        "(on Linux, usually a missing system bubblewrap); it is not admitted — fix that, then "
-        f"run {_REPAIR_COMMAND}"
+        "the selected Codex sent an event Yoetz does not admit before any review content exists, "
+        "such as an unreviewed configuration or sandbox warning; it is not admitted — fix that, "
+        f"then run {_REPAIR_COMMAND}"
     ),
     "codex_app_server_remote_control_not_disabled": (
         "the selected Codex reported remote control as not disabled before any review content "
@@ -1181,9 +1182,11 @@ def _safe_status(
         "plan_type": status.plan_type,
         "model_available": status.model_available,
         "process_cleanup": status.cleanup,
-        # Codex reported that its Linux sandbox cannot create user namespaces (ADR-006,
-        # 2026-10-14). The evaluator exposes no tool that sandbox would confine.
+        # Codex reported that its Linux sandbox cannot create user namespaces, or that no system
+        # bubblewrap is installed so the sandbox is unverified (ADR-006, 2026-10-14). The
+        # evaluator exposes no tool that sandbox would confine; the reason is disclosed.
         "codex_sandbox_unavailable": status.sandbox_unavailable,
+        "codex_sandbox_unavailable_reason": status.sandbox_unavailable_reason,
         "upstream_body_observability": "unavailable",
     }
 

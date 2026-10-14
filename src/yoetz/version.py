@@ -108,7 +108,10 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # One independently reviewed cardinality tripwire guards the generated resource manifest. All
 # per-kind counts are derived from the manifest entries so adding a resource has exactly one
 # hand-authored count to review and the owning resource-ripple command can regenerate the rest.
-REVIEWED_RESOURCE_COUNT: Final = 306  # -2: the pinned Codex evaluator cells (capability check)
+# 306 + 3: the publish-action-notices canonical vector (was unpackaged), the review-packet-row
+# 2.0.0 provider contract, and its golden-vector case; +1: the advice egress/category-denial
+# canonical vector (#1019).
+REVIEWED_RESOURCE_COUNT: Final = 310
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -159,6 +162,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("receipt-result", "1.3.0"),
     ("respond-request", "1.1.0"),
     ("respond-result", "1.1.0"),
+    ("review-packet-row", "2.0.0"),
     ("review-result", "7.0.0"),
     ("routine-read-summary", "1.0.0"),
     ("runtime-attempt-evidence", "1.1.0"),

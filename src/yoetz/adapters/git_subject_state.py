@@ -18,6 +18,7 @@ from typing import Final, Literal, cast
 
 from yoetz.adapters.git_rev_parse import absolute_rev_parse_path
 from yoetz.adapters.git_version import require_supported_git
+from yoetz.config.foreign_write import writable_by_others
 from yoetz.domain.values import SubjectStateRef
 from yoetz.ports.subject_state import (
     MAX_SUBJECT_STATE_FILES,
@@ -800,7 +801,7 @@ class GitSubjectStateAdapter:
                 except OSError as exc:
                     raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT) from exc
                 expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
-                if facts.st_uid != expected_uid or stat.S_IMODE(facts.st_mode) & 0o022:
+                if facts.st_uid != expected_uid or writable_by_others(facts):
                     raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT)
                 if stat.S_ISLNK(facts.st_mode) or not (
                     stat.S_ISREG(facts.st_mode) or stat.S_ISDIR(facts.st_mode)
@@ -938,11 +939,7 @@ def _open_root_descriptor(root: Path) -> int:
 
 def _verify_root_facts(facts: os.stat_result) -> None:
     expected_uid = os.geteuid() if hasattr(os, "geteuid") else os.getuid()
-    if (
-        not stat.S_ISDIR(facts.st_mode)
-        or facts.st_uid != expected_uid
-        or stat.S_IMODE(facts.st_mode) & 0o022
-    ):
+    if not stat.S_ISDIR(facts.st_mode) or facts.st_uid != expected_uid or writable_by_others(facts):
         raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT)
 
 
@@ -1078,7 +1075,7 @@ def _read_small_mutable(path: Path, limit: int) -> bytearray:
         if (
             not stat.S_ISREG(facts.st_mode)
             or facts.st_uid != expected_uid
-            or stat.S_IMODE(facts.st_mode) & 0o022
+            or writable_by_others(facts)
             or facts.st_nlink != 1
         ):
             raise _CaptureFailure(SubjectStateLimitation.UNSAFE_ROOT)

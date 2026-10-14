@@ -345,9 +345,12 @@ def test_dispose_stops_only_the_holder_of_that_roots_lock(
             "os.write(fd, sys.argv[2].encode())\n"
             # Block SIGTERM before announcing the lock, then wait for it synchronously: a
             # handler plus time.sleep loses a SIGTERM that lands before the sleep starts.
+            # sigwait is POSIX (sigtimedwait is absent on macOS); the alarm's default action
+            # bounds an orphaned holder to 60 seconds.
             "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})\n"
+            "signal.alarm(60)\n"
             "print('held', flush=True)\n"
-            "signal.sigtimedwait({signal.SIGTERM}, 60)\n",
+            "signal.sigwait({signal.SIGTERM})\n",
             str(lock),
             "PLACEHOLDER",
         ],

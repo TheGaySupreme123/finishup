@@ -120,9 +120,12 @@ explicitly pair with it (see
 provider menu, and `/provider` can log out the
 dedicated home first when you choose to switch ChatGPT accounts.
 
-On Linux, Codex's read-only sandbox needs bubblewrap (`bwrap`) and unprivileged user
-namespaces. A container or VM without them fails closed before any case is disclosed. Use an
-environment that provides both and keep the sandbox checks enabled. See the
+On Linux, Codex's read-only sandbox uses bubblewrap (`bwrap`) and unprivileged user
+namespaces. The evaluator runs no commands and writes no files, so with a reviewed Codex release
+(today 0.162.1) a container or VM without them still works. `yoetz provider codex-subscription
+status` then reports `codex_sandbox_unavailable: true` with the reason (`bubblewrap_missing` or
+`user_namespaces_unavailable`). Any other Codex warning, or the same warning from an unreviewed
+release, fails closed before any case is disclosed. See the
 [evaluator runbook](../runbooks/codex-subscription-evaluator.md#linux-authenticated-smoke-evidence-2026-09-13)
 for the current acceptance evidence and remaining release checks.
 
@@ -609,8 +612,13 @@ paired fallback serves explicit checks, never background advice, so a primary th
 pauses background advice even when the fallback could. Otherwise nothing is queued and nothing
 leaves your machine;
 advice shows `advice_semantic_unavailable` instead of `advice_semantic_pending`, and receipts no
-longer say AI-powered advice is pending. Signing in or enabling the channel takes effect on the
-next observation; connecting or disconnecting a provider takes effect when Yoetz restarts its
+longer say AI-powered advice is pending. Background advice also needs a privacy choice that lets
+it run without you previewing each request: with Metadata only, or any policy that asks you to
+preview every request, it is skipped and shows `advice_semantic_preview_required`. Nothing is
+queued, no approval waits for you and nothing is sent; explicit checks still ask you to preview.
+When it does run, background advice sends the approved, minimized advice summary and follows your
+review-context choice (Structural sends no finding summaries). Signing in or enabling the channel
+takes effect on the next observation; connecting or disconnecting a provider takes effect when Yoetz restarts its
 service, which setup does for you. Your coding session keeps running either way.
 
 To turn background advice off, add `semantic_advice_enabled = false` to the existing

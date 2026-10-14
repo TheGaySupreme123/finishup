@@ -100,7 +100,7 @@ source "$HOME/.local/bin/env"
 Then install the latest published Yoetz version:
 
 ```text
-uv tool install --managed-python --python 3.14.6 yoetz
+uv tool install --compile-bytecode --managed-python --python 3.14.6 yoetz
 yoetz version
 ```
 
@@ -112,9 +112,12 @@ extras are aliases the standard install already contains — do not add them.
 Do not worry about which Pythons the machine has. Yoetz needs Python 3.14 and `--managed-python`
 makes `uv` download exactly that interpreter on demand; pyenv, Homebrew, system, and project
 Pythons are neither used nor touched. Never substitute `pip install yoetz`, `pipx`, or a project
-virtual environment: an older Python cannot satisfy the package, and a shared or group-writable
-prefix (Homebrew's `/opt/homebrew`) is refused when Yoetz connects an agent, because the agent
-would then launch a program others can replace. Do not connect an agent from a one-off
+virtual environment: an older Python cannot satisfy the package, and a prefix another account can
+write (Homebrew's `/opt/homebrew`, a shared `venv`) is refused, because the agent would then launch
+a program others can replace. Ubuntu's and Fedora's default umask `0002` is fine: the group it
+leaves writable is the user's own. If the service or MCP reports `release_runtime_group_writable`
+or `release_runtime_world_writable`, show the user the `chmod -R go-w …` line that `yoetz service
+run` prints; it changes permissions on their files, so it is theirs to run. Do not connect an agent from a one-off
 `uvx yoetz` run either; it lives in `uv`'s cache and a later `uv cache clean` would break the
 connection. If the install fails, read the `uv` error: the only two blocking configurations are
 `python-downloads = "never"` and `python-preference = "only-system"` without a 3.14 present, and

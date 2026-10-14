@@ -154,6 +154,7 @@ class HostAdmissionReason(str, Enum):  # noqa: UP042 - exact public token
     ENTRY_UNREADABLE = "entry_unreadable"
     ROUTE_NOT_POLICY = "route_not_policy"
     ROUTE_UNOBSERVED = "route_unobserved"
+    CODEX_BINARY_INCONSISTENT = "codex_binary_inconsistent"
     GRANT_NOT_PERMITTING = "grant_not_permitting"
     GRANT_UNVERIFIABLE = "grant_unverifiable"
     OWNER_REQUIRED = "owner_required"

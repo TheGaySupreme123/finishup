@@ -250,3 +250,26 @@ async def test_cli_prompt_accepting_the_offered_runtime_keeps_newest_first_fallb
     # The preview still shows the runtime that would be bound; setup keeps the fallback.
     assert previewed == [offered, typed]
     assert seen == [None, typed]
+
+
+def test_setup_keeps_only_a_closed_codex_sandbox_reason() -> None:
+    # ADR-006 (2026-10-14): `yoetz setup` keeps why Codex's Linux sandbox is unverified, so a
+    # missing system bubblewrap is disclosed beside `codex_sandbox_unavailable`.
+    from yoetz.cli.setup import _sandbox_unavailable_reason  # pyright: ignore[reportPrivateUsage]
+
+    for reason in ("bubblewrap_missing", "user_namespaces_unavailable"):
+        status = {"codex_sandbox_unavailable": True, "codex_sandbox_unavailable_reason": reason}
+        assert _sandbox_unavailable_reason(status) == reason
+    assert _sandbox_unavailable_reason({"codex_sandbox_unavailable": True}) is None
+    assert (
+        _sandbox_unavailable_reason(
+            {"codex_sandbox_unavailable": False, "codex_sandbox_unavailable_reason": "x"}
+        )
+        is None
+    )
+    assert (
+        _sandbox_unavailable_reason(
+            {"codex_sandbox_unavailable": True, "codex_sandbox_unavailable_reason": "canary"}
+        )
+        is None
+    )

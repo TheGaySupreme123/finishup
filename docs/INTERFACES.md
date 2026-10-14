@@ -3971,6 +3971,16 @@ Network egress additionally requires the exact channel-compatible `ProviderBindi
 NonLlmDestination`; local disclosure names its sink and forbids attempt-only request-body counts.
 Required schema data is never modeled as an optional compatibility default.
 
+Predispatch `EgressReceipt.blocked_categories` contains only actual classifier/category-policy
+denials (#1019). Request-level scope/destination/channel refusal and failure to assemble approved
+context do not by themselves deny any category. `approved_categories` and `counts.approved_items`
+record classification approval, never provider delivery; before classification neither approval
+nor denial is asserted. `safe_failure_reason` independently names the actual failure. Stored older
+receipts preserve their original category accounting. Because the released receipt shape is
+closed, the human rendering of `yoetz privacy receipts get|list` (not `--json`) adds one stderr
+line per network receipt with no `dispatch_id` that still carries approvals: `not sent: privacy
+receipt <receipt_id> (<outcome>) never reached a provider; ...` (#1019 r2).
+
 `EgressReceipt` and `LocalDisclosureReceipt` share one closed outcome/reason compatibility matrix:
 `completed` forbids `safe_failure_reason`; every other outcome requires exactly one reason permitted
 for that outcome. `blocked_by_policy` admits the direct policy/scope/category/purpose/destination
@@ -4347,6 +4357,19 @@ registered in §7. Adapter provenance has no authorization/reservation/receipt I
 published. Final provenance adds exact attempt, dispatch-authority, receipt, commitment, status,
 and reason fields only after the terminal privacy receipt is durable; predispatch gaps use the
 status/reason pair with no provenance.
+
+`review_item_catalog(items)` and `review_envelope_to_candidate_context(envelope, items, ...)`
+(`application.semantic_case`) are the shared catalog/classification projection for explicit checks
+and automatic advice. They offer the structural `review-packet` envelope and only catalogued
+content as separate categorized candidates. `observation_advice_to_candidate_context(attempt, ...,
+review_context_profile, include_finding_prose)` (`application.observation_advice_semantic`)
+validates the frozen advice packet through `validate_semantic_evidence_packet`
+(`application.observation_advice`), keeps rule metadata and gaps structural, and separates
+finding-summary prose. The service passes the effective repository policy's
+`review_context_profile` (named in the envelope) and offers finding-summary prose only when
+`review_selection_for_delivery(policy).include_finding_prose` (never under `structural`). Both producers use
+`assemble_filtered_review_packet` to retain only privacy-approved content. Advice does not invent a
+cooperative ledger frontier, source excerpts, or task-check coverage (#1019, ADR-009).
 
 For `dispatch_kind=external_runtime_oauth`, provenance additionally requires one
 `RuntimeAttemptEvidence` value. It contains only exact runtime/source/executable/protocol/
@@ -4960,7 +4983,27 @@ Shared closed types:
   without both no row
   is written, no provider is contacted, and the snapshot adds `advice_semantic_unavailable` once
   with semantic state `disabled`, never `advice_semantic_pending`; only a completed review of the
-  same identity is still reused. Only a `succeeded` row with validated finding ids adds
+  same identity is still reused. When both pass but the effective repository policy needs a human
+  preview (`semantic_preview_required`, `application.egress`: profile `confirm_every_request`,
+  i.e. the metadata-only recipe, or an LLM channel with `preview_required`), the scheduler's
+  `preview_required` probe skips the same way with the typed addon reason `preview_required`: no
+  row, revisit, provider identity, backoff or disclosure proposal; the snapshot adds
+  `advice_semantic_preview_required` beside `advice_semantic_unavailable` with semantic state
+  `disabled` (gap rule G5b, disclosed). A row queued before such a policy change closes at dispatch
+  as `unavailable` / `authorization_missing` with no provider identity, and `PrivacyCoordinator`
+  refuses an `observation_advice` candidate under such a policy before classification
+  (`blocked_by_policy` / `policy_denied`, no proposal, no category approval) (#1019 r2). It
+  likewise refuses (`scope_mismatch`) an advice candidate whose envelope names a review-context
+  profile other than the effective one, or that offers `finding_summary` prose the effective
+  selection excludes (`advice_selection_is_current`, `application.egress`). The dispatch maps a
+  `SemanticEgressBlocked` result from its typed reason, never from the configured binding
+  (`advice_outcome_for_blocked`, `service.ready_composition`): `outcome_unknown` keeps
+  `failed` / `provider_failed` with the provider identity; `policy_denied`, `scope_mismatch`,
+  `purpose_not_allowed`, `destination_not_allowed`, `channel_unavailable` and
+  `authorization_stale` close `unavailable` / `authorization_missing`; other pre-dispatch refusals
+  stay `failed` / `provider_failed`; none of the proven-unsent ones names a provider, and each links
+  its privacy receipt or proposal id as `attempt_receipt` (#1019 r3). The MCP `status` advice text
+  adds one fixed sentence when the snapshot carries `advice_semantic_preview_required`. Only a `succeeded` row with validated finding ids adds
   `semantic_model_derived`; a succeeded attempt that returned no challenges is an honest receipt and
   no finding.
 
@@ -6384,8 +6427,8 @@ status` body carries `state` and `route_profile`.
 **Host admission port (`adapters/integrations/host_admission.py`, issue #467).** `HostAdmissionState`
 is `absent|present|partial|foreign|unknown`; `HostAdmissionAction` is `grant|revoke|noop`;
 `HostAdmissionReason` is `confirmation_required|preview_stale|foreign_entry_present|
-entry_unreadable|route_not_policy|route_unobserved|grant_not_permitting|grant_unverifiable|
-owner_required|target_unsafe|write_failed|host_invalid`. `observe_host_admission` reads only the
+entry_unreadable|route_not_policy|route_unobserved|codex_binary_inconsistent|grant_not_permitting|
+grant_unverifiable|owner_required|target_unsafe|write_failed|host_invalid`. `observe_host_admission` reads only the
 host's project-scoped surfaces and classifies by exact entry: Claude `mcp__yoetz__check` for an
 external registration or `mcp__plugin_yoetz_yoetz__check` for the plugin-owned route in
 `permissions.allow` (detail `allow`) or `ask` (detail `ask`);
@@ -6483,8 +6526,10 @@ A Codex-subscription endpoint (primary or fallback) adds `review_budgets`. It is
 `{"routine"|"final": {"reasoning_effort", "output_limit", "effort_source"}}`, where
 `effort_source` is `configured` or `legacy_single_effort`. `yoetz provider codex-subscription
 status` (`yoetz.codex-subscription-status/1`) carries the same object, plus
-`codex_sandbox_unavailable` (`true` when Codex reported, through the one admitted
-`configWarning`, that its Linux sandbox cannot create user namespaces; ADR-006, 2026-10-14).
+`codex_sandbox_unavailable` (`true` when Codex reported, through one of the two admitted
+`configWarning`s, that its Linux sandbox cannot create user namespaces or that no system
+bubblewrap is installed; ADR-006, 2026-10-14) and `codex_sandbox_unavailable_reason`
+(`user_namespaces_unavailable|bubblewrap_missing|null`).
 `repository_grant_state` and `repository_migration_state` expose the separate repository-authority
 inputs without inventing another readiness verdict. `agent_route_semantic_ready` is
 `semantic_ready` **and** one exclusive observed owner (`external|plugin`) with
@@ -6496,10 +6541,16 @@ legacy external-registration fields `registration_state`, `registered_profile`, 
 `external_registration|plugin_managed|dual|foreign|null`; `ownership_state` uses
 `McpOwnershipState`. `observed: false` means exclusive ownership was not read unambiguously, not
 that none is registered. `registered_profile: null` with `observed: true` means the observed state
-has no single Yoetz route (`absent|dual|foreign`). A host with multiple discovered Codex
-executables is left unobserved until the caller selects one with `--codex-path`; `provider status`
-reports the closed `codex_binary_selection` blocker and a quoted continuation retaining the
-invoking launcher, isolation root and inspected Codex home. An explicitly unresolved
+has no single Yoetz route (`absent|dual|foreign`). For multiple discovered Codex executables, `binary_selection: consistent` reports agreeing
+registration readings against one selected home. Read order prefers the configured Codex runtime
+when discoverable, otherwise the newest reported version; `selected_codex_version` names its
+version without a path. This does not attest the executable a host session launched. Disagreement
+or a failed reading reports `binary_selection: inconsistent`, blocks agent readiness and admission
+grants (refused as `host_admission_codex_binary_inconsistent`), and offers an explicit selector. If no executable can read the registration, selection is
+`multiple`. `provider status` reports the closed `codex_binary_selection` blocker and a quoted
+continuation retaining the invoking launcher, isolation root and inspected Codex home. Codex
+admission commands accept `--codex-path` and `--codex-home` too; their path-free next commands
+retain selector placeholders, and the caller must repeat the exact selected values. An explicitly unresolved
 `--codex-path` uses the `not_found` state of that blocker. No arbitrary executable is chosen for a
 readiness claim.
 A strict registered route adds a `mcp_route_profile` blocker
@@ -8646,7 +8697,7 @@ current `change-section-NNN` section of each path it changed, cut from the froze
 (`kernel.test_edit_visibility.check_change_sections`). Span keys use the source's own length, and a
 head-and-tail clip contributes two intervals. A follow-up case marks the excerpts that supply the
 request (`SemanticCase.follow_up_supplied_item_ids`, in its digest); the packet row carries
-`follow_up_supplied: true` and the provider-bound `missing_inputs` say `supplied` only through such
+`follow_up_supplied: true` (governed by `privacy/review-packet-row-2.0.0.schema.json`; absence is compatible) and the provider-bound `missing_inputs` say `supplied` only through such
 a row admission kept. The dispatch gate counts only rows the bounded envelope's catalog keeps
 (`bounded_catalog_item_ids`). The planner's `section_parts` (`current_section_parts`, carried as the
 evaluation's in-process `case_current_section_parts`) asks for a current section only while that
@@ -9515,7 +9566,7 @@ Before and after each call the root pathname and its `.git` must still `lstat` t
 inode recorded from the validated descriptor (`unsafe_root` otherwise).
 `_refuse_unsafe_object_store` requires `.git/objects`, `objects/info` and `objects/pack` to be real
 directories of the service user and each fan-out directory a real directory, and every
-pack-directory entry a regular file of the service user, not group- or world-writable (any link
+pack-directory entry a regular file of the service user that no other account can write (ADR-007, 2026-10-14: group write through the owner's private group is owner-only; any link
 count; a link or a foreign-owned or writable entry is `unsafe_root`, more than 4096 entries
 `unsupported_repository`); `objects/info/alternates` and `objects/info/http-alternates` are
 `unsafe_root`, as the ADR-011 open fence already makes static alternates, and `.git/commondir` is
@@ -9924,7 +9975,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   character, no leading `/`, no empty, `.` or `..` segment; the only path text the check records)
   with `undeclared_reference_count` when more were found than are named, and since tb4n5
   `undeclared_reference_ambiguous`, how many created files it names only ambiguously, never
-  which); absent when the check read no declared output file. Status
+  which; `undeclared_references_created_in_task` (`const true`) is read-compatibility only for
+  payloads intermediate tb4n5 builds wrote before that provenance was withdrawn: it decodes and
+  re-encodes byte-identically, no build produces it, and nothing consults it); absent when the
+  check read no declared output file. Status
   `closure_readiness.undeclared_references` (optional on the unreleased status-result 1.4.0, at
   most 16 rows `{obligation_id, item_index, paths, total}`,
   `closure_readiness.current_undeclared_references` over the applicable check) carries them; each
@@ -10095,3 +10149,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `_RESULT_OUTCOME_HINT` (closed outcome set, no `blocked`, the blocker line) to the MCP error text.
 - **Scope.** The requested-output read runs only in `check`; status candidate findings and semantic
   assessment matching call `work_integrity_findings(case)` without `absent_outputs`.
+
+A follow-up provider manifest changes a composed `supplied` request with no carried supplying
+refs to `unavailable` when all of its composed supply refs are privacy-withheld. Packet-room
+admission cuts remain `pending`. The dispatched `follow_up_round` is retained in either case,
+and no withheld content is credited as supplied. This shared manifest reaches CLI, MCP, TUI
+and all receipt renderings without a host-specific projection.

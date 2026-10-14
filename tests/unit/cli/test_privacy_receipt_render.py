@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import replace
 from datetime import datetime
 from typing import Any, cast
 
@@ -36,9 +37,10 @@ from yoetz.cli.app import (
     _privacy_receipts_get,  # pyright: ignore[reportPrivateUsage]
     _privacy_receipts_list,  # pyright: ignore[reportPrivateUsage]
 )
+from yoetz.domain.privacy import ConsentSource, PrivacyOutcome, PrivacyReason, ReceiptCounts
 from yoetz.domain.values import JsonObject, freeze_json
 from yoetz.ports.control import ControlError
-from yoetz.ports.privacy import PrivacyReceiptPage, PrivacyReceiptView
+from yoetz.ports.privacy import NetworkEgressReceiptView, PrivacyReceiptPage, PrivacyReceiptView
 from yoetz.protocol.canonical import JsonValue
 from yoetz.service.client import (
     PrivacyReceiptGetResult,
@@ -372,3 +374,68 @@ def test_the_menu_shares_the_one_converter() -> None:
     from yoetz.cli import menu
 
     assert menu._plain(NOW) == _EXPECTED_TIMESTAMP  # pyright: ignore[reportPrivateUsage]
+
+
+def _refused_network_view() -> PrivacyReceiptView:
+    """A predispatch refusal whose classification still approved a category (#1019)."""
+
+    view = network_receipt_view()
+    assert isinstance(view, NetworkEgressReceiptView)
+    receipt = replace(
+        view.receipt,
+        schema_version="1.1.0",
+        outcome=PrivacyOutcome.BLOCKED_BY_POLICY,
+        consent_source=ConsentSource.NONE,
+        counts=ReceiptCounts(4, 0, 4, 4, 0, 900, 0, None, None),
+        safe_failure_reason=PrivacyReason.INSUFFICIENT_APPROVED_CONTEXT,
+        authorization_id=None,
+        dispatch_id=None,
+        dispatch_started_at=None,
+        request_commitment=None,
+    )
+    return NetworkEgressReceiptView("network_egress", receipt)
+
+
+def _terminal_streams(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[str]]:
+    out_lines: list[str] = []
+    err_lines: list[str] = []
+
+    def echo(message: object = "", *, err: bool = False, **_kwargs: object) -> None:
+        (err_lines if err else out_lines).append(str(message))
+
+    monkeypatch.setattr(sys, "stdout", _TtyStdout(sys.stdout))
+    monkeypatch.setattr(typer, "echo", echo)
+    return out_lines, err_lines
+
+
+@pytest.mark.parametrize("command", ["get", "list"])
+async def test_refused_receipt_labels_classification_approvals_as_not_sent(
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    view = _refused_network_view()
+    out, err = _terminal_streams(monkeypatch)
+    if command == "get":
+        _install(monkeypatch, _Client(_decoded_get(view)))
+        assert await _privacy_receipts_get(NETWORK_RECEIPT_ID, False) == 0
+    else:
+        _install(monkeypatch, _Client(_decoded_page(view, local_receipt_view())))
+        assert await _privacy_receipts_list(50, None, False) == 0
+    assert '"approved_categories":["bounded_structural_metadata"]' in out[0]
+    assert err == [
+        f"not sent: privacy receipt {NETWORK_RECEIPT_ID} (blocked_by_policy) never reached a "
+        "provider; its approved_categories and counts.approved_items are classification "
+        "results, not data sent"
+    ]
+
+
+async def test_dispatched_and_json_receipts_carry_no_not_sent_label(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _out, err = _terminal_streams(monkeypatch)
+    _install(monkeypatch, _Client(_decoded_page(network_receipt_view())))
+    assert await _privacy_receipts_list(50, None, False) == 0
+    _install(monkeypatch, _Client(_decoded_get(_refused_network_view())))
+    _captured_json(monkeypatch)
+    assert await _privacy_receipts_get(NETWORK_RECEIPT_ID, True) == 0
+    assert err == []

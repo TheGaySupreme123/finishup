@@ -507,3 +507,121 @@ def test_runtime_io_phase_excludes_source_exception_text(
     assert captured.out == ""
     assert f"{phase}_permission_denied" in captured.err
     assert "PRIVATE" not in captured.err
+
+
+def _refuse_foreign_write(monkeypatch: pytest.MonkeyPatch, token: str) -> None:
+    from yoetz.adapters import release_runtime
+
+    def refuse(_arguments: list[str]) -> None:
+        raise release_runtime.ReleaseRuntimeError(token, area="environment")
+
+    monkeypatch.setattr(release_runtime, "enter_release_runtime", refuse)
+
+
+@pytest.mark.parametrize(
+    "argv", [["service", "run"], ["mcp", "serve"], ["upgrade"]], ids=["service", "mcp", "upgrade"]
+)
+@pytest.mark.parametrize(
+    "token", ["release_runtime_group_writable", "release_runtime_world_writable"]
+)
+def test_foreign_writable_runtime_names_its_token_and_exact_repair(
+    argv: list[str],
+    token: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    import shlex
+
+    prefix = tmp_path / "tools" / "yoetz"
+    base = tmp_path / "python" / "cpython-3.14.6"
+    (prefix / "bin").mkdir(parents=True)
+    (base / "bin").mkdir(parents=True)
+    (base / "bin/python3.14").write_bytes(b"")
+    (prefix / "bin/python").symlink_to(base / "bin/python3.14")
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    _refuse_foreign_write(monkeypatch, token)
+    monkeypatch.setattr(sys, "argv", ["yoetz", *argv])
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 20
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith(f"{token}: ")
+    assert "could not be verified" not in captured.err
+    repair = shlex.join(["chmod", "-R", "go-w", str(prefix.resolve()), str(base.resolve())])
+    assert f"  {repair}\n" in captured.err
+    assert "umask 022" in captured.err
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["hooks", "observe", "--event", "PreToolUse"],
+        ["hooks", "claude-observe", "--event", "Stop"],
+        ["hooks", "cursor-observe", "--event", "preToolUse"],
+    ],
+    ids=["codex", "claude", "cursor"],
+)
+def test_foreign_writable_runtime_hook_names_token_without_paths_or_decision(
+    argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "PRIVATE_PREFIX"))
+    _refuse_foreign_write(monkeypatch, "release_runtime_group_writable")
+    monkeypatch.setattr(sys, "argv", ["yoetz", *argv])
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    # Same non-blocking exit as every runtime refusal: never 2 (a block) and no allow on stdout.
+    assert error.value.code == 20
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("release_runtime_group_writable: ")
+    assert "PRIVATE_PREFIX" not in captured.err
+    assert "yoetz service run" in captured.err
+
+
+def test_spawned_service_records_the_refusal_for_the_client_that_started_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from yoetz.protocol.ids import IdKind, new_id
+    from yoetz.service import startup_failure
+
+    recorded: list[tuple[str, str | None, str | None]] = []
+
+    def record(
+        _exc: BaseException,
+        *,
+        stage: str,
+        correlation_id: str | None = None,
+        reason_code: str | None = None,
+        unexpected: bool = False,
+    ) -> object:
+        recorded.append((stage, correlation_id, reason_code))
+        return None
+
+    monkeypatch.setattr(startup_failure, "record_startup_failure", record)
+    correlation_id = new_id(IdKind.CORRELATION)
+    _refuse_foreign_write(monkeypatch, "release_runtime_group_writable")
+    monkeypatch.setattr(
+        sys, "argv", ["yoetz", "service", "run", "--startup-correlation-id", correlation_id]
+    )
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 20
+    assert recorded == [("import", correlation_id, "release_runtime_group_writable")]
+    assert capsys.readouterr().err.startswith("release_runtime_group_writable: ")
+
+
+def test_startup_failure_line_carries_the_runtime_token() -> None:
+    from yoetz.service.startup_failure import StartupFailure
+
+    failure = StartupFailure(
+        stage="import",
+        reason="exception_unknown",
+        correlation_id="err_00000000-0000-4000-8000-000000000001",
+        reason_code="release_runtime_group_writable",
+    )
+    assert "release_runtime_group_writable" in failure.describe()

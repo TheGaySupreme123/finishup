@@ -16,6 +16,8 @@ from typing import Final, Literal, cast
 
 from platformdirs import PlatformDirs
 
+from yoetz.config.foreign_write import writable_by_others
+
 __all__ = [
     "ISOLATED_ROOT_ENV",
     "RUNTIME_PIN_NAME",
@@ -226,7 +228,7 @@ def read_runtime_pin(*, _probe: _PathProbe | None = None) -> RuntimePin | None:
     if (
         not stat.S_ISREG(facts.st_mode)
         or (hasattr(facts, "st_uid") and facts.st_uid != probe.effective_uid)
-        or stat.S_IMODE(facts.st_mode) & 0o022
+        or writable_by_others(facts)
         or facts.st_size > _MAX_RUNTIME_PIN_BYTES
     ):
         raise PathSafetyError("runtime_pin_invalid")

@@ -6,6 +6,21 @@ reverse-chronological released versions.
 
 ## Unreleased
 
+- **Behaviour change:** background AI-powered advice now actually sends the approved, minimized
+  advice packet to your configured reviewer when external review is configured and your privacy
+  policy allows unattended requests (#1019). The background switch was already on by default, but
+  an invalid review envelope meant nothing was sent before. Set
+  `observation.semantic_advice_enabled = false` to stop background sends on every host.
+- Background advice is skipped under policies that require you to preview each request (the
+  Metadata only recipe, or `preview_required` on the AI-powered review channel). It shows
+  `advice_semantic_preview_required`; nothing is queued or sent, no approval waits for you, and no
+  provider attempt or retry backoff is recorded. Explicit checks keep their preview. The advice
+  packet follows your review-context choice (a choice changed while a review waits is applied, never
+  the stale one), a policy change that lands mid-request is recorded as not sent rather than as a
+  provider failure, the MCP status advice text names the preview skip, and
+  `yoetz privacy receipts get|list` now marks refused receipts whose category approvals were never
+  sent (#1019).
+
 ### Fixed
 
 - One Codex home, Claude Code configuration or Cursor configuration now serves several projects
@@ -40,6 +55,18 @@ reverse-chronological released versions.
   configuration uses it, lists those projects, and says when it could not check them all.
   `setup disconnect --remove-shared` removes the pieces shared by every connected project.
 
+- The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
+  in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find
+  bubblewrap on PATH" warning is admitted the same way as its user-namespace warning: the reviewer
+  runs no commands and writes no files, so the sandbox confines nothing there. The fact is
+  disclosed, not hidden. `status`, `setup` and `repair` report `codex_sandbox_unavailable: true`
+  with the new `codex_sandbox_unavailable_reason` (`bubblewrap_missing` or
+  `user_namespaces_unavailable`), and the terminal interface says the evaluator runs without
+  Codex's verified Linux sandbox. Only reviewed Codex releases are admitted; others are refused
+  as `codex_sandbox_unavailable_unreviewed_runtime`. Every other warning, including Codex's WSL1
+  one, still stops setup. Approved network-denied checks still need a usable `bwrap`.
+  Receipts do not carry this fact yet.
+
 - MCP input schemas now target 4,800 bytes per tool so Codex does not apply its size-triggered
   schema rewrite. Required fields, enums and event envelopes stay inline; full payload examples
   and variant rules are available through `read_guidance` in request templates. Claude Code and
@@ -49,6 +76,17 @@ reverse-chronological released versions.
   and serves the minimal form instead of failing startup. CI still rejects oversized schemas.
 
 ### Added
+
+- Codex stream parsing defers ledger mapping imports until needed, reducing cold hook startup
+  work while preserving public import names, parser profiles and wire bytes.
+
+- Provider packet supply markers now have a packaged row schema and golden vectors. A follow-up
+  round whose requested excerpts are entirely withheld reports them unavailable with empty
+  supply refs; room cuts still report pending. The dispatch remains counted.
+
+- Codex admission commands accept `--codex-path` and `--codex-home`. Multiple installed versions
+  can read an agreeing registration without manual selection; disagreement has an explicit
+  continuation and cannot grant admission; the refusal is `host_admission_codex_binary_inconsistent`.
 
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap
@@ -470,6 +508,37 @@ reverse-chronological released versions.
   budget without dropping any rule.
 
 ### Fixed
+
+- Automatic AI-powered observation advice can now reach the configured reviewer through the
+  approved review-packet envelope on Codex, Claude Code and Cursor. Scoped gaps and rule metadata
+  are retained; finding summaries travel only when their category is approved. Malformed or denied
+  advice stays blocked. Privacy receipts now distinguish actual category denials from request or
+  packet-assembly failures, while older receipts remain readable (#1019, ADR-009).
+
+- Hooks, the agent connection (MCP) and the service start as fast as an ordinary run again. They
+  run from a sealed copy of the installation that held no compiled bytecode, so every start
+  compiled the whole package (12 s against 6 s on WSL, 0.9 s against 0.5 s on macOS) and slow
+  machines missed the service handshake. The copy now ships bytecode, reusing the installation's
+  own checked-hash bytecode when its source hash matches and compiling the rest once (timestamp
+  bytecode is never reused); an older copy is rebuilt on the next start. The documented install,
+  `npx yoetz` and `yoetz upgrade --accept` add `--compile-bytecode`, and `npx yoetz` and the
+  upgrade set `SOURCE_DATE_EPOCH` for uv so that bytecode is checked-hash. A service that is
+  still starting when a command gives up is reported as `service_handshake_timeout` (retry)
+  instead of telling you to run it under a supervisor (ADR-007).
+
+- Yoetz runs for normal accounts on Ubuntu, Debian, Fedora and RHEL. Their default umask `0002`
+  makes every installed file writable by the account's own private group, and with the retained
+  release runtime the service, the agent connection (MCP) and every hook refused to start on
+  Codex, Claude Code and Cursor with only "The retained runtime could not be verified". The same rule refused such
+  users' repositories (`unsafe_root`), Codex launchers and host settings folders
+  (`target_unsafe`). Group write now counts as owner-only when the local account files prove the
+  group is the owner's own private group with no other member (machines whose accounts come
+  from a directory service such as LDAP or SSSD still need `umask 022`); world write, or group write through a group someone else
+  is in, is still refused, now as `release_runtime_group_writable` or
+  `release_runtime_world_writable` with the exact `chmod -R go-w …` repair on `yoetz service run`,
+  `yoetz mcp serve` and `yoetz upgrade`, on `yoetz service status` and other commands that find
+  no service, and in `yoetz setup`; hooks name the token without local paths and still make no
+  decision. `yoetz upgrade --accept` and `npx yoetz` install under umask `022` (ADR-007).
 
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `yoetz-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so
