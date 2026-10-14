@@ -223,11 +223,11 @@ _SUBSCRIPTION_REMEDIATIONS: Final[Mapping[str, str]] = {
         "('codex app-server generate-json-schema'); select another Codex installation"
     ),
     "codex_sandbox_unavailable_unreviewed_runtime": (
-        "this Codex release reports that its Linux sandbox cannot create user namespaces, and "
-        "Yoetz has reviewed that it confines nothing in reviews only for specific releases; it "
-        "is not admitted. Install a reviewed release (for example 'npm install -g "
-        "@openai/codex@0.162.1') or enable unprivileged user namespaces on this host (outside "
-        f"gVisor or restrictive container seccomp), then run {_REPAIR_COMMAND}"
+        "this Codex release reports that its Linux sandbox cannot create user namespaces here. "
+        "Yoetz accepts that only from Codex releases it has reviewed, and this one is not "
+        "reviewed, so it is not admitted. Install a reviewed release (for example 'npm install "
+        "-g @openai/codex@0.162.1'), or run where unprivileged user namespaces are allowed (not "
+        f"gVisor or a restrictive container seccomp profile), then run {_REPAIR_COMMAND}"
     ),
     "codex_app_server_predisclosure_event_forbidden": (
         "the selected Codex sent an event Yoetz does not admit before any review content exists "
