@@ -184,6 +184,18 @@ a different network namespace, and could not connect to a live listener in the p
 This bounded check passed; it does not establish every distribution or native host integration,
 and no Linux sandbox capability cell is claimed from it.
 
+## Codex evaluator without a system bubblewrap
+
+The Codex-subscription evaluator is a different consumer from approved checks. With a
+source-reviewed Codex release (today `0.162.1`), it admits Codex's exact missing-bubblewrap and
+no-user-namespace warnings (ADR-006, 2026-10-14). It runs no commands and writes no files, so
+there is nothing for the sandbox to confine. Without a system `bwrap`, setup and repair still
+pass. `yoetz provider codex-subscription status --json` reports
+`codex_sandbox_unavailable: true` and `codex_sandbox_unavailable_reason: bubblewrap_missing`,
+and the terminal interface says the evaluator runs without Codex's verified Linux sandbox. On WSL 2
+the same applies. WSL 1 is unsupported, and Codex's WSL1 warning stays refused. Installing the
+`bubblewrap` package is still what approved network-denied checks need (above).
+
 ## System credential store
 
 The vault-root key may live only in an approved keyring backend. Auto-unlock accepts a wider set,

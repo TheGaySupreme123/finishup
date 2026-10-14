@@ -1355,6 +1355,32 @@ async def test_setup_reports_codex_sandbox_unavailable_without_refusing(
 
     assert result["runtime_version"] == "0.162.1"
     assert result["codex_sandbox_unavailable"] is True
+    assert result["codex_sandbox_unavailable_reason"] is None
+    assert len(written) == 1
+
+
+@pytest.mark.anyio
+async def test_setup_discloses_a_missing_system_bubblewrap_without_refusing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _three_releases(monkeypatch, {})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+
+    async def probe(_profile: object) -> CodexRuntimeStatus:
+        return CodexRuntimeStatus(
+            True, "chatgpt", "pro", True, "terminated", True, "bubblewrap_missing"
+        )
+
+    monkeypatch.setattr(module, "codex_account_status", probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert result["runtime_version"] == "0.162.1"
+    assert result["codex_sandbox_unavailable"] is True
+    assert result["codex_sandbox_unavailable_reason"] == "bubblewrap_missing"
     assert len(written) == 1
 
 
@@ -1392,6 +1418,23 @@ def test_the_terminal_interface_names_an_unavailable_codex_sandbox_in_plain_word
     (line,) = codex_sandbox_lines({"codex_sandbox_unavailable": True})
     assert line.startswith("Codex sandbox: unavailable here")
     assert "reviews are unaffected" in line
+    (line,) = codex_sandbox_lines(
+        {
+            "codex_sandbox_unavailable": True,
+            "codex_sandbox_unavailable_reason": "bubblewrap_missing",
+        }
+    )
+    # Honest disclosure: the evaluator ran without a system bubblewrap, so Codex's Linux sandbox
+    # was not verified; the reason the review is still unaffected follows.
+    assert line.startswith("Codex sandbox: no system bubblewrap here")
+    assert "without Codex's verified Linux sandbox" in line
+    assert "reviews are unaffected" in line
+
+
+def test_the_predisclosure_refusal_no_longer_blames_a_missing_bubblewrap() -> None:
+    text = module.subscription_remediation("codex_app_server_predisclosure_event_forbidden") or ""
+    assert "missing system bubblewrap" not in text
+    assert "repair" in text
 
 
 @pytest.mark.anyio

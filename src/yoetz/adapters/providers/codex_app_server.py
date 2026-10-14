@@ -336,22 +336,38 @@ _PREDISCLOSURE_NOTIFICATION_METHODS: Final = frozenset(
         "warning",
     }
 )
-# The one native configuration warning admitted before disclosure (ADR-006, 2026-10-14): Codex
-# 0.162.1 on Linux reports, verbatim, that its bubblewrap sandbox cannot create user namespaces
-# (``codex-rs/sandboxing/src/bwrap.rs`` ``USER_NAMESPACE_WARNING``; Docker's default seccomp,
-# gVisor, and kernels without unprivileged user namespaces). The evaluator's isolated config
-# exposes no tool that bubblewrap would confine: ``features.shell_tool=false`` removes command
-# execution, ``read-only`` with ``approval_policy=never`` rejects every patch before it runs, and
-# no MCP server, plugin, app or agent is enabled. The warning therefore widens nothing a review
-# can do; it is admitted only with this exact closed shape and recorded as
-# ``codex_sandbox_unavailable``. Every other ``configWarning`` stays forbidden.
+# The two native configuration warnings admitted before disclosure (ADR-006, 2026-10-14). Codex
+# 0.162.1 on Linux writes at most one of them at app-server start
+# (``codex-rs/sandboxing/src/bwrap.rs`` ``system_bwrap_warning_for_path``):
+# - ``USER_NAMESPACE_WARNING``: a system bubblewrap exists but cannot create user namespaces
+#   (Docker's default seccomp, gVisor, kernels without unprivileged user namespaces);
+# - ``MISSING_BWRAP_WARNING``: no system ``bwrap`` is on ``PATH`` (an official task container
+#   without the distribution ``bubblewrap`` package). Codex then falls back to its bundled
+#   bubblewrap, whose namespace access it does not probe, so its Linux sandbox is unverified.
+# The evaluator's isolated config exposes no tool that bubblewrap would confine:
+# ``features.shell_tool=false`` removes command execution, ``read-only`` with
+# ``approval_policy=never`` rejects every patch before it runs, and no MCP server, plugin, app or
+# agent is enabled. Either warning therefore widens nothing a review can do; each is admitted only
+# with this exact closed shape and recorded as ``codex_sandbox_unavailable`` with its reason. Every
+# other ``configWarning`` (including the WSL1 one) stays forbidden.
+SandboxUnavailableReason = Literal["user_namespaces_unavailable", "bubblewrap_missing"]
 _SANDBOX_UNAVAILABLE_SUMMARY: Final = (
     "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
 )
+_MISSING_BWRAP_SUMMARY: Final = (
+    "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. "
+    "See the sandbox prerequisites: "
+    "https://developers.openai.com/codex/concepts/sandboxing#prerequisites. "
+    "Codex will use the bundled bubblewrap in the meantime."
+)
+_SANDBOX_WARNING_REASONS: Final[Mapping[str, SandboxUnavailableReason]] = {
+    _SANDBOX_UNAVAILABLE_SUMMARY: "user_namespaces_unavailable",
+    _MISSING_BWRAP_SUMMARY: "bubblewrap_missing",
+}
 # That reasoning was verified against one release's source; no app-server method exposes the
 # effective tool registry or patch-approval semantics without a model call, so it cannot be proven
 # at runtime. The admission is therefore bound to the releases whose source was reviewed (the
-# release ``initialize`` proved). Any other release sending the same warning fails closed with
+# release ``initialize`` proved). Any other release sending either warning fails closed with
 # ``codex_sandbox_unavailable_unreviewed_runtime``; selection then falls back to an older
 # reviewed release when one is installed. Extend this set only after re-reviewing the source.
 SANDBOX_UNAVAILABLE_REVIEWED_RELEASES: Final = frozenset({"0.162.1"})
@@ -399,9 +415,11 @@ class CodexRuntimeStatus:
     plan_type: str | None
     model_available: bool
     cleanup: Literal["not_started", "terminated", "killed", "failed"]
-    # Codex reported (only through the admitted closed warning) that its Linux sandbox cannot
-    # create user namespaces. It confines no evaluator tool; it is surfaced, not refused.
+    # Codex reported (only through an admitted closed warning) that its Linux sandbox cannot
+    # create user namespaces, or that no system bubblewrap is installed so the sandbox is
+    # unverified. It confines no evaluator tool; it is surfaced with its reason, not refused.
     sandbox_unavailable: bool = False
+    sandbox_unavailable_reason: SandboxUnavailableReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -721,6 +739,7 @@ class _CodexProcess:
     stderr_task: asyncio.Task[bool]
     pending_notifications: deque[Mapping[str, object]]
     sandbox_unavailable: bool = False
+    sandbox_unavailable_reason: SandboxUnavailableReason | None = None
 
     async def send(self, value: Mapping[str, object]) -> None:
         stdin = self.process.stdin
@@ -748,8 +767,10 @@ class _CodexProcess:
         except ProtocolValueError, ValueError:
             # A malformed JSONL envelope is transport failure, not a malformed final answer.
             raise ValueError("codex_app_server_message_invalid") from None
-        if _is_sandbox_unavailable_warning(message):
+        reason = _sandbox_warning_reason(message)
+        if reason is not None:
             self.sandbox_unavailable = True
+            self.sandbox_unavailable_reason = reason
         return message
 
     async def request(
@@ -1143,6 +1164,7 @@ async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeSt
         model_available=model_available,
         cleanup=cleanup,
         sandbox_unavailable=_sandbox_unavailable(runtime),
+        sandbox_unavailable_reason=_sandbox_unavailable_reason(runtime),
     )
 
 
@@ -1258,7 +1280,7 @@ def _validate_predisclosure_notification(
     elif method == "warning":
         raise _runtime_warning(message)
     elif method == "configWarning":
-        if not _is_sandbox_unavailable_warning(message):
+        if _sandbox_warning_reason(message) is None:
             raise ValueError(invalid_token)
         if runtime_version not in SANDBOX_UNAVAILABLE_REVIEWED_RELEASES:
             raise ValueError("codex_sandbox_unavailable_unreviewed_runtime")
@@ -1271,30 +1293,31 @@ def _validate_predisclosure_notification(
     return False
 
 
-def _is_sandbox_unavailable_warning(message: Mapping[str, object]) -> bool:
-    """Whether ``message`` is exactly Codex's reviewed user-namespace sandbox warning.
+def _sandbox_warning_reason(message: Mapping[str, object]) -> SandboxUnavailableReason | None:
+    """The reason when ``message`` is exactly one of Codex's reviewed sandbox warnings.
 
-    The wire shape is closed: ``{"method": "configWarning", "params": {"summary": <the exact
-    reviewed text>, "details": null}}`` with an optional integer ``emittedAtMs``. Codex carries no
-    structured warning code, so the summary must equal the reviewed constant byte for byte; any
+    The wire shape is closed: ``{"method": "configWarning", "params": {"summary": <one reviewed
+    text>, "details": null}}`` with an optional integer ``emittedAtMs``. Codex carries no
+    structured warning code, so the summary must equal a reviewed constant byte for byte; any
     other summary, detail, path or range is a different warning and is not admitted.
     """
 
     if message.get("method") != "configWarning":
-        return False
+        return None
     if set(message) not in ({"method", "params"}, {"method", "params", "emittedAtMs"}):
-        return False
+        return None
     if "emittedAtMs" in message and type(message["emittedAtMs"]) is not int:
-        return False
+        return None
     params = message.get("params")
     if type(params) is not dict:
-        return False
+        return None
     fields = cast(dict[str, object], params)
-    return (
-        set(fields) == {"summary", "details"}
-        and fields["details"] is None
-        and fields["summary"] == _SANDBOX_UNAVAILABLE_SUMMARY
-    )
+    if set(fields) != {"summary", "details"} or fields["details"] is not None:
+        return None
+    summary = fields["summary"]
+    if type(summary) is not str:
+        return None
+    return _SANDBOX_WARNING_REASONS.get(summary)
 
 
 def _login_notification(
@@ -1535,6 +1558,7 @@ async def codex_login(
         model_available=model_available,
         cleanup=cleanup,
         sandbox_unavailable=_sandbox_unavailable(runtime),
+        sandbox_unavailable_reason=_sandbox_unavailable_reason(runtime),
     )
 
 
@@ -1555,12 +1579,29 @@ async def codex_logout(profile: CodexAppServerProfile) -> CodexRuntimeStatus:
     finally:
         cleanup = await _cleanup_guaranteed(runtime)
     return CodexRuntimeStatus(
-        runtime_ready, None, None, False, cleanup, _sandbox_unavailable(runtime)
+        runtime_ready,
+        None,
+        None,
+        False,
+        cleanup,
+        _sandbox_unavailable(runtime),
+        _sandbox_unavailable_reason(runtime),
     )
 
 
 def _sandbox_unavailable(runtime: _CodexProcess | None) -> bool:
     return runtime is not None and getattr(runtime, "sandbox_unavailable", False) is True
+
+
+def _sandbox_unavailable_reason(runtime: _CodexProcess | None) -> SandboxUnavailableReason | None:
+    if runtime is None:
+        return None
+    reason = getattr(runtime, "sandbox_unavailable_reason", None)
+    if reason == "user_namespaces_unavailable":
+        return "user_namespaces_unavailable"
+    if reason == "bubblewrap_missing":
+        return "bubblewrap_missing"
+    return None
 
 
 def _validate_thread(
