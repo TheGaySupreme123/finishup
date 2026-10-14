@@ -2114,10 +2114,10 @@ WSL 2 is not recorded for this change.
 
 ### Receipt privacy ceiling (N5)
 
-Supported through the shared service projection: receipt JSON prose and markdown/text require
-both ordinary-category and repository-excerpt disclosure. A denied excerpt reads
-`(receipt prose withheld: repository_excerpt)` with exact omitted pointers and structural coverage.
-`full_local` is not an agent grant. MCP status/closure summaries never quote unprojected stored
-receipt prose, and Stop continues to use the existing privacy-projected status/count/code path.
-The same rule covers agent-facing CLI and UI results; an attached human terminal keeps full local
-detail. It applies on macOS, Linux and Windows through WSL 2 without a host-specific grant.
+Shared service projection, no host-specific path. Agent receipts (the MCP `receipt` tool,
+`yoetz receipt --json` or redirected output) keep normal prose, titles, codes and counts; only undeclared
+repository names the policy withholds become `(receipt prose withheld: repository_excerpt)`, and an
+exact name the requesting writer published itself returns. Large omission lists coalesce to
+containing fields instead of failing. Human-rendered `yoetz receipt` on the foreground terminal and
+the terminal interface are the owner's full view. Verified by in-process tests on macOS; Linux and
+Windows through WSL 2 run the same service code but were not exercised for this change.

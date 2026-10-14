@@ -412,11 +412,13 @@ reverse-chronological released versions.
 
 ### Fixed
 
-- Agent-facing receipts now apply the repository-excerpt ceiling to all receipt prose, including
-  `full_local` JSON, markdown and text. Withheld prose uses a stable token and exact omitted field
-  pointers while structural coverage remains available. The owner’s local full receipt keeps its
-  detail, and earlier stored receipts follow the same rule when reread. Finding/obligation prose
-  classifications and alternate client renderings cannot bypass this privacy decision.
+- A receipt your agent reads no longer shows the names of repository files your privacy policy
+  keeps from agents, even when the agent asks for a full local profile, in JSON, markdown and text.
+  Only the name is replaced with `(receipt prose withheld: repository_excerpt)`; the rest of the
+  receipt stays readable, and a name the agent published itself returns to it. `yoetz receipt` in
+  your terminal and the terminal interface still show you the full receipt. A receipt with many
+  withheld names still renders: past its bound the omitted-field list names the containing
+  sections. Older receipts follow the same rule when read again.
 
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `yoetz-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so

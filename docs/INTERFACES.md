@@ -10013,26 +10013,38 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
 
 ### Receipt prose and the agent-context ceiling (N5 privacy, 2026-10-14)
 
-Receipt prose delivered to `agent_context` requires both its ordinary content category and
-`repository_excerpt` approval. This applies to every receipt profile (`full_local` included),
-JSON document prose, and the complete markdown/text rendering. Prose has no durable source-level
-proof that it contains only the ordinary category, so the ceiling covers all prose, rather than
-matching known file names. If the excerpt decision withholds it, each prose leaf reads
-`(receipt prose withheld: repository_excerpt)` and `privacy_projection.omitted_pointers` identifies
-the actual leaf. Structural conclusion, counts, IDs, frontiers and coverage/gap codes remain.
-A denied ordinary prose category keeps its existing omission behavior; JSON fails closed when
-that denial would require an object marker inside the receipt document. The digest and object ID
-identify the unchanged stored owner receipt, not the projected presentation. Earlier stored
-receipts pass through the same current gate when reread; no event or receipt migration is needed.
-An attached controlling-terminal human view retains the full local detail. No format, redaction
-profile, host, CLI redirection, or UI client grants an agent access to that human view.
+Receipt prose is Yoetz-authored and keeps its ordinary category policy in an `agent_context`
+projection: section titles, sentences, codes, counts, IDs and coverage remain readable. The one
+thing it can carry that the excerpt ceiling covers is a repository file name the check found and no
+participant published (an undeclared-reference name, ADR-035), which a `full_local` receipt spells.
+Each such name span is offered as its own `repository_excerpt` candidate. Unless the policy grants
+repository excerpts, or the requesting writer published that exact name in this session through an
+accepted, unredacted cooperative publication, only the span becomes
+`(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the quoted
+path the receipt prints, the bare path when it has a directory, or a basename with an extension; a
+plain word such as `Summary` never matches. The rule applies to JSON, markdown and text and to every
+profile, `full_local` included: a format or profile is not a disclosure grant.
 
-The shared `Application.project_result_for_client` offers each receipt prose string twice, under
-`repository_excerpt`, and its fixed fallback under the ordinary leaf classification, with opaque
-independent candidate pointers. Either category can withhold it; only the excerpt item may carry
-original prose into the authorized sink payload. Excerpt omissions map back to real response pointers and
-use the fixed string above, keeping the existing receipt document schema valid. Other method results
-keep their existing classifications. MCP receipt/status/closure summaries use structural fields,
-never raw stored receipt prose; CLI and TUI use the service-projected result. Codex, Claude Code and
-Cursor share this boundary. Hook Stop text derives counts/codes and projects undeclared paths through
-its existing status gate; it never bypasses the gate by rendering the stored full receipt.
+`privacy_projection.omitted_pointers` names each affected result field. Past the 512-pointer wire
+bound the list coalesces deterministically to containing fields, so a large receipt still renders;
+the local disclosure audit keeps one decision per name and field
+(`<field pointer>/@repository_name/<name index>`). The digest and object ID identify the unchanged
+stored owner receipt. An earlier stored receipt meets the same rule when reread, with name
+provenance read at the current ledger head, so redacting the publication that spelled a name
+withdraws it. A denied ordinary prose category keeps its existing omission behavior; JSON still
+fails closed when that denial would need an object marker inside the receipt document.
+
+The owner's own views are `local_human_view` and show the full receipt for the requested profile:
+human-rendered `yoetz receipt` whose output is the foreground controlling terminal, and the
+interactive terminal interface. `yoetz receipt --json`, redirected or non-terminal output, MCP
+tools and hooks stay `agent_context`. The terminal test is the existing local-terminal presentation
+fact, not proof that a human is reading.
+
+The shared `Application.project_result_for_client` builds the name spans in
+`application/receipt_projection.py`: names come from every check recorded through the receipt's
+subject frontier, and authorship from `published_name_authorship` keyed once per distinct name at
+`/receipt_repository_names/<index>` (at most 128). The ordinary-category candidate for a field
+carries its prose with every name span already withheld, so a denied name never enters the
+authorized sink payload under another category. Other result methods keep their classifications.
+Codex, Claude Code and Cursor share this service boundary; MCP summaries and the Stop gate use
+projected fields and structural counts.

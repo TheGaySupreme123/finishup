@@ -319,21 +319,9 @@ status/reason, and material coverage gaps. Finding counts follow that scope stat
 with a bare “no findings”, “zero actionable findings”, “clean”, or “verified” claim: an empty finding
 set is meaningful only within the evidence and review scope that actually ran.
 
-Agent-context receipts require repository-excerpt approval for every prose string in addition to
-its ordinary finding-summary or obligation-text category. This covers JSON, markdown and text,
-including `full_local`. Receipt prose can quote repository content, and its category is not an
-excerpt grant. When excerpts are withheld, prose reads
-`(receipt prose withheld: repository_excerpt)`; `privacy_projection.omitted_pointers` names each
-withheld field. Structural conclusions, counts, IDs, frontiers and coverage/gap codes remain.
-`json` carries a schema-valid projected `document`; `markdown` and `text` carry the projected
-`human_text`. Neither is the byte-identical stored receipt: the digest and object ID identify the
-owner's unchanged local document. Older stored receipts follow the current gate when reread.
+Default agent-context policy can project verification output (findings, obligations, receipt sections) so `json`, `markdown`, and `text` receipts work for the requesting agent. `json` carries the structured receipt in `document`. `markdown` and `text` keep `document` null by format and project those same sections in `human_text` (bodies, items, coverage notes, limitations, finding counts, and coverage-limitation findings that do not by themselves select `unresolved_findings_remain`). If that projection exceeds the wire bound, `human_text` carries an explicit truncation marker. Under a deliberately stricter owner policy, digest-bound `json` may fail closed with `PRIVACY_AUTHORITY_REQUIRED` (`receipt_json_projection_blocked`); re-request `markdown` or `text`, or widen agent-context policy from a local terminal. The durable receipt is still recorded when projection is blocked. If a human format cannot project the sections, the result names the omission rather than returning `document: null` with no pointer and only a compact count.
 
-A policy that denies an ordinary JSON document prose category still fails closed with
-`PRIVACY_AUTHORITY_REQUIRED` (`receipt_json_projection_blocked`); re-request markdown/text for
-an explicit omission, or inspect the full receipt from an attached local human terminal. The
-durable receipt is recorded even when projection is blocked. Changing a format or redaction
-profile never grants agent disclosure. Do not request policy widening merely to make prose visible.
+A repository file name that the check found and you did not publish (an undeclared reference) stays under the repository-excerpt ceiling in every format and profile, `full_local` included: only the name reads `(receipt prose withheld: repository_excerpt)`, the rest of the receipt stays readable, and a name you published yourself in this session returns. `privacy_projection.omitted_pointers` names the affected fields (containing fields past its bound). To declare such a file, list what your change created with your own shell rather than requesting a wider policy.
 
 ## Receipt fields and wording
 

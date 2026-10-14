@@ -297,16 +297,29 @@ verified before any release that advertises them.
 
 ## Receipt prose delivered to agents
 
-Receipt prose delivered to `agent_context` requires both its ordinary content category and
-`repository_excerpt` approval. This applies to every receipt profile (`full_local` included),
-JSON document prose, and the complete markdown/text rendering. Prose has no durable source-level
-proof that it contains only the ordinary category, so the ceiling covers all prose, rather than
-matching known file names. If the excerpt decision withholds it, each prose leaf reads
-`(receipt prose withheld: repository_excerpt)` and `privacy_projection.omitted_pointers` identifies
-the actual leaf. Structural conclusion, counts, IDs, frontiers and coverage/gap codes remain.
-A denied ordinary prose category keeps its existing omission behavior; JSON fails closed when
-that denial would require an object marker inside the receipt document. The digest and object ID
-identify the unchanged stored owner receipt, not the projected presentation. Earlier stored
-receipts pass through the same current gate when reread; no event or receipt migration is needed.
-An attached controlling-terminal human view retains the full local detail. No format, redaction
-profile, host, CLI redirection, or UI client grants an agent access to that human view.
+Receipt prose is Yoetz-authored and keeps its ordinary category policy in an `agent_context`
+projection: section titles, sentences, codes, counts, IDs and coverage remain readable. The one
+thing it can carry that the excerpt ceiling covers is a repository file name the check found and no
+participant published (an undeclared-reference name, ADR-035), which a `full_local` receipt spells.
+Each such name span is offered as its own `repository_excerpt` candidate. Unless the policy grants
+repository excerpts, or the requesting writer published that exact name in this session through an
+accepted, unredacted cooperative publication, only the span becomes
+`(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the quoted
+path the receipt prints, the bare path when it has a directory, or a basename with an extension; a
+plain word such as `Summary` never matches. The rule applies to JSON, markdown and text and to every
+profile, `full_local` included: a format or profile is not a disclosure grant.
+
+`privacy_projection.omitted_pointers` names each affected result field. Past the 512-pointer wire
+bound the list coalesces deterministically to containing fields, so a large receipt still renders;
+the local disclosure audit keeps one decision per name and field
+(`<field pointer>/@repository_name/<name index>`). The digest and object ID identify the unchanged
+stored owner receipt. An earlier stored receipt meets the same rule when reread, with name
+provenance read at the current ledger head, so redacting the publication that spelled a name
+withdraws it. A denied ordinary prose category keeps its existing omission behavior; JSON still
+fails closed when that denial would need an object marker inside the receipt document.
+
+The owner's own views are `local_human_view` and show the full receipt for the requested profile:
+human-rendered `yoetz receipt` whose output is the foreground controlling terminal, and the
+interactive terminal interface. `yoetz receipt --json`, redirected or non-terminal output, MCP
+tools and hooks stay `agent_context`. The terminal test is the existing local-terminal presentation
+fact, not proof that a human is reading.

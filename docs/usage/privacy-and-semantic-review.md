@@ -562,13 +562,15 @@ background result remains cancelled and retains available attempt and provider p
 
 ## Receipt text your agent can read
 
-Your agent's receipt follows your privacy policy in JSON, markdown and text. Receipt prose can
-quote repository content, so it needs permission for repository excerpts as well as for finding or
-obligation text. If your policy withholds excerpts, the prose reads
-`(receipt prose withheld: repository_excerpt)`. The structured conclusion, coverage limits,
-counts, gap codes and receipt identity remain available. The list of omitted fields tells your
-agent what was withheld. This is also true for a full local receipt requested by an agent.
+Your agent reads its receipts in JSON, markdown and text under your privacy policy. Normal receipt
+prose, section titles, counts and coverage codes stay readable. When a receipt names a repository
+file that your policy keeps from agents (for example a file the check found but no participant
+published), only that name becomes `(receipt prose withheld: repository_excerpt)`; the rest of the
+sentence stays. A name your agent published itself in the same session returns to it. The list of
+omitted fields tells your agent where something was withheld; for a very large receipt it names the
+containing sections. Asking for a full local profile or another format does not give your agent
+more access. Older receipts follow the same rule when read again.
 
-Your full receipt keeps its detail locally. Read it in an attached local terminal to inspect it;
-requesting another format or a full local profile does not grant your agent more access. Older
-receipts follow the current privacy policy when read again.
+Your own views show the full receipt for the profile you choose: run `yoetz receipt` in your
+terminal, or open the receipt in the terminal interface. Output that is redirected, piped or
+requested with `--json` is treated like your agent's view, because another program may read it.
