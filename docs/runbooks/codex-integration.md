@@ -1000,7 +1000,13 @@ neither path reintroduces the rows. The shared host-spelling advice guard suppre
 recommendation delivery on a Yoetz-owned hook without an explicit failure; no hook delivers a
 frontier-motion notice at all (issue #915). Explicit
 self-call failures stay retained, enqueued, and eligible for pending advice. Ordinary tools are
-unchanged. To confirm closure converged,
+unchanged. The rollout's completed `McpToolCall` item (`event_msg`/`item_completed`) is read in the
+`PostToolUse` phase for this policy (tb4 n5): before, it had no phase, so every successful `status`
+read reached the ledger as action, result and evidence (about twelve events per read on the S
+arm) and changed the very task the agent was polling. A Yoetz read item is also never held for its
+hook post, and one an earlier build held is settled locally when released, never delivered. A
+failed Yoetz item (`error`, `isError`, or a non-success `status`), Yoetz writes and other servers'
+items are delivered as before. To confirm closure converged,
 run `yoetz observe drain --workspace . --json` after the agent stops and require
 `terminal: drained` with `pending_after: 0`; `retry_pending` names the retryable head cause in
 `reasons` (a check barrier's `operation_pending` clears when the check completes), and

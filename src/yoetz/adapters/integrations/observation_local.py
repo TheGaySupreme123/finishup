@@ -404,6 +404,12 @@ def self_observation_deliverable(phase: str, structural: Mapping[str, JsonValue]
     - the post-event of a Yoetz-owned *mutation* (``start``, ``publish_work``,
       ``check``, ``respond``): deliverable, one row per call.
 
+    Yoetz-owned means a host spelling in ``YOETZ_OWNED_TOOL_NAMES``. Cursor's
+    server-less ``MCP:<tool>`` is ambiguous and stays deliverable unless the Cursor
+    adapter proves the call was Yoetz's own read (the bridge's served-read record),
+    in which case it passes the server-scoped spelling. A Codex rollout's completed
+    ``McpToolCall`` item is read in the ``PostToolUse`` phase by its caller (tb4 n5).
+
     The envelope is always ingested into the bounded local store first; this
     governs only outbox delivery, so nothing is dropped from local evidence.
     """

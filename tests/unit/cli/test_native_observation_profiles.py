@@ -1110,3 +1110,130 @@ def test_unknown_runtime_authority_never_extracts_native_content(
     assert "content_capture_unavailable" in pending[0].gap_codes
     assert "content_unselected" not in pending[0].gap_codes
     assert pending[0].content_object_refs == ()
+
+
+_YOETZ_ARGS: dict[str, JsonValue] = {
+    "request_id": "req_7d1e5c2a-3b4f-4a6e-9c8d-1f2e3a4b5c6d",
+    "session_id": "ses_1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b",
+    "writer_id": "wri_2c3d4e5f-6071-4829-9bac-1d2e3f4a5b6c",
+    "view": "obligations",
+}
+
+
+def _cursor_ordinary_emit(
+    tmp_path: Path,
+    event: str,
+    call_id: str,
+    tool_name: str,
+    tool_input: Mapping[str, JsonValue],
+    output: JsonValue,
+) -> None:
+    payload: dict[str, JsonValue] = {
+        "hook_event_name": event,
+        "session_id": "cursor-n5-ordinary",
+        "conversation_id": "cursor-n5-conversation",
+        "tool_name": tool_name,
+        "tool_use_id": call_id,
+        "tool_input": JsonObject(tool_input),
+    }
+    if event != "preToolUse":
+        payload["tool_output"] = output
+    assert (
+        observe_hooks.handle_cursor_observe(
+            event_name=event,
+            stdin_bytes=canonical_encode(payload),
+            stdout=io.BytesIO(),
+            workspace=str(tmp_path),
+            _state=tmp_path / "state",
+            skip_service=True,
+            observation_profile=CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
+        )
+        == 0
+    )
+
+
+def _cursor_delivered(tmp_path: Path, commitment: str) -> set[tuple[str, object, object]]:
+    store = LocalObservationStore(_state=tmp_path / "state")
+    return {
+        (
+            row.envelope.event_kind,
+            row.envelope.structural_payload.get("tool_name"),
+            row.envelope.structural_payload.get("tool_call_id"),
+        )
+        for row in store.list_pending_outbox_rows(commitment)
+        if row.envelope.event_kind in {"PreToolUse", "PostToolUse"}
+    }
+
+
+def test_cursor_ordinary_foreign_status_tool_is_still_delivered(tmp_path: Path) -> None:
+    """tb4 n5 round 2: ``MCP:status`` names no server; another server's ``status`` is evidence."""
+
+    store = LocalObservationStore(_state=tmp_path / "state")
+    commitment = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(commitment)
+    unhealthy = (
+        '{"content":[{"type":"text","text":"Cluster is unhealthy: 3 pods failing readiness'
+        ' checks"}],"isError":false}'
+    )
+    _cursor_ordinary_emit(
+        tmp_path, "preToolUse", "cur-foreign", "MCP:status", {"cluster": "prod"}, None
+    )
+    _cursor_ordinary_emit(
+        tmp_path, "postToolUse", "cur-foreign", "MCP:status", {"cluster": "prod"}, unhealthy
+    )
+    delivered = _cursor_delivered(tmp_path, commitment)
+    assert {kind for kind, _tool, _call in delivered} == {"PreToolUse", "PostToolUse"}
+
+
+def test_cursor_ordinary_yoetz_status_read_proven_by_the_bridge_stays_local(tmp_path: Path) -> None:
+    """tb4 n5: a served Yoetz read is not appended to the ledger it read; nothing else changes."""
+
+    from yoetz.adapters.integrations import yoetz_call_rejections as rejections
+
+    store = LocalObservationStore(_state=tmp_path / "state")
+    commitment = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(commitment)
+    # The bridge records serving the read before returning its result to Cursor.
+    assert rejections.record_served_yoetz_read("status", _YOETZ_ARGS, state_root=tmp_path / "state")
+    ok = '{"content":[],"isError":false}'
+    for call, tool, args in (
+        ("cur-yoetz-status", "MCP:status", _YOETZ_ARGS),
+        ("cur-yoetz-publish", "MCP:publish_work", _YOETZ_ARGS),
+        (
+            "cur-other-status",
+            "MCP:status",
+            {**_YOETZ_ARGS, "request_id": "req_00000000-0000-4000-8000-0000000000ff"},
+        ),
+    ):
+        _cursor_ordinary_emit(tmp_path, "preToolUse", call, tool, args, None)
+        _cursor_ordinary_emit(tmp_path, "postToolUse", call, tool, args, ok)
+    delivered = _cursor_delivered(tmp_path, commitment)
+    # The proven read's post stays local; its pre cannot be proven yet and is delivered as before.
+    assert ("PostToolUse", "MCP:status", "cur-yoetz-status") not in delivered
+    assert ("PreToolUse", "MCP:status", "cur-yoetz-status") in delivered
+    # A write, and a read the bridge never served, are delivered as before.
+    assert ("PostToolUse", "MCP:publish_work", "cur-yoetz-publish") in delivered
+    assert ("PostToolUse", "MCP:status", "cur-other-status") in delivered
+    local = {e.structural_payload.get("tool_call_id") for e in store.list_envelopes(commitment)}
+    assert "cur-yoetz-status" in local
+
+
+def test_cursor_served_read_record_suppresses_at_most_one_post_event(tmp_path: Path) -> None:
+    """tb4 n5 round 3: a retained record must not suppress a later foreign call's evidence.
+
+    After one genuine Yoetz read, a later foreign ``MCP:status`` that reuses the same request
+    scope (another call id, another host session) is delivered: a served read is claimed once.
+    """
+
+    from yoetz.adapters.integrations import yoetz_call_rejections as rejections
+
+    store = LocalObservationStore(_state=tmp_path / "state")
+    commitment = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(commitment)
+    assert rejections.record_served_yoetz_read("status", _YOETZ_ARGS, state_root=tmp_path / "state")
+    ok = '{"content":[],"isError":false}'
+    _cursor_ordinary_emit(tmp_path, "postToolUse", "cur-genuine", "MCP:status", _YOETZ_ARGS, ok)
+    _cursor_ordinary_emit(tmp_path, "postToolUse", "cur-replay", "MCP:status", _YOETZ_ARGS, ok)
+    delivered = _cursor_delivered(tmp_path, commitment)
+    assert ("PostToolUse", "MCP:status", "cur-genuine") not in delivered
+    assert ("PostToolUse", "MCP:status", "cur-replay") in delivered

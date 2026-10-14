@@ -1184,7 +1184,20 @@ is repaired by restarting a service that already reports ready.
 not enqueued for delivery, while `start`, `publish_work`, `check`, and `respond` enqueue one row
 each. Cursor's hook payload states no outcome fact for MCP executions, so a failed Yoetz call is
 indistinguishable from a successful one at this ingress; the service's own record of the call is
-the authority on its outcome. The shared advice guard recognizes both Cursor server spellings, so
+the authority on its outcome. On the ordinary-work profile Cursor's generic `preToolUse` and
+`postToolUse` spell every MCP call `MCP:<tool>` without a server, so the name alone cannot tell
+Yoetz's `status` from another server's `status`, whose result is real evidence (tb4 n5 round 2).
+Yoetz's MCP bridge on the Cursor profile therefore records a commitment to each read it served
+successfully (`status`, `receipt`, `read_guidance`, `closure_prepare`: tool, Yoetz session and
+writer, `request_id`; owner-only `observation/yoetz-served-reads.json`, newest 256) before it
+returns the result. A `postToolUse` whose own `tool_input` matches a recorded read is Yoetz's and
+stays local; the match claims the record, so it suppresses at most one post-event, and a record
+older than 120 s proves nothing (a later call reusing the same request scope, in any session, is
+delivered); every other `MCP:<tool>` event, including every `preToolUse` (the read is not served
+yet) and every write, is delivered as before. Gap: a Yoetz read's `preToolUse` still reaches the
+ledger on this profile (one row per read instead of two plus a result); owner: tb4 n5 follow-up.
+The
+shared advice guard recognizes both Cursor server spellings, so
 a self-owned hook without an explicit failure does not lease pending frontier or recommendation
 context for the call being observed; explicit failures remain eligible for pending advice.
 This does not change local retention or explicit failure delivery. Cursor reports

@@ -5685,8 +5685,9 @@ def test_session_start_auto_attaches_maps_and_drains_for_every_host(
     assert "no ledger task is mapped yet" not in rendered
     assert "after guidance reads and tool/schema discovery" in rendered
     assert "before substantive material work" in rendered
-    assert rendered.index("call start with mode=attach") < rendered.index("Then call status")
-    assert "Then call status with the returned session/writer ids" in rendered
+    assert rendered.index("call start with mode=attach") < rendered.index("Then read status")
+    assert "Then read status with the returned session/writer ids" in rendered
+    assert "do not reread status between ordinary steps" in rendered
     assert "same-request recovery first" in rendered
     assert "ask the user for intro and guidance" in rendered
     diagnostics_path = tmp_path / "observation/hook-diagnostics.jsonl"

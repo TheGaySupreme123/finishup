@@ -31,7 +31,10 @@ from yoetz.adapters.integrations.cursor_project_mcp import (
     CursorProjectMcpRegistrationSnapshot,
     inspect_project_mcp_registration,
 )
-from yoetz.adapters.integrations.yoetz_call_rejections import record_rejected_yoetz_call
+from yoetz.adapters.integrations.yoetz_call_rejections import (
+    record_rejected_yoetz_call,
+    record_served_yoetz_read,
+)
 from yoetz.adapters.mcp_stdio import MAX_JSON_FRAME_BYTES, bounded_stdio_server
 from yoetz.adapters.workspace_binding import (
     MAX_WORKSPACE_LOCATOR_BYTES,
@@ -81,6 +84,11 @@ from yoetz.mcp.resources import (
 from yoetz.mcp.semantic_destination import (
     SemanticDestinationDisclosure,
     read_semantic_destination_disclosure,
+)
+from yoetz.mcp.status_streak import (
+    STATUS_STREAK_NUDGE_THRESHOLD,
+    StatusReadStreaks,
+    status_streak_nudge,
 )
 from yoetz.mcp.summaries import (
     render_check_reviewer_output,
@@ -499,6 +507,10 @@ class BridgeRuntime:
     cursor_launcher: tuple[str, ...] | None = field(default=None, repr=False, compare=False)
     cursor_isolation_root: str | None = field(default=None, repr=False, compare=False)
     cursor_project_binding: Literal["mcp-roots", "registered-project"] = "mcp-roots"
+    # tb4 n5: consecutive status reads per (session, actor) since the session's last write call.
+    status_streaks: StatusReadStreaks = field(
+        default_factory=StatusReadStreaks, repr=False, compare=False
+    )
 
 
 def _valid_runtime_launcher(value: object) -> bool:
@@ -3594,12 +3606,51 @@ async def call_tool(
             types.ErrorData(code=types.INVALID_PARAMS, message=sanitize_unknown_tool_name(name))
         )
     if name == "closure_prepare":
-        return await dispatch_closure_prepare(
+        result = await dispatch_closure_prepare(
             arguments,
             runtime,
             transport_request_id=transport_request_id,
         )
-    return await dispatcher(arguments, runtime)
+    else:
+        result = await dispatcher(arguments, runtime)
+    return _with_status_streak_nudge(name, arguments, result, runtime)
+
+
+def _with_status_streak_nudge(
+    name: str,
+    arguments: Mapping[str, object],
+    result: types.CallToolResult,
+    runtime: BridgeRuntime,
+) -> types.CallToolResult:
+    """Lead a repeated status read's text with one concrete next write (tb4 n5).
+
+    The structured result is unchanged; only the model-visible text gains one leading line. The
+    Cursor profile's text block is the exact canonical JSON of the result, which stays
+    ``content[0]``; there the line is a separate second block. A failure here never fails the
+    call: the result is returned as served.
+    """
+
+    try:
+        streak = runtime.status_streaks.note_call(name, arguments)
+        if streak < STATUS_STREAK_NUDGE_THRESHOLD or result.isError is True:
+            return result
+        wire = result.structuredContent
+        if not isinstance(wire, Mapping):
+            return result
+        nudge = status_streak_nudge(cast(Mapping[str, object], wire), streak)
+        if not nudge:
+            return result
+        content = list(result.content)
+        first = content[0] if content else None
+        if runtime.host_profile != "cursor" and isinstance(first, types.TextContent):
+            content[0] = first.model_copy(update={"text": f"{nudge}\n{first.text}"})
+        else:
+            # Cursor's first block is the exact canonical JSON a consumer may parse as the result;
+            # it stays first and the nudge follows it as its own block.
+            content.append(types.TextContent(type="text", text=nudge))
+        return result.model_copy(update={"content": content})
+    except Exception:  # noqa: BLE001 - the nudge is advisory text; the served result stands
+        return result
 
 
 async def _handle_call_tool_request(
@@ -3641,7 +3692,25 @@ async def _handle_call_tool_request(
     else:
         result = await call_tool(name, arguments, runtime)
     _record_rejected_call(name, arguments, result)
+    _record_served_read(runtime, name, arguments, result)
     return types.ServerResult(result)
+
+
+def _record_served_read(
+    runtime: BridgeRuntime,
+    name: str,
+    arguments: Mapping[str, object],
+    result: types.CallToolResult,
+) -> None:
+    """On Cursor, record a successful Yoetz read so its hook can prove it is Yoetz's (tb4 n5).
+
+    Cursor's ordinary hooks name this call ``MCP:<tool>`` with no server. The record is written
+    before the host receives this result, so the call's post-event always finds it. Other hosts
+    name the server in every hook, so nothing is written for them. Never raises.
+    """
+
+    if runtime.host_profile == "cursor" and result.isError is not True:
+        record_served_yoetz_read(name, arguments)
 
 
 def _record_rejected_call(

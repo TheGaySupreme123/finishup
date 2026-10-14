@@ -47,7 +47,10 @@ from yoetz.adapters.integrations.observation_local import (
     self_observation_deliverable,
 )
 from yoetz.adapters.integrations.observation_task_pending import task_pending_outbox_count
-from yoetz.adapters.integrations.yoetz_call_rejections import rejected_call_commitment
+from yoetz.adapters.integrations.yoetz_call_rejections import (
+    claim_served_yoetz_read,
+    rejected_call_commitment,
+)
 from yoetz.adapters.workspace_binding import canonical_workspace_locator, resolve_workspace_locator
 from yoetz.cli import hook_io
 from yoetz.cli.closure_gate import (
@@ -1893,6 +1896,37 @@ def _intercepted_shell_apply_patch(
         and "<<" in command
         and any(_SHELL_APPLY_PATCH.search(prefix) for prefix, _, _ in _shell_heredocs(command))
     )
+
+
+def _cursor_served_yoetz_read(
+    event_name: str, payload: Mapping[str, JsonValue], state_root: Path | None
+) -> bool:
+    """Whether a Cursor ``MCP:<tool>`` post-event is provably Yoetz's own served read.
+
+    Cursor's ordinary ``postToolUse`` names no MCP server, so ``MCP:status`` may be another
+    server's tool whose result is real evidence. Yoetz's bridge records a commitment to each read
+    it served successfully (tool, Yoetz session and writer, ``request_id``) before returning it;
+    only a post-event whose own ``tool_input`` claims one, once and within its expiry, is treated
+    as Yoetz's. Anything else, including every pre-event and any replay, stays ordinary evidence.
+    """
+
+    if event_name != "PostToolUse":
+        return False
+    tool = payload.get("tool_name")
+    if type(tool) is not str or not tool.startswith("MCP:"):
+        return False
+    return claim_served_yoetz_read(tool, payload.get("tool_input"), state_root=state_root)
+
+
+def _proven_yoetz_structural(
+    structural: Mapping[str, DomainJsonValue], *, proven: bool
+) -> Mapping[str, DomainJsonValue]:
+    """The structural view the delivery policy reads; a proven Yoetz read gets its scoped name."""
+
+    tool = structural.get("tool_name")
+    if not proven or type(tool) is not str or not tool.startswith("MCP:"):
+        return structural
+    return {**structural, "tool_name": f"yoetz:{tool[len('MCP:') :]}"}
 
 
 def _yoetz_request_commitment(event_name: str, payload: Mapping[str, JsonValue]) -> str | None:
@@ -4723,6 +4757,7 @@ def handle_observe(
     _derived_runner_class: RunnerClass | None = None,
     _stop_final_message: str | None = None,
     _request_commitment: str | None = None,
+    _proven_yoetz_read: bool = False,
 ) -> int:
     """Bounded observation ingress for Codex lifecycle hooks. Always exits 0.
 
@@ -5611,7 +5646,12 @@ def handle_observe(
             if (
                 not child_attribution_gap
                 and local_result.disposition.value == "accepted"
-                and self_observation_deliverable(resolved_event, envelope.structural_payload)
+                and self_observation_deliverable(
+                    resolved_event,
+                    _proven_yoetz_structural(
+                        envelope.structural_payload, proven=_proven_yoetz_read
+                    ),
+                )
             ):
                 plan = store.prepare_selected_admission(
                     workspace_commitment,
@@ -7859,6 +7899,9 @@ def _handle_cursor_observe(
             # The structural envelope drops ``tool_input``; commit to a Yoetz call here so a
             # pending attempt Yoetz rejected can still close as rejected (tb4n5).
             _request_commitment=_yoetz_request_commitment(event_map[raw_event], payload),
+            # Cursor's ordinary ``MCP:<tool>`` names no server: only the bridge's own record of
+            # serving this exact read proves it was Yoetz's (tb4 n5 round 2).
+            _proven_yoetz_read=_cursor_served_yoetz_read(event_map[raw_event], payload, _state),
         )
     except BaseException:
         if _pass_timing is not None:
