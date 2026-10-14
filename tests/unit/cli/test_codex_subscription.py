@@ -1337,6 +1337,38 @@ async def test_setup_binds_the_newest_release_that_passes_the_capability_check(
 
 
 @pytest.mark.anyio
+async def test_setup_reports_codex_sandbox_unavailable_without_refusing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _three_releases(monkeypatch, {})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+
+    async def probe(_profile: object) -> CodexRuntimeStatus:
+        return CodexRuntimeStatus(True, "chatgpt", "pro", True, "terminated", True)
+
+    monkeypatch.setattr(module, "codex_account_status", probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert result["runtime_version"] == "0.162.1"
+    assert result["codex_sandbox_unavailable"] is True
+    assert len(written) == 1
+
+
+def test_the_terminal_interface_names_an_unavailable_codex_sandbox_in_plain_words() -> None:
+    from yoetz.tui.app import codex_sandbox_lines
+
+    assert codex_sandbox_lines({"codex_sandbox_unavailable": False}) == ()
+    assert codex_sandbox_lines({}) == ()
+    (line,) = codex_sandbox_lines({"codex_sandbox_unavailable": True})
+    assert line.startswith("Codex sandbox: unavailable here")
+    assert "reviews are unaffected" in line
+
+
+@pytest.mark.anyio
 async def test_a_newer_release_that_fails_the_check_falls_back_to_the_previous_good_one(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

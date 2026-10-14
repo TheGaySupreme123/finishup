@@ -59,8 +59,13 @@ request is involved:
 
    No `turn/start` is sent. The scratch directory is deleted afterwards. On Linux, Codex emits a
    pre-disclosure `configWarning` when no system `bwrap` is on the fixed `PATH`
-   (`/usr/bin:/bin`), so the check fails closed there until bubblewrap is installed and
-   unprivileged user namespaces work.
+   (`/usr/bin:/bin`), so the check fails closed there until bubblewrap is installed.
+   Codex 0.162.1 also warns when bubblewrap cannot create user namespaces: gVisor (Modal),
+   Docker's default seccomp, or kernels with unprivileged user namespaces disabled. That
+   one warning is admitted (ADR-006, 2026-10-14), because the evaluator has no command-running or
+   file-writing tool for the sandbox to confine. The check passes. `status`, `setup` and `repair`
+   report `codex_sandbox_unavailable: true`, and the terminal interface notes it. Any other
+   warning text still fails closed.
 5. **Model.** The dedicated home's readiness probe (`account/read`, then `model/list`, then the
    same barrier and allowlist check) must list the configured model with every configured
    effort; a release that warns only under the signed-in home is passed over. A home Codex reports signed in whose model

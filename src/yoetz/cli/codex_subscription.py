@@ -1174,6 +1174,9 @@ def _safe_status(
         "plan_type": status.plan_type,
         "model_available": status.model_available,
         "process_cleanup": status.cleanup,
+        # Codex reported that its Linux sandbox cannot create user namespaces (ADR-006,
+        # 2026-10-14). The evaluator exposes no tool that sandbox would confine.
+        "codex_sandbox_unavailable": status.sandbox_unavailable,
         "upstream_body_observability": "unavailable",
     }
 

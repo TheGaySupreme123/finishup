@@ -330,10 +330,23 @@ _PREDISCLOSURE_NOTIFICATION_METHODS: Final = frozenset(
         "account/updated",
         "account/rateLimits/updated",
         "remoteControl/status/changed",
+        "configWarning",
         "thread/started",
         "thread/status/changed",
         "warning",
     }
+)
+# The one native configuration warning admitted before disclosure (ADR-006, 2026-10-14): Codex
+# 0.162.1 on Linux reports, verbatim, that its bubblewrap sandbox cannot create user namespaces
+# (``codex-rs/sandboxing/src/bwrap.rs`` ``USER_NAMESPACE_WARNING``; Docker's default seccomp,
+# gVisor, and kernels without unprivileged user namespaces). The evaluator's isolated config
+# exposes no tool that bubblewrap would confine: ``features.shell_tool=false`` removes command
+# execution, ``read-only`` with ``approval_policy=never`` rejects every patch before it runs, and
+# no MCP server, plugin, app or agent is enabled. The warning therefore widens nothing a review
+# can do; it is admitted only with this exact closed shape and recorded as
+# ``codex_sandbox_unavailable``. Every other ``configWarning`` stays forbidden.
+_SANDBOX_UNAVAILABLE_SUMMARY: Final = (
+    "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
 )
 _LAUNCH_OVERRIDES: Final = (
     "analytics.enabled=false",
@@ -379,6 +392,9 @@ class CodexRuntimeStatus:
     plan_type: str | None
     model_available: bool
     cleanup: Literal["not_started", "terminated", "killed", "failed"]
+    # Codex reported (only through the admitted closed warning) that its Linux sandbox cannot
+    # create user namespaces. It confines no evaluator tool; it is surfaced, not refused.
+    sandbox_unavailable: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -697,6 +713,7 @@ class _CodexProcess:
     workdir: Path
     stderr_task: asyncio.Task[bool]
     pending_notifications: deque[Mapping[str, object]]
+    sandbox_unavailable: bool = False
 
     async def send(self, value: Mapping[str, object]) -> None:
         stdin = self.process.stdin
@@ -720,10 +737,13 @@ class _CodexProcess:
         if self.stderr_task.done() and self.stderr_task.result():
             raise ValueError("codex_app_server_stderr_limit")
         try:
-            return _object(strict_json_parse(line[:-1]))
+            message = _object(strict_json_parse(line[:-1]))
         except ProtocolValueError, ValueError:
             # A malformed JSONL envelope is transport failure, not a malformed final answer.
             raise ValueError("codex_app_server_message_invalid") from None
+        if _is_sandbox_unavailable_warning(message):
+            self.sandbox_unavailable = True
+        return message
 
     async def request(
         self,
@@ -1115,6 +1135,7 @@ async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeSt
         plan_type=plan_type,
         model_available=model_available,
         cleanup=cleanup,
+        sandbox_unavailable=_sandbox_unavailable(runtime),
     )
 
 
@@ -1228,6 +1249,9 @@ def _validate_predisclosure_notification(
         _discard_rate_limits_notification(message)
     elif method == "warning":
         raise _runtime_warning(message)
+    elif method == "configWarning":
+        if not _is_sandbox_unavailable_warning(message):
+            raise ValueError(invalid_token)
     elif method == "remoteControl/status/changed":
         params = _object(message.get("params"))
         if set(params) != {"environmentId", "installationId", "serverName", "status"}:
@@ -1235,6 +1259,32 @@ def _validate_predisclosure_notification(
         if params.get("status") != "disabled":
             raise ValueError("codex_app_server_remote_control_not_disabled")
     return False
+
+
+def _is_sandbox_unavailable_warning(message: Mapping[str, object]) -> bool:
+    """Whether ``message`` is exactly Codex's reviewed user-namespace sandbox warning.
+
+    The wire shape is closed: ``{"method": "configWarning", "params": {"summary": <the exact
+    reviewed text>, "details": null}}`` with an optional integer ``emittedAtMs``. Codex carries no
+    structured warning code, so the summary must equal the reviewed constant byte for byte; any
+    other summary, detail, path or range is a different warning and is not admitted.
+    """
+
+    if message.get("method") != "configWarning":
+        return False
+    if set(message) not in ({"method", "params"}, {"method", "params", "emittedAtMs"}):
+        return False
+    if "emittedAtMs" in message and type(message["emittedAtMs"]) is not int:
+        return False
+    params = message.get("params")
+    if type(params) is not dict:
+        return False
+    fields = cast(dict[str, object], params)
+    return (
+        set(fields) == {"summary", "details"}
+        and fields["details"] is None
+        and fields["summary"] == _SANDBOX_UNAVAILABLE_SUMMARY
+    )
 
 
 def _login_notification(
@@ -1466,6 +1516,7 @@ async def codex_login(
         plan_type=plan_type,
         model_available=model_available,
         cleanup=cleanup,
+        sandbox_unavailable=_sandbox_unavailable(runtime),
     )
 
 
@@ -1485,7 +1536,13 @@ async def codex_logout(profile: CodexAppServerProfile) -> CodexRuntimeStatus:
             raise ValueError("codex_logout_unconfirmed")
     finally:
         cleanup = await _cleanup_guaranteed(runtime)
-    return CodexRuntimeStatus(runtime_ready, None, None, False, cleanup)
+    return CodexRuntimeStatus(
+        runtime_ready, None, None, False, cleanup, _sandbox_unavailable(runtime)
+    )
+
+
+def _sandbox_unavailable(runtime: _CodexProcess | None) -> bool:
+    return runtime is not None and getattr(runtime, "sandbox_unavailable", False) is True
 
 
 def _validate_thread(

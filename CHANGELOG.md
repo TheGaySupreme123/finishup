@@ -240,7 +240,11 @@ reverse-chronological released versions.
   `flexUnavailable` error) is handled, and unreviewed events still fail closed. Each check kills
   every process the checked Codex started, including ones it left running; if Yoetz cannot confirm
   they are gone, it stops with `codex_capability_probe_cleanup_unconfirmed` instead of trying
-  another release.
+  another release. On Linux hosts where Codex's sandbox cannot create user namespaces (gVisor,
+  Docker's default seccomp, some kernels), Codex's warning about it no longer blocks setup. The
+  reviewer runs no commands and writes no files, so the sandbox confines nothing there.
+  `status`, `setup` and `repair` report `codex_sandbox_unavailable`. Every other warning still
+  stops setup.
   Authenticated live evidence through a capability-admitted release is pending.
 
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,

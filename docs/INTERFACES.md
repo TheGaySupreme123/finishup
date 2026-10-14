@@ -6394,7 +6394,9 @@ input to `semantic_ready`, and a single-endpoint install omits the fallback fiel
 A Codex-subscription endpoint (primary or fallback) adds `review_budgets`. It is shaped
 `{"routine"|"final": {"reasoning_effort", "output_limit", "effort_source"}}`, where
 `effort_source` is `configured` or `legacy_single_effort`. `yoetz provider codex-subscription
-status` (`yoetz.codex-subscription-status/1`) carries the same object.
+status` (`yoetz.codex-subscription-status/1`) carries the same object, plus
+`codex_sandbox_unavailable` (`true` when Codex reported, through the one admitted
+`configWarning`, that its Linux sandbox cannot create user namespaces; ADR-006, 2026-10-14).
 `repository_grant_state` and `repository_migration_state` expose the separate repository-authority
 inputs without inventing another readiness verdict. `agent_route_semantic_ready` is
 `semantic_ready` **and** one exclusive observed owner (`external|plugin`) with

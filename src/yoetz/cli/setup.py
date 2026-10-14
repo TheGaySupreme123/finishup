@@ -2236,6 +2236,7 @@ async def _interactive_provider_setup(
                 "plan_type": status.get("plan_type"),
                 "model_available": status.get("model_available"),
                 "process_cleanup": status.get("process_cleanup"),
+                "codex_sandbox_unavailable": status.get("codex_sandbox_unavailable") is True,
                 "login_reused": status.get("login_reused") is True,
             }
         )
