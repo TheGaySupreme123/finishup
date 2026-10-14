@@ -1517,9 +1517,14 @@ _OWNER_VIEW_REFUSALS: Final = MappingProxyType(
             "unlock' in your terminal, then ask again. Nothing changed."
         ),
         "trusted_console_required": (
-            "owner_view_requires_terminal: the full receipt asks you to confirm in a foreground "
-            "terminal that Yoetz owns. Run 'yoetz receipt --owner-view' yourself in your own "
-            "terminal; an agent cannot complete this step. Nothing changed."
+            "owner_view_requires_terminal: the full receipt asks you to confirm with your vault "
+            "passphrase in a foreground terminal, and this command has none. Run 'yoetz receipt "
+            "--owner-view' yourself in your own terminal. Nothing changed."
+        ),
+        "target_invalid": (
+            "owner_view_refused: this command's connection to Yoetz closed before the "
+            "confirmation finished, so nothing can be shown. Run the command again. Nothing "
+            "changed."
         ),
         "secret_rejected": (
             "owner_view_refused: the passphrase did not match. Nothing was shown and nothing "
@@ -1657,8 +1662,9 @@ def receipt_command(
             "--owner-view",
             help=(
                 "Show the full receipt, including repository names your agents do not see. "
-                "You confirm in your own foreground terminal (OS presence or your vault "
-                "passphrase) for this one request; nothing else changes."
+                "You confirm it is you (OS presence or your vault passphrase) in a foreground "
+                "terminal, for this one request on this command's own connection; nothing else "
+                "changes."
             ),
         ),
     ] = False,

@@ -133,6 +133,7 @@ _ERROR_REASONS: Final = frozenset(
         "session_closed",
         "stale_generation",
         "state_forbidden",
+        "target_invalid",
         "timeout",
     }
 )
@@ -150,6 +151,7 @@ _PASS_THROUGH_SERVER_CODES: Final = frozenset(
         "presence_unavailable",
         "reauthentication_unavailable",
         "state_forbidden",
+        "target_invalid",
     }
 )
 

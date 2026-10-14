@@ -227,6 +227,7 @@ from yoetz.service.lifecycle import (
 )
 from yoetz.service.loop_health import ControlPlaneWatchdog
 from yoetz.service.owner_view import (
+    OwnerViewConnectionRefused,
     OwnerViewGrants,
     owner_receipt_view_target,
     owner_receipt_view_target_digest,
@@ -1777,6 +1778,7 @@ class ServiceDaemon:
 
     async def _serve_control_connection(self, stream: ControlStream) -> None:
         session: ControlSession | None = None
+        admission: str | None = None
         calls: dict[str, asyncio.Task[None]] = {}
         write_lock = asyncio.Lock()
         try:
@@ -1801,6 +1803,17 @@ class ServiceDaemon:
                         reason=exc.reason,
                     )
                 return
+            # The service, never the client, names this connection for owner-view grants. A
+            # hello nonce that is live or was already admitted cannot be admitted again.
+            try:
+                admission = self._composition.owner_view_grants.admit(session.connection_nonce)
+            except OwnerViewConnectionRefused:
+                record_public_error_without_raising(
+                    component="service.daemon",
+                    operation="control_handshake",
+                    reason="connection_nonce_reused",
+                )
+                return
             while not self._stop_event.is_set():
                 try:
                     frame = await self._read_control_frame_idle_aware(stream, calls)
@@ -1823,7 +1836,9 @@ class ServiceDaemon:
                     if target is not None:
                         target.cancel(EXPLICIT_CONTROL_CANCEL)
                     continue
-                task = asyncio.create_task(self._serve_call(stream, session, request, write_lock))
+                task = asyncio.create_task(
+                    self._serve_call(stream, session, request, write_lock, admission)
+                )
                 calls[request.rpc_id] = task
                 task.add_done_callback(lambda _task, rpc_id=request.rpc_id: calls.pop(rpc_id, None))
         except asyncio.CancelledError:
@@ -1831,6 +1846,9 @@ class ServiceDaemon:
         except Exception:
             return
         finally:
+            if admission is not None:
+                # Revoke on disconnect: a later socket gets a fresh admission, never this one.
+                self._composition.owner_view_grants.release(admission)
             if session is not None:
                 session.close()
             for task in tuple(calls.values()):
@@ -1884,19 +1902,24 @@ class ServiceDaemon:
                 await asyncio.gather(read_task, return_exceptions=True)
             raise
 
-    def _consume_owner_view(self, session: ControlSession, request: ControlCallRequest) -> bool:
-        """True only when a live ceremony grant matches this receipt call and connection."""
+    def _consume_owner_view(
+        self, session: ControlSession, request: ControlCallRequest, admission: str | None
+    ) -> bool:
+        """True only when a live ceremony grant matches this receipt call on this admission."""
 
-        if request.method is not ControlMethod.RECEIPT or session.client_kind not in {
-            ControlClientKind.CLI,
-            ControlClientKind.UI,
-        }:
+        if (
+            admission is None
+            or request.method is not ControlMethod.RECEIPT
+            or session.client_kind not in {ControlClientKind.CLI, ControlClientKind.UI}
+        ):
             return False
         try:
             target = owner_receipt_view_target(request.body, session.connection_nonce)
         except AttributeError, TypeError, ValueError:
             return False
-        return self._composition.owner_view_grants.consume(owner_receipt_view_target_digest(target))
+        return self._composition.owner_view_grants.consume(
+            admission, owner_receipt_view_target_digest(target)
+        )
 
     async def _serve_call(
         self,
@@ -1904,6 +1927,7 @@ class ServiceDaemon:
         session: ControlSession,
         request: ControlCallRequest,
         write_lock: asyncio.Lock,
+        admission: str | None = None,
     ) -> None:
         call_started = time.monotonic()
         # Presentation facts from the hello describe rendering only. The owner view is the one
@@ -1913,7 +1937,7 @@ class ServiceDaemon:
             session.client_kind,
             session.projection_render_mode,
             session.output_is_controlling_tty,
-            owner_view=self._consume_owner_view(session, request),
+            owner_view=self._consume_owner_view(session, request, admission),
         )
         if session.repository_privacy_context is None:
             result = await self.dispatch(
@@ -4355,7 +4379,12 @@ class _LockedHumanEffects:
             )
         except SecretMemoryError as exc:
             raise HumanControlError("stale_generation") from exc
-        return OwnerReceiptViewResult("authorized", digest, grants.issue(digest))
+        try:
+            seconds = grants.issue(digest, target.control_connection_digest)
+        except LookupError as exc:
+            # The command's own connection closed (or never existed): nobody may use a grant.
+            raise HumanControlError("target_invalid") from exc
+        return OwnerReceiptViewResult("authorized", digest, seconds)
 
 
 class _HumanConnectionServer:

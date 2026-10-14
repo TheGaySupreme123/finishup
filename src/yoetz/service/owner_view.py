@@ -3,14 +3,16 @@
 Every ordinary client result is projected for ``agent_context``. The only way to the
 ``local_human_view`` of a receipt is a grant the human-control ceremony mints after the owner
 reauthenticates (OS user presence or the vault passphrase) for one exact receipt request on one
-control connection. The grant lives in service memory, is consumed by the first matching receipt
-call, and expires after ``OWNER_RECEIPT_VIEW_GRANT_SECONDS``. No terminal fact, client kind, UID or
-hello field can create one.
+admitted control connection. The grant lives in service memory under that connection's
+service-minted admission identity, is consumed only by the matching receipt call on that
+connection, is revoked when it closes, and expires after ``OWNER_RECEIPT_VIEW_GRANT_SECONDS``. No
+terminal fact, client kind, UID or hello field can create one.
 """
 
 from __future__ import annotations
 
 import hashlib
+import secrets
 import threading
 import time
 from collections.abc import Callable
@@ -24,6 +26,7 @@ from yoetz.service.confidential_protocol import (
 )
 
 __all__ = [
+    "OwnerViewConnectionRefused",
     "OwnerViewGrants",
     "control_connection_digest",
     "owner_receipt_view_target",
@@ -32,6 +35,7 @@ __all__ = [
 
 _CONNECTION_DOMAIN: Final = b"yoetz.owner-view.control-connection/1\x00"
 _MAX_PENDING_GRANTS: Final = 8
+_MAX_SEEN_CONNECTIONS: Final = 65_536
 
 
 def control_connection_digest(connection_nonce: str) -> str:
@@ -71,38 +75,90 @@ def owner_receipt_view_target_digest(target: OwnerReceiptViewTarget) -> str:
     return canonical_digest(human_target_json(target))
 
 
+class OwnerViewConnectionRefused(Exception):
+    """A control connection claimed a nonce that is live or was already used in this service."""
+
+
 class OwnerViewGrants:
-    """One-use, expiring owner receipt view grants, held in service memory only."""
+    """One-use, expiring owner receipt view grants bound to one admitted control connection.
+
+    The service mints an opaque admission identity for every admitted control connection
+    (``admit``); the client never supplies it. The client's hello nonce is only a lookup key: it
+    must be unique among every connection this service has admitted (a duplicate or reused
+    nonce is refused at admission), and at ceremony time it resolves to exactly the one live
+    admission that owns it. The grant is stored under that admission, consumed only by a receipt
+    call on that same admission, and revoked when the connection closes. A new socket always gets
+    a fresh admission, so it can never adopt an earlier connection's grant.
+    """
 
     def __init__(self, monotonic: Callable[[], float] = time.monotonic) -> None:
         self._monotonic = monotonic
         self._lock = threading.Lock()
-        self._grants: dict[str, float] = {}
+        # connection digest -> live admission id
+        self._live: dict[str, str] = {}
+        # every connection digest ever admitted by this service (bounded, oldest first)
+        self._seen: dict[str, None] = {}
+        # (admission id, target digest) -> expiry
+        self._grants: dict[tuple[str, str], float] = {}
 
-    def issue(self, target_digest: str) -> int:
-        """Record one grant for ``target_digest``; returns its lifetime in seconds."""
+    def admit(self, connection_nonce: str) -> str:
+        """Register one admitted connection; returns its service-minted admission identity."""
+
+        digest = control_connection_digest(connection_nonce)
+        with self._lock:
+            if digest in self._seen:
+                raise OwnerViewConnectionRefused("connection_nonce_reused")
+            self._seen[digest] = None
+            while len(self._seen) > _MAX_SEEN_CONNECTIONS:
+                oldest = next(iter(self._seen))
+                if oldest in self._live:
+                    break
+                del self._seen[oldest]
+            admission = secrets.token_hex(32)
+            self._live[digest] = admission
+            return admission
+
+    def release(self, admission: str) -> None:
+        """The connection closed: forget it and revoke every grant it held."""
+
+        with self._lock:
+            for digest in [digest for digest, live in self._live.items() if live == admission]:
+                del self._live[digest]
+            for key in [key for key in self._grants if key[0] == admission]:
+                del self._grants[key]
+
+    def issue(self, target_digest: str, control_connection_digest: str) -> int:
+        """Grant the view to the one live connection the ceremony target names.
+
+        Raises ``LookupError`` when no live admitted connection owns that digest (it closed,
+        or it never existed), so a ceremony can never mint a grant nobody may consume.
+        """
 
         now = self._monotonic()
         with self._lock:
             self._expire(now)
-            if len(self._grants) >= _MAX_PENDING_GRANTS and target_digest not in self._grants:
-                oldest = min(self._grants, key=lambda digest: self._grants[digest])
+            admission = self._live.get(control_connection_digest)
+            if admission is None:
+                raise LookupError("owner_view_connection_unavailable")
+            if len(self._grants) >= _MAX_PENDING_GRANTS:
+                oldest = min(self._grants, key=lambda key: self._grants[key])
                 del self._grants[oldest]
-            self._grants[target_digest] = now + OWNER_RECEIPT_VIEW_GRANT_SECONDS
+            self._grants[(admission, target_digest)] = now + OWNER_RECEIPT_VIEW_GRANT_SECONDS
         return OWNER_RECEIPT_VIEW_GRANT_SECONDS
 
-    def consume(self, target_digest: str) -> bool:
-        """True exactly once for a live grant; a missing, used or expired one is False."""
+    def consume(self, admission: str, target_digest: str) -> bool:
+        """True exactly once, on the granted connection, for a live grant of that target."""
 
         now = self._monotonic()
         with self._lock:
             self._expire(now)
-            return self._grants.pop(target_digest, None) is not None
+            return self._grants.pop((admission, target_digest), None) is not None
 
     def clear(self) -> None:
         with self._lock:
             self._grants.clear()
+            self._live.clear()
 
     def _expire(self, now: float) -> None:
-        for digest in [digest for digest, expiry in self._grants.items() if expiry <= now]:
-            del self._grants[digest]
+        for key in [key for key, expiry in self._grants.items() if expiry <= now]:
+            del self._grants[key]

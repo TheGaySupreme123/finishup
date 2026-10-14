@@ -1657,8 +1657,10 @@ async def change_idle_relock_policy(
 async def authorize_owner_receipt_view(target: OwnerReceiptViewTarget) -> OwnerReceiptViewResult:
     """Reauthenticate the owner for one exact receipt view on the foreground terminal.
 
-    The ceremony asks for OS user presence or the vault passphrase; it never accepts a
-    supplied secret, so nothing an agent passes on the command line can complete it.
+    The ceremony asks for OS user presence or the vault passphrase and never accepts a secret
+    on the command line. Whoever holds the terminal can type into the prompt (a pseudo-terminal
+    too), so the boundary is the service verifying a passphrase or presence an agent does not
+    have, not who is typing.
     """
 
     if type(target) is not OwnerReceiptViewTarget:

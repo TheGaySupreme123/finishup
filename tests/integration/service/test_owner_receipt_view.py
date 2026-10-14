@@ -95,19 +95,21 @@ class _OwnerEffects(_Effects):
 
 def _owner_service(
     tmp_path: Path, mode: str, handles: list[Any], presence: _Presence | None = None
-) -> tuple[Any, OwnerViewGrants]:
+) -> tuple[Any, OwnerViewGrants, str]:
     effects = _OwnerEffects()
     service, _clock, lifecycle, vault, _ = _service(
         tmp_path, mode=mode, ready=True, handles=handles, presence=presence, effects=effects
     )
     grants = OwnerViewGrants()
+    # The owner's own receipt command holds this admitted control connection.
+    admission = grants.admit("e" * 64)
     effects.locked = _LockedHumanEffects(
         cast(Any, lifecycle),
         cast(Any, _VaultView(vault)),
         cast(Any, None),
         owner_view_grants=grants,
     )
-    return service, grants
+    return service, grants, admission
 
 
 async def test_passphrase_reauthentication_mints_one_grant_for_the_exact_target(
@@ -117,7 +119,7 @@ async def test_passphrase_reauthentication_mints_one_grant_for_the_exact_target(
     reauth = memory.capture(
         SecretPurpose.PRIVACY_REAUTHENTICATION, bytearray(b"correct horse battery staple")
     )
-    service, grants = _owner_service(tmp_path, "passphrase", [reauth])
+    service, grants, admission = _owner_service(tmp_path, "passphrase", [reauth])
     opened = await service.open_ceremony(
         ClientOpenEnvelope("7" * 64, HumanCeremonyKind.OWNER_RECEIPT_VIEW, _TARGET)
     )
@@ -128,7 +130,7 @@ async def test_passphrase_reauthentication_mints_one_grant_for_the_exact_target(
     assert type(opened.phase) is AuthorizationRequiredPhase
     assert opened.phase.available_sources == ("secret_reauthentication",)
     # Nothing is granted before the owner reauthenticates.
-    assert grants.consume(digest) is False
+    assert grants._grants == {}
     phase = await service.submit_action(
         ClientActionEnvelope(
             opened.ceremony_id, 2, SelectAuthorizationSourceAction("secret_reauthentication")
@@ -142,8 +144,8 @@ async def test_passphrase_reauthentication_mints_one_grant_for_the_exact_target(
     assert type(result) is ServerResultEnvelope
     assert type(result.result) is OwnerReceiptViewResult
     assert result.result.target_digest == digest
-    assert grants.consume(digest) is True
-    assert grants.consume(digest) is False
+    assert grants.consume(admission, digest) is True
+    assert grants.consume(admission, digest) is False
     memory.close()
 
 
@@ -152,18 +154,18 @@ async def test_without_presence_or_a_passphrase_vault_the_view_fails_closed(
 ) -> None:
     """Keyring vault with no presence adapter: the production default refuses at open."""
 
-    service, grants = _owner_service(tmp_path, "os_keyring", [])
+    service, grants, admission = _owner_service(tmp_path, "os_keyring", [])
     with pytest.raises(HumanControlError) as raised:
         await service.open_ceremony(
             ClientOpenEnvelope("8" * 64, HumanCeremonyKind.OWNER_RECEIPT_VIEW, _TARGET)
         )
     assert raised.value.reason == "reauthentication_unavailable"
-    assert grants.consume(owner_receipt_view_target_digest(_TARGET)) is False
+    assert grants.consume(admission, owner_receipt_view_target_digest(_TARGET)) is False
 
 
 async def test_os_presence_alone_can_authorize_the_view(tmp_path: Path) -> None:
     presence = _Presence()
-    service, grants = _owner_service(tmp_path, "os_keyring", [], presence=presence)
+    service, grants, admission = _owner_service(tmp_path, "os_keyring", [], presence=presence)
     opened = await service.open_ceremony(
         ClientOpenEnvelope("9" * 64, HumanCeremonyKind.OWNER_RECEIPT_VIEW, _TARGET)
     )
@@ -177,4 +179,27 @@ async def test_os_presence_alone_can_authorize_the_view(tmp_path: Path) -> None:
     assert presence.attestation.used
     assert presence.last_challenge is not None
     assert presence.last_challenge.target_digest == owner_receipt_view_target_digest(_TARGET)
-    assert grants.consume(owner_receipt_view_target_digest(_TARGET)) is True
+    assert grants.consume(admission, owner_receipt_view_target_digest(_TARGET)) is True
+
+
+async def test_a_ceremony_for_a_connection_that_is_gone_mints_nothing(tmp_path: Path) -> None:
+    """R3-F1: the grant must belong to a live admitted connection, or there is no grant."""
+
+    memory = LocalSecretMemory()
+    reauth = memory.capture(
+        SecretPurpose.PRIVACY_REAUTHENTICATION, bytearray(b"correct horse battery staple")
+    )
+    service, grants, admission = _owner_service(tmp_path, "passphrase", [reauth])
+    grants.clear()  # the command's control connection closed before the owner confirmed
+    opened = await service.open_ceremony(
+        ClientOpenEnvelope("6" * 64, HumanCeremonyKind.OWNER_RECEIPT_VIEW, _TARGET)
+    )
+    await service.submit_action(
+        ClientActionEnvelope(
+            opened.ceremony_id, 2, SelectAuthorizationSourceAction("secret_reauthentication")
+        )
+    )
+    with pytest.raises(HumanControlError) as raised:
+        await service.secret_completed(opened.ceremony_id)
+    assert raised.value.reason == "target_invalid"
+    memory.close()
