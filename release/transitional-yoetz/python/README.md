@@ -8,10 +8,21 @@ existing installations keep working while you move to the new name:
 - it keeps the `yoetz` command working as an alias of `finishup`, so agents connected by an earlier
   Yoetz release keep running. Any `finishup` command FinishUP shows also works as `yoetz` with the
   same subcommand. In an interactive terminal the alias prints a one-line notice;
-- `yoetz upgrade` from an earlier release upgrades to this package in place.
+- an eligible unpinned 0.2.x `yoetz` tool reaches this package through its upgrade command;
+  an exact-pinned tool needs the explicit requirement replacement below.
 
 FinishUP reads the existing Yoetz state, settings and agent registrations where they are; nothing
 is moved or rewritten.
+
+## Update an older pinned installation
+
+The released 0.2.1-0.2.5 upgrade command runs `uv tool upgrade yoetz`, which keeps an exact
+`yoetz==0.2.5` pin, including one installed by the npm launcher. First follow the old release's
+stop-first procedure for hosts, hooks and the service, then run
+`uv tool install --upgrade 'yoetz>=0.3.0'`, carrying over the original extras, Python request and
+package options. Check `yoetz --version` directly: the old command can report success while
+leaving its pinned version installed. Version 0.1.0 has no `upgrade` command; use its package
+manager. See the upgrade guide below for the complete procedure.
 
 ## Move to FinishUP
 

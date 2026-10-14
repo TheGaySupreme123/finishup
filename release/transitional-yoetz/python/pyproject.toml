@@ -1,12 +1,13 @@
 # Transitional "yoetz" distribution (ADR-048).
 #
-# FinishUP shipped on PyPI as "yoetz" through 0.2.5. Released `yoetz upgrade` code runs
-# `uv tool install --upgrade yoetz>=V` and then `<tool>/bin/yoetz --version`, and hosts connected
-# by those releases run `<tool>/bin/yoetz` or `<python> -m yoetz`. This distribution keeps every
-# one of those working for the deprecation window: it installs the exact same-version `finishup`
-# and declares only the `yoetz` console script. It must never declare `finishup` too: a yoetz tool
-# environment exposing `finishup` makes `uv tool install finishup` fail ("Executables already
-# exist"). Version, dependency pin and extras stay in lockstep with the repository-root
+# FinishUP shipped on PyPI as "yoetz" through 0.2.5. The released 0.2.x upgrade command runs
+# `uv tool upgrade yoetz`, which keeps exact pins; pre-rename 0.3 development builds instead run
+# `uv tool install --upgrade yoetz>=V` and verify `<tool>/bin/yoetz --version`. Connected hosts
+# run `<tool>/bin/yoetz` or `<python> -m yoetz`. Once an eligible unpinned tool is upgraded, or a
+# pinned requirement is explicitly replaced, this distribution keeps those launchers working:
+# it installs the same-version `finishup` and declares only `yoetz`. Never declare `finishup`
+# too: a yoetz tool environment exposing it makes `uv tool install finishup` fail
+# ("Executables already exist"). Version, dependency pin and extras stay in lockstep with the root
 # pyproject.toml; scripts/check_transitional_yoetz.py and the release workflow enforce it.
 
 [build-system]

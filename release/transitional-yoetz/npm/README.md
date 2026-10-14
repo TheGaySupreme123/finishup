@@ -18,6 +18,18 @@ running from the same place after the update. Any `finishup` command FinishUP sh
 - passes every argument through unchanged, inherits stdio, and exits with the child's exit code
   (`128+n` for a child killed by a signal).
 
+## Update a 0.2.x installation
+
+First follow the old release's stop-first procedure for hosts, hooks and the service. Then run
+the transitional version explicitly, for example `npx yoetz@0.3.0 --version`: an old installed or
+cached 0.2.x npm launcher still requests its own old Python package version. The released Python
+`yoetz upgrade` command also retains the exact pin made by npm, so its successful exit can leave
+0.2.5 installed. Verify the fresh version directly before restarting the hosts.
+
+To preserve extras or custom installation options, use
+`uv tool install --upgrade 'yoetz>=0.3.0'` with those original extras, Python request and options
+instead of the npm launcher. See the upgrade guide below.
+
 ## Move to FinishUP
 
 1. Install the new name: `uv tool install --managed-python --python 3.14.6 finishup` (or run

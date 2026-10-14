@@ -56,10 +56,15 @@ markers in recorded decisions, and a long list of byte strings inside stored and
 
 Three facts bound what a rename may touch:
 
-1. **Released installs keep running their own code.** A 0.1-0.2.5 install upgrades by running
-   `uv tool install --upgrade yoetz>=V` and then `<tool>/bin/yoetz --version`, and it polls
-   `https://pypi.org/pypi/yoetz/json`. Hosts connected by those releases run a bare `yoetz`, an
-   absolute `.../bin/yoetz`, or `<python> -m yoetz`. None of that shipped code can change.
+1. **Released installs keep running their own code.** The released 0.2.1-0.2.5 upgrade command
+   runs `uv tool upgrade yoetz`, which retains an exact version pin and does not verify the
+   resulting version. It cannot move a `yoetz==0.2.5` tool (including one installed by the npm
+   launcher) to FinishUP without an explicit replacement of that requirement. The 0.1.0 release
+   has no `upgrade` command. Pre-rename 0.3 development builds instead run
+   `uv tool install --upgrade yoetz>=V` and verify `<tool>/bin/yoetz --version`. Released update
+   checks poll `https://pypi.org/pypi/yoetz/json`. Hosts connected by those releases run a bare
+   `yoetz`, an absolute `.../bin/yoetz`, or `<python> -m yoetz`. None of that shipped code can
+   change.
 2. **Recorded bytes are evidence.** The ledger hash chain, object envelopes, crypto domain
    separators, keyring entries, SQL schema and recorded events contain the old spelling. Rewriting
    them would break digests, replay and decryption, and would falsify recorded evidence.
@@ -150,9 +155,13 @@ version for **one release**:
 - The Python package depends on exactly `finishup==<same version>`, re-exports the same extras,
   declares only the `yoetz` console script, and ships a small `yoetz` import shim for
   `python -m yoetz` and the legacy release-runtime bootstrap. It adds no product code.
-- Released `yoetz upgrade` therefore lands on it in place: the existing `yoetz` uv tool gains
-  `finishup`, `<tool>/bin/yoetz --version` prints the bare version, and hosts registered against
-  that tool keep working.
+- An eligible unpinned 0.2.x `yoetz` uv tool reaches it through its released upgrade command.
+  An exact-pinned tool needs the owner's explicit `uv tool install --upgrade 'yoetz>=0.3.0'`,
+  preserving its extras, Python request and resolution options; a 0.1.0 install likewise uses
+  its package manager. Follow 0.2's stop-first procedure before replacement. The existing
+  `yoetz` tool then gains `finishup`, `<tool>/bin/yoetz --version` prints the bare version, and
+  hosts registered against that tool keep working. An older command's successful exit alone
+  is not evidence that the package changed; the upgrade guide requires a direct version check.
 - The npm package installs `yoetz==<version>` as a uv tool, never with `--force`, and runs it.
 - An install that came from the transitional distribution polls `https://pypi.org/pypi/yoetz/json`
   (added to the ADR-009 allowlist) and its advisory names `yoetz upgrade` (§1); every other install

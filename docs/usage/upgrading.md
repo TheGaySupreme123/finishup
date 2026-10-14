@@ -110,9 +110,32 @@ What stays where it is:
 ### 1. Update the existing installation
 
 Run `yoetz upgrade` and follow its package step. From 0.2.x this is 0.2's stop-first procedure
-described above. The update keeps the installation under the `yoetz` name and adds FinishUP to it,
-so agents connected through that installation keep running. `npx yoetz` likewise updates an existing
-`yoetz` installation in place. Neither replaces or removes another installation.
+described above. Version 0.1.0 has no `upgrade` command: use its original package manager.
+
+The released 0.2.1-0.2.5 command runs `uv tool upgrade yoetz`. If the tool was installed with an
+exact pin such as `yoetz==0.2.5`, uv keeps that pin, so the command can report success while
+leaving 0.2.5 installed. Installations made through the npm launcher have this exact pin. After
+stopping the old hosts, hooks and service, replace that requirement explicitly:
+
+```text
+uv tool install --upgrade 'yoetz>=0.3.0'
+yoetz --version
+```
+
+Carry over the extras and Python or package resolution options from your original installation.
+For example, use `'yoetz[semantic-openai]>=0.3.0'` when that extra was installed, and keep a
+recorded `--python` request or custom index options. For another package manager, use its upgrade
+procedure. Verify that the fresh launcher reports 0.3.0 or later before continuing; a successful
+exit from the old upgrade command does not establish that.
+
+For an npm installation, after the same stop-first procedure, run the transitional release
+explicitly with `npx yoetz@0.3.0 --version`. An older installed or cached 0.2.x npm launcher still
+requests its own old Python package version. The current transitional launcher installs its matching
+`yoetz` Python package in place; use the explicit uv command above instead when you need to
+preserve extras or custom installation options.
+
+The update keeps the installation under the `yoetz` name and adds FinishUP to it, so agents
+connected through that installation keep their launcher path.
 
 ### 2. Move to the `finishup` command
 

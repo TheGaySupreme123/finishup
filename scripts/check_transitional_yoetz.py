@@ -2,9 +2,10 @@
 
 FinishUP shipped as Yoetz through 0.2.5. ``release/transitional-yoetz/`` builds a PyPI ``yoetz``
 distribution and an npm ``yoetz`` launcher that keep earlier installations working for one
-deprecation release. Released ``yoetz upgrade`` code upgrades through the PyPI name and then
-parses ``<tool>/bin/yoetz --version``, so the transitional distribution must stay an exact,
-same-version forwarder to ``finishup``:
+deprecation release. Released 0.2.x ``yoetz upgrade`` code runs ``uv tool upgrade yoetz`` and
+retains exact pins; those need an explicit requirement replacement. Pre-rename 0.3 development
+builds instead install a lower bound and parse ``<tool>/bin/yoetz --version``. Both paths must
+reach an exact, same-version forwarder to ``finishup``:
 
 - its version equals the repository-root version, and it depends on ``finishup==<version>``;
 - every root extra is re-exported as ``finishup[<extra>]==<version>`` (uv tool receipts record

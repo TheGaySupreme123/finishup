@@ -2,8 +2,10 @@
 
 FinishUP shipped as Yoetz through 0.2.5. For one release after the rename, every tagged FinishUP
 release also publishes a deprecated `yoetz` distribution to PyPI and npm at the same version
-([ADR-048](../adr/ADR-048-finishup-rebrand-and-frozen-legacy-identifiers.md) §4). Without it, no
-0.1-0.2.5 install reaches FinishUP: released `yoetz upgrade` code only polls and installs `yoetz`.
+([ADR-048](../adr/ADR-048-finishup-rebrand-and-frozen-legacy-identifiers.md) §4). Released update
+checks and 0.2.x upgrade commands still name `yoetz`; without the transitional distribution,
+those paths cannot reach FinishUP. Exact-pinned installs additionally need the explicit
+requirement replacement described in the [upgrade guide](../usage/upgrading.md#upgrading-from-yoetz).
 
 This runbook is for the maintainer cutting a release. The account and registry steps it names are
 also tracked on [issue #1056](https://github.com/TheGaySupreme123/finishup/issues/1056).
@@ -69,11 +71,20 @@ contract tests only.
 
 - Update the PyPI and npm `yoetz` project descriptions to point at `finishup`. Running `npm
   deprecate yoetz@<old versions>` is a separate maintainer decision.
-- On a real 0.2.5 install, run `yoetz upgrade` and confirm the `yoetz` command runs FinishUP, `yoetz
-  --version` prints the bare version, and hosts keep working before they are reconnected. On that
-  install only `yoetz` is on `PATH`; also confirm that the update tip names `yoetz upgrade`, that a
-  second `yoetz upgrade` ends with the *Move from the yoetz name* step and carries over the tool's
-  extras, and that `yoetz consent catalog` prepare hints start with `yoetz`.
+- On separately pinned test instances representing both an unpinned and an exact-pinned 0.2.5
+  uv tool, verify the released stop-first procedure and preserve the launcher path, settings,
+  registrations and recorded data. The released command runs `uv tool upgrade yoetz`, retains
+  an exact `==0.2.5` constraint and does not verify the result. Confirm that such a command does
+  not establish an upgrade, then exercise the explicit `uv tool install --upgrade 'yoetz>=0.3.0'`
+  route with the original extras, Python request and resolution options. For npm, exercise the
+  current transitional `yoetz@<V>` launcher rather than an old installed or cached 0.2.x launcher.
+  Do not apply these probes to the maintainer's live install; its separately authorized
+  verification remains on #1056.
+- After replacement, confirm the `yoetz` command runs FinishUP, `yoetz --version` prints the bare
+  version, and hosts keep working before they are reconnected. On that install only `yoetz` is
+  on `PATH`; also confirm that the update tip names `yoetz upgrade`, that a second `yoetz upgrade`
+  ends with the *Move from the yoetz name* step and carries over the tool's extras, and that
+  `yoetz consent catalog` prepare hints start with `yoetz`.
 
 ## Removing the alias
 
