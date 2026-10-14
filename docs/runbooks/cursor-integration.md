@@ -48,8 +48,11 @@ the record. Status reports `connected_projects` (recorded) and `connected_projec
 longer observed keeps the plugin until `setup disconnect` runs for it, which forgets it. When the
 plugin is found without a record (it was set up by an earlier release, or the record was lost),
 other projects may use it that no record names: the record and every preview carry
-`membership_unknown`, an ordinary disconnect keeps the plugin, and only `--remove-shared` removes
-it. `setup status --host cursor-ide|cursor-cli` names unknown membership as soon as the plugin
+`membership_unknown`, an ordinary disconnect keeps the plugin, and among the setup commands only
+`setup disconnect --remove-shared` removes it. The low-level `integrate cursor plugin remove`
+removes the user plugin for every project by design; its preview (`--action remove`) names who
+uses it (`shared_with`, `membership_unknown`, `shared_removed_for_every_project`), which the
+artifact digest does not bind, so prefer `setup disconnect` to disconnect one project. `setup status --host cursor-ide|cursor-cli` names unknown membership as soon as the plugin
 is found without a record and gives the exact `--remove-shared` preview command. Cursor has no list of
 trusted projects to inspect, so there are no Codex-style possible users and no
 `membership_unverified` refusal here: unknown membership simply keeps the plugin. Every Cursor

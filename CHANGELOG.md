@@ -43,11 +43,16 @@ reverse-chronological released versions.
   and never take over the home's marketplace binding, and a disconnect that would leave only such
   projects stops with `membership_unverified` and offers reconnecting the project you use or
   `--remove-shared`. A project connected only through another Yoetz installation is not detected
-  once the record is lost. Connecting a project on another review mode (local only or AI-powered
-  review) changes it for every project sharing that Codex home or Claude Code configuration; the
-  preview now names those projects and both modes (Cursor keeps the review mode per project).
+  once the record is lost. Running a Codex disconnect again, or for a project that never
+  connected, no longer removes the MCP registration the other connected projects use. Connecting
+  a project on another review mode (local only or AI-powered review) changes it for every project
+  sharing that Codex home or Claude Code configuration; `setup run`, the terminal interface's
+  first-run preview, `integrate codex mcp preview` and `integrate claude plugin preview` now name
+  those projects and both modes, and an unattended `--accept` that would change them stops and
+  asks for the reviewed preview (Cursor keeps the review mode per project).
   `setup disconnect --remove-shared` previews and asks for consent naming the projects that stop
-  using Yoetz. Two setups for the same agent configuration at once can no longer lose a project:
+  using Yoetz; the low-level `integrate codex mcp remove` and `integrate cursor plugin remove`
+  stay home-wide but now name them too. Two setups for the same agent configuration at once can no longer lose a project:
   setup holds a private lock per configuration in Yoetz's own state folder, so a first Claude Code
   or Cursor setup into a configuration folder that does not exist yet needs no manual `mkdir`
   (Codex still needs its home to exist and now says so), and a lock that cannot be taken stops

@@ -123,10 +123,27 @@ binding whose project lost its manifest makes every `codex plugin …` command i
   edited stays `destination_conflict`; another connected project never is.
 - The review mode is part of the shared registration: connecting a project with a different
   `--route-profile` re-registers `[mcp_servers.yoetz]` for every project in the home, which
-  changes their review mode too (local only or AI-powered review). The preview names them:
-  `status.route_profile_before` and `status.route_changes_for`, a summary sentence in interactive
-  and text-mode previews, and the TUI first-run preview ("registered again ... This also changes
-  the review mode ..."). No extra flag is required (ADR-012 amendment item 5).
+  changes their review mode too (local only or AI-powered review). Every path that can do it
+  names them (`route_profile_before`, `route_changes_for`, and `route_changes_possible_for` for
+  possible users, plus a summary sentence): `setup run --host codex` (in `status`, digest-bound,
+  also in text-mode previews), the TUI first-run preview ("registered again ... This also changes
+  the review mode ..."), the historical wizard (`setup run` with Codex as the only host found, or
+  `--codex-path`), whose bare `--accept` then refuses as `route_change_affects_other_projects`
+  with the guided continuation, and `integrate codex mcp preview|install`, whose preview digest
+  binds them and whose install needs it. No extra flag is required (ADR-012 amendment item 5).
+- The user-level MCP registration stays while another project uses the shared pieces (a
+  serving connected project or a possible user), whatever the disconnecting project's own state:
+  re-running the disconnect of an already detached project, or disconnecting one that never
+  connected, leaves it and says so (`retained`, `shared_with`). A detached project reports
+  `configured: false` (with `shared_registration_retained: true`).
+- Only a connected project may move or remove a binding whose anchor lost its manifest; a
+  project that never connected removes only its own pieces. A removal of the shared pieces names
+  connected projects whose plugin files are absent right now (`status.members_not_serving`), and
+  a detach names where the binding moves (`status.rebind_to`).
+- Low-level commands stay home-wide by design: `integrate codex mcp preview-remove|remove` removes
+  the registration for every project of the home and says so (`shared_with`, `possible_users`,
+  warning `mcp_registration_shared_with_other_projects`; the preview digest binds them). Use
+  `setup disconnect` to disconnect one project.
 - Every guided setup apply for the home (`setup run|disconnect --host codex`) holds Yoetz's
   per-configuration lock from plan revalidation through the record update: an exclusive `flock`
   on a 0600 file under Yoetz's own state directory (`host-config-locks/`), keyed by the home's
@@ -168,6 +185,11 @@ from this branch (2026-10-14 and, for the review fixes, 2026-10-15, #1058):
 | Review mode: connect A on `strict`; connect B on `policy`; preview C on `strict` | B's preview carries `route_profile_before: strict`, `route_changes_for: [A]`; the text-mode preview for C prints the change from AI-powered review to local only for A and B |
 | Damaged record (mode 0644) | `setup run`, `setup status` and `setup disconnect` all report `connection_projects_record_invalid` with the `chmod 600` continuation |
 | `--remove-shared` text preview | prints the home-wide sentence naming the connected project that stops using Yoetz |
+| Re-run: connect A and B (strict); disconnect B; disconnect B again; disconnect never-connected C (2026-10-15, round 2) | B's detach discloses `shared_with` A; both re-runs are `unchanged` with the shared registration listed as retained; A's `[mcp_servers.yoetz]` (strict, absolute launcher) is byte-identical and A reads `active`, `configured: true` |
+| Historical wizard: `setup run --codex-path ... --codex-home ... --route-profile policy --non-interactive --accept` with A on strict | refused `route_change_affects_other_projects` naming A, with the guided `setup run --host codex` continuation; the registration stays strict |
+| `integrate codex mcp preview|install --route-profile policy` with A on strict | the preview names A (`route_profile_before: strict`, `route_changes_for`) with a bound digest; `install --accept` without it exits 2 (`mcp_registration_route_change_affects_other_projects`) and changes nothing |
+| Dangling binding: only A connected; A's `marketplace.json` moved away; disconnect never-connected C | only C's own manifest goes; `config.toml` byte-identical, cache and record kept; when A's manifest returns, A reads `active` |
+| `integrate codex mcp preview-remove` with A connected | `shared_with` A and warning `mcp_registration_shared_with_other_projects` |
 
 ## Linux and WSL
 
@@ -664,7 +686,11 @@ status --json` (`mcp_route.registered_profile`). The route is explicit input: pa
 strict|policy` to `yoetz setup run` or `yoetz integrate codex mcp preview|install` to choose it.
 Without that flag an existing yoetz-owned registration keeps its current route (non-interactive
 `--accept` never changes it), and a route transition is shown in the preview and reported as
-`route_profile_before` → `route_profile`. Before running a session that will report a finding about
+`route_profile_before` → `route_profile`. The registration is shared by every project of the
+home: when a transition would change other connected projects (or projects that may use
+Yoetz), the preview names them (`route_changes_for`, `route_changes_possible_for`), its
+`preview_digest` binds them, and `install` refuses without that exact digest
+(`mcp_registration_route_change_affects_other_projects`). Before running a session that will report a finding about
 Yoetz's AI-powered review behaviour, walk the [AI-powered review dogfood
 runbook](semantic-dogfood.md) — it declares up front which claim the run is allowed to make, and
 refuses to score AI-powered review quality when no provider attempt happened. To measure whether
@@ -1661,7 +1687,10 @@ yoetz integrate codex mcp remove --accept --preview-digest <digest> --json
 
 The first command exposes the exact unregistration digest and current owned route without
 mutation. Noninteractive removal requires that digest plus `--accept`; `--accept` alone fails
-closed. Apply re-reads the current entry immediately before it runs `codex mcp remove yoetz` and
+closed. The registration serves every project of the home: while other projects use it, the
+preview names them (`shared_with`, `possible_users`, warning
+`mcp_registration_shared_with_other_projects`) and its digest binds them; `setup disconnect`
+keeps it for them instead. Apply re-reads the current entry immediately before it runs `codex mcp remove yoetz` and
 refuses a foreign replacement or changed Yoetz route observed at that boundary. An
 already-absent entry is a no-op only after the same successful `mcp list --json` absence check.
 Interactive removal shows the exact command, route profile, warning tokens, and preview digest

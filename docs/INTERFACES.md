@@ -6546,12 +6546,28 @@ record when a wrapper kept only `source_invalid`; Claude Code keeps no record), 
 naming the file: make it owner-only again (`chmod 600`) or restore it; for Codex, if it must be
 removed, connect every project again before disconnecting any (until then the witness and trusted
 checkouts keep the shared pieces and a disconnect stops as `membership_unverified`); for Cursor,
-removing it makes membership unknown. A connect whose plan rewrites a shared Yoetz route on
-another review mode while other members use it (the Codex user-level registration, the Claude
-Code shared source; Cursor's route is per project) adds the digest-bound disclosure
-`route_profile_before` and `route_changes_for` (the other serving members); the TUI first-run
-plan (`IntegrationPlan.mcp_reregister|route_profile_before|route_changes_for`) shows the same.
-`integrate codex plugin preview` reports `possible_users` (and `membership_unknown`). CLI:
+removing it makes membership unknown. A plan that rewrites a shared Yoetz route on another
+review mode while other projects use it (the Codex user-level registration, the Claude Code
+shared source; Cursor's route is per project) reports `route_profile_before`,
+`route_changes_for` (other serving members) and `route_changes_possible_for` (possible users):
+digest-bound in `setup run --host` plans; in the TUI first-run plan
+(`IntegrationPlan.mcp_reregister|route_profile_before|route_changes_for|
+route_changes_possible_for`); in the historical Codex wizard report, which refuses a bare
+`--accept` as `route_change_affects_other_projects`; in `integrate codex mcp preview`, whose
+`preview_digest` then binds them (`canonical_digest({"mcp_preview_digest", "route_change"})`) and
+whose `install` needs it (exit 2, `mcp_registration_route_change_affects_other_projects`); and in
+`integrate claude plugin preview` (bound by its host-state digest over `installed_plugins.json`).
+`integrate codex mcp preview-remove|remove` reports `shared_with`, `possible_users` and warning
+`mcp_registration_shared_with_other_projects` and binds them the same way;
+`integrate cursor plugin preview --action remove` reports `shared_with`, `membership_unknown`,
+`shared_removed_for_every_project`. A Codex `setup disconnect` keeps the user-level registration
+whenever `codex_marketplace.other_members(home, project)` (serving members, possible users) is
+non-empty, also for an already detached or never-connected project (`retained`, `shared_with`;
+post-apply status `configured: false`, `shared_registration_retained: true`). The disconnect plan
+disclosure adds `rebind_to` and `members_not_serving` (`RemovalPreview.unserved_members`: live
+recorded projects, or a dangling anchor, that do not serve the manifest). Only a recorded project
+may move or remove a dangling binding. `integrate codex plugin preview` reports `possible_users`
+(and `membership_unknown`). CLI:
 `yoetz integrate <host> admission status|preview|grant|revoke --project-root`
 (preview `--action grant|revoke`; Claude `--checkpoint`; the host roots the route observation
 needs; `--accept --preview-digest` for the apply verbs, exit 3 without them, exit 1

@@ -64,7 +64,11 @@ apply alike, so such a row holds nothing open and the last live project's discon
 `remove_plugin_mcp`. The shared source carries the plugin MCP server's review mode for every
 project's install: connecting a project on another review mode re-renders it for all of them, and
 the preview names them (`status.route_profile_before`, `status.route_changes_for`, and a summary
-sentence with both modes). `--remove-shared` previews and the interactive consent say the
+sentence with both modes). `integrate claude plugin preview` reports the same keys and sentence
+for an install or update on another review mode; its preview digest already binds every
+project's install row (`installed_plugins.json`), and its apply needs that digest and the OS
+password prompt. `integrate claude plugin remove` removes this project's install and, like
+`setup disconnect`, keeps the shared marketplace while another live project has its row. `--remove-shared` previews and the interactive consent say the
 disconnect is home-wide and name the projects that stop using Yoetz. The TUI has no
 `--remove-shared`; use `yoetz setup disconnect --host claude --remove-shared`. Like every
 host, each setup apply holds Yoetz's per-configuration lock from revalidation through the last
@@ -91,6 +95,7 @@ preview were also read through the real CLI and agreed.
 | Connect A and B; `rm -rf A`; disconnect B (2026-10-15) | the plan is `uninstall_plugin`, `remove_marketplace`, `remove_plugin_mcp`; apply removes the marketplace, and `claude plugin list` no longer shows A's dead row |
 | Connect A and B; `rm -rf A`; `claude plugin uninstall --scope project` in B; disconnect B | a second uninstall fails in Claude Code 2.1.300 (`not installed in project scope`); the plan is `remove_marketplace`, `remove_plugin_mcp` and completes with no marketplace left |
 | Connect A on `strict`; connect B on `policy` | B's plan discloses `route_profile_before: strict`, `route_changes_for: [A]`; the shared source's `.mcp.json` then runs the policy route |
+| Then `integrate claude plugin preview --action update --route-profile strict` in A (round 2) | `route_profile_before: policy`, `route_changes_for: [B]` |
 
 On macOS the presence step uses LocalAuthentication; Linux and WSL 2 use the trusted PAM console
 path. A missing mechanism is a reported local continuation, not permission to bypass it. The

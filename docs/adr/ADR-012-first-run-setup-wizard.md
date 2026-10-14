@@ -519,17 +519,37 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    whose project is deleted or lost its manifest (Codex then fails every plugin command in the
    home) moves to a remaining verified member on `detach`, or, with none left, goes with the
    shared pieces: its exact tables and managed cache trees are removed directly, since no
-   `codex plugin` command works through it; the same holds under `--remove-shared`.
-   Uncertainty keeps the pieces: unknown Cursor membership, and a Codex scan of other projects
+   `codex plugin` command works through it; the same holds under `--remove-shared`. Only a
+   connected project (one the record names, under any spelling) may move or remove such a
+   binding: the anchor's manifest may be absent only for now (a branch switch, `git clean`, an
+   unmounted volume), so a project that never connected removes only its own pieces and leaves
+   the binding and every shared piece alone. A removal of the shared pieces names connected
+   projects whose directory exists but that do not serve the manifest right now
+   (`unserved_members`, CLI `members_not_serving`), and every plan names `rebind_to`. The Codex
+   user-level MCP registration stays whenever another project still uses the shared pieces (a
+   serving verified member or a possible user), whatever this project's own state: re-running
+   the disconnect of an already detached project, or disconnecting one that never connected,
+   leaves it (disclosed as retained, with `shared_with`), and a detached project does not report
+   `configured` (2026-10-15 review round 2). Uncertainty keeps the pieces: unknown Cursor membership, and a Codex scan of other projects
    that stopped at its bound of 32, keep them on an ordinary disconnect. A Codex disconnect that
    would leave possible users but no verified member to carry the binding refuses before any
    change (`remove_refused` with `conflict: membership_unverified`; CLI reason
    `membership_unverified`) rather than guess: its continuation names the possible users and
-   offers reconnecting the one that uses Yoetz, or previewing `--remove-shared`. Only the
-   explicit `setup disconnect --remove-shared` removes the shared pieces for every project. Its
-   preview and the interactive consent say it is home-wide and name the connected projects that
-   stop using Yoetz (`shared_removed_from`) and any `possible_users`; it still refuses while
-   another project's Codex configuration needs the registration or the scan is incomplete.
+   offers reconnecting the one that uses Yoetz, or previewing `--remove-shared`. Among the setup
+   commands, only the explicit `setup disconnect --remove-shared` removes the shared pieces for
+   every project. Its preview and the interactive consent say it is home-wide and name the
+   connected projects that stop using Yoetz (`shared_removed_from`) and any `possible_users`; it
+   still refuses while another project's Codex configuration needs the registration or the scan
+   is incomplete. The low-level commands stay home-wide by design but say so (decision
+   2026-10-15): `integrate codex mcp preview-remove|remove` names the projects that lose the
+   user-level registration (`shared_with`, `possible_users`, warning
+   `mcp_registration_shared_with_other_projects`) and its preview digest binds them;
+   `integrate cursor plugin preview --action remove` names who uses the user plugin
+   (`shared_with`, `membership_unknown`, `shared_removed_for_every_project`), not bound into the
+   artifact digest; `integrate codex plugin remove` uses the same removal plan as `setup
+   disconnect` (detach, refusals); `integrate claude plugin remove` removes the project-scope
+   install and, like `setup disconnect`, keeps the shared marketplace while another live project
+   has its row.
 4. **Genuine duplicates.** One directory reached through a second path (a symlink, a letter-case
    variant, a moved directory) is refused on connect as `project_connected_via_other_path`, with
    the path already connected and the way out: disconnecting the project under its current path
@@ -541,11 +561,19 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    keeps the route in each project's own MCP entry): connecting a project with another route
    re-registers or re-renders them for every project in that configuration. That changes the
    other projects' review mode, local only (`strict`) or AI-powered review under the configured
-   privacy policy (`policy`), so the plan names it: the digest-bound disclosure
-   `route_profile_before` and `route_changes_for` (the other serving members), a CLI summary
-   sentence naming those projects and both modes (also in text-mode previews), and the TUI
-   first-run Codex preview, which no longer says "verified, not replaced" when it re-registers.
-   Decision (2026-10-15): disclosure, not an extra flag. A `policy` route does not by itself
+   privacy policy (`policy`), so every path that can rewrite them names it:
+   `route_profile_before`, `route_changes_for` (the other serving members) and
+   `route_changes_possible_for` (possible users), plus a sentence naming those projects and both
+   modes. `setup run|disconnect --host` binds them into the plan digest (also in text-mode
+   previews); the TUI first-run Codex preview shows them and no longer says "verified, not
+   replaced" when it re-registers; the historical Codex wizard (`setup run` with Codex as the
+   only host found, or `--codex-path`) prints the sentence in its preview and refuses a bare
+   `--accept` that would change other projects (`route_change_affects_other_projects`, with the
+   guided `setup run --host codex` continuation); `integrate codex mcp preview|install` reports
+   them and its preview digest binds them, and an install that would change other projects
+   needs that digest; `integrate claude plugin preview` reports them, and its preview digest
+   already binds every project's install row (`installed_plugins.json`). Decision (2026-10-15):
+   disclosure, not an extra flag. A `policy` route does not by itself
    send anything; every network channel still needs the user's privacy policy and consent
    (ADR-009), and the hybrid default (#1068) moves new setups to `policy` for every review
    choice, where a flag would fire on every upgrade. A registration from another Yoetz
