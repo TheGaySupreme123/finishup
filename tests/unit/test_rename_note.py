@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -51,9 +52,26 @@ def test_cli_help_carries_the_same_sentence() -> None:
     assert RENAME_NOTE in result.output
 
 
-def test_readme_logo_is_a_tracked_relative_path() -> None:
+# PyPI renders README.md as the package's long description and resolves nothing relative to the
+# repository, so a relative image is broken there. The README therefore names the tracked logo by
+# its raw URL on the default branch of the renamed repository (issue #1056); moving the file breaks
+# every published PyPI page, which this test refuses.
+_LOGO = "docs/assets/finishup-logo.png"
+_LOGO_URL = f"https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/{_LOGO}"
+
+
+def test_readme_logo_renders_on_github_and_pypi() -> None:
     readme = (_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert '<img src="docs/assets/finishup-logo.png"' in readme
-    assert (_ROOT / "docs/assets/finishup-logo.png").is_file()
+    assert f'<img src="{_LOGO_URL}"' in readme
+    assert (_ROOT / _LOGO).is_file()
     assert "https://finishup.dev" in readme
+
+
+def test_readme_images_are_absolute_for_the_pypi_description() -> None:
+    readme = (_ROOT / "README.md").read_text(encoding="utf-8")
+    sources = re.findall(r'<img\s[^>]*?src="([^"]*)"', readme)
+    sources += re.findall(r"!\[[^\]]*\]\(([^)\s]+)", readme)
+
+    assert sources
+    assert [source for source in sources if not source.startswith("https://")] == []

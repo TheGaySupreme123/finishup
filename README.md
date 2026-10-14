@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://finishup.dev"><img src="docs/assets/finishup-logo.png" alt="FinishUP" width="360"></a>
+  <a href="https://finishup.dev"><img src="https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/docs/assets/finishup-logo.png" alt="FinishUP" width="360"></a>
 </p>
 
 <h1 align="center">Agents claim they're done.<br>FinishUP checks if they actually did.</h1>
