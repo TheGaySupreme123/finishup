@@ -162,6 +162,7 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("receipt-result", "1.3.0"),
     ("respond-request", "1.1.0"),
     ("respond-result", "1.1.0"),
+    ("review-packet-row", "2.0.0"),
     ("review-result", "7.0.0"),
     ("routine-read-summary", "1.0.0"),
     ("runtime-attempt-evidence", "1.1.0"),
