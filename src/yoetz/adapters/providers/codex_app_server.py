@@ -330,11 +330,31 @@ _PREDISCLOSURE_NOTIFICATION_METHODS: Final = frozenset(
         "account/updated",
         "account/rateLimits/updated",
         "remoteControl/status/changed",
+        "configWarning",
         "thread/started",
         "thread/status/changed",
         "warning",
     }
 )
+# The one native configuration warning admitted before disclosure (ADR-006, 2026-10-14): Codex
+# 0.162.1 on Linux reports, verbatim, that its bubblewrap sandbox cannot create user namespaces
+# (``codex-rs/sandboxing/src/bwrap.rs`` ``USER_NAMESPACE_WARNING``; Docker's default seccomp,
+# gVisor, and kernels without unprivileged user namespaces). The evaluator's isolated config
+# exposes no tool that bubblewrap would confine: ``features.shell_tool=false`` removes command
+# execution, ``read-only`` with ``approval_policy=never`` rejects every patch before it runs, and
+# no MCP server, plugin, app or agent is enabled. The warning therefore widens nothing a review
+# can do; it is admitted only with this exact closed shape and recorded as
+# ``codex_sandbox_unavailable``. Every other ``configWarning`` stays forbidden.
+_SANDBOX_UNAVAILABLE_SUMMARY: Final = (
+    "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
+)
+# That reasoning was verified against one release's source; no app-server method exposes the
+# effective tool registry or patch-approval semantics without a model call, so it cannot be proven
+# at runtime. The admission is therefore bound to the releases whose source was reviewed (the
+# release ``initialize`` proved). Any other release sending the same warning fails closed with
+# ``codex_sandbox_unavailable_unreviewed_runtime``; selection then falls back to an older
+# reviewed release when one is installed. Extend this set only after re-reviewing the source.
+SANDBOX_UNAVAILABLE_REVIEWED_RELEASES: Final = frozenset({"0.162.1"})
 _LAUNCH_OVERRIDES: Final = (
     "analytics.enabled=false",
     'approval_policy="never"',
@@ -379,6 +399,9 @@ class CodexRuntimeStatus:
     plan_type: str | None
     model_available: bool
     cleanup: Literal["not_started", "terminated", "killed", "failed"]
+    # Codex reported (only through the admitted closed warning) that its Linux sandbox cannot
+    # create user namespaces. It confines no evaluator tool; it is surfaced, not refused.
+    sandbox_unavailable: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -697,6 +720,7 @@ class _CodexProcess:
     workdir: Path
     stderr_task: asyncio.Task[bool]
     pending_notifications: deque[Mapping[str, object]]
+    sandbox_unavailable: bool = False
 
     async def send(self, value: Mapping[str, object]) -> None:
         stdin = self.process.stdin
@@ -720,10 +744,13 @@ class _CodexProcess:
         if self.stderr_task.done() and self.stderr_task.result():
             raise ValueError("codex_app_server_stderr_limit")
         try:
-            return _object(strict_json_parse(line[:-1]))
+            message = _object(strict_json_parse(line[:-1]))
         except ProtocolValueError, ValueError:
             # A malformed JSONL envelope is transport failure, not a malformed final answer.
             raise ValueError("codex_app_server_message_invalid") from None
+        if _is_sandbox_unavailable_warning(message):
+            self.sandbox_unavailable = True
+        return message
 
     async def request(
         self,
@@ -1115,6 +1142,7 @@ async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeSt
         plan_type=plan_type,
         model_available=model_available,
         cleanup=cleanup,
+        sandbox_unavailable=_sandbox_unavailable(runtime),
     )
 
 
@@ -1213,6 +1241,7 @@ def _login_challenge(result: Mapping[str, object]) -> CodexLoginChallenge:
 def _validate_predisclosure_notification(
     message: Mapping[str, object],
     *,
+    runtime_version: str,
     invalid_token: str = "codex_app_server_predisclosure_event_forbidden",
 ) -> bool:
     """Validate one reviewed pre-disclosure notification and retain no native payload."""
@@ -1228,6 +1257,11 @@ def _validate_predisclosure_notification(
         _discard_rate_limits_notification(message)
     elif method == "warning":
         raise _runtime_warning(message)
+    elif method == "configWarning":
+        if not _is_sandbox_unavailable_warning(message):
+            raise ValueError(invalid_token)
+        if runtime_version not in SANDBOX_UNAVAILABLE_REVIEWED_RELEASES:
+            raise ValueError("codex_sandbox_unavailable_unreviewed_runtime")
     elif method == "remoteControl/status/changed":
         params = _object(message.get("params"))
         if set(params) != {"environmentId", "installationId", "serverName", "status"}:
@@ -1237,8 +1271,34 @@ def _validate_predisclosure_notification(
     return False
 
 
+def _is_sandbox_unavailable_warning(message: Mapping[str, object]) -> bool:
+    """Whether ``message`` is exactly Codex's reviewed user-namespace sandbox warning.
+
+    The wire shape is closed: ``{"method": "configWarning", "params": {"summary": <the exact
+    reviewed text>, "details": null}}`` with an optional integer ``emittedAtMs``. Codex carries no
+    structured warning code, so the summary must equal the reviewed constant byte for byte; any
+    other summary, detail, path or range is a different warning and is not admitted.
+    """
+
+    if message.get("method") != "configWarning":
+        return False
+    if set(message) not in ({"method", "params"}, {"method", "params", "emittedAtMs"}):
+        return False
+    if "emittedAtMs" in message and type(message["emittedAtMs"]) is not int:
+        return False
+    params = message.get("params")
+    if type(params) is not dict:
+        return False
+    fields = cast(dict[str, object], params)
+    return (
+        set(fields) == {"summary", "details"}
+        and fields["details"] is None
+        and fields["summary"] == _SANDBOX_UNAVAILABLE_SUMMARY
+    )
+
+
 def _login_notification(
-    message: Mapping[str, object], login_id: str
+    message: Mapping[str, object], login_id: str, *, runtime_version: str
 ) -> Literal["account_updated", "completed", "predisclosure"]:
     """Validate one login notification without retaining any native payload text."""
 
@@ -1248,7 +1308,7 @@ def _login_notification(
     if type(method) is str and method in _PREDISCLOSURE_NOTIFICATION_METHODS:
         try:
             updated = _validate_predisclosure_notification(
-                message, invalid_token="codex_login_event_invalid"
+                message, runtime_version=runtime_version, invalid_token="codex_login_event_invalid"
             )
         except _CodexRuntimeWarning as warning:
             # A native warning is not a login event. It ends the login with the bounded login
@@ -1292,7 +1352,9 @@ def _take_account_updated(runtime: _CodexProcess) -> bool:
     pending = runtime.pending_notifications
     runtime.pending_notifications = deque()
     for message in pending:
-        notification = _login_notification(message, "")
+        notification = _login_notification(
+            message, "", runtime_version=runtime.profile.runtime_version
+        )
         if notification == "account_updated":
             updated = True
             continue
@@ -1310,7 +1372,9 @@ async def _wait_for_account_updated(runtime: _CodexProcess, deadline: float) -> 
             if remaining <= 0.0:
                 return False
             message = await runtime.read(remaining)
-            notification = _login_notification(message, "")
+            notification = _login_notification(
+                message, "", runtime_version=runtime.profile.runtime_version
+            )
             if notification == "account_updated":
                 return True
             if notification == "predisclosure":
@@ -1405,7 +1469,9 @@ async def codex_login(
                 except TimeoutError:
                     break
                 events_seen += 1
-                notification = _login_notification(message, login_id)
+                notification = _login_notification(
+                    message, login_id, runtime_version=runtime.profile.runtime_version
+                )
                 if notification == "account_updated":
                     account_updated_seen = True
                     continue
@@ -1436,7 +1502,9 @@ async def codex_login(
                     except TimeoutError as error:
                         raise TimeoutError from error
                     events_seen += 1
-                    notification = _login_notification(message, login_id)
+                    notification = _login_notification(
+                        message, login_id, runtime_version=runtime.profile.runtime_version
+                    )
                     if notification == "account_updated":
                         account_updated_seen = True
                         continue
@@ -1466,6 +1534,7 @@ async def codex_login(
         plan_type=plan_type,
         model_available=model_available,
         cleanup=cleanup,
+        sandbox_unavailable=_sandbox_unavailable(runtime),
     )
 
 
@@ -1485,7 +1554,13 @@ async def codex_logout(profile: CodexAppServerProfile) -> CodexRuntimeStatus:
             raise ValueError("codex_logout_unconfirmed")
     finally:
         cleanup = await _cleanup_guaranteed(runtime)
-    return CodexRuntimeStatus(runtime_ready, None, None, False, cleanup)
+    return CodexRuntimeStatus(
+        runtime_ready, None, None, False, cleanup, _sandbox_unavailable(runtime)
+    )
+
+
+def _sandbox_unavailable(runtime: _CodexProcess | None) -> bool:
+    return runtime is not None and getattr(runtime, "sandbox_unavailable", False) is True
 
 
 def _validate_thread(
@@ -1811,7 +1886,9 @@ def _turn_failure(error: object) -> _CodexTurnFailure:
 
 def _validate_predisclosure_notifications(runtime: _CodexProcess) -> None:
     for message in runtime.pending_notifications:
-        _validate_predisclosure_notification(message)
+        _validate_predisclosure_notification(
+            message, runtime_version=runtime.profile.runtime_version
+        )
     runtime.pending_notifications.clear()
 
 
@@ -1859,6 +1936,7 @@ _FAILURE_STAGE_BY_TOKEN: Final[Mapping[str, str]] = {
     "codex_model_catalog_invalid": "model_unavailable",
     "codex_thread_isolation_unproven": "thread_invalid",
     "codex_app_server_predisclosure_event_forbidden": "predisclosure_event_forbidden",
+    "codex_sandbox_unavailable_unreviewed_runtime": "predisclosure_event_forbidden",
     "codex_app_server_remote_control_state_invalid": "predisclosure_event_forbidden",
     "codex_app_server_remote_control_not_disabled": "predisclosure_event_forbidden",
     "codex_runtime_case_invalid": "case_invalid",

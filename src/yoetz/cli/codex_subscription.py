@@ -222,6 +222,13 @@ _SUBSCRIPTION_REMEDIATIONS: Final[Mapping[str, str]] = {
         "the selected Codex could not describe its app-server protocol "
         "('codex app-server generate-json-schema'); select another Codex installation"
     ),
+    "codex_sandbox_unavailable_unreviewed_runtime": (
+        "this Codex release reports that its Linux sandbox cannot create user namespaces here. "
+        "Yoetz accepts that only from Codex releases it has reviewed, and this one is not "
+        "reviewed, so it is not admitted. Install a reviewed release (for example 'npm install "
+        "-g @openai/codex@0.162.1'), or run where unprivileged user namespaces are allowed (not "
+        f"gVisor or a restrictive container seccomp profile), then run {_REPAIR_COMMAND}"
+    ),
     "codex_app_server_predisclosure_event_forbidden": (
         "the selected Codex sent an event Yoetz does not admit before any review content exists "
         "(on Linux, usually a missing system bubblewrap); it is not admitted — fix that, then "
@@ -1174,6 +1181,9 @@ def _safe_status(
         "plan_type": status.plan_type,
         "model_available": status.model_available,
         "process_cleanup": status.cleanup,
+        # Codex reported that its Linux sandbox cannot create user namespaces (ADR-006,
+        # 2026-10-14). The evaluator exposes no tool that sandbox would confine.
+        "codex_sandbox_unavailable": status.sandbox_unavailable,
         "upstream_body_observability": "unavailable",
     }
 

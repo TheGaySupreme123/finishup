@@ -602,6 +602,69 @@ holds, and the review ends `unavailable`.
 - Authenticated evidence, with `gpt-6.1-sol` listed on 0.159.0 under a ChatGPT login, is
   pending. The runbook records the boundary.
 
+**Amendment (2026-10-14, owner-requested scoped fix; maintainer acknowledgement for the
+privacy/egress gate recorded here).** Codex 0.162.1 on Linux probes its bubblewrap sandbox at
+app-server start (`bwrap --unshare-user --unshare-net --ro-bind / / /bin/true`). When that fails
+with a user-namespace error (gVisor's `loopback: Failed RTM_NEWADDR`, Docker's default seccomp,
+kernels without unprivileged user namespaces), it writes one `configWarning` before any content:
+`{"summary": "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.",
+"details": null}` (`codex-rs/sandboxing/src/bwrap.rs` `USER_NAMESPACE_WARNING`). The
+pre-disclosure gate refused every warning, so the capability check and each attempt failed as
+`codex_app_server_predisclosure_event_forbidden` on such hosts.
+
+1. **What the warning means for a review.** Bubblewrap confines only the tools Codex runs as
+   child processes. Under the evaluator's isolated config, Codex 0.162.1 offers the model none of
+   them:
+   - `features.shell_tool=false` makes `add_shell_tools` (`core/src/tools/spec_plan.rs`) register
+     no `exec_command` or `write_stdin` handler;
+   - `apply_patch` stays registered, but `sandbox_mode="read-only"` has no writable roots and
+     `approval_policy="never"` rejects sandbox approval. So `assess_patch_safety`
+     (`core/src/safety.rs`) returns `Reject` before any patch runs, whether or not a sandbox
+     exists;
+   - the code-mode host is spawned as a plain child, not under bubblewrap. Its nested calls reach
+     only the same tool registry;
+   - no MCP server, plugin, app, web search, image or agent tool is enabled.
+
+   Yoetz's turn gate still ends the turn on any command, file-change or tool item and on every
+   server request. A missing user-namespace sandbox therefore widens nothing a review can do.
+2. **Narrow admission.** Only that exact notification is admitted before disclosure:
+   - method `configWarning`;
+   - `params` exactly `{summary, details}`, with `details` null;
+   - the summary byte-identical to the reviewed constant (Codex carries no structured code);
+   - an optional integer `emittedAtMs`.
+
+   Every other `configWarning` still fails closed as `codex_app_server_predisclosure_event_forbidden`.
+   That includes the missing-bubblewrap and WSL1 warnings, any detail, path or range, and the same
+   text sent through `warning`. Admission applies to the capability check, the readiness and
+   login probes, and every attempt.
+
+   **Bound to reviewed releases.** Point 1 was verified against one release's source and cannot be
+   proven at runtime. No app-server method returns the effective tool registry without a model
+   call: `config/read` returns config values, not registered handlers, and
+   `codex debug prompt-input` renders input items only. Even a tool list would not prove that a
+   patch is rejected before it runs. The admission is therefore limited to the reviewed set
+   `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES = {0.162.1}`, matched against the release that
+   `initialize` proved. That is the newest stable npm release on 2026-10-14; 0.159.x sends this
+   warning only in the terminal UI, not through the app-server.
+
+   Any other release that sends the same warning fails closed before disclosure with
+   `codex_sandbox_unavailable_unreviewed_runtime`, recorded as the `predisclosure_event_forbidden`
+   stage. That token is a per-candidate refusal, so newest-first selection falls back to an older
+   reviewed release when one is installed. Its continuation names a reviewed release and enabling
+   user namespaces. Adding a release to the set requires re-reviewing every item of point 1 in its source.
+3. **Surfaced, not hidden.** A probe that saw the warning reports `sandbox_unavailable`.
+   `provider codex-subscription status`, `setup` and `repair` add
+   `codex_sandbox_unavailable: true|false`, which `yoetz setup` keeps. The terminal interface shows
+   a plain line saying reviews are unaffected.
+
+   The capability record is not changed: it stays a host-independent statement about the bytes.
+   Receipts' `runtime_evidence` does not carry the flag yet, because that needs a new
+   `runtime-attempt-evidence` schema version and its event/receipt cascade. That is a follow-up;
+   until then the receipt's claim is unchanged by this host fact (point 1).
+4. **Re-review trigger.** Each new Codex release is outside the reviewed set until its source is
+   re-checked: no command-running tool for this config, patch rejection under read-only and
+   `never`, and the code-mode host outside bubblewrap. A new text or shape fails closed regardless.
+
 ## Fallback endpoint amendment (2026-09-04, issue #582)
 
 AI-powered review may bind one primary endpoint plus exactly one fallback endpoint. The pairing is
