@@ -290,7 +290,8 @@ _STRICT_ROUTE_TAIL: Final = (
 # rule, in imperative form, because those are the only lines guaranteed to survive a host that
 # cuts the block; everything else is one `read_guidance` call away. Claude also renders this block
 # into native subagents, which see no hook cue saying they are children (issue #509), so the
-# scope sentences exempt a subagent whose assignment names neither child selector.
+# scope sentences exempt a subagent whose assignment names neither child selector. Like the compact
+# body, it leaves the cadence to the operating card it names (tb4n5 startup dedup, ADR-047).
 CLAUDE_CODE_INITIALIZE_INSTRUCTIONS: Final = (
     "# Yoetz: call start first\n"
     "\n"
@@ -302,10 +303,8 @@ CLAUDE_CODE_INITIALIZE_INSTRUCTIONS: Final = (
     "\n"
     "Before `start`, read `yoetz://guidance/agent-instructions.md`; if empty or clipped, page and "
     "verify. Do not list resources. After `start`, read workflow, publication, coverage or "
-    "request-template topics only on demand. Cadence: "
-    "`publish_work` per transition, `check`, `receipt` last. Never claim active before `start`; "
-    "never invent a task. If it fails, follow its continuation, then ask; do not work without a "
-    "task.\n"
+    "request-template topics only on demand. Never claim active before `start`; never invent a "
+    "task. If it fails, follow its continuation, then ask; do not work without a task.\n"
     "\n"
     "Yoetz records only what participants publish; a clean check does not mean the work "
     "is correct."
@@ -334,10 +333,12 @@ COMPACT_INSTRUCTIONS_BUDGET: Final[Mapping[str, int]] = MappingProxyType(
 )
 # The compact initialize text for the Codex and Cursor hosts. It keeps the rules an agent needs
 # before its first guidance read: when to call `start`, the late-start and no-false-activation
-# rules, where every guidance document is and when to read it, the cadence, the consent,
-# disclosure and recovery boundaries, and coverage-honest wording. The full
-# `agent-instructions.md` safety floor it summarizes is one `read_guidance` call away, and the
-# text says to read it before the first `start`. It names no host, so one body serves both.
+# rules, where every guidance document is and when to read it (never by listing resources: all 18
+# tb4n5 Codex attempts listed them first), the consent, disclosure and recovery boundaries, and
+# coverage-honest wording. The full `agent-instructions.md` safety floor it summarizes is one
+# `read_guidance` call away, and the text says to read it before the first `start`. The per-step
+# cadence is stated once, in that card (tb4n5 startup dedup, ADR-047), not here and in every skill.
+# It names no host, so one body serves both.
 COMPACT_INITIALIZE_INSTRUCTIONS: Final = (
     "# Yoetz: call start first\n"
     "\n"
@@ -347,14 +348,14 @@ COMPACT_INITIALIZE_INSTRUCTIONS: Final = (
     "names, load the `start` schema first. Read-only questions skip it.\n"
     "\n"
     "Before the first `start`, call `read_guidance` on `yoetz://guidance/agent-instructions.md`; "
-    "page and verify empty or clipped guidance. After `start`, read workflow "
+    "page and verify empty or clipped guidance. Do not list resources; read the named topics. "
+    "After `start`, read workflow "
     "`yoetz://guidance/workflow.md`, `yoetz://guidance/publication-policy.md`, "
     "`yoetz://guidance/coverage-and-receipts.md` or `yoetz://guidance/request-templates.md` only "
     "when a result names one or you are unsure.\n"
     "\n"
-    "Cadence: `start`, `publish_work`, `check`, `respond`, `receipt`. Never claim active before "
-    "`start`; never invent a task, id, finding, verdict or receipt. If `start` fails, follow its "
-    "typed continuation, then ask; do not work without a task.\n"
+    "Never claim active before `start`; never invent a task, id, finding, verdict or receipt. If "
+    "`start` fails, follow its typed continuation, then ask; do not work without a task.\n"
     "\n"
     "Publish only material, state-bound facts, never hidden reasoning, transcripts, credentials, "
     "secrets or whole files. Setup, privacy, credential and recommendation changes need user "

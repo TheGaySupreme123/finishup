@@ -17,6 +17,8 @@ from collections.abc import Mapping
 from typing import Final, Literal, cast
 
 __all__ = [
+    "CODEX_CHECK_CELL_PRAGMA",
+    "CODEX_CHECK_YIELD_TIME_MS",
     "OBLIGATION_RESOLVE_RECIPE_VARIANTS",
     "READINESS_STATES",
     "awaiting_ruling_variants",
@@ -42,6 +44,14 @@ _ACTION_REQUIRED: Final = (
     "Work remains. Clear each agent-actionable item; standing limitations need no action."
 )
 _READY: Final = "Nothing further to do. Request the receipt."
+# tb4n5 (P6): a Codex code-mode `check` cell without this deadline yields, and the yielded `exec`
+# cell lands after the check and makes it stale. `startup.md` states the pragma; the status
+# sentence for an `exec` cause and the Codex Stop gate repeat it where they ask for that check.
+# The value is the bridge's `check` call deadline (a test pins the two together).
+CODEX_CHECK_YIELD_TIME_MS: Final = 300_000
+CODEX_CHECK_CELL_PRAGMA: Final = '// @exec: {"yield_time_ms": 300000}'
+# The tool name Codex records for a code-mode cell.
+_CODEX_CELL_TOOL: Final = "exec"
 _UNKNOWN: Final = (
     "Readiness is unknown at this frontier. Read status again once the projection is readable."
 )
@@ -95,19 +105,31 @@ def check_cause_sentence(
     """
 
     via = "" if tool is None else f" via {tool}"
+    # A Codex code-mode cell after the check is usually the yielded check cell itself (tb4n5).
+    cell = tool == _CODEX_CELL_TOOL
     if compact:
         # The short form for a byte-bounded text: no id, no rule, the same record and frontier.
         record = f"ledger record {_count(ledger_sequence)}"
         tested = f"frontier {_count(check_subject_frontier)}"
+        pragma = f" Start the next check cell with `{CODEX_CHECK_CELL_PRAGMA}`." if cell else ""
         if effect == "superseded":
             what = "observed edit" if material_class == "edit_or_write" else f"{family} record"
-            return f"Why check_not_applicable: {what}{via} ({record}) after the check at {tested}."
+            return (
+                f"Why check_not_applicable: {what}{via} ({record}) after the check at {tested}."
+                f"{pragma}"
+            )
         if effect == "bounds_conclusion":
             return (
                 f"Why check_current_as_of_earlier_frontier: {family} record{via} ({record}) "
-                f"after the check at {tested} is unclassified."
+                f"after the check at {tested} is unclassified.{pragma}"
             )
         raise ValueError("check_cause_effect_invalid")
+    pragma = (
+        " If it was a Codex `check` cell that yielded, start the next check cell with "
+        f"`{CODEX_CHECK_CELL_PRAGMA}` so the check finishes in its own cell."
+        if cell
+        else ""
+    )
     where = f"ledger record {_count(ledger_sequence)}, {event_id}"
     tested = f"subject frontier {_count(check_subject_frontier)}"
     if effect == "superseded":
@@ -118,14 +140,14 @@ def check_cause_sentence(
         )
         return (
             f"Why check_not_applicable: {what} ({where}) was recorded after the check at "
-            f"{tested} (rule {rule}). Re-run check after your last change."
+            f"{tested} (rule {rule}). Re-run check after your last change.{pragma}"
         )
     if effect == "bounds_conclusion":
         return (
             "Why check_current_as_of_earlier_frontier: after the check at "
             f"{tested}, a {family} record{via} ({where}) could not be classified as Yoetz's own "
             f"call, a read-only read or host bookkeeping (rule {rule}). Yoetz cannot tell whether "
-            "it changed the work; the receipt discloses it."
+            f"it changed the work; the receipt discloses it.{pragma}"
         )
     raise ValueError("check_cause_effect_invalid")
 

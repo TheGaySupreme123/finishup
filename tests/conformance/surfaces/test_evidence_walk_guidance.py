@@ -96,10 +96,17 @@ def test_discovery_procedure_uses_published_ids_filters_and_structural_links(nam
 
 def test_codex_skill_routes_evidence_first_closure_to_the_workflow_topic() -> None:
     text = _collapsed(_REPO_ROOT / "skills" / "codex" / "yoetz" / "SKILL.md")
-    assert "yoetz://guidance/workflow.md#start-and-resume" in text
-    # Issue #1048: the core is the operating card; other pages are read on demand.
+    # Issue #1048: the core is the operating card; other pages are read on demand. Since the
+    # tb4n5 startup dedup the card alone names `workflow.md`, where evidence-first closure lives.
     assert "that core is the operating card" in text
     assert "other pages only when a result names them" in text
+    card = _collapsed(_GUIDANCE / "agent-instructions.md")
+    assert "on demand only: resume/recovery/delegation/capacity `yoetz://guidance/workflow.md`" in (
+        card
+    )
+    assert "\n## Evidence-first closure\n" in (_GUIDANCE / "workflow.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_agent_instructions_floor_names_the_filtered_discovery() -> None:

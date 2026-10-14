@@ -273,8 +273,8 @@ ceremony step and makes each one cheaper:
   bytes on the policy route without a disclosure, 2,098 bytes on the strict route, and at most
   3,132 bytes (`max_encoded_bytes`) with the longest admissible disclosure. The packaged
   advertised surface falls from 223,627 to 99,300 bytes. The body keeps the start trigger and
-  late-start rule, the schema-load step, all five guidance URIs and when to read each, the
-  cadence, the no-false-activation and no-fabrication rules, typed continuations, the
+  late-start rule, the schema-load step, all five guidance URIs and when to read each (never by
+  listing resources, tb4n5), the no-false-activation and no-fabrication rules, typed continuations, the
   unavailable-service statement, the disclosure, consent and recovery boundaries, and
   coverage-honest wording. It tells the agent to read `agent-instructions.md` with `read_guidance`
   before the first `start`, so the full safety floor is one call away.
@@ -1909,6 +1909,29 @@ repository grant that permits external review, so on a policy route without that
 inspection costs an approval (or, under policy `never`, a refusal) that the `status` reads it
 replaces do not. Closing it needs a read-only advertisement for inspection: one descriptor per
 tool cannot carry a hint per mode, and a separate tool is the alternative ADR-047 rejected.
+
+### Guidance delivery on Codex (tb4n5)
+
+- **Closure trigger in the skill description.** The skill description ends "Also use when a
+  Yoetz finding, Stop message or receipt needs an answer", so a host that selects skills by
+  description can load the skill again at closure. Decision: supported; whether this host
+  re-selects the skill at closure is unmeasured until its dogfood lane runs.
+- **Initialize body.** The compact body adds "Do not list resources; read the named topics": all
+  18 tb4n5 attempts called `list_mcp_resources` in their first cell. The per-step cadence left the
+  body; the operating card states it once (ADR-047 amendment). The Codex skill keeps one start
+  sentence that names its antecedent, the card pointer, `references/startup.md` and the closure
+  judgment rules; the capacity procedure is the catalogued topic
+  `workflow.md#change-local-retention-capacity`. Decision: supported.
+- **Page-zero sections.** Page zero of a paged `read_guidance` read carries
+  `structuredContent.sections`, one `{uri, byte_count}` per catalogued section, and the bounded
+  pointer in `content` names the anchors and sizes. A code-mode cell that prints the structured
+  result (the `startup.md` snippet prints the whole page) shows the list. Decision: supported.
+- **Check-cell deadline at closure.** A `check` cell without `yield_time_ms` yields, and the
+  yielded `exec` cell lands after the check and makes it stale (5 of 9 S attempts, a stale final
+  check in 6). The Codex Stop gate's close instruction now repeats
+  `// @exec: {"yield_time_ms": 300000}`, and the status `check_cause` sentence repeats it when the
+  cause's tool is `exec`. Decision: supported. Evidence boundary: unit tests only; the Codex
+  dogfood lane is pending.
 
 ### Closure readiness and standing limitations (#913)
 

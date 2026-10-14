@@ -74,6 +74,8 @@ def test_the_claude_text_names_the_deferred_schema_load_step_and_the_catalog() -
     assert "Do not list resources." in text
     assert "if empty or clipped, page and verify." in text
     assert "Never claim active before `start`" in text
+    # tb4n5 startup dedup (ADR-047): the cadence is stated once, in the operating card.
+    assert "Cadence" not in text
     assert "a clean check does not mean the work is correct" in text
 
 

@@ -251,3 +251,38 @@ its frontier"; they now keep the held frontier and read `status` (or a filtered 
 when IDs are needed, no frontier is held, or `frontier_changed` occurred. The focused review topic
 now answers each open AI-powered finding only; a `verified_resolved` or final finding takes no
 response. The consistency scan covers both spellings and the review topic.
+
+## Amendment (2026-10-13, tb4n5 guidance follow-up): one owner per startup rule
+
+tb4n5 left the Codex mandatory surface 6 bytes under its 8,192-byte budget (initialize, skill and
+card together), and three surfaces said the same startup rules: start first, recover then ask, never
+claim activation early, and the cadence. Each rule now has one owning surface per host family, and
+the tests pin it there instead of at every copy:
+
+- **Initialize (tier 0, ADR-010).** Keeps every rule an agent needs before its first guidance read:
+  when to call `start`, late start, schema loading, the read-only skip, reading the card first,
+  no false activation, never inventing state, start failure (continuation, then ask), consent,
+  disclosure and coverage wording, and the five URIs. The compact (Codex, Cursor) body adds "Do not
+  list resources; read the named topics": all 18 tb4n5 Codex attempts listed resources before their
+  first read. Both compact and Claude Code bodies drop the cadence sentence.
+- **Operating card.** Owns the cadence and the closure order (and stays the generic host's tier 0,
+  so its start paragraph is unchanged).
+- **Host skills.** Keep the catalog description (the #692 trigger, start first and failed-start
+  recovery), one start sentence, the pointer to the card and the closure judgment rules. The body no
+  longer repeats failed-start recovery, the read-only skip, the card's page routes or the cadence.
+  The start sentence now names its antecedent: "The first workflow operation is `start`, after a
+  discovery step that reads guidance and discovers schemas. This includes `read_guidance` and
+  commands." The capacity procedure leaves the skills: each keeps the one-line consent floor and
+  names the catalogued topic `workflow.md#change-local-retention-capacity`, where the procedure is
+  complete.
+
+Part of the freed budget pays for two routing changes. Each skill description, the trigger a host
+selects skills by, ends "Also use when a Yoetz finding, Stop message or receipt needs an answer", so
+a host that picks skills by description loads the skill again at closure. The card's catalog line
+says a long page lists its `#anchor` sections on page 0 (the generated `sections` list, ADR-010
+amendment of the same date) and to read one section, not the page.
+
+Mandatory surface after the change (budget 8,192): Codex 7,766 (was 8,186), Cursor 7,694 (8,140),
+portable 7,711 (8,157), Claude Code 7,252 (7,744). No rule left any host's mandatory surface;
+`tests/conformance/surfaces/test_session_start_start_first.py` checks that failed-start recovery
+and the read-only skip remain in the initialize bodies and the card.

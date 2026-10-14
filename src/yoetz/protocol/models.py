@@ -175,6 +175,7 @@ __all__ = [
     "ReadGuidanceResult",
     "ReadGuidanceResultModel",
     "ReadGuidanceContinuationModel",
+    "ReadGuidanceSectionModel",
     "RespondRequest",
     "RespondRequestModel",
     "RespondResult",
@@ -1173,6 +1174,8 @@ def _annotation_accepts_tuple(annotation: object) -> bool:
     origin = get_origin(annotation)
     if origin is tuple:
         return True
+    if origin is Annotated:
+        return _annotation_accepts_tuple(get_args(annotation)[0])
     if origin is types.UnionType or origin is Union:
         return any(_annotation_accepts_tuple(argument) for argument in get_args(annotation))
     return False
@@ -2042,6 +2045,7 @@ _MAX_GUIDANCE_DOCUMENT_BYTES: Final = 1_048_576
 _MIN_GUIDANCE_PAGE_SIZE: Final = 4
 _MAX_GUIDANCE_PAGE_SIZE: Final = 16_384
 _MAX_GUIDANCE_PAGE_COUNT: Final = 16_384
+_MAX_GUIDANCE_SECTIONS: Final = 128
 
 
 def _guidance_page_size(value: object) -> str:
@@ -2073,6 +2077,13 @@ class ReadGuidanceContinuationModel(_ClosedModel):
         if self.revision != self.digest:
             raise ValueError("guidance_revision_digest_mismatch")
         return self
+
+
+class ReadGuidanceSectionModel(_ClosedModel):
+    """One catalogued section a paged guidance read names on page zero (tb4n5)."""
+
+    uri: GuidanceResourceUri
+    byte_count: Annotated[int, Field(ge=0, le=_MAX_GUIDANCE_DOCUMENT_BYTES)]
 
 
 class ReadGuidanceRequestModel(_ClosedModel):
@@ -2123,6 +2134,7 @@ class ReadGuidanceSuccessModel(_ClosedModel):
             "page_count",
             "complete",
             "continuation",
+            "sections",
         }
     )
 
@@ -2142,6 +2154,15 @@ class ReadGuidanceSuccessModel(_ClosedModel):
     page_count: CanonicalPositiveUInt64Wire | None = None
     complete: bool | None = None
     continuation: ReadGuidanceContinuationModel | None = None
+    # Page zero of a paged read names the catalogued sections inside the resource (tb4n5), so a
+    # caller reads one section instead of paging the document.
+    sections: (
+        Annotated[
+            tuple[ReadGuidanceSectionModel, ...],
+            Field(min_length=1, max_length=_MAX_GUIDANCE_SECTIONS),
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def _validate_read_guidance_success(self) -> ReadGuidanceSuccessModel:
@@ -2161,7 +2182,7 @@ class ReadGuidanceSuccessModel(_ClosedModel):
             self.complete,
         )
         if not any(value is not None for value in page_fields):
-            if self.continuation is not None:
+            if self.continuation is not None or self.sections is not None:
                 raise ValueError("guidance_page_metadata_incomplete")
         else:
             if any(value is None for value in page_fields):
@@ -2206,6 +2227,15 @@ class ReadGuidanceSuccessModel(_ClosedModel):
                     raise ValueError("guidance_continuation_page_size_mismatch")
                 if self.continuation.revision != self.revision:
                     raise ValueError("guidance_continuation_revision_mismatch")
+            if self.sections is not None:
+                if page != 0:
+                    raise ValueError("guidance_sections_page_invalid")
+                document = self.uri.partition("#")[0]
+                if any(
+                    section.uri == self.uri or section.uri.partition("#")[0] != document
+                    for section in self.sections
+                ):
+                    raise ValueError("guidance_sections_document_mismatch")
         _validate_model_against_schema(self, "read-guidance-result")
         return self
 

@@ -4199,6 +4199,7 @@ def _decide_closure_gate(
                 reasked_blockers=reasked,
                 active_stop=active_stop,
                 final_message=final_message,
+                host=harness_id,
                 on_acceptance_covered=lambda: record_hook_diagnostic(
                     "closure_gate_acceptance_covered", "Stop", _state=_state
                 ),

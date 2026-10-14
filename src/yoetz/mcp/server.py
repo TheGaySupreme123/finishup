@@ -60,10 +60,13 @@ from yoetz.mcp.errors import (
 from yoetz.mcp.resources import (
     DEFAULT_GUIDANCE_PAGE_SIZE,
     GUIDANCE_RESOURCES,
+    GUIDANCE_SECTIONS_MARKER,
     MAX_GUIDANCE_PAGE_SIZE,
     GuidanceResource,
     GuidanceResourceError,
     GuidanceResourcePage,
+    GuidanceSection,
+    guidance_sections,
     resolve_guidance_topic_uri,
 )
 from yoetz.mcp.resources import (
@@ -3311,10 +3314,15 @@ async def dispatch_read_guidance(
         }
         if page.continuation is not None:
             result_body["continuation"] = page.continuation
+        sections = _page_zero_sections(page)
+        if sections:
+            result_body["sections"] = [
+                {"uri": section.uri, "byte_count": section.byte_count} for section in sections
+            ]
         result = ReadGuidanceResult.model_validate(result_body)
         wire = public_model_to_wire(result)
         content_text = _guidance_page_content_text(
-            page, host_profile=runtime.host_profile, wire=wire
+            page, host_profile=runtime.host_profile, wire=wire, sections=sections
         )
     else:
         text = resource.text
@@ -3455,25 +3463,56 @@ def _guidance_page_error(
     )
 
 
+def _page_zero_sections(page: GuidanceResourcePage) -> tuple[GuidanceSection, ...]:
+    """The catalogued sections page zero names (tb4n5); none on later pages.
+
+    The list is advisory and outside the page bytes, so a registry failure omits it rather than
+    failing a page that was read correctly.
+    """
+
+    if page.page != 0:
+        return ()
+    try:
+        return guidance_sections(page.resource.uri)
+    except GuidanceResourceError:
+        return ()
+
+
 def _guidance_page_content_text(
     page: GuidanceResourcePage,
     *,
     host_profile: McpHostProfile,
     wire: Mapping[str, object],
+    sections: tuple[GuidanceSection, ...] = (),
 ) -> str:
-    """Render a page with explicit boundaries on hosts that consume the text channel."""
+    """Render a page with explicit boundaries on hosts that consume the text channel.
+
+    Page zero appends the resource's section list after the end marker (tb4n5). It is outside the
+    page bytes, so ``GuidancePageAssembler`` still checks exactly the text between the markers.
+    """
 
     if host_profile == "codex":
         return summary_for_read_guidance(wire)
     next_page = "none" if page.next_page is None else str(page.next_page)
     complete = "yes" if page.complete else "no"
-    return (
+    text = (
         f"YOETZ_GUIDANCE_PAGE_BEGIN document={page.resource.uri} page={page.page} "
         f"page_count={page.page_count} offset={page.offset} bytes={page.byte_count} "
         f"total_bytes={page.total_byte_count} revision={page.revision} digest={page.digest}\n"
         f"{page.text}\n"
         f"YOETZ_GUIDANCE_PAGE_END complete={complete} next_page={next_page} "
         f"revision={page.revision} digest={page.digest}"
+    )
+    if not sections:
+        return text
+    document = page.resource.uri.partition("#")[0]
+    rows = "\n".join(
+        f"#{section.uri.partition('#')[2]} {section.byte_count}" for section in sections
+    )
+    return (
+        f"{text}\n{GUIDANCE_SECTIONS_MARKER} document={page.resource.uri} count={len(sections)}\n"
+        "Read only the section you need instead of paging: call read_guidance with uri "
+        f"{document}#<anchor>. Anchor and UTF-8 bytes:\n{rows}"
     )
 
 

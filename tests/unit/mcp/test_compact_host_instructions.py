@@ -37,8 +37,9 @@ from yoetz.ports.control import McpHostProfile
 # The stated cap recorded on issue #918: the packaged compact body is at most 2 KB. The route tail
 # and the policy-route destination disclosure (#479) ride on top and are never trimmed to fit.
 COMPACT_BODY_CAP_BYTES = 2_048
-# The Claude body hash locks the current compact startup contract, including guidance recovery.
-CLAUDE_BODY_SHA256 = "sha256:126d3c3d59bc10c7c96ca87f8136ebfac90fe83ec4bd33ce00ae9928450cf86a"
+# The Claude body hash locks the current compact startup contract, including guidance recovery
+# (re-locked for the tb4n5 startup dedup: the cadence moved to the operating card).
+CLAUDE_BODY_SHA256 = "sha256:b66be45520812414087237bd10d55a416a179e26b37c10cd1fb87da718936bf9"
 COMPACT_HOSTS: tuple[McpHostProfile, ...] = ("codex", "cursor")
 # The longer of the two route lines the bridge appends to every body.
 LONGEST_ROUTE_LINE = (
@@ -166,17 +167,19 @@ def test_the_compact_body_names_every_guidance_document_and_how_to_read_it() -> 
     assert "before `publish_work`" not in text
     assert "before `check`" not in text
     assert "page and verify empty or clipped guidance" in text
+    # tb4n5: all 18 Codex attempts listed resources before their first guidance read.
+    assert "Do not list resources; read the named topics." in text
 
 
-def test_the_compact_body_keeps_cadence_consent_and_honesty_rules() -> None:
+def test_the_compact_body_keeps_consent_and_honesty_rules_and_leaves_cadence_to_the_card() -> None:
     text = _collapsed(COMPACT_INITIALIZE_INSTRUCTIONS)
-    # Ceremony unchanged: every cadence step stays named, in order; the per-step frequency
-    # (`start` once, `publish_work` per material transition, `receipt` last) is in the mandatory
-    # core the body sends the agent to before `start` (#961).
-    assert "Cadence: `start`, `publish_work`, `check`, `respond`, `receipt`." in text
+    # tb4n5 startup dedup (ADR-047): the cadence is stated once, in the operating card the body
+    # sends the agent to before `start` (#961), not here and again in every skill.
+    assert "Cadence" not in text
     core = " ".join(read_resource(INITIALIZE_GUIDANCE_URIS[0]).decode("utf-8").split())
     assert "Cadence: `start` once, `publish_work` per material transition; `receipt` last." in core
-    assert "`respond`" in text
+    assert "`check` after the plan and each milestone" in core
+    assert "Answer each open AI-powered finding with `respond`" in core
     assert "typed continuation" in text
     # Disclosure and consent boundaries.
     assert "Publish only material, state-bound facts" in text

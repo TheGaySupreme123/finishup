@@ -26,10 +26,14 @@ __all__ = [
     "GuidanceAssemblyError",
     "GuidanceResourcePage",
     "GuidancePageAssembler",
+    "GuidanceSection",
+    "GUIDANCE_SECTIONS_MARKER",
+    "MAX_GUIDANCE_SECTIONS",
     "list_resources",
     "resource_for_uri",
     "read_resource_page",
     "read_resource",
+    "guidance_sections",
     "resolve_guidance_topic_uri",
 ]
 
@@ -49,6 +53,12 @@ MAX_GUIDANCE_PAGE_COUNT: Final = 16_384
 _MAX_GUIDANCE_PAGE_BYTES: Final = 65_536
 _MIN_GUIDANCE_PAGE_SIZE: Final = 4
 _GUIDANCE_HEADING: Final = re.compile(r"^(#{1,6}) (.+?)\s*$")
+# tb4n5: page zero of a paged read names the catalogued sections the resource contains, so an
+# agent reads one section instead of paging an 80 KB document. The text channel carries that list
+# after the page's end marker; this first line is the only thing a page rendering may append.
+GUIDANCE_SECTIONS_MARKER: Final = "YOETZ_GUIDANCE_SECTIONS"
+# A document's section list is bounded; the largest shipped document catalogues 39 topics.
+MAX_GUIDANCE_SECTIONS: Final = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +162,14 @@ class GuidanceResourcePage:
             "revision": self.revision,
             "digest": self.digest,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class GuidanceSection:
+    """One catalogued topic inside a guidance resource: its exact URI and UTF-8 byte size."""
+
+    uri: str
+    byte_count: int
 
 
 class GuidanceAssemblyError(ValueError):
@@ -398,6 +416,12 @@ def _validate_host_page_rendering(
     )
     if not host_text.startswith(begin):
         raise GuidanceAssemblyError("guidance_host_delivery_incomplete")
+    if page == 0:
+        # Page zero may append the section list right after its end marker (tb4n5). The list is
+        # advisory and outside the page bytes, so only the text up to the end marker is checked.
+        trailer = host_text.find(f"\n{end}\n{GUIDANCE_SECTIONS_MARKER} ", len(begin))
+        if trailer >= 0:
+            host_text = host_text[: trailer + 1 + len(end)]
     separator = host_text.find("\n", len(begin))
     if separator < 0 or not host_text.endswith(end):
         raise GuidanceAssemblyError("guidance_host_delivery_incomplete")
@@ -668,6 +692,43 @@ def _topic_resource(uri: str) -> GuidanceResource:
         section_start=start,
         section_end=end,
     )
+
+
+def guidance_sections(uri: str) -> tuple[GuidanceSection, ...]:
+    """The catalogued topics inside one registered resource, in document order (tb4n5).
+
+    tb4n5 agents read the 80 KB request-templates page whole 34 times; its first page held no
+    request body, so they paged, ran ``sed`` ranges or guessed anchors. Page zero of a paged read
+    now names the sections to read instead. The list is generated from the closed topic catalog
+    and the packaged bytes, the same source ``read_guidance`` admits anchors from, so it cannot
+    drift the way a hand-written map can. A whole document lists every catalogued topic; a heading
+    topic lists the catalogued topics that start inside it; a focused topic lists none.
+    """
+
+    resource = _resource_for_uri(uri)
+    document = uri.partition("#")[0]
+    if document not in _RESOURCE_BY_URI:
+        return ()
+    start = resource.section_start or 0
+    end = resource.section_end
+    if end is None:
+        end = len(resource.source_bytes)
+    prefix = document + "#"
+    found: list[tuple[int, GuidanceSection]] = []
+    for topic_uri in GUIDANCE_TOPIC_URIS:
+        if not topic_uri.startswith(prefix) or topic_uri == uri:
+            continue
+        topic = _topic_resource(topic_uri)
+        topic_start = cast(int, topic.section_start)
+        if start <= topic_start < end:
+            found.append(
+                (
+                    topic_start,
+                    GuidanceSection(topic_uri, cast(int, topic.section_end) - topic_start),
+                )
+            )
+    found.sort(key=lambda item: item[0])
+    return tuple(section for _offset, section in found[:MAX_GUIDANCE_SECTIONS])
 
 
 # An explicit ``<a id="..."></a>`` target a guidance document writes beside a heading. Several name

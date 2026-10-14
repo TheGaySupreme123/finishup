@@ -2519,7 +2519,8 @@ def summary_for_read_guidance(envelope: object) -> str:
                     f"Guidance page {page}/{page_count} for {uri}: {page_bytes} bytes of "
                     f"{total_bytes}; complete: {complete}; continuation: {continuation}; "
                     f"revision: {digest_text}; full page in structuredContent.text."
-                )
+                ),
+                _guidance_sections_part(source.get("sections")),
             ]
         )
     return _compose(
@@ -2530,6 +2531,32 @@ def summary_for_read_guidance(envelope: object) -> str:
             )
         ]
     )
+
+
+def _guidance_sections_part(raw: object) -> Part | None:
+    """Name the sections page zero lists (tb4n5), re-gated against the closed URI catalog."""
+
+    if not isinstance(raw, (list, tuple)):
+        return None
+    rows: list[str] = []
+    for entry in cast("list[object] | tuple[object, ...]", raw):
+        uri = _field_of(entry, "uri")
+        if type(uri) is not str or uri not in _REGISTERED_GUIDANCE_URIS or "#" not in uri:
+            return None
+        rows.append(f"#{uri.partition('#')[2]} {_safe_count(_field_of(entry, 'byte_count'))}")
+    if not rows:
+        return None
+    lead = (
+        f"{len(rows)} sections in structuredContent.sections; read only the one you need "
+        "instead of paging"
+    )
+    return _opt(f"{lead}: {', '.join(rows)}.", f"{lead}.", priority=_P_ACTION)
+
+
+def _field_of(entry: object, name: str) -> object:
+    if isinstance(entry, Mapping):
+        return cast(Mapping[str, object], entry).get(name)
+    return None
 
 
 def summary_for_closure_prepare(envelope: object) -> str:

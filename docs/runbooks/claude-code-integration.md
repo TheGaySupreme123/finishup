@@ -1379,6 +1379,24 @@ The `PermissionDenied` hook skips its advisory for `mode: inspect` as it does fo
 `mode: deterministic_only`: a denied inspection shows no AI-powered review notice and spends no
 retry offer.
 
+### Guidance delivery on Claude Code (tb4n5)
+
+- **Closure trigger in the skill description.** The skill description ends "Also use when a
+  Yoetz finding, Stop message or receipt needs an answer", so a host that selects skills by
+  description can load the skill again at closure. Decision: supported; whether this host
+  re-selects the skill at closure is unmeasured until its dogfood lane runs.
+- **Initialize body.** The Claude body already said "Do not list resources"; it drops its cadence
+  sentence, which the operating card states once (ADR-047 amendment). The skill keeps one start
+  sentence that names its antecedent, the card pointer and the closure judgment rules; the capacity
+  procedure is the catalogued topic `workflow.md#change-local-retention-capacity`. Decision:
+  supported.
+- **Page-zero sections.** Page zero of a paged `read_guidance` read appends the section list after
+  its end marker (`YOETZ_GUIDANCE_SECTIONS ...`, one `#<anchor> <bytes>` line each) and carries
+  `structuredContent.sections`. The list is outside the page bytes, so `GuidancePageAssembler`
+  verifies the page as before. Decision: supported.
+- **Check-cell deadline at closure.** Not applicable: Claude Code runs a tool call to completion,
+  so there is no yielding cell to stale a check. The Stop gate text is unchanged on this host.
+
 ### Bounded workflow recovery examples (#613)
 
 These examples use the existing MCP operations on the pinned local Claude Code cell. Replace

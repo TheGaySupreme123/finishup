@@ -1122,3 +1122,21 @@ def test_the_reread_names_only_what_the_message_missed_and_the_downgrade_still_c
     h.readiness.rechecks = (invite, ack_recheck(_RESOLVED_B, since=8))
     after = _final_stop(h, host, session, "Acknowledged as not done.")
     assert "closure gate" not in json.dumps(after)
+
+
+def test_only_the_codex_stop_gate_repeats_the_check_cell_deadline(
+    tmp_path: Path, host: _Host
+) -> None:
+    """tb4n5 (P6): a yielded Codex `check` cell stales its own check; the gate names the pragma."""
+
+    from yoetz.protocol.readiness_text import CODEX_CHECK_CELL_PRAGMA
+
+    session = "gate-pragma"
+    h = _Harness(tmp_path, host.key(session))
+    text = host.assert_gate(_stop(h, host, session))
+    if host.name == "codex":
+        assert f"starting its Codex cell with `{CODEX_CHECK_CELL_PRAGMA}`" in text
+    else:
+        # Claude Code and Cursor run a tool call to completion: their close text is unchanged.
+        assert "yield_time_ms" not in text
+        assert gate_module._CLOSE_TEXT in text  # pyright: ignore[reportPrivateUsage]

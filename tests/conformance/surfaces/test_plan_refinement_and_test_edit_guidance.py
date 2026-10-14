@@ -60,13 +60,14 @@ def test_publication_topic_names_the_requested_file_justification() -> None:
     assert "hook-observed verification run made after your last observed edit" in text
 
 
-def test_core_and_every_skill_carry_milestone_check_cadence() -> None:
+def test_the_core_carries_milestone_check_cadence_for_every_skill() -> None:
     core = _collapsed(_ROOT / "guidance/agent-instructions.md")
     assert "`check` after the plan and each milestone" in core
     assert "an unchanged recheck returns it" in core
     workflow = _collapsed(_ROOT / "guidance/workflow.md")
     assert "a recheck with no new events returns the same finding" in workflow
+    # tb4n5 startup dedup (ADR-047): the cadence is stated once, in the card every skill names.
     for skill in _SKILLS:
         text = _collapsed(skill)
-        assert "`check` after the plan and each milestone" in text
-        assert "not just recheck" in text
+        assert "yoetz://guidance/agent-instructions.md" in text
+        assert "each milestone" not in text

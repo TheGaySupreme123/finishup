@@ -87,7 +87,7 @@ from yoetz.domain.task_fact_tokens import (
 )
 from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.readiness_text import predicted_receipt_variants
+from yoetz.protocol.readiness_text import CODEX_CHECK_CELL_PRAGMA, predicted_receipt_variants
 
 if TYPE_CHECKING:
     from yoetz.ports.control import ControlClientKind
@@ -283,6 +283,24 @@ _BLOCKER_OFFER_SHORT_TEXT: Final = (
 _CLOSE_TEXT: Final = (
     "Then run `check` and request the receipt. A Yoetz limit is never a `yoetz-blocker`."
 )
+# tb4n5 (P6): in Codex code mode a `check` cell without a yield deadline yields; the yielded cell
+# then lands after the check and makes it stale (Yoetz-only yielded check cells in 5 of 9 S
+# attempts, a stale final check in 6). The deadline pragma was only in `startup.md`, read at start
+# and forgotten by closure, so the Codex Stop gate repeats it where it asks for that check. The
+# value is the bridge's `check` deadline (``CODEX_CHECK_YIELD_TIME_MS``; a test pins the two
+# together). Claude Code and Cursor run a tool call to completion, so their text is unchanged.
+_CLOSE_TEXT_CODEX: Final = (
+    f"Then run `check`, starting its Codex cell with `{CODEX_CHECK_CELL_PRAGMA}` so it does not"
+    " yield, and request the receipt. A Yoetz limit is never a `yoetz-blocker`."
+)
+
+
+def _close_text(host: str | None) -> str:
+    """The close instruction; on Codex it repeats the `check` cell's yield deadline (tb4n5)."""
+
+    return _CLOSE_TEXT_CODEX if host == "codex" else _CLOSE_TEXT
+
+
 # tb4n2 FH A-12 (cargo D): an obligation was published resolved while the agent's own output said
 # the outcome was infeasible. An acknowledged obligation is left out of the completion claim and no
 # longer traps closure (issue #1022). tb4n3 RC-1/RC-8: when the criteria can only be checked outside
@@ -916,6 +934,7 @@ def _fallback_parts(
     accept_text: str,
     lineage: tuple[str, ...] = (),
     undeclared: tuple[str, ...] = (),
+    close_text: str = _CLOSE_TEXT,
 ) -> list[tuple[str, Part]]:
     """The gate's sentences as named parts, in reading order, for the composed fallback.
 
@@ -955,7 +974,7 @@ def _fallback_parts(
         parts.append(("limitations", Part((limitations,), priority=5)))
     if accept_text:
         parts.append(("acceptance", Part((accept_text,), priority=8)))
-    parts.append(("close", Part((_CLOSE_TEXT,), required=True)))
+    parts.append(("close", Part((close_text,), required=True)))
     if offers_blocker:
         parts.append(("offer", Part((_BLOCKER_OFFER_TEXT, _BLOCKER_OFFER_SHORT_TEXT), priority=4)))
     if unconfirmed:
@@ -982,8 +1001,12 @@ def closure_gate_from_readiness(
     reasked_blockers: frozenset[str] = frozenset(),
     active_stop: bool = False,
     final_message: str | None = None,
+    host: str | None = None,
 ) -> ClosureGate | None:
     """Decide the gate from one ``closure_readiness`` object; ``None`` means let the agent stop.
+
+    ``host`` is the hook host (``codex``, ``claude`` or ``cursor``). On ``codex`` the close
+    instruction repeats the `check` cell's ``yield_time_ms`` deadline (tb4n5).
 
     ``final_message`` (#1050) is the agent's last message when the host passed one. The acceptance
     re-read names the obligations readiness announced (since tb4n5 only the resolved obligations
@@ -1253,7 +1276,7 @@ def closure_gate_from_readiness(
             # FH A-12, announced by readiness: the first optional sentence dropped under the host
             # bound, with the drain note.
             parts.append(accept_text)
-        parts.append(_CLOSE_TEXT)
+        parts.append(_close_text(host))
         # The blocker exit is offered only for open obligations: findings, reviews and Yoetz
         # limits are never excused by a blocker (F1, #984).
         if offers_blocker:
@@ -1337,6 +1360,7 @@ def closure_gate_from_readiness(
             accept_text=accept_text,
             lineage=lineage_variants,
             undeclared=undeclared,
+            close_text=_close_text(host),
         )
         composed = compose_parts([part for _, part in parts], _MAX_TEXT_CHARS, ascii_only=False)
         # The predicted conclusion yields before anything else: it is added only when the whole
@@ -1415,6 +1439,7 @@ async def read_closure_gate(
     active_stop: bool = False,
     final_message: str | None = None,
     on_acceptance_covered: Callable[[], object] | None = None,
+    host: str | None = None,
 ) -> ClosureGate | None:
     """Read the mapped session's compact status and decide the gate.
 
@@ -1459,6 +1484,7 @@ async def read_closure_gate(
             reasked_blockers=reasked_blockers,
             active_stop=active_stop,
             final_message=message,
+            host=host,
         )
         if (
             message is not None
@@ -1474,6 +1500,7 @@ async def read_closure_gate(
                 observation_pending=observation_pending,
                 reasked_blockers=reasked_blockers,
                 active_stop=active_stop,
+                host=host,
             )
             if unanswered is not None and ACCEPTANCE_RECHECK_ITEM in unanswered.items:
                 with contextlib.suppress(Exception):

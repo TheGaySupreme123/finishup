@@ -114,8 +114,15 @@ def test_safety_floor_routes_delegation_to_the_workflow_rules() -> None:
 
 
 @pytest.mark.parametrize("skill", _SKILLS, ids=lambda path: path.parts[-3])
-def test_every_skill_names_the_assignment_and_child_closure(skill: Path) -> None:
+def test_every_skill_reaches_the_assignment_and_child_closure_through_the_card(skill: Path) -> None:
+    # tb4n5 startup dedup (ADR-047): the skills no longer repeat the card's routes; each names the
+    # operating card, whose multi-agent section routes delegation to the workflow rules.
     text = _collapsed(skill)
-    assert "yoetz://guidance/workflow.md#start-and-resume" in text
-    assert "delegation" in text
+    assert "yoetz://guidance/agent-instructions.md" in text
+    assert "that core is the operating card" in text
     assert "closure" in text
+    card = _section(_AGENT_INSTRUCTIONS, "# Multi-agent work")
+    assert (
+        "read the multi-agent sections of `yoetz://guidance/workflow.md` and `delegation.md`"
+        in (card)
+    )

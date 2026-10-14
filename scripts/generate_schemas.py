@@ -51,6 +51,7 @@ _DRAFT_2020_12: Final = "https://json-schema.org/draft/2020-12/schema"
 _SCHEMA_MEDIA_TYPE: Final = "application/schema+json"
 _MAX_OUTPUT_BYTES: Final = 20_000_000
 _MAX_GUIDANCE_DOCUMENT_BYTES: Final = 1_048_576
+_MAX_GUIDANCE_SECTIONS: Final = 128
 
 
 class SchemaGenerationError(Exception):
@@ -6856,6 +6857,7 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                                     "page_count",
                                     "complete",
                                     "continuation",
+                                    "sections",
                                 )
                             ]
                         },
@@ -6888,6 +6890,11 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                         },
                         "then": {"required": ["continuation"]},
                     },
+                    {
+                        # tb4n5: only page zero of a paged read names the resource's sections.
+                        "if": {"required": ["sections"]},
+                        "then": {"properties": {"page": {"const": "0"}}},
+                    },
                 ],
                 "properties": {
                     "byte_count": {"maximum": 65536, "minimum": 0, "type": "integer"},
@@ -6907,6 +6914,12 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                     },
                     "page_size": {"$ref": "#/$defs/page_size"},
                     "revision": {"$ref": "#/$defs/digest"},
+                    "sections": {
+                        "items": {"$ref": "#/$defs/section"},
+                        "maxItems": _MAX_GUIDANCE_SECTIONS,
+                        "minItems": 1,
+                        "type": "array",
+                    },
                     "text": {"maxLength": 65536, "minLength": 0, "type": "string"},
                     "total_byte_count": {
                         "maximum": _MAX_GUIDANCE_DOCUMENT_BYTES,
@@ -6916,6 +6929,19 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                     "uri": {"$ref": "#/$defs/guidance_resource_uri"},
                 },
                 "required": ["byte_count", "media_type", "ok", "text", "uri"],
+                "type": "object",
+            },
+            "section": {
+                "additionalProperties": False,
+                "properties": {
+                    "byte_count": {
+                        "maximum": _MAX_GUIDANCE_DOCUMENT_BYTES,
+                        "minimum": 0,
+                        "type": "integer",
+                    },
+                    "uri": {"$ref": "#/$defs/guidance_resource_uri"},
+                },
+                "required": ["byte_count", "uri"],
                 "type": "object",
             },
             "canonical_positive_uint": {

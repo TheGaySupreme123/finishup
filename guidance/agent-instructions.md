@@ -12,7 +12,7 @@ Deliver each requested output at its path, best-effort and disclosed if an input
 
 Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance; a list failure is not a missing server or reason to read product source. If a body is empty or clipped, call `read_guidance` with the same URI. Only if that result is also empty, use installed `references/<name>.md` or the topic's parent index.
 
-Focused topics by trigger: failed write `recovery.md`; batch `publication.md`; finding `review.md`; closing `receipt.md`; resume `startup.md`; delegate `delegation.md`; setup `consent.md`; clipped page `page-delivery.md`. Long pages open with a map of `#anchor` topics; use only named anchors.
+Focused topics by trigger: failed write `recovery.md`; batch `publication.md`; finding `review.md`; closing `receipt.md`; resume `startup.md`; delegate `delegation.md`; setup `consent.md`; clipped page `page-delivery.md`. A long page lists its `#anchor` sections on page 0; read one section, not the page, and use only listed anchors.
 
 # Start contract
 

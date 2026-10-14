@@ -1505,6 +1505,24 @@ ordinary profile `StrReplace`, `Delete` and other unclassified tools are listed 
 actions, and the structural profile's post-only results carry no tool identity, so those runs are
 not listed at all; `action_count` counts only what the record holds.
 
+### Guidance delivery on Cursor (tb4n5)
+
+- **Closure trigger in the skill description.** The skill description ends "Also use when a
+  Yoetz finding, Stop message or receipt needs an answer", so a host that selects skills by
+  description can load the skill again at closure. Decision: supported; whether this host
+  re-selects the skill at closure is unmeasured until its dogfood lane runs.
+- **Initialize body.** Cursor serves the same compact body as Codex, which adds "Do not list
+  resources; read the named topics" and leaves the cadence to the operating card (ADR-047
+  amendment). The skill keeps one start sentence that names its antecedent, the card pointer and
+  the closure judgment rules; the capacity procedure is the catalogued topic
+  `workflow.md#change-local-retention-capacity`. Decision: supported.
+- **Page-zero sections.** Cursor does not reliably deliver `structuredContent`, so the list rides
+  the text channel: page zero appends it after its end marker (`YOETZ_GUIDANCE_SECTIONS ...`, one
+  `#<anchor> <bytes>` line each). It is outside the page bytes; `GuidancePageAssembler` accepts it
+  only there. Decision: supported; the Cursor dogfood lane is pending.
+- **Check-cell deadline at closure.** Not applicable: Cursor runs a tool call to completion, so
+  there is no yielding cell to stale a check. The Stop gate text is unchanged on this host.
+
 ### Bounded workflow recovery examples (#613)
 
 These examples use the existing MCP operations on the pinned local Cursor IDE or Agent CLI cell.

@@ -304,6 +304,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "page_count",
                 "complete",
                 "continuation",
+                "sections",
             }
         ),
     ),
@@ -2032,6 +2033,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "page_count",
         "complete",
         "continuation",
+        "sections",
     ):
         covered["ReadGuidanceSuccessModel", field] = (
             "test_legacy_guidance_result_omits_unset_paging_metadata"

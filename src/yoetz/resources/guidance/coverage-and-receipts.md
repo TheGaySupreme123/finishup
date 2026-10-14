@@ -4,19 +4,10 @@ Use the small `review.md` or `receipt.md` topic through `read_guidance` for a fo
 closure decision. This complete document remains authoritative for the full coverage vector,
 finding rules, recovery, and receipt fields.
 
-Read only the section you need, as `yoetz://guidance/coverage-and-receipts.md#<anchor>`:
-
-| Situation | Anchor |
-| --- | --- |
-| a finding to answer or repair | `#findings-and-responses` |
-| the order of repair, final check, and receipt | `#repair-then-finish` |
-| what `closure_readiness` asks of you | `#closure-readiness-actionable-standing-acknowledged` |
-| choosing a check mode, or an AI-powered review outcome | `#check-mode-and-ai-powered-review-coverage` |
-| a check held by host auto-review | `#when-host-auto-review-blocks-an-ai-powered-check-before-yoetz-runs` |
-| a check waiting on a local decision (`awaiting_human`) | `#when-a-check-is-waiting-on-a-local-decision` |
-| a missing repository grant | `#when-the-current-repository-grant-is-missing` |
-| receipt wording and fields | `#receipt-fields-and-wording` |
-| evidence strength and provenance | `#evidence-and-provenance` |
+Read only the section you need, as `yoetz://guidance/coverage-and-receipts.md#<anchor>`: a paged
+read lists every section anchor on page 0. Two are not obvious from their names: the order of
+repair, final check, and receipt is `#repair-then-finish`; a check waiting on a local decision
+(`awaiting_human`) is `#when-a-check-is-waiting-on-a-local-decision`.
 
 ## Coverage is a vector
 

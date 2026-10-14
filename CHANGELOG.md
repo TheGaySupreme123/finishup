@@ -230,6 +230,21 @@ reverse-chronological released versions.
   cannot prove the repair. No tool, field or behavior changed, and the mandatory startup text
   stays within its 8 KiB budget.
 
+- Reading a long guidance page by its plain address now shows, on its first page, the list of
+  sections it contains with their sizes, so an agent reads the one section it needs instead of
+  paging; the list comes from the same catalog the reader accepts, so it cannot go stale, and the
+  hand-written maps at the top of those pages shrink to the few rows a section name does not make
+  obvious. The startup text says each rule once: the Codex and Cursor startup text adds "do not
+  list resources", the per-step cadence lives only in the operating card, and the host skills
+  drop their repeated start, recovery and cadence lines and keep a one-line capacity consent rule
+  that points at the capacity procedure. Each skill's description now also names closure ("a
+  Yoetz finding, Stop message or receipt needs an answer"), so hosts that choose skills by
+  description load it again when closing, and the operating card says a long page lists its
+  sections on page 0. Together that leaves about 420 to 490 bytes of the 8 KiB startup budget free
+  on every host. On Codex, the Stop message that asks for a final `check` now repeats the
+  `yield_time_ms` setting for that cell, as does the status explanation when a code-mode cell made
+  the check stale (tb4n5).
+
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
   a data table) now stops closure instead of being only disclosed: the Stop hook continues the agent
   and names each such file, `status` lists them (`closure_readiness.undeclared_references`), the

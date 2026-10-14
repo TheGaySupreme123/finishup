@@ -347,6 +347,19 @@ mismatches, and a final digest mismatch before exposing guidance. The frozen 1.0
 available for compatibility, and generated resource/skill mirrors continue to come from the
 resource ripple.
 
+**Amendment (2026-10-13, tb4n5): page zero names the sections.** tb4n5 agents read the 80 KB
+request templates whole 34 times in 15 of 18 attempts; page zero held no request body, so they
+paged, ran `sed` ranges or guessed anchors. Page zero of a paged read now carries an optional
+`sections` list (`{uri, byte_count}` per catalogued heading topic inside the resource, in document
+order, at most 128) in the still-unreleased `read_guidance` 1.1.0 result, edited in place like the
+2026-10-03 bound change. It is generated from the closed topic catalog and the packaged bytes, so
+it cannot drift from the anchors `read_guidance` admits, and the hand-written maps at the top of the
+paged documents shrink to the rows a name does not make obvious. Generic, Claude Code and Cursor
+text appends the list after page zero's end marker (`YOETZ_GUIDANCE_SECTIONS ...`); the assembler
+accepts it only there and still verifies exactly the bytes between the markers. The Codex pointer
+names the anchors beside `structuredContent.sections`. Later pages, unpaged reads and focused
+topics carry no list.
+
 **Amendment (ADR-023, 2026-08-21, issue #149): tier 2 gains a portable carrier; artifact and
 activation are sibling ports.** Tier 2 on-disk delivery may now be carried either by a host-native
 projection (the existing Codex layout) or by a portable Agent Plugins 1.0.0 artifact, both

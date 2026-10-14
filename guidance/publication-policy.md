@@ -298,7 +298,7 @@ no cursor. A `respond` request carries `finding_id`, `finding_frontier`, `dispos
 a `receipt` request carries its own receipt fields. Never copy response fields into a receipt, and
 never invent a finding disposition when a host reports that the wrong operation template was used.
 The complete operation bodies remain in `yoetz://guidance/request-templates.md`; read the one
-section its opening map names for your operation, such as `#respond` or `#receipt`.
+section for your operation, such as `#respond` or `#receipt` (page 0 lists every section).
 
 Newly minted caller IDs (`request_id`, event/object payload IDs, and claim IDs) use the required
 prefix plus a fresh lowercase UUID v4. Existing returned evidence, obligation, claim, and finding

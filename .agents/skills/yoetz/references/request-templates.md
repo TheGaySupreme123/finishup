@@ -5,28 +5,16 @@ These are complete request bodies for the six Yoetz operations and ordinary
 metadata. The operation input schema remains the field-shape authority; these templates are an
 authoring fallback, not a second protocol.
 
-Read one section, not this whole page: its first page holds no request body. Call
-`read_guidance` with `yoetz://guidance/request-templates.md#<anchor>`, taking the anchor from
-this map:
+Read one section, not this whole page: its first page holds no request body. A paged
+`read_guidance` read of this page lists every section anchor on page 0 (`sections`, generated from
+the catalog). Call `read_guidance` with `yoetz://guidance/request-templates.md#<anchor>`, taking the
+anchor from that list. These three are not obvious from their names:
 
 | You are writing | Anchor |
 | --- | --- |
-| `start`, or a revised task statement | `#start` |
-| the first plan and its obligations; resolving an obligation or marking it not done | `#publish-work-plan-plus-obligation` |
-| a plan revision that adds, carries or supersedes obligations | `#publish-work-revised-plan` |
-| an action | `#publish-work-action` |
-| the result of an action | `#publish-work-result` |
-| evidence | `#publish-work-evidence` |
-| a claim, or a completion-claim repair | `#publish-work-claim` |
-| a decision | `#publish-work-decision` |
-| `status` | `#status` |
-| `check`, including the closing review and an inspection | `#check-whole-case` |
-| `respond` | `#respond` |
-| `receipt` | `#receipt` |
-| `work_closed` | `#work-closed` |
-| delegation or a child attach | `#start-delegate-child-attach-and-self-registration` |
-| setup, settings, credentials, vault, or transcript import | `#setup-and-consent` |
-| a SessionStart recommendation | `#recommendations` |
+| a resolved obligation, or one marked not done | `#publish-work-plan-plus-obligation` |
+| the closing review or an inspection `check` | `#check-whole-case` |
+| settings, credentials, vault, or transcript import | `#setup-and-consent` |
 
 Do not derive an anchor from a tool or event name. Ordinary workflow calls with complete schema
 metadata do not require this document.
@@ -101,10 +89,13 @@ range, and show the valid paged retry shape without echoing caller content; do n
 
 Each page carries `document_id`, `revision`, `digest`, `total_byte_count`, `page`, `page_count`,
 `page_offset`, `page_byte_count`, and `complete`. A non-final page carries an exact `continuation`
-with the next page and the same revision/digest. The final page's `complete: true` means only that
-the service emitted the end page; it does not prove that the host received it. Require complete
-begin/end markers in the host-visible channel, keep pages in order, verify contiguous offsets and
-per-page byte counts, then compare the assembled UTF-8 bytes with the final digest and total length.
+with the next page and the same revision/digest. Page 0 also carries `sections`, the catalogued
+sections inside the document with their byte counts; a text host prints them after page 0's end
+marker, outside the page bytes. Read one of those section URIs instead of paging when you need one
+procedure. The final page's `complete: true` means only that the service emitted the end page; it
+does not prove that the host received it. Require complete begin/end markers in the host-visible
+channel, keep pages in order, verify contiguous offsets and per-page byte counts, then compare the
+assembled UTF-8 bytes with the final digest and total length.
 Keep each host print bounded to one page; never print all pages or the assembled document in one
 tool result, because a host text channel can clip after receiving a valid structured response.
 Missing or clipped markers, a missing page, stale revision, mismatched digest, or a changed length

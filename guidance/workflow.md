@@ -3,21 +3,12 @@
 Read when resuming without the prior workflow in context, before delegating, or when a result,
 error or continuation names this page; the [operating card](agent-instructions.md) is enough for
 ordinary work. Use the current tool schemas; missing schema metadata routes to one section of
-[request templates](request-templates.md), named in that page's opening map.
+[request templates](request-templates.md).
 
-Read only the section you need, as `yoetz://guidance/workflow.md#<anchor>`:
-
-| Situation | Anchor |
-| --- | --- |
-| starting, attaching, or resuming after compaction | `#start-and-resume` |
-| a failed, pending, or unknown write | `#recovery-decision-table-02` |
-| what to publish, and when | `#cadence` |
-| closing: `closure_readiness`, a Stop message, deliverables | `#completion` |
-| an error code or typed continuation | `#errors-and-continuations` |
-| a finding, a response, or a recheck | `#findings-and-recheck` |
-| delegating, or working as a child | `#delegation-and-project-coordination` |
-| Yoetz unavailable or degraded | `#degraded-and-unavailable-behavior` |
-| a capacity or retention change | `#change-local-retention-capacity` |
+Read only the section you need, as `yoetz://guidance/workflow.md#<anchor>`: a paged read lists
+every section anchor on page 0. Two are not obvious from their names: a failed, pending, or
+unknown write is `#recovery-decision-table-02`; closing (`closure_readiness`, a Stop message,
+deliverables) is `#completion`.
 
 Yoetz records participant-published facts and checks that bounded record; it does not prove the
 underlying work correct. For operational behavior, this served guidance and the typed result take
