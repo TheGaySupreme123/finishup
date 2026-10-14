@@ -2118,7 +2118,7 @@ Shared service projection, no host-specific path. Every receipt an agent can req
 `receipt` tool, or `yoetz receipt` run by the agent, under a pseudo-terminal or not) is the agent
 projection: normal prose, titles, codes and counts stay; undeclared repository names the policy
 withholds become `(receipt prose withheld: repository_excerpt)`, including `./` and absolute
-spellings, and an exact name the requesting writer published itself returns. Large receipts stay
+spellings (quoted when a directory has spaces), and an exact name the requesting writer published itself returns. Large receipts stay
 valid: omission lists coalesce and an over-long field is cut visibly. The owner's full receipt is
 `yoetz receipt --owner-view` (or *Your full receipt* in the terminal interface), which needs the
 `owner_receipt_view` reauthentication; the packaged service supports it only on a passphrase vault

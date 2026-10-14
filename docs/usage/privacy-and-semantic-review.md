@@ -566,8 +566,8 @@ Your agent reads its receipts in JSON, markdown and text under your privacy poli
 prose, section titles, counts and coverage codes stay readable. When a receipt names a repository
 file that your policy keeps from agents (for example a file the check found but no participant
 published), only that name becomes `(receipt prose withheld: repository_excerpt)`; the rest of the
-sentence stays. The same file written as `./artifacts/model.npz` or as an absolute path is withheld
-too. A name your agent published itself in the same session returns to it. The list of omitted
+sentence stays. The same file written as `./artifacts/model.npz`, or as an absolute path (in quotes when a folder
+name has spaces), is withheld too. A name your agent published itself in the same session returns to it. The list of omitted
 fields tells your agent where something was withheld; for a very large receipt it names the
 containing sections, and a field that would grow too long ends with a visible
 `[receipt text truncated after withholding: ...]` note. Asking for a full local profile or another

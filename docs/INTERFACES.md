@@ -10025,11 +10025,14 @@ repository excerpts, or the requesting writer published that exact name in this 
 accepted, unredacted cooperative publication, the whole path token becomes
 `(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the quoted
 path the receipt prints, the bare path when it has a directory, or a basename with an extension,
-with any leading `./` (quoted or not) or an absolute directory prefix counted as the same file. A
-different relative directory, a longer name, a plain word such as `Summary`, and a different letter
-case stay readable: spellings are compared exactly, because folding case or Unicode would conflate
-distinct files on a case-sensitive filesystem. The rule applies to JSON, markdown and text and to
-every profile, `full_local` included: a format or profile is not a disclosure grant.
+with any leading `./` (quoted or not) or an absolute directory prefix counted as the same file; a
+path in single quotes, double quotes or backticks may run through directories with spaces and the
+whole quoted token is withheld. An unquoted absolute path through a directory with spaces has no
+token boundary in prose and is not recognised as one path. A different relative directory, a longer
+name, a suffix, a plain word such as `Summary`, and a different letter case stay readable:
+spellings are compared exactly, because folding case or Unicode would conflate distinct files on a
+case-sensitive filesystem. The rule applies to JSON, markdown and text and to every profile,
+`full_local` included: a format or profile is not a disclosure grant.
 
 The token can be longer than the name it replaces. A field that would then pass its wire bound
 (32,768 characters for `human_text`, at least its original length for a document field) or the
@@ -10052,15 +10055,21 @@ them selects the owner's view, and the service ignores them as authority. The ow
 (`local_human_view`) needs an explicit request, `yoetz receipt --owner-view` or *Your full receipt*
 in the terminal interface, and a human-control `owner_receipt_view` ceremony: the owner
 reauthenticates with operating-system presence or the vault passphrase for that exact receipt
-request on that command's own control connection, and the service mints a one-use grant that
-expires after 60 seconds and is consumed by the matching receipt call. There is no standing grant,
-and the agent-attested consent lane cannot stand in for it. The packaged service has no
-operating-system presence adapter yet, so today only a passphrase vault can complete the ceremony;
-anywhere else (an OS-keyring vault, a headless Linux or WSL 2 session) the request fails closed
-with `owner_view_unavailable`, shows nothing, and points to `git status --short` for what the change
-created. A process running as the owner's account that can already read the vault passphrase (for
-example from an auto-unlock keyring entry) is outside this boundary, as for every passphrase
-reauthentication (ADR-008).
+request. The grant belongs to the command's own control connection as the service admitted it: the
+service mints an opaque identity for every admitted connection and never takes one from the client,
+refuses any connection whose hello nonce is already live or was used before, mints the grant only
+for the one live connection the ceremony target names, consumes it only on a receipt call on that
+connection, and revokes it when the connection closes. The grant is one-use and expires after 60
+seconds. There is no standing grant, and the agent-attested consent lane cannot stand in for it.
+Anyone holding the terminal can type into the prompt, a pseudo-terminal included; the boundary is a
+passphrase or presence check the agent cannot pass. The packaged service has no operating-system
+presence adapter yet, so today only a passphrase vault can complete the ceremony. On an OS-keyring
+vault the request fails closed with `owner_view_unavailable`; a command with no foreground terminal
+to prompt on (for example a headless session) fails with `owner_view_requires_terminal`. Either way
+it shows nothing and points to the next step. Linux and WSL 2 use the same code but were not
+exercised for this change. A process running as the owner's account that can already read the vault
+passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for every
+passphrase reauthentication (ADR-008).
 
 The shared `Application.project_result_for_client` builds the name spans in
 `application/receipt_projection.py`: names come from every check recorded through the receipt's
@@ -10071,6 +10080,10 @@ the authorized sink payload under another category. `resolve_client_disclosure_s
 `local_human_view` only for a `ClientProjectionContext(owner_view=True)` on a `cli` or `ui` call;
 only the daemon sets that flag, after `service/owner_view.py` consumed a grant whose target digest
 binds the receipt request's task, session, request ID, format, include and profile to a digest of
-the control connection nonce. Other result methods keep their classifications. Codex, Claude Code
+the control connection nonce. `OwnerViewGrants.admit` gives every admitted control connection a
+service-minted admission identity and refuses a nonce that is live or was already admitted;
+`issue` resolves the target's connection digest to that one live admission (no live connection,
+no grant: the ceremony fails `target_invalid`); `consume(admission, target)` succeeds once, on
+that admission only; `release` on disconnect revokes its grants. Other result methods keep their classifications. Codex, Claude Code
 and Cursor share this service boundary; MCP summaries and the Stop gate use projected fields and
 structural counts.

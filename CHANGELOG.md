@@ -415,7 +415,7 @@ reverse-chronological released versions.
 - A receipt your agent reads no longer shows the names of repository files your privacy policy
   keeps from agents, even when the agent asks for a full local profile, in JSON, markdown and text.
   Only the name is replaced with `(receipt prose withheld: repository_excerpt)`, including when it
-  is written as `./path` or as an absolute path; the rest of the receipt stays readable, and a name
+  is written as `./path` or as an absolute path (quoted, when a folder name has spaces); the rest of the receipt stays readable, and a name
   the agent published itself returns to it. A receipt with many withheld names still renders: past
   its bound the omitted-field list names the containing sections, and an over-long field ends with
   a visible truncation note. Older receipts follow the same rule when read again.
@@ -424,7 +424,7 @@ reverse-chronological released versions.
   the agent's privacy view, as it already did over MCP: a terminal is not proof that you are the
   one reading, since an agent can run Yoetz in a pseudo-terminal of its own. To see your full receipt, run `yoetz receipt --owner-view` or
   choose *Your full receipt* in the terminal interface, and confirm it is you; the view is for that
-  one receipt, once. Yoetz can confirm it is you only with a vault passphrase for now. On a
+  one receipt, once, on that command's own connection. Yoetz can confirm it is you only with a vault passphrase for now. On a
   system-keychain installation, or where no one can answer the prompt, it reports that the full
   receipt is unavailable and shows nothing.
 

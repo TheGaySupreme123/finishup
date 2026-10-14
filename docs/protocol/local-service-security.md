@@ -142,10 +142,12 @@ always restores the 3600-second default — and disabling idle relock never disa
 session-lock, suspend, or monitor-loss relock.
 
 The owner's full receipt (`local_human_view`) uses the same channel: `yoetz receipt --owner-view`
-opens an `owner_receipt_view` ceremony bound to that one receipt request and a digest of the
-command's own control-connection nonce, which completes only with a fresh OS user-presence
-assertion or, in passphrase mode, the `privacy_reauthentication` purpose. The service then holds
-one in-memory grant for 60 seconds and consumes it on the matching receipt call. A terminal, a
+opens an `owner_receipt_view` ceremony bound to that one receipt request and to the command's own
+control connection, which completes only with a fresh OS user-presence assertion or, in
+passphrase mode, the `privacy_reauthentication` purpose. The service names each admitted control
+connection itself, refuses a connection whose hello nonce is live or was used before, holds one
+in-memory grant for 60 seconds under that admitted connection, consumes it only on the matching
+receipt call on that connection, and revokes it when the connection closes. A terminal, a
 pseudo-terminal, a client kind or a hello presentation field never substitutes for it.
 
 ## Forbidden secret surfaces
