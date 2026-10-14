@@ -27,6 +27,7 @@ from yoetz.adapters.integrations.codex_mcp import (
 )
 from yoetz.adapters.integrations.host_admission import (
     CODEX_EXTERNAL_ADMISSION_TABLE,
+    CODEX_PLUGIN_ADMISSION_TABLE,
     HostAdmissionAction,
     apply_host_admission,
     preview_host_admission,
@@ -207,9 +208,11 @@ def test_repeat_disconnect_repairs_tools_only_leftover(
     assert codex_project_mcp_leftover(home, project) is None
 
 
-def test_unloadable_project_config_after_disconnect_is_reported(
+def test_retained_foreign_table_refuses_before_any_change(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """CHECK_DISCONNECT_R1 P2-b: a retained table that needs the transport stops the plan."""
+
     home, project, installation = _layout(tmp_path)
     (project / ".codex").mkdir(mode=0o700)
     # A non-exact (foreign) table Yoetz does not own and therefore retains.
@@ -217,28 +220,110 @@ def test_unloadable_project_config_after_disconnect_is_reported(
         '[mcp_servers.yoetz.tools.status]\napproval_mode = "approve"\n'
     )
     cleanup = list[str]()
-    neutral = FakeCodex(home, tmp_path / "elsewhere")
-    _wire(monkeypatch, neutral, cleanup, skill=IntegrationState.ABSENT)
+    fake = FakeCodex(home, tmp_path / "elsewhere")
+    _wire(monkeypatch, fake, cleanup, skill=IntegrationState.ABSENT)
 
-    def probe(*_args: object) -> str:
-        # In the project, the retained foreign table has no transport once the user one goes.
-        return "loads" if neutral.registered else "fails"
+    with pytest.raises(ConnectionError, match="connection_project_mcp_tables_retained") as caught:
+        _plan(installation, project)
 
-    monkeypatch.setattr(codex_connection, "probe_project_config_load", probe)
-    plan = _plan(installation, project)
-    assert "remove_project_admission" not in _items(plan.body["changes"])
-    with pytest.raises(ConnectionError, match="connection_project_config_unloadable") as caught:
-        plan.apply_reviewed_steps()
     status = caught.value.status
     assert status is not None
-    assert status["project_config_load"] == "fails"
-    assert status["project_mcp_leftover"] == "tools_only"
-    assert _items(status["next_arguments"])[:4] == ["integrate", "codex", "admission", "preview"]
+    assert status["project_mcp_retained"] == str(project / ".codex" / "config.toml")
+    assert fake.registered
+    assert not any(call[1:3] == ("mcp", "remove") for call in fake.calls)
+    # Status keeps naming the conflict while the project still loads (the user-level
+    # registration is still present).
+    (home / "config.toml").write_text('[mcp_servers.yoetz]\ncommand = "yoetz"\n')
+    assert codex_connection.project_mcp_leftover_status(home, project) == {
+        "project_mcp_needs_registration": True
+    }
 
 
-def test_disconnect_lists_other_projects_with_admission(
+@pytest.mark.parametrize(
+    "content",
+    [
+        # A comment inside the generated table makes it the owner's (retained, not swept).
+        CODEX_EXTERNAL_ADMISSION_TABLE + "# user comment\n",
+        # An exact generated table plus a user-owned sibling tools table.
+        CODEX_EXTERNAL_ADMISSION_TABLE
+        + '\n[mcp_servers.yoetz.tools.status]\napproval_mode = "prompt"\n',
+    ],
+)
+def test_edited_or_sibling_admission_refuses_before_unregistering(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, content: str
+) -> None:
+    home, project, installation = _layout(tmp_path)
+    (project / ".codex").mkdir(mode=0o700)
+    (project / ".codex" / "config.toml").write_text(content)
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+
+    with pytest.raises(ConnectionError, match="connection_project_mcp_tables_retained"):
+        _plan(installation, project)
+
+    assert fake.registered and fake.loads()
+    assert (project / ".codex" / "config.toml").read_text() == content
+
+
+def test_unknown_admission_surface_refuses_before_any_change(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """CHECK_DISCONNECT_R1 P2-a: a symlinked approval file is never skipped."""
+
+    home, project, installation = _layout(tmp_path)
+    real = tmp_path / "real-config.toml"
+    real.write_text(CODEX_EXTERNAL_ADMISSION_TABLE)
+    (project / ".codex").mkdir(mode=0o700)
+    (project / ".codex" / "config.toml").symlink_to(real)
+    fake = FakeCodex(home, tmp_path / "elsewhere")
+    _wire(monkeypatch, fake, list[str]())
+
+    with pytest.raises(ConnectionError, match="connection_admission_cleanup_failed") as caught:
+        _plan(installation, project)
+
+    assert caught.value.status is not None
+    assert caught.value.status["admission_unreadable_surfaces"] == [".codex/config.toml"]
+    assert fake.registered
+    assert real.read_text() == CODEX_EXTERNAL_ADMISSION_TABLE
+
+
+@pytest.mark.parametrize("host", ["claude", "cursor"])
+def test_unknown_admission_surface_refuses_for_every_host(tmp_path: Path, host: str) -> None:
+    project = tmp_path / "project"
+    project.mkdir(mode=0o700)
+    surface = ".claude/settings.local.json" if host == "claude" else ".cursor/permissions.json"
+    real = tmp_path / "real.json"
+    real.write_text("{}")
+    (project / surface).parent.mkdir(mode=0o700)
+    (project / surface).symlink_to(real)
+
+    with pytest.raises(ConnectionError, match="connection_admission_cleanup_failed"):
+        AdmissionCleanupStep(project).plan({"changes": []}, host, "disconnect")  # type: ignore[arg-type]
+
+
+def test_admission_turning_unreadable_after_preview_stops_apply(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home, project, installation = _layout(tmp_path)
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+    plan = _plan(installation, project)
+    real = tmp_path / "real-config.toml"
+    real.write_text(CODEX_EXTERNAL_ADMISSION_TABLE)
+    (project / ".codex").mkdir(mode=0o700)
+    (project / ".codex" / "config.toml").symlink_to(real)
+
+    with pytest.raises(ConnectionError, match="connection_admission_cleanup_failed"):
+        plan.apply_reviewed_steps()
+
+    assert fake.registered
+
+
+def test_disconnect_keeps_registration_another_project_uses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The multi-project risk in CHECK_DISCONNECT_R1: B's approval table needs the transport."""
+
     home, project, installation = _layout(tmp_path)
     other = tmp_path / "other"
     other.mkdir(mode=0o700)
@@ -250,12 +335,89 @@ def test_disconnect_lists_other_projects_with_admission(
     fake, cleanup = FakeCodex(home, project), list[str]()
     _wire(monkeypatch, fake, cleanup)
     plan = _plan(installation, project)
-    assert "admission_present_in_other_projects" in _items(plan.body["warnings"])
+    assert "remove_mcp_registration" not in _items(plan.body["changes"])
+    assert "mcp_registration_kept_for_other_projects" in _items(plan.body["warnings"])
     others = plan.disclosure["admission_other_projects"]
     assert isinstance(others, list) and len(others) == 1
     assert isinstance(others[0], dict) and others[0]["project_root"] == str(other)
-    assert any("Other projects" in line for line in connection_summary(plan))
+    assert others[0]["dependence"] == "depends"
+    assert any("registration stays" in line for line in connection_summary(plan))
     validate_schema_instance("host-connection", "1.0.0", plan.body)
+
+    plan.apply_reviewed_steps()
+
+    assert fake.registered
+    assert not any(call[1:3] == ("mcp", "remove") for call in fake.calls)
+
+
+def test_plugin_only_or_own_transport_projects_do_not_hold_the_registration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """P3: projects that load without the home transport are not listed as dependent."""
+
+    home, project, installation = _layout(tmp_path)
+    plugin_only, own = tmp_path / "plugin-only", tmp_path / "own"
+    for root in (plugin_only, own):
+        (root / ".codex").mkdir(parents=True, mode=0o700)
+    (plugin_only / ".codex" / "config.toml").write_text(CODEX_PLUGIN_ADMISSION_TABLE)
+    (own / ".codex" / "config.toml").write_text(
+        '[mcp_servers.yoetz]\ncommand = "yoetz"\n\n' + CODEX_EXTERNAL_ADMISSION_TABLE
+    )
+    (home / "config.toml").write_text(
+        f'[projects."{plugin_only}"]\ntrust_level = "trusted"\n\n'
+        f'[projects."{own}"]\ntrust_level = "trusted"\n'
+    )
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+
+    plan = _plan(installation, project)
+
+    assert "remove_mcp_registration" in _items(plan.body["changes"])
+    assert "admission_other_projects" not in plan.disclosure
+
+
+def test_enumeration_bound_is_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    home, project, installation = _layout(tmp_path)
+    other = tmp_path / "zz-other"
+    other.mkdir(mode=0o700)
+    _grant(other)
+    trusted = [tmp_path / f"p{index:02d}" for index in range(40)]
+    (home / "config.toml").write_text(
+        "".join(f'[projects."{root}"]\ntrust_level = "trusted"\n\n' for root in [*trusted, other])
+    )
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+
+    plan = _plan(installation, project)
+
+    # The dependent project sorts after the bound, so it was not read; the bound is surfaced
+    # instead of reading absence from the list as "nobody depends".
+    assert plan.disclosure["admission_other_projects_known"] == 41
+    assert plan.disclosure["admission_other_projects_inspected"] == 32
+    assert any("were checked" in line for line in connection_summary(plan))
+
+
+def test_remove_shared_refuses_while_another_project_needs_the_registration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home, project, installation = _layout(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir(mode=0o700)
+    _grant(other)
+    (home / "config.toml").write_text(f'[projects."{other}"]\ntrust_level = "trusted"\n')
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str]())
+
+    with pytest.raises(ConnectionError, match="connection_other_projects_need_registration"):
+        codex_connection.prepare_codex_connection(
+            installation,
+            project,
+            action="disconnect",
+            route="strict",
+            request_value=REQUEST,
+            remove_shared=True,
+        )
+    assert fake.registered
 
 
 def test_leftover_detector_respects_user_transport(tmp_path: Path) -> None:

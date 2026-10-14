@@ -195,7 +195,8 @@ def test_partial_cursor_connection_resumes_only_remaining_mcp_stage(
     assert (config / "plugins/local/yoetz").is_dir()
     monkeypatch.setattr(mcp, "apply_cursor_project_mcp", original)
     remaining = prepare()
-    assert remaining.body["changes"] == ["register_project_mcp"]
+    # The interrupted connect never recorded the project (#1058), so resuming records it too.
+    assert remaining.body["changes"] == ["register_project_mcp", "record_connected_project"]
     result = apply_connection(
         remaining,
         accepted_digest=remaining.digest,
@@ -300,6 +301,9 @@ def test_cursor_second_path_to_a_connected_project_is_refused(tmp_path: Path) ->
             route="strict",
             launcher=(str(launcher),),
         )
-    # Disconnecting under the current path clears the old-path entry, after which it connects.
+    # Cursor's project MCP entry still names the old path, so it is not Yoetz's for the new one:
+    # the owner removes it (the refusal says so), then a disconnect under the current path
+    # clears the old-path record entry, after which the project connects.
+    (moved / ".cursor" / "mcp.json").unlink()
     _cursor_step(installation, moved, "disconnect", launcher, review)
     assert _cursor_step(installation, moved, "connect", launcher, review)["configured"] is True

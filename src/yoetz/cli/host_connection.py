@@ -208,15 +208,25 @@ def _admission_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
     others = body.get("admission_other_projects")
     if isinstance(others, list) and others:
         lines.append(
-            "Other projects still carry a Yoetz tool-approval entry; after this removal Codex "
-            "will not start there until it is revoked:"
+            "The Yoetz MCP registration stays: these projects' Codex configuration names the "
+            "Yoetz server without a transport of its own (or could not be read), and removing "
+            "the registration could stop Codex loading there:"
         )
         for item in others:
-            if isinstance(item, dict) and isinstance(item.get("next_arguments"), list):
+            if not isinstance(item, dict):
+                continue
+            lines.append(f"  {item.get('project_root')}")
+            if isinstance(item.get("next_arguments"), list):
                 lines.append(
-                    "  "
+                    "    to release it, revoke that project's approval entry: "
                     + continuation([str(a) for a in cast(list[JsonValue], item["next_arguments"])])
                 )
+    inspected = body.get("admission_other_projects_inspected")
+    if isinstance(inspected, int):
+        lines.append(
+            f"Only {inspected} of {body.get('admission_other_projects_known')} projects this "
+            "Codex home knows were checked; others may also use the registration."
+        )
     return tuple(lines)
 
 
@@ -266,6 +276,13 @@ def _duplicate_step(host: str, config_root: Path | None, project: Path) -> str:
         "connect it under this path, disconnect it first (that also removes the entry under "
         "the other path), then rerun this command: "
         + continuation([*arguments, "--project", str(project)])
+        + (
+            " If that disconnect reports the project's Yoetz MCP entry as foreign, it still "
+            "names the old path: remove the Yoetz entry from this project's .cursor/mcp.json "
+            "first."
+            if host.startswith("cursor")
+            else ""
+        )
     )
 
 
@@ -312,13 +329,62 @@ def _codex_duplicate_step(config_root: Path | None, project: Path) -> str:
 
 
 def _leftover_next_step(status: dict[str, JsonValue]) -> str | None:
-    if status.get("project_mcp_leftover") != "tools_only":
-        return None
-    return (
-        "This project's .codex/config.toml keeps a Yoetz tool-approval table for a server that "
-        "is no longer registered, so Codex cannot load its configuration here. Revoke it, then "
-        "accept the shown digest: " + str(status.get("next_command"))
-    )
+    leftover = status.get("project_mcp_leftover")
+    if leftover == "tools_only":
+        return (
+            "This project's .codex/config.toml keeps a Yoetz tool-approval table for a server "
+            "that is no longer registered, so Codex cannot load its configuration here. Revoke "
+            "it, then accept the shown digest: " + str(status.get("next_command"))
+        )
+    if leftover == "retained_tables":
+        return (
+            "This project's .codex/config.toml keeps [mcp_servers."
+            + MCP_SERVER_NAME
+            + "] tables that Yoetz did not write (or that were edited), for a server that is no "
+            "longer registered, so Codex cannot load its configuration here. Yoetz does not "
+            "edit them. Either remove those tables from that file yourself, or connect the "
+            "project again so the server is registered: " + str(status.get("next_command"))
+        )
+    return None
+
+
+def _refusal_step(reason: str, status: dict[str, JsonValue]) -> str | None:
+    """Plain-language continuation for a disconnect that stopped before changing anything."""
+
+    if reason == "connection_admission_cleanup_failed":
+        surfaces = status.get("admission_unreadable_surfaces")
+        named = (
+            ", ".join(str(item) for item in surfaces)
+            if isinstance(surfaces, list) and surfaces
+            else "its tool-approval file"
+        )
+        return (
+            f"Nothing was changed. This project's {named} could not be read safely (a symlink, "
+            "an unreadable or oversized file, or invalid syntax), so Yoetz cannot remove its "
+            "approval entry there, and removing the registration under it could stop the host "
+            "loading this project. Make it a regular file you own with valid syntax (or remove "
+            "the Yoetz entries from it yourself), then rerun this command."
+        )
+    if reason == "connection_project_mcp_tables_retained":
+        return (
+            "Nothing was changed. "
+            + str(status.get("project_mcp_retained"))
+            + " keeps [mcp_servers."
+            + MCP_SERVER_NAME
+            + "] tables that Yoetz did not write or that were edited (for example your own "
+            "tools.* approval settings or comments inside the Yoetz table). They need the Yoetz "
+            "MCP registration this disconnect would remove, and Codex would then refuse to load "
+            "this project. Remove or move those tables yourself, then rerun this command; or "
+            "keep Yoetz connected."
+        )
+    if reason == "connection_other_projects_need_registration":
+        return (
+            "Nothing was changed. Other projects' Codex configuration uses the Yoetz MCP "
+            "registration (listed in status), so removing it for every project would stop "
+            "Codex loading there. Revoke or remove their Yoetz approval tables first (status "
+            "shows the command where Yoetz can do it), or disconnect without --remove-shared."
+        )
+    return None
 
 
 def prepare_selected(
@@ -328,12 +394,18 @@ def prepare_selected(
     action: ConnectionAction,
     route: Literal["strict", "policy"],
     request_value: str,
+    remove_shared: bool = False,
 ) -> ConnectionPlan:
     if installation.host == "codex":
         from yoetz.cli.codex_connection import prepare_codex_connection
 
         return prepare_codex_connection(
-            installation, project, action=action, route=route, request_value=request_value
+            installation,
+            project,
+            action=action,
+            route=route,
+            request_value=request_value,
+            remove_shared=remove_shared,
         )
     invocation = invoking_launcher()
     if invocation is None:
@@ -347,6 +419,7 @@ def prepare_selected(
         route=route,
         launcher=resolve_yoetz_launcher(invocation),
         isolation_root=None if root is None else str(root),
+        remove_shared=remove_shared,
     )
 
 
@@ -387,6 +460,7 @@ def run_host_connection(
     preview_digest: str | None = None,
     json_output: bool = False,
     status_only: bool = False,
+    remove_shared: bool = False,
 ) -> int:
     report: dict[str, JsonValue] = {
         "schema": "yoetz.host-connection-report/1",
@@ -401,7 +475,12 @@ def run_host_connection(
 
         def prepare() -> ConnectionPlan:
             return prepare_selected(
-                selected, project, action=action, route=route, request_value=request
+                selected,
+                project,
+                action=action,
+                route=route,
+                request_value=request,
+                remove_shared=remove_shared,
             )
 
         plan = prepare()
@@ -497,9 +576,17 @@ def run_host_connection(
             )
         if isinstance(error, ConnectionError) and error.status is not None:
             rendered_status = _rendered_status(error.status)
+            others = rendered_status.get("admission_other_projects")
+            if isinstance(others, list):
+                rendered_status["admission_other_projects"] = [
+                    _rendered_status(item) if isinstance(item, dict) else item for item in others
+                ]
             report["status"] = rendered_status
             next_command = rendered_status.get("next_command")
-            if isinstance(next_command, str):
+            refusal = _refusal_step(reason, rendered_status) or _leftover_next_step(rendered_status)
+            if refusal is not None:
+                report["next_step"] = refusal
+            elif isinstance(next_command, str):
                 report["next_step"] = (
                     "Inspect the selected registration before a fresh preview: " + next_command
                 )
@@ -597,6 +684,7 @@ def connection_continuation(plan: ConnectionPlan) -> str:
         str(body["request_id"]),
         "--preview-digest",
         plan.digest,
+        *(["--remove-shared"] if plan.disclosure.get("remove_shared") is True else []),
         "--accept",
         "--non-interactive",
     ]

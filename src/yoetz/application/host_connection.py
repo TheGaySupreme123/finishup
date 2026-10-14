@@ -152,6 +152,30 @@ def plan_digest(body: dict[str, JsonValue], disclosure: dict[str, JsonValue]) ->
     return canonical_digest(body if not disclosure else {**body, "disclosure": disclosure})
 
 
+def _refuse_unknown_admission(cleanup: dict[str, JsonValue]) -> None:
+    """Stop a disconnect whose admission surfaces Yoetz cannot read or safely edit.
+
+    A symlinked, oversized, or unparsable approval file may still hold an entry the host loads;
+    removing the registration under it would leave the project unloadable, and Yoetz must not
+    edit through it. Nothing has changed yet when this refuses.
+    """
+
+    surfaces = cleanup.get("surfaces")
+    unknown = [
+        str(item.get("surface"))
+        for item in (surfaces if isinstance(surfaces, list) else [])
+        if isinstance(item, dict) and item.get("state") == HostAdmissionState.UNKNOWN.value
+    ]
+    if cleanup.get("state") == HostAdmissionState.UNKNOWN.value or unknown:
+        raise ConnectionError(
+            "connection_admission_cleanup_failed",
+            status={
+                "admission_cleanup": cleanup,
+                "admission_unreadable_surfaces": cast(list[JsonValue], sorted(unknown)),
+            },
+        )
+
+
 class AdmissionCleanupStep:
     """One disconnect's project admission sweep: planned in preview, run first in apply."""
 
@@ -170,6 +194,7 @@ class AdmissionCleanupStep:
             return False
         self._host = host
         cleanup = admission_cleanup_plan(host, self._project)
+        _refuse_unknown_admission(cleanup)
         self.disclosure["admission_cleanup"] = cleanup
         needed = admission_cleanup_needed(cleanup)
         if needed:
@@ -177,7 +202,12 @@ class AdmissionCleanupStep:
         return needed
 
     def apply(self, needed: bool) -> None:
-        if needed and self._host is not None:
+        if self._host is None:
+            return
+        # Revalidate before anything is removed: a surface that became unreadable or unsafe
+        # since preview must stop the disconnect, not be skipped (CHECK_DISCONNECT_R1 P2).
+        _refuse_unknown_admission(admission_cleanup_plan(self._host, self._project))
+        if needed:
             self._report = sweep_project_admission(self._host, self._project)
 
     def status(self) -> dict[str, JsonValue]:
@@ -209,6 +239,7 @@ class SharedProjectsStep:
         *,
         observed: tuple[str, ...] | None = None,
         recorded: bool = True,
+        remove_shared: bool = False,
     ) -> None:
         self._project = project
         self._recorded = recorded
@@ -225,7 +256,10 @@ class SharedProjectsStep:
         # through another path to the same directory is refused.
         if action == "connect" and duplicate_of(project, known) is not None:
             raise ConnectionError("project_connected_via_other_path")
-        self.others: tuple[str, ...] = live_projects(known, excluding=project)
+        # Projects that keep the shared pieces; an explicit home-wide disconnect keeps none.
+        self.affected: tuple[str, ...] = live_projects(known, excluding=project)
+        self.remove_shared = remove_shared and action == "disconnect"
+        self.others: tuple[str, ...] = () if self.remove_shared else self.affected
         self._config_root = config_root
 
     def record_change(self, action: ConnectionAction) -> str | None:
@@ -239,13 +273,20 @@ class SharedProjectsStep:
         )
         if action == "connect" and not listed:
             return "record_connected_project"
-        if action == "disconnect" and listed:
+        if action == "disconnect" and (
+            listed or (self.remove_shared and self._snapshot is not None and self._snapshot.raw)
+        ):
             return "forget_connected_project"
         return None
 
     def disclose(self, disclosure: dict[str, JsonValue]) -> None:
         if self.others:
             disclosure["shared_with"] = cast(list[JsonValue], list(self.others))
+        if self.remove_shared:
+            disclosure["remove_shared"] = True
+            if self.affected:
+                # These projects lose the shared pieces with this home-wide disconnect.
+                disclosure["shared_removed_from"] = cast(list[JsonValue], list(self.affected))
         if self._snapshot is not None and self._snapshot.raw is not None:
             disclosure["connected_projects_record"] = canonical_digest(
                 {"projects": list(self._snapshot.projects)}
@@ -265,6 +306,8 @@ class SharedProjectsStep:
                 raise ConnectionError("connection_outcome_unknown") from error
         if action == "connect":
             projects = snapshot.with_project(self._project)
+        elif self.remove_shared:
+            projects = ()
         else:
             projects = tuple(
                 item
@@ -324,8 +367,13 @@ def prepare_connection(
     route: Route,
     launcher: tuple[str, ...],
     isolation_root: str | None = None,
+    remove_shared: bool = False,
 ) -> ConnectionPlan:
-    """Read all participating preimages before any authorization or mutation."""
+    """Read all participating preimages before any authorization or mutation.
+
+    ``remove_shared`` (disconnect only) also removes the pieces this config root shares with
+    other connected projects; without it a disconnect keeps whatever they still use (#1058).
+    """
     body: dict[str, JsonValue] = {
         "schema": "yoetz.host-connection-plan/1",
         "request_id": request,
@@ -370,6 +418,7 @@ def prepare_connection(
             action,
             observed=claude.claude_code_other_projects(target) or (),
             recorded=False,
+            remove_shared=remove_shared,
         )
         operation = (
             claude.ClaudeCodePluginAction.CONNECT
@@ -436,6 +485,7 @@ def prepare_connection(
                 accepted_preview_digest=preview.preview_digest,
                 authority=ArtifactAuthority("setup_composition", preview.preview_digest),
                 review=_ReviewedStep(preview.preview_digest),
+                remove_shared=shared.remove_shared,
             )
             if result.operation_state is not PluginOperationState.COMPLETED:
                 raise ConnectionError("connection_outcome_unknown")
@@ -460,7 +510,9 @@ def prepare_connection(
             raise ConnectionError("connection_modified_plugin")
         # The user plugin (hooks, skill) serves every project under this config root; only the
         # project MCP entry is per project. The record names who still needs the plugin (#1058).
-        shared = SharedProjectsStep(installation.config_root, project, action)
+        shared = SharedProjectsStep(
+            installation.config_root, project, action, remove_shared=remove_shared
+        )
         cursor_action = (
             PluginArtifactAction.REMOVE
             if action == "disconnect"

@@ -2205,8 +2205,13 @@ def apply_claude_code_plugin(
     authority: ArtifactAuthority | None,
     review: PluginMutationReviewPort | None = None,
     commands: ClaudeCodeCommandPort | None = None,
+    remove_shared: bool = False,
 ) -> ClaudeCodePluginResult:
-    """Apply one exact Claude lifecycle mutation and reconcile by read-back."""
+    """Apply one exact Claude lifecycle mutation and reconcile by read-back.
+
+    ``remove_shared`` is the explicit home-wide disconnect: REMOVE then also runs the unscoped
+    marketplace removal while other projects still have their installs (#1058).
+    """
 
     _validate_digest(accepted_preview_digest)
     command_port = SubprocessClaudeCodeCommands() if commands is None else commands
@@ -2304,7 +2309,7 @@ def apply_claude_code_plugin(
             # source; an unreadable inventory keeps them too (#1058).
             rows, observed = _list_plugins(target, command_port)
             others = _other_project_paths(target, rows) if observed else None
-            shared_kept = others is None or bool(others)
+            shared_kept = not remove_shared and (others is None or bool(others))
         if command_ok and not shared_kept:
             command_ok = _run_mutation(
                 target,

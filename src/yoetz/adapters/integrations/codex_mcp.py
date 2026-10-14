@@ -48,6 +48,7 @@ __all__ = [
     "codex_project_mcp_leftover",
     "read_bounded_toml",
     "probe_project_config_load",
+    "project_transport_dependence",
 ]
 
 _COMMAND_TIMEOUT_SECONDS: Final = 10.0
@@ -707,6 +708,52 @@ def read_bounded_toml(path: Path) -> Mapping[str, object] | None:
         return None
 
 
+def project_transport_dependence(
+    project: Path, *, after_sweep: bool
+) -> Literal["none", "depends", "unknown"]:
+    """Whether ``project``'s Codex layer needs the user-level ``mcp_servers.yoetz`` transport.
+
+    ``depends`` means ``<project>/.codex/config.toml`` declares ``mcp_servers.yoetz`` (for
+    example a ``tools.*`` approval table) without its own ``command`` or ``url``: Codex then
+    refuses to load configuration in that project once the user-level registration is gone.
+    ``after_sweep`` first removes the exact tables the admission sweep would remove, so the
+    answer describes the project after a disconnect. ``unknown`` is a file Yoetz cannot read
+    safely (symlink, oversized, not UTF-8 TOML).
+    """
+
+    from yoetz.adapters.integrations.host_admission import (
+        CODEX_EXTERNAL_ADMISSION_TABLE,
+        CODEX_PLUGIN_ADMISSION_TABLE,
+    )
+    from yoetz.adapters.integrations.toml_tables import strip_exact_table
+
+    path = project / ".codex" / "config.toml"
+    if not os.path.lexists(path):
+        return "none"
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > _OUTPUT_LIMIT_BYTES:
+            return "unknown"
+        raw = path.read_bytes()
+    except OSError:
+        return "unknown"
+    if after_sweep:
+        for table in (CODEX_EXTERNAL_ADMISSION_TABLE, CODEX_PLUGIN_ADMISSION_TABLE):
+            raw = strip_exact_table(raw, table)
+    import tomllib
+
+    try:
+        parsed = tomllib.loads(raw.decode("utf-8"))
+    except UnicodeError, tomllib.TOMLDecodeError:
+        return "unknown"
+    servers = parsed.get("mcp_servers")
+    if not isinstance(servers, Mapping):
+        return "none"
+    entry = cast(Mapping[str, object], servers).get(MCP_SERVER_NAME)
+    if entry is None or _has_transport(entry):
+        return "none"
+    return "depends"
+
+
 def codex_project_mcp_leftover(codex_home: Path | None, project: Path) -> str | None:
     """Name a project ``mcp_servers.yoetz`` table that has no transport anywhere, statically.
 
@@ -732,4 +779,13 @@ def codex_project_mcp_leftover(codex_home: Path | None, project: Path) -> str | 
         if isinstance(user_servers, Mapping)
         else None
     )
-    return None if _has_transport(user_entry) else "tools_only"
+    if _has_transport(user_entry):
+        return None
+    # ``tools_only``: only exact Yoetz approval tables remain, which an admission revoke removes.
+    # ``retained_tables``: tables Yoetz did not write (or that were edited) remain; a revoke cannot
+    # remove them, so the repair is editing the file or restoring the registration.
+    return (
+        "tools_only"
+        if project_transport_dependence(project, after_sweep=True) == "none"
+        else "retained_tables"
+    )

@@ -2128,6 +2128,7 @@ def _removal_plan(
     executable_path: str,
     codex_home: Path | str | None = None,
     purge_cache: bool = False,
+    remove_shared: bool = False,
     _run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> _RemovalPlan:
     binary = _probe_codex_binary(executable_path, codex_home=codex_home, _run=_run)
@@ -2149,7 +2150,13 @@ def _removal_plan(
     # Disconnecting a project also removes an entry that names its directory under another path
     # (a symlink, a case variant, the path before a move): that entry is this same project, and
     # removing it is the way out of a ``project_connected_via_other_path`` refusal (#1058).
-    owned = Path(source) if relation == "duplicate" else project
+    # An explicit home-wide removal (``remove_shared``) also clears a binding that names another
+    # connected project; an ordinary one never does (#1058).
+    owned = (
+        Path(source)
+        if relation == "duplicate" or (remove_shared and relation == "shared")
+        else project
+    )
     projects_before = _load_projects(home)
     # Other connected projects that can still anchor the home's shared marketplace (#1058).
     candidates = {*projects_before.projects, *((source,) if relation == "shared" else ())}
@@ -2158,7 +2165,7 @@ def _removal_plan(
         for candidate in live_projects(candidates, excluding=project)
         if _anchor_manifest_state(Path(candidate)) == "serves"
     )
-    detach = bool(remaining) and relation in {"self", "shared", "duplicate"}
+    detach = not remove_shared and bool(remaining) and relation in {"self", "shared", "duplicate"}
     rebind_to = remaining[0] if detach and relation in {"self", "duplicate"} else None
     cache_members = render_plugin_install_tree(codex_version=binary.codex_version)
     if detach:
@@ -2271,6 +2278,7 @@ def _removal_plan(
         + canonical_encode(
             {
                 "detach": detach,
+                "remove_shared": remove_shared,
                 "projects_after": list(projects_after),
                 "rebind_to": rebind_to,
                 "shared_with": list(remaining) if detach else [],
@@ -2324,6 +2332,7 @@ def preview_removal(
     executable_path: str,
     codex_home: Path | str | None = None,
     purge_cache: bool = False,
+    remove_shared: bool = False,
     _run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> RemovalPreview:
     """Return the exact proposed removal plan and stale-safe digest."""
@@ -2333,6 +2342,7 @@ def preview_removal(
         executable_path=executable_path,
         codex_home=codex_home,
         purge_cache=purge_cache,
+        remove_shared=remove_shared,
         _run=_run,
     ).preview
 
@@ -3000,6 +3010,7 @@ def apply_removal(
     executable_path: str,
     codex_home: Path | str | None = None,
     purge_cache: bool = False,
+    remove_shared: bool = False,
     _run: Callable[..., subprocess.CompletedProcess[bytes]] = subprocess.run,
 ) -> RemovalResult:
     """Apply one exact approved removal preview, refusing stale or foreign state."""
@@ -3013,6 +3024,7 @@ def apply_removal(
             executable_path=executable_path,
             codex_home=codex_home,
             purge_cache=purge_cache,
+            remove_shared=remove_shared,
             _run=_run,
         )
         preview = plan.preview

@@ -3124,6 +3124,17 @@ def setup_disconnect(
     non_interactive: Annotated[bool, typer.Option("--non-interactive")] = False,
     route_profile: _ROUTE_PROFILE = None,
     json_output: _JSON = False,
+    remove_shared: Annotated[
+        bool,
+        typer.Option(
+            "--remove-shared",
+            help=(
+                "Also remove the Yoetz pieces this agent configuration shares with other "
+                "connected projects (they stop using Yoetz). Without it, a disconnect keeps "
+                "whatever another project still uses."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Preview and remove the selected integration, preserving Yoetz data."""
     from yoetz.cli.host_connection import run_host_connection
@@ -3149,6 +3160,7 @@ def setup_disconnect(
             request_value=request_value,
             preview_digest=preview_digest,
             json_output=json_output,
+            remove_shared=remove_shared,
         )
     )
 

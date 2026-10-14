@@ -20,6 +20,7 @@ from yoetz.adapters.integrations.codex_mcp import (
     CodexMcpAdapter,
     codex_project_mcp_leftover,
     probe_project_config_load,
+    project_transport_dependence,
     read_bounded_toml,
 )
 from yoetz.adapters.integrations.codex_skill import CodexSkillIntegration
@@ -34,8 +35,6 @@ from yoetz.application.host_connection import (
     ConnectionAction,
     ConnectionError,
     ConnectionPlan,
-    admission_cleanup_needed,
-    admission_cleanup_plan,
     admission_revoke_arguments,
     plan_digest,
 )
@@ -63,6 +62,7 @@ def prepare_codex_connection(
     action: ConnectionAction,
     route: Literal["policy", "strict"],
     request_value: str,
+    remove_shared: bool = False,
 ) -> ConnectionPlan:
     runtime = YoetzRuntime(cwd=project)
     option = HarnessOption(
@@ -172,6 +172,7 @@ def prepare_codex_connection(
             target,
             executable_path=str(installation.executable),
             codex_home=installation.config_root,
+            remove_shared=remove_shared,
         )
 
         async def preview_mcp():
@@ -181,6 +182,29 @@ def prepare_codex_connection(
         # Other connected projects keep the home's shared plugin and user-level MCP
         # registration; this disconnect removes only this project's pieces (#1058).
         detach = removal.outcome is RemovalOutcome.DETACH
+        # Projects whose own Codex layer uses the user-level transport (an approval table
+        # without a transport of its own) also keep it, connected through Yoetz or not.
+        needing, enumeration = _other_projects_needing_transport(installation.config_root, project)
+        removes_transport = not detach and registration.action.value != "noop"
+        if removes_transport and needing and remove_shared:
+            # An explicit home-wide disconnect still never breaks Codex in another project.
+            raise ConnectionError(
+                "connection_other_projects_need_registration",
+                status={"admission_other_projects": needing, **enumeration},
+            )
+        keep_transport = removes_transport and bool(needing)
+        if removes_transport and not keep_transport:
+            own = project_transport_dependence(project, after_sweep=True)
+            if own == "depends":
+                # Tables Yoetz did not write (or that were edited) stay in this project's
+                # .codex/config.toml after the sweep and still name the Yoetz server: removing
+                # the registration would stop Codex loading here. Nothing has changed yet.
+                raise ConnectionError(
+                    "connection_project_mcp_tables_retained",
+                    status={
+                        "project_mcp_retained": str(project / ".codex" / "config.toml"),
+                    },
+                )
         skill = CodexSkillIntegration()
         skill_command = SkillPreviewCommand(
             request_id(request_value), target, IntegrationAction.REMOVE, False
@@ -197,8 +221,9 @@ def prepare_codex_connection(
             raise ConnectionError("connection_modified_skill")
         body["skill_preview_digest"] = skill_preview.preview_digest
         body["plugin_preview_digest"] = removal.preview_digest
-        body["mcp_preview_digest"] = None if detach else registration.preview_digest
-        warnings: list[JsonValue] = [] if detach else list(registration.warnings)
+        unregister_planned = removes_transport and not keep_transport
+        body["mcp_preview_digest"] = registration.preview_digest if unregister_planned else None
+        warnings: list[JsonValue] = list(registration.warnings) if unregister_planned else []
         body["warnings"] = warnings
         body["retained"] = ["Yoetz data", "inactive project plugin sources"]
         if detach:
@@ -206,6 +231,18 @@ def prepare_codex_connection(
                 "shared Codex plugin and MCP registration used by other connected projects"
             )
             admission.disclosure["shared_with"] = cast(list[JsonValue], list(removal.shared_with))
+        if keep_transport:
+            cast(list[JsonValue], body["retained"]).append(
+                "Yoetz MCP registration used by other projects' Codex configuration"
+            )
+            admission.disclosure["admission_other_projects"] = needing
+            warnings.append("mcp_registration_kept_for_other_projects")
+        if removes_transport and enumeration:
+            # Not every known project was read: absence from the list is not proof.
+            admission.disclosure.update(enumeration)
+            warnings.append("other_projects_partially_checked")
+        if remove_shared:
+            admission.disclosure["remove_shared"] = True
         body["changes"] = (
             []
             if removal.outcome is RemovalOutcome.ALREADY_ABSENT
@@ -213,7 +250,7 @@ def prepare_codex_connection(
             if detach
             else ["deactivate_plugin"]
         )
-        if not detach and registration.action.value != "noop":
+        if unregister_planned:
             cast(list[JsonValue], body["changes"]).append("remove_mcp_registration")
         if skill_preview.state_before is IntegrationState.INSTALLED_EXACT:
             cast(list[JsonValue], body["changes"]).append("remove_project_skill")
@@ -221,13 +258,6 @@ def prepare_codex_connection(
         # trusted project's `[mcp_servers.yoetz.tools.check]` without a transport makes
         # Codex refuse to load configuration there (exec, mcp list, plugin list).
         sweep_admission = admission.plan(body, "codex", action)
-        # Only removing the user-level transport strands other projects' admission tables.
-        other_projects = (
-            [] if detach else _other_project_admissions(installation.config_root, project)
-        )
-        if other_projects:
-            admission.disclosure["admission_other_projects"] = other_projects
-            warnings.append("admission_present_in_other_projects")
 
         def apply() -> None:
             nonlocal removal_report, config_load
@@ -237,6 +267,7 @@ def prepare_codex_connection(
                 approved_digest=removal.preview_digest,
                 executable_path=str(installation.executable),
                 codex_home=installation.config_root,
+                remove_shared=remove_shared,
             )
 
             async def unregister():
@@ -248,7 +279,7 @@ def prepare_codex_connection(
                 )
 
             try:
-                if not detach:
+                if unregister_planned:
                     removal_report = mcp_removal_report(anyio.run(unregister))
             except McpRegistrationError as error:
                 if error.reason is McpRegistrationReason.REGISTRATION_FAILED:
@@ -300,12 +331,7 @@ def prepare_codex_connection(
                         **admission.status(),
                         "mcp_removal": removal_report,
                         "project_config_load": config_load,
-                        "project_mcp_leftover": codex_project_mcp_leftover(
-                            installation.config_root, project
-                        ),
-                        "next_arguments": cast(
-                            list[JsonValue], admission_revoke_arguments("codex", project)
-                        ),
+                        **project_mcp_leftover_status(installation.config_root, project),
                     },
                 )
 
@@ -337,12 +363,16 @@ def prepare_codex_connection(
 _OTHER_PROJECTS_LIMIT = 32
 
 
-def _other_project_admissions(codex_home: Path, project: Path) -> list[JsonValue]:
-    """Codex projects, other than ``project``, that still carry a Yoetz admission table.
+def _other_projects_needing_transport(
+    codex_home: Path, project: Path
+) -> tuple[list[JsonValue], dict[str, JsonValue]]:
+    """Projects, other than ``project``, whose Codex layer uses the user-level transport.
 
-    Removing the user-level registration leaves such a table without a transport, and Codex
-    then refuses to start there. The candidates are the projects this Codex home knows:
-    its ``[projects."<path>"]`` trust entries and the Yoetz marketplace source.
+    Candidates are the projects this home knows: its ``[projects."<path>"]`` trust entries, the
+    Yoetz marketplace binding, and the connected-projects record. A project whose
+    ``.codex/config.toml`` declares ``mcp_servers.yoetz`` without its own transport, or cannot be
+    read safely, needs the registration kept. At most ``_OTHER_PROJECTS_LIMIT`` candidates are
+    read; the second value reports the bound so absence from the list is never read as proof.
     """
 
     config = read_bounded_toml(codex_home / "config.toml") or {}
@@ -350,29 +380,42 @@ def _other_project_admissions(codex_home: Path, project: Path) -> list[JsonValue
     projects = config.get("projects")
     if isinstance(projects, dict):
         candidates.update(str(key) for key in cast(dict[str, object], projects))
-    marketplaces = config.get("marketplaces")
-    if isinstance(marketplaces, dict):
-        yoetz_market = cast(dict[str, object], marketplaces).get("yoetz")
-        if isinstance(yoetz_market, dict):
-            source = cast(dict[str, object], yoetz_market).get("source")
-            if isinstance(source, str):
-                candidates.add(source)
+    try:
+        candidates.update(connected_projects(codex_home))
+    except IntegrationError:
+        pass
+    eligible = sorted(
+        candidate
+        for candidate in candidates
+        if Path(candidate).is_absolute() and Path(candidate) != project
+    )
+    inspected = eligible[:_OTHER_PROJECTS_LIMIT]
     found: list[JsonValue] = []
-    for candidate in sorted(candidates)[:_OTHER_PROJECTS_LIMIT]:
+    for candidate in inspected:
         root = Path(candidate)
-        if not root.is_absolute() or root == project or not root.is_dir():
+        if not root.is_dir():
             continue
-        cleanup = admission_cleanup_plan("codex", root)
-        if admission_cleanup_needed(cleanup):
-            found.append(
-                {
-                    "project_root": str(root),
-                    "next_arguments": cast(
-                        list[JsonValue], admission_revoke_arguments("codex", root)
-                    ),
-                }
+        dependence = project_transport_dependence(root, after_sweep=False)
+        if dependence == "none":
+            continue
+        entry: dict[str, JsonValue] = {"project_root": str(root), "dependence": dependence}
+        if dependence == "depends" and project_transport_dependence(root, after_sweep=True) == (
+            "none"
+        ):
+            # Only exact Yoetz approval tables: an admission revoke there removes them.
+            entry["next_arguments"] = cast(
+                list[JsonValue], admission_revoke_arguments("codex", root)
             )
-    return found
+        found.append(entry)
+    enumeration: dict[str, JsonValue] = (
+        {
+            "admission_other_projects_inspected": len(inspected),
+            "admission_other_projects_known": len(eligible),
+        }
+        if len(eligible) > len(inspected)
+        else {}
+    )
+    return found, enumeration
 
 
 def home_projects_status(codex_home: Path) -> dict[str, JsonValue]:
@@ -386,12 +429,34 @@ def home_projects_status(codex_home: Path) -> dict[str, JsonValue]:
 
 
 def project_mcp_leftover_status(codex_home: Path, project: Path) -> dict[str, JsonValue]:
-    """Explain a transport-less project ``mcp_servers.yoetz`` table and name its exact repair."""
+    """Explain a transport-less project ``mcp_servers.yoetz`` table and name its exact repair.
+
+    Exact Yoetz approval tables (``tools_only``) are revoked; other retained tables
+    (``retained_tables``) are the owner's to edit, or the server is registered again by
+    reconnecting, so the continuation is the reconnect and the step text names the file.
+    """
 
     leftover = codex_project_mcp_leftover(codex_home, project)
     if leftover is None:
+        if project_transport_dependence(project, after_sweep=True) == "depends":
+            # Loads today, but a disconnect would refuse: the retained tables need the transport.
+            return {"project_mcp_needs_registration": True}
         return {}
+    arguments = (
+        admission_revoke_arguments("codex", project)
+        if leftover == "tools_only"
+        else [
+            "setup",
+            "run",
+            "--host",
+            "codex",
+            "--host-config-root",
+            str(codex_home),
+            "--project",
+            str(project),
+        ]
+    )
     return {
         "project_mcp_leftover": leftover,
-        "next_arguments": cast(list[JsonValue], admission_revoke_arguments("codex", project)),
+        "next_arguments": cast(list[JsonValue], arguments),
     }
