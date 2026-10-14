@@ -498,3 +498,41 @@ def test_codex_home_that_does_not_exist_names_the_mkdir(
     assert report["reason"] == "target_untrusted"
     assert report["next_step"].startswith("Nothing was changed.")
     assert f"mkdir -p -m 700 {home}" in report["next_step"]
+
+
+def test_unverified_step_names_the_selected_codex_and_keeps_the_review_mode(
+    tmp_path: Path,
+) -> None:
+    """#1058 review round 2 P3: the continuation works when Codex is not on PATH and the
+    reconnect keeps the home's shared review mode."""
+
+    home = tmp_path / "codex"
+    home.mkdir(mode=0o700)
+    (home / "config.toml").write_text(
+        '[mcp_servers.yoetz]\ncommand = "yoetz"\n'
+        'args = ["mcp", "serve", "--host", "codex", "--semantic", "off"]\n'
+    )
+    installation = HostInstallation("codex", Path("/opt/codex/bin/codex"), "0.144.6", home, "Codex")
+    step = cli._codex_unverified_step(  # pyright: ignore[reportPrivateUsage]
+        None, tmp_path / "a", installation
+    )
+    assert step.count("--host-path /opt/codex/bin/codex") == 2
+    assert "--route-profile strict" in step
+
+
+def test_summary_names_unserved_members_rebind_and_possible_route_changes() -> None:
+    lines = cli._shared_summary(  # pyright: ignore[reportPrivateUsage]
+        {
+            "action": "connect",
+            "route_profile": "policy",
+            "route_profile_before": "strict",
+            "route_changes_for": [],
+            "route_changes_possible_for": ["/work/maybe"],
+            "members_not_serving": ["/work/away"],
+            "rebind_to": "/work/next",
+        }
+    )
+    joined = "\n".join(lines)
+    assert "/work/maybe (may use Yoetz)" in joined
+    assert "missing right now" in joined and "/work/away" in joined
+    assert "binding moves to /work/next" in joined

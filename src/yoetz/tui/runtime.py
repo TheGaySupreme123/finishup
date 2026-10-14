@@ -232,32 +232,28 @@ async def _shared_route_change(
     route: Literal["policy", "strict"],
     codex_home: Path,
     project: Path,
-) -> tuple[Literal["policy", "strict"] | None, tuple[str, ...]]:
+) -> tuple[Literal["policy", "strict"] | None, tuple[str, ...], tuple[str, ...]]:
     """The review mode the home's shared registration has now, and who else it changes for.
 
     The user-level ``[mcp_servers.yoetz]`` registration serves every project in the Codex home,
     so rewriting it on another review mode changes those projects' sessions too (#1058 review
-    P2-3). Returns ``(None, ())`` when the registration is absent, not Yoetz's, or already on
-    ``route``; the other projects are the verified members that still serve the manifest.
+    P2-3). Returns ``(before, verified others, possible others)``, or ``(None, (), ())`` when
+    the registration is absent, not Yoetz's, already on ``route``, or serves nobody else.
     """
 
-    from yoetz.adapters.integrations.codex_marketplace import serving_projects
-    from yoetz.adapters.integrations.host_projects import same_directory
+    from yoetz.adapters.integrations.codex_marketplace import other_members
     from yoetz.ports.harness_mcp import McpRegistrationState
-    from yoetz.ports.integrations import IntegrationError
 
     if preview.state_before is not McpRegistrationState.YOETZ_OWNED:
-        return None, ()
+        return None, (), ()
     observed = await service.observe(binary)
     before = observed.route_profile
     if before is None or before == route:
-        return None, ()
-    try:
-        members = serving_projects(codex_home)
-    except IntegrationError:
-        members = ()
-    others = tuple(item for item in members if not same_directory(Path(item), project))
-    return before, others
+        return None, (), ()
+    others, possible = other_members(codex_home, project)
+    if not others and not possible:
+        return None, (), ()
+    return before, others, possible
 
 
 class RuntimeError_(Exception):
@@ -757,7 +753,7 @@ class YoetzRuntime:
             mcp_preview = await service.preview(binary)
         except McpRegistrationError as error:
             raise RuntimeError_(error.reason.value, "the Codex registration could not be previewed")
-        route_before, changes_for = await _shared_route_change(
+        route_before, changes_for, changes_possible_for = await _shared_route_change(
             service, binary, mcp_preview, route, activation_preview.codex_home, root
         )
         reregister = (
@@ -823,6 +819,7 @@ class YoetzRuntime:
             mcp_reregister=reregister,
             route_profile_before=route_before,
             route_changes_for=changes_for,
+            route_changes_possible_for=changes_possible_for,
         )
 
     async def apply_integration(

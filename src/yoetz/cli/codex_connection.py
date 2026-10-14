@@ -14,6 +14,7 @@ from yoetz.adapters.integrations.codex_marketplace import (
     apply_removal,
     connected_projects,
     inspect_activation,
+    other_members,
     possible_projects,
     preview_removal,
     serving_projects,
@@ -122,12 +123,16 @@ def prepare_codex_connection(
                 excluding=project,
             )
         )
-        if legacy.route_profile_before is not None and legacy.route_changes_for:
+        if legacy.route_profile_before is not None:
             # The user-level registration serves every project in the home: rewriting it on
-            # another review mode changes theirs too, so the plan names them (#1058 review P2-3).
-            admission.disclosure["route_profile_before"] = legacy.route_profile_before
-            admission.disclosure["route_changes_for"] = cast(
-                list[JsonValue], list(legacy.route_changes_for)
+            # another review mode changes theirs too, so the plan names them (#1058 review P2-3),
+            # including projects that may use it without a verified connection.
+            admission.disclosure.update(
+                route_change_disclosure(
+                    legacy.route_profile_before,
+                    legacy.route_changes_for,
+                    legacy.route_changes_possible_for,
+                )
             )
         activation = inspect_activation(
             IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(project)),
@@ -202,10 +207,17 @@ def prepare_codex_connection(
         # Other connected projects keep the home's shared plugin and user-level MCP
         # registration; this disconnect removes only this project's pieces (#1058).
         detach = removal.outcome is RemovalOutcome.DETACH
+        # Whatever this project's own state (already detached, never connected), the shared
+        # registration stays while another project uses the home's shared pieces: a verified
+        # member that still serves the manifest, or a possible user (#1058 review round 2 P1).
+        serving_others, possible_others = other_members(installation.config_root, project)
+        shared_kept = not remove_shared and (
+            detach or bool(serving_others) or bool(possible_others)
+        )
         # Projects whose own Codex layer uses the user-level transport (an approval table
         # without a transport of its own) also keep it, connected through Yoetz or not.
         needing, enumeration = _other_projects_needing_transport(installation.config_root, project)
-        removes_transport = not detach and registration.action.value != "noop"
+        removes_transport = not shared_kept and registration.action.value != "noop"
         # An incomplete read is not proof that no other project needs the transport
         # (CHECK_MULTIPROJ_R1 P2-3): keep it on an ordinary disconnect, refuse it home-wide.
         unproven = bool(enumeration)
@@ -249,11 +261,13 @@ def prepare_codex_connection(
         warnings: list[JsonValue] = list(registration.warnings) if unregister_planned else []
         body["warnings"] = warnings
         body["retained"] = ["Yoetz data", "inactive project plugin sources"]
-        if detach:
+        if shared_kept:
             cast(list[JsonValue], body["retained"]).append(
                 "shared Codex plugin and MCP registration used by other connected projects"
             )
-            admission.disclosure["shared_with"] = cast(list[JsonValue], list(removal.shared_with))
+            admission.disclosure["shared_with"] = cast(
+                list[JsonValue], list(removal.shared_with if detach else serving_others)
+            )
         if keep_transport:
             cast(list[JsonValue], body["retained"]).append(
                 "Yoetz MCP registration used by other projects' Codex configuration"
@@ -267,9 +281,19 @@ def prepare_codex_connection(
             # Not every known project was read: absence from the list is not proof.
             admission.disclosure.update(enumeration)
             warnings.append("other_projects_partially_checked")
-        # Trusted checkouts that may use the shared pieces though no record names them: an
-        # ordinary disconnect keeps the pieces for them, --remove-shared removes them anyway.
-        admission.disclosure.update(possible_users_disclosure(removal.possible_users))
+        # Projects that may use the shared pieces though no record names them: an ordinary
+        # disconnect keeps the pieces for them, --remove-shared removes them anyway.
+        admission.disclosure.update(
+            possible_users_disclosure(tuple(sorted({*removal.possible_users, *possible_others})))
+        )
+        if removal.rebind_to is not None:
+            admission.disclosure["rebind_to"] = removal.rebind_to
+        if removal.unserved_members:
+            # Connected projects whose plugin files are absent right now lose the shared pieces
+            # with this removal too (#1058 review round 2).
+            admission.disclosure["members_not_serving"] = cast(
+                list[JsonValue], list(removal.unserved_members)
+            )
         if remove_shared:
             admission.disclosure["remove_shared"] = True
             if removal.outcome is not RemovalOutcome.ALREADY_ABSENT:
@@ -379,11 +403,20 @@ def prepare_codex_connection(
                 codex_home=installation.config_root,
             )
             observed = anyio.run(preview_mcp)
+            registered = observed.action.value != "noop"
+            connected = current.outcome is not RemovalOutcome.ALREADY_ABSENT
             return {
                 "installed": None,
                 # A detached project still sees the home's shared plugin; it is not connected.
                 "enabled": current.outcome is RemovalOutcome.REMOVE,
-                "configured": observed.action.value != "noop",
+                # The shared registration other projects keep is not this project's
+                # configuration (#1058 review round 2 P1: reporting it invited a re-run).
+                "configured": registered and connected,
+                **(
+                    {"shared_registration_retained": True}
+                    if registered and not connected and shared_kept
+                    else {}
+                ),
                 "connection_observed": False,
                 "reload_required": True,
                 "retained": body["retained"],
@@ -465,6 +498,22 @@ def _other_connected_projects(codex_home: Path, project: Path) -> tuple[str, ...
     except IntegrationError:
         return ()
     return live_projects(listed, excluding=project)
+
+
+def route_change_disclosure(
+    before: str | None, verified: tuple[str, ...], possible: tuple[str, ...]
+) -> dict[str, JsonValue]:
+    """Digest-bound preview facts for a shared review-mode change that reaches other projects."""
+
+    if before is None or (not verified and not possible):
+        return {}
+    disclosure: dict[str, JsonValue] = {
+        "route_profile_before": before,
+        "route_changes_for": cast(list[JsonValue], list(verified)),
+    }
+    if possible:
+        disclosure["route_changes_possible_for"] = cast(list[JsonValue], list(possible))
+    return disclosure
 
 
 def possible_users_disclosure(

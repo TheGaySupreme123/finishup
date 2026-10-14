@@ -18,8 +18,10 @@ from yoetz.adapters.integrations.claude_code_integration import (
     ClaudeCodePluginStatus,
     ClaudeCodePluginTarget,
     apply_claude_code_plugin,
+    claude_code_other_projects,
     discover_claude_code,
     export_claude_code_plugin,
+    installed_claude_route_profile,
     installed_claude_startup_mode,
     preview_claude_code_plugin,
     render_claude_code_plugin,
@@ -217,6 +219,40 @@ def _status_body(status: ClaudeCodePluginStatus) -> dict[str, object]:
     }
 
 
+def _shared_route_change(
+    target: ClaudeCodePluginTarget,
+    artifact: ClaudeCodePluginArtifact,
+    action: ClaudeCodePluginAction,
+    project: Path,
+) -> dict[str, JsonValue]:
+    """Other projects whose review mode a re-render of the shared source changes (#1058).
+
+    The marketplace source under the config root serves every project's install. Its preview
+    digest already binds every project's install row (``installed_plugins.json``), so the
+    projects named here cannot change between preview and the approved apply.
+    """
+
+    from yoetz.adapters.integrations.host_projects import live_projects
+
+    after = artifact.plan.mcp_route_profile
+    if action not in {
+        ClaudeCodePluginAction.INSTALL,
+        ClaudeCodePluginAction.UPDATE,
+        ClaudeCodePluginAction.CONNECT,
+    } or after not in {"strict", "policy"}:
+        return {}
+    before = installed_claude_route_profile(target)
+    if before is None or before == after:
+        return {}
+    others = live_projects(claude_code_other_projects(target) or (), excluding=project)
+    if not others:
+        return {}
+    return {
+        "route_profile_before": before,
+        "route_changes_for": cast(list[JsonValue], list(others)),
+    }
+
+
 def run_claude_code_plugin_command(
     command: str,
     *,
@@ -315,9 +351,11 @@ def run_claude_code_plugin_command(
             and artifact.plan.mcp_route_profile == "strict"
         )
         project = Path(target.project_root)
+        route_change = _shared_route_change(target, artifact, action, project)
         if command == "preview":
             _emit(
                 {
+                    **route_change,
                     "action": preview.action.value,
                     "admission_cleanup": (
                         admission_cleanup_preview("claude", project) if reverse_admission else None
@@ -358,6 +396,16 @@ def run_claude_code_plugin_command(
                 },
                 json_output=json_output,
             )
+            if route_change and not json_output:
+                from yoetz.cli.host_connection import (
+                    _route_change_line,  # pyright: ignore[reportPrivateUsage]
+                )
+
+                sentence = _route_change_line(
+                    {**route_change, "route_profile": artifact.plan.mcp_route_profile}
+                )
+                if sentence is not None:
+                    sys.stdout.write(sentence + "\n")
             return 0
         if not accept or preview_digest is None:
             sys.stderr.write("claude_code_plugin_exact_preview_acceptance_required\n")

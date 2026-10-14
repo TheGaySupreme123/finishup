@@ -112,7 +112,14 @@ def _wire(
         return CodexMcpAdapter(fake)
 
     def plugin_preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(preview_digest=DIGEST, outcome=plugin, possible_users=())
+        return SimpleNamespace(
+            preview_digest=DIGEST,
+            outcome=plugin,
+            possible_users=(),
+            shared_with=(),
+            rebind_to=None,
+            unserved_members=(),
+        )
 
     class Skill:
         async def preview_skill(self, *_args: object) -> SimpleNamespace:
@@ -639,6 +646,8 @@ def test_detaching_disconnect_keeps_the_shared_mcp_registration(
             outcome=RemovalOutcome.DETACH,
             shared_with=(other,),
             possible_users=(),
+            rebind_to=None,
+            unserved_members=(),
         )
 
     monkeypatch.setattr(codex_connection, "preview_removal", detach_preview)
@@ -682,6 +691,8 @@ def test_disconnect_preview_names_projects_that_may_use_the_shared_pieces(
             outcome=RemovalOutcome.DETACH,
             shared_with=(other,),
             possible_users=(maybe,),
+            rebind_to=None,
+            unserved_members=(),
         )
 
     monkeypatch.setattr(codex_connection, "preview_removal", detach_preview)
@@ -773,3 +784,52 @@ def test_remove_shared_preview_names_the_connected_projects_that_lose_yoetz(
         "Home-wide disconnect" in line and str(other) in line and "stop using Yoetz" in line
         for line in summary
     )
+
+
+def _serving_member(tmp_path: Path, name: str) -> Path:
+    from tests.unit.adapters.test_codex_marketplace import (
+        _install,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from yoetz.adapters.integrations.codex_marketplace import (
+        _canonical_marketplace_bytes,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.ports.integrations import IntegrationScope, IntegrationTarget
+
+    root = tmp_path / name
+    root.mkdir(mode=0o700)
+    _install(IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(root)))
+    (root / ".agents/plugins/marketplace.json").write_bytes(_canonical_marketplace_bytes())
+    return root
+
+
+def test_rerunning_a_disconnect_keeps_the_registration_other_projects_use(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1058 review round 2 P1: a project that is already detached (or never connected) must
+    not remove the user-level registration the other connected projects use."""
+
+    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE, encode_projects
+
+    home, project, installation = _layout(tmp_path)
+    fake, cleanup = FakeCodex(home, project), list[str]()
+    _wire(monkeypatch, fake, cleanup)  # the plugin removal finds nothing: already_absent
+    other = _serving_member(tmp_path, "other")
+    record = home / CONNECTED_PROJECTS_FILE
+    record.write_bytes(encode_projects((str(other),)))
+    record.chmod(0o600)
+
+    plan = _plan(installation, project)
+
+    assert "remove_mcp_registration" not in _items(plan.body["changes"])
+    assert plan.body["mcp_preview_digest"] is None
+    assert plan.disclosure["shared_with"] == [str(other)]
+    assert any(
+        "used by other connected projects" in str(item) for item in _items(plan.body["retained"])
+    )
+    plan.apply_reviewed_steps()
+    assert fake.registered
+    assert not any(call[1:3] == ("mcp", "remove") for call in fake.calls)
+    status = plan.status()
+    # This project is not connected: the shared registration is not its configuration.
+    assert status["configured"] is False

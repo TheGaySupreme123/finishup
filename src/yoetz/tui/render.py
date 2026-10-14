@@ -272,14 +272,20 @@ def render_integration_preview(plan: IntegrationPlan, width: int) -> tuple[str, 
                 width=2,
             )
         )
-    if plan.route_profile_before is not None and plan.route_changes_for:
+    if plan.route_profile_before is not None and (
+        plan.route_changes_for or plan.route_changes_possible_for
+    ):
+        named = [
+            *plan.route_changes_for,
+            *(f"{item} (may use Yoetz)" for item in plan.route_changes_possible_for),
+        ]
         lines.extend(
             _indent(
                 wrap(
                     "! This also changes the review mode from "
                     f"{_REVIEW_MODE[plan.route_profile_before]} to "
-                    f"{_REVIEW_MODE[plan.route_profile]} for the other projects connected to "
-                    "this Codex home: " + ", ".join(plan.route_changes_for),
+                    f"{_REVIEW_MODE[plan.route_profile]} for the other projects using "
+                    "this Codex home: " + ", ".join(named),
                     body - 2,
                 ),
                 width=2,

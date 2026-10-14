@@ -72,11 +72,13 @@ __all__ = [
     "apply_removal",
     "connected_projects",
     "inspect_activation",
+    "other_members",
     "possible_projects",
     "preview_activation",
     "preview_removal",
     "project_registered_elsewhere",
     "resolve_codex_home_for_binary",
+    "serving_projects",
     "skill_tree_state",
 ]
 
@@ -199,6 +201,9 @@ class RemovalPreview:
     # Trusted checkouts that may use the shared pieces though no record names them; never an
     # anchor (CHECK_MULTIPROJ_R2).
     possible_users: tuple[str, ...] = ()
+    # Connected projects whose directory exists but no longer serves the manifest (for example
+    # its plugin files are absent right now): a removal of the shared pieces affects them too.
+    unserved_members: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -842,6 +847,31 @@ def serving_projects(codex_home: Path | str | None) -> tuple[str, ...]:
         member
         for member in members
         if member in live and _anchor_manifest_state(Path(member)) == "serves"
+    )
+
+
+def other_members(
+    codex_home: Path | str | None, project: Path | None
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(serving verified members, possible users)`` of the home other than ``project``.
+
+    These are the projects whose sessions use the home's shared pieces, notably the user-level
+    MCP registration and its review mode (#1058 review). ``project`` ``None`` excludes nothing.
+    An unreadable record or config names none (callers that act on membership read it
+    themselves and refuse).
+    """
+
+    try:
+        serving = serving_projects(codex_home)
+        possible = possible_projects(codex_home)
+    except IntegrationError:
+        return (), ()
+
+    def other(item: str) -> bool:
+        return project is None or (item != str(project) and not same_directory(Path(item), project))
+
+    return tuple(item for item in serving if other(item)), tuple(
+        item for item in possible if other(item)
     )
 
 
@@ -2304,15 +2334,33 @@ def _removal_plan(
     possible = _possible_users(
         config, project, tuple(sorted(candidates)), home=home, uncertain=uncertain
     )
-    holds_shared = relation in {"self", "shared", "duplicate", "missing"} and not remove_shared
+    # Only a connected project may move or remove a dangling binding: for a project that never
+    # connected, the binding is another member's whose manifest may be absent only for now
+    # (a branch switch, `git clean`, an unmounted volume) (#1058 review round 2).
+    member = any(
+        item == str(project) or same_directory(Path(item), project)
+        for item in projects_before.projects
+    )
+    dangling_other = anchor_missing and not member and not remove_shared
+    holds_shared = (
+        relation in {"self", "shared", "duplicate", "missing"}
+        and not remove_shared
+        and not dangling_other
+    )
     if holds_shared and not remaining and possible:
         # No verified project can carry the binding, but projects this installation recorded
         # earlier, or trusted checkouts, might still use the shared pieces: refuse before any
         # change rather than guess (recovery: reconnect them, which records them, or remove the
         # shared pieces explicitly with --remove-shared).
         _refuse_conflict("membership_unverified")
-    detach = holds_shared and bool(remaining)
-    rebind_to = remaining[0] if detach and relation in {"self", "duplicate", "missing"} else None
+    # A non-member leaves the dangling binding and every shared piece alone (only its own
+    # project pieces go): the same plan shape as a detach, without a rebind.
+    detach = (holds_shared and bool(remaining)) or dangling_other
+    rebind_to = (
+        remaining[0]
+        if detach and not dangling_other and relation in {"self", "duplicate", "missing"}
+        else None
+    )
     # Disconnecting a project also removes an entry that names its directory under another path
     # (a symlink, a case variant, the path before a move): that entry is this same project, and
     # removing it is the way out of a ``project_connected_via_other_path`` refusal (#1058).
@@ -2364,6 +2412,20 @@ def _removal_plan(
         # The last connected project's removal leaves no record behind.
         projects_after = ()
         unknown_after = False
+    # Members (and a dangling anchor) whose directory still exists but that do not serve the
+    # manifest right now lose the shared pieces with a removal: name them (round 2 P3).
+    unserved: tuple[str, ...] = (
+        ()
+        if detach
+        else tuple(
+            candidate
+            for candidate in live_projects(
+                {*projects_before.projects, *((source,) if anchor_missing else ())},
+                excluding=project,
+            )
+            if _anchor_manifest_state(Path(candidate)) != "serves"
+        )
+    )
     cache_versions = tuple(version for version, _digest in cache_digests)
     inspection = inspect_activation(
         target,
@@ -2450,6 +2512,7 @@ def _removal_plan(
                 "possible_users": list(possible),
                 "unknown_after": unknown_after,
                 "anchor_missing": anchor_missing,
+                "unserved_members": list(unserved),
             }
         )
     )
@@ -2481,6 +2544,7 @@ def _removal_plan(
         remaining if detach else (),
         rebind_to,
         possible,
+        unserved,
     )
     return _RemovalPlan(
         preview,

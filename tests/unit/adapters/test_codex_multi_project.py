@@ -602,7 +602,8 @@ def test_a_deleted_record_still_keeps_the_projects_this_installation_connected(
 
 
 def test_a_review_mode_change_names_the_other_connected_projects(tmp_path: Path) -> None:
-    """#1058 review P2-3: `[mcp_servers.yoetz]` is user-level, shared by the whole home."""
+    """#1058 review P2-3: `[mcp_servers.yoetz]` is user-level, shared by the whole home;
+    round 2: projects that may use it (possible users) are named too."""
 
     import anyio
 
@@ -617,7 +618,8 @@ def test_a_review_mode_change_names_the_other_connected_projects(tmp_path: Path)
 
     home = _home(tmp_path)
     target_a, root_a = _project(tmp_path, "a")
-    _target_b, root_b = _project(tmp_path, "b")
+    target_b, root_b = _project(tmp_path, "b")
+    _target_c, root_c = _project(tmp_path, "c")
     _connect(target_a, home)
 
     class Service:
@@ -640,18 +642,63 @@ def test_a_review_mode_change_names_the_other_connected_projects(tmp_path: Path)
         "sha256:" + "a" * 64,
     )
 
-    async def change(route: str | None) -> object:
+    async def change(route: str | None, project: Path) -> object:
         return await runtime._shared_route_change(  # pyright: ignore[reportPrivateUsage]
-            cast(Any, Service(route)), cast(Any, None), preview, "policy", home, root_b
+            cast(Any, Service(route)), cast(Any, None), preview, "policy", home, project
         )
 
-    assert anyio.run(change, "strict") == ("strict", (str(root_a),))
+    assert anyio.run(change, "strict", root_b) == ("strict", (str(root_a),), ())
     # Same review mode, or connecting the only project: nothing to disclose for others.
-    assert anyio.run(change, "policy") == (None, ())
+    assert anyio.run(change, "policy", root_b) == (None, (), ())
+    assert anyio.run(change, "strict", root_a) == (None, (), ())
+    # After the record is lost, B is only a possible user, and is still named.
+    _connect(target_b, home)
+    (home / CONNECTED_PROJECTS_FILE).unlink()
+    assert anyio.run(change, "strict", root_c) == ("strict", (str(root_a),), (str(root_b),))
 
-    async def own() -> object:
-        return await runtime._shared_route_change(  # pyright: ignore[reportPrivateUsage]
-            cast(Any, Service("strict")), cast(Any, None), preview, "policy", home, root_a
-        )
 
-    assert anyio.run(own) == ("strict", ())
+def test_a_project_that_never_connected_cannot_remove_a_dangling_binding(
+    tmp_path: Path,
+) -> None:
+    """#1058 review round 2 P3: A's manifest is only absent for now (branch switch, git clean,
+    unmounted volume); disconnecting never-connected C must not remove A's shared pieces."""
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    target_c, _root_c = _clone(tmp_path, "c")
+    _connect(target_a, home)
+    manifest = root_a / ".agents/plugins/marketplace.json"
+    saved = manifest.read_bytes()
+    manifest.unlink()
+    config_before = (home / "config.toml").read_bytes()
+
+    outcome = _remove(target_c, home)
+
+    assert outcome in {RemovalOutcome.DETACH, RemovalOutcome.ALREADY_ABSENT}
+    assert (home / "config.toml").read_bytes() == config_before
+    assert _cache(home).exists()
+    assert connected_projects(home) == (str(root_a),)
+    # A comes back and is still connected.
+    manifest.write_bytes(saved)
+    assert inspect_activation(target_a, codex_home=home).state is ActivationState.ACTIVE
+
+
+def test_removing_a_dangling_binding_names_members_without_their_plugin_files(
+    tmp_path: Path,
+) -> None:
+    """#1058 review round 2 P3: B (a member) is the last serving project; A's directory exists
+    but lost its manifest. B's disconnect removes the shared pieces and says A loses them."""
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    target_b, _root_b = _project(tmp_path, "b")
+    _connect(target_a, home)
+    _connect(target_b, home)
+    (root_a / ".agents/plugins/marketplace.json").unlink()
+
+    preview = preview_removal(target_b, codex_home=home)
+
+    assert preview.outcome is RemovalOutcome.REMOVE
+    assert preview.unserved_members == (str(root_a),)
+    assert _disconnect(target_b, home) is RemovalOutcome.REMOVE
+    _shared_gone(home)

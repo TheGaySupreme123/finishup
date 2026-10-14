@@ -205,6 +205,38 @@ def _status_body(status: CursorPluginStatus) -> dict[str, object]:
     }
 
 
+def _plugin_sharing(
+    config_root: Path, project: Path | None, *, plugin_present: bool
+) -> dict[str, object]:
+    """Who else uses the user plugin this low-level removal takes away (#1058 review round 2).
+
+    The plugin serves every project under the config root. `setup disconnect` keeps it while
+    another project uses it; this command removes it for all of them, so its preview names
+    them. Read from the connected-projects record; unknown membership is said so.
+    """
+
+    from yoetz.adapters.integrations.host_projects import (
+        HostProjectsError,
+        live_projects,
+        load_connected_projects,
+    )
+
+    try:
+        record = load_connected_projects(config_root.expanduser().absolute())
+    except HostProjectsError:
+        return {"membership_unknown": True}
+    excluding = project if project is not None else Path(config_root.anchor)
+    others = live_projects(record.projects, excluding=excluding)
+    sharing: dict[str, object] = {}
+    if others:
+        sharing["shared_with"] = list(others)
+    if plugin_present and (record.unknown_members or record.raw is None):
+        sharing["membership_unknown"] = True
+    if sharing:
+        sharing["shared_removed_for_every_project"] = True
+    return sharing
+
+
 def run_cursor_plugin_command(
     command: str,
     *,
@@ -298,6 +330,15 @@ def run_cursor_plugin_command(
             preview = preview_cursor_plugin(request, target, action, artifact, project_root=project)
             _emit(
                 {
+                    **(
+                        _plugin_sharing(
+                            cursor_config_root,
+                            project,
+                            plugin_present=status.state.value != "absent",
+                        )
+                        if action is PluginArtifactAction.REMOVE
+                        else {}
+                    ),
                     "action": preview.action.value,
                     "admission_cleanup": (
                         admission_cleanup_preview("cursor", project)

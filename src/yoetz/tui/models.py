@@ -170,6 +170,9 @@ class IntegrationPlan:
     # projects of this Codex home whose sessions change with it (#1058 review P2-3).
     route_profile_before: Literal["policy", "strict"] | None = None
     route_changes_for: tuple[str, ...] = ()
+    # Projects that may use the home's shared pieces (not verified connections) whose sessions
+    # would change too.
+    route_changes_possible_for: tuple[str, ...] = ()
 
     @property
     def changes(self) -> tuple[str, ...]:

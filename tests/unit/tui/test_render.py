@@ -516,3 +516,19 @@ def test_integration_preview_names_projects_whose_review_mode_changes() -> None:
     unchanged = "\n".join(render_integration_preview(build.plan(already_registered=True), WIDE))
     assert "verified, not replaced" in unchanged
     assert "review mode from" not in unchanged
+
+
+def test_integration_preview_names_possible_users_whose_review_mode_changes() -> None:
+    friendly = "\n".join(
+        render_integration_preview(
+            build.plan(
+                already_registered=True,
+                mcp_reregister=True,
+                route_profile="policy",
+                route_profile_before="strict",
+                route_changes_possible_for=("/work/maybe",),
+            ),
+            WIDE,
+        )
+    )
+    assert "/work/maybe (may use Yoetz)" in friendly

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Literal, cast
@@ -219,6 +220,16 @@ def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
             "trusted checkouts with Yoetz's plugin files; not verified connections): "
             + ", ".join(str(item) for item in possible)
         )
+    unserved = body.get("members_not_serving")
+    if isinstance(unserved, list) and unserved:
+        lines.append(
+            "Connected projects whose Yoetz plugin files are missing right now lose the shared "
+            "pieces too (connect them again later to restore them): "
+            + ", ".join(str(item) for item in unserved)
+        )
+    rebind = body.get("rebind_to")
+    if isinstance(rebind, str):
+        lines.append(f"The shared Codex marketplace binding moves to {rebind}.")
     others = body.get("shared_with")
     if isinstance(others, list) and others:
         names = ", ".join(str(item) for item in others)
@@ -229,24 +240,37 @@ def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
             else "This configuration already serves other connected projects, which keep "
             f"working: {names}"
         )
-    before = body.get("route_profile_before")
-    changed = body.get("route_changes_for")
-    after = body.get("route_profile")
-    if (
-        isinstance(changed, list)
-        and changed
-        and isinstance(before, str)
-        and isinstance(after, str)
-        and before in _REVIEW_MODES
-        and after in _REVIEW_MODES
-        and before != after
-    ):
-        lines.append(
-            "The review mode is shared by every project using this agent configuration: this "
-            f"changes it from {_REVIEW_MODES[before]} to {_REVIEW_MODES[after]} for these "
-            "connected projects too: " + ", ".join(str(item) for item in changed)
-        )
+    route_line = _route_change_line(body)
+    if route_line is not None:
+        lines.append(route_line)
     return tuple(lines)
+
+
+def _route_change_line(body: dict[str, JsonValue]) -> str | None:
+    """One sentence naming the other projects whose shared review mode this plan changes."""
+
+    before = body.get("route_profile_before")
+    after = body.get("route_profile")
+    changed = body.get("route_changes_for")
+    possible = body.get("route_changes_possible_for")
+    named = [
+        *(str(item) for item in (changed if isinstance(changed, list) else [])),
+        *(f"{item} (may use Yoetz)" for item in (possible if isinstance(possible, list) else [])),
+    ]
+    if (
+        not named
+        or not isinstance(before, str)
+        or not isinstance(after, str)
+        or before not in _REVIEW_MODES
+        or after not in _REVIEW_MODES
+        or before == after
+    ):
+        return None
+    return (
+        "The review mode is shared by every project using this agent configuration: this "
+        f"changes it from {_REVIEW_MODES[before]} to {_REVIEW_MODES[after]} for these "
+        "projects too: " + ", ".join(named)
+    )
 
 
 def _admission_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
@@ -370,14 +394,46 @@ def _membership_status_step(
     )
 
 
-def _codex_unverified_step(config_root: Path | None, project: Path) -> str:
-    """Continuation when only unverified projects might still use the shared pieces."""
+def _registered_codex_route(home: Path) -> str | None:
+    """The review mode of the home's Yoetz MCP registration, read from its config (or None)."""
+
+    from yoetz.adapters.integrations.codex_mcp import read_bounded_toml
+
+    try:
+        config = read_bounded_toml(home / "config.toml") or {}
+    except OSError, ValueError:
+        return None
+    servers = config.get("mcp_servers")
+    entry = (
+        cast(Mapping[str, object], servers).get(MCP_SERVER_NAME)
+        if isinstance(servers, Mapping)
+        else None
+    )
+    args = cast(Mapping[str, object], entry).get("args") if isinstance(entry, Mapping) else None
+    if not isinstance(args, list):
+        return None
+    words = [str(item) for item in cast(list[object], args)]
+    if "serve" not in words:
+        return None
+    return "strict" if words[-2:] == ["--semantic", "off"] else "policy"
+
+
+def _codex_unverified_step(
+    config_root: Path | None, project: Path, selected: HostInstallation | None = None
+) -> str:
+    """Continuation when only unverified projects might still use the shared pieces.
+
+    The commands name the selected Codex executable and home (Codex may not be on PATH), and
+    the reconnect keeps the home's current review mode, which every project shares.
+    """
 
     from yoetz.adapters.integrations.codex_marketplace import possible_projects
 
     try:
         home = (
-            config_root.expanduser().absolute()
+            selected.config_root
+            if selected is not None
+            else config_root.expanduser().absolute()
             if config_root is not None
             else host_config_root("codex")
         )
@@ -385,7 +441,12 @@ def _codex_unverified_step(config_root: Path | None, project: Path) -> str:
     except OSError, ValueError, IntegrationError:
         home, possible = None, ()
     names = ", ".join(possible) if possible else "other projects"
-    target = ["--host-config-root", str(home)] if home is not None else []
+    target = [
+        *(["--host-path", str(selected.executable)] if selected is not None else []),
+        *(["--host-config-root", str(home)] if home is not None else []),
+    ]
+    route = None if home is None else _registered_codex_route(home)
+    keep_route = ["--route-profile", route] if route is not None else []
     return (
         "Nothing was changed. Yoetz's record of the projects connected to this Codex home does "
         "not name these projects, but this installation of Yoetz connected them earlier or they "
@@ -393,7 +454,18 @@ def _codex_unverified_step(config_root: Path | None, project: Path) -> str:
         f"pieces: {names}. None of them is a verified connection now, so Yoetz will not move the "
         "shared marketplace to one or remove what they use. If you use Yoetz in one of them, "
         "connect it again (this records it), then rerun this disconnect: "
-        + continuation(["setup", "run", "--host", "codex", *target, "--project", "<that project>"])
+        + continuation(
+            [
+                "setup",
+                "run",
+                "--host",
+                "codex",
+                *target,
+                *keep_route,
+                "--project",
+                "<that project>",
+            ]
+        )
         + ". If none of them uses Yoetz, preview removing the shared pieces for every project: "
         + continuation(
             [
@@ -688,8 +760,10 @@ def run_host_connection(
         "action": action,
         "connection_observed": False,
     }
+    chosen: HostInstallation | None = None
     try:
         selected = select_installation(host, executable, config_root)
+        chosen = selected
         report["host"] = selected.host
         if action == "connect" and not status_only:
             from yoetz.cli.runtime_refusal import installed_runtime_refusal_text
@@ -810,7 +884,7 @@ def run_host_connection(
             and error.safe_details.get("conflict") == "membership_unverified"
         ):
             report["reason"] = "membership_unverified"
-            report["next_step"] = _codex_unverified_step(config_root, project)
+            report["next_step"] = _codex_unverified_step(config_root, project, chosen)
         if reason == "connection_lock_unavailable":
             report["next_step"] = _lock_unavailable_step(str(report["host"]), config_root)
         if host == "codex" and reason == "target_untrusted":
