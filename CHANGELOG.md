@@ -20,13 +20,16 @@ reverse-chronological released versions.
 
 - In such a root-owned project, a checkout root made (`/app` and `/app/.git` owned by root, or
   your own `git init` in a sticky root-owned `/app`) now works as a plain directory instead of
-  being refused at every service connection: the service starts, hooks and MCP attach, and work is
-  checked as published. Git-based change capture does not read it, because Git refuses another
-  owner's checkout, and the receipt says so. Cursor's project registration status, connect and
-  disconnect work there, and a Codex disconnect removes the project's `marketplace.json` instead
+  being refused at every service connection: the service starts, hooks and MCP attach from the
+  checkout's top or any folder beneath it (one identity for all of them), and work is checked as
+  published. Git-based change capture does not read it, because Git refuses another owner's
+  checkout; the receipt says "the repository failed a safety check (… another owner …)" rather
+  than "not a Git repository". Cursor's project registration status, connect and disconnect work
+  in a root-owned project, and a Codex disconnect removes the project's `marketplace.json` instead
   of failing half-way on every retry. A `.claude`, `.codex` or `.cursor` folder root committed to
   the image no longer makes revoking auto-review admission, a Codex disconnect or the privacy
-  ceremony report a failure. Yoetz also no longer reads or writes host settings in such a folder
+  ceremony report a failure; Claude Code's plugin setup and Cursor's project registration still
+  refuse such a folder (`target_unsafe`) until root makes it the user's. Yoetz also no longer reads or writes host settings in such a folder
   that another account created (possible in a shared, sticky project folder such as `/app` with
   mode 1777): admission status reports it as unknown, auto-review admission and Claude Code's
   project-scope setup refuse it, and writes go through the folder Yoetz checked, never a link
@@ -45,8 +48,10 @@ reverse-chronological released versions.
   Before, the service, MCP connection and hooks stopped with
   `release_runtime_unavailable: permission_denied` or "could not be verified", and setup connected
   agents to a runtime that could not start. Every way of connecting an agent (`setup run`, with or
-  without `--host`, and the full-screen interface's first run and `/connect`) now refuses that
-  connection, and one another account can write, with the same reason; disconnect still works.
+  without `--host`, the full-screen interface's first run and `/connect`, the menu, and
+  `yoetz integrate … install` for Codex MCP, Claude Code and Cursor) now refuses that connection,
+  and one another account can write, with the same reason; disconnect, removal and status still
+  work.
 
 - The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
   in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find

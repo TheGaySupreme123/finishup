@@ -2002,12 +2002,25 @@ root-owned `/app`, now passes the service handshake: the service commits the pla
 identity without running Git (Git refuses another owner's checkout), so hooks and MCP attach;
 Git-based change capture reports `unsafe_root`. A root-owned `.git` file with more than one link
 is not trusted. (2) A `.cursor` root committed to the image is read normally: admission status is
-`absent` and the reverse sweeps (Cursor disconnect and the privacy ceremony) report nothing to remove instead of `write_failed`; a
+`absent` (typically) and host admission's own reverse sweep (the privacy ceremony) reports nothing to remove instead of `write_failed`; a
 grant into it is refused `target_unsafe`. A `.cursor` another account made, or one others can
 write, is `unknown` (`folder_not_owned`) in status and refused by grant and revoke; writes to
 `.cursor/permissions.json` and `.cursor/cli.json` go through the host folder pinned by descriptor, never a link swapped in after the
 check. (3) `setup run --host cursor-ide|cursor-cli` and the full-screen interface's `/connect` refuse before any registration is written. Covered by tests through the public paths with simulated ownership, and the
 repository identity with a real Git checkout owned by another uid.
+
+**Review fixes, round 3.** Decisions for Cursor: (1) the plain directory identity of a root-built
+checkout is now its top's (the directory holding `.git`), the same from any subdirectory, so a
+session started below the top meets its own hooks instead of `repository_identity_mismatch`
+(same path as every host). (2) Check-time change capture reports `unsafe_root` for such a
+checkout; the receipt reads "the repository failed a safety check (a link, another owner, ...)",
+not "not a Git repository" (same path as every host). (3) `integrate cursor plugin preview|install` (install or replace) and `integrate cursor project-mcp
+preview|install` now refuse a runtime that cannot serve this account with exit 20 and the token,
+before any write; removal, its preview and status stay open. Known gap: a `.cursor` root committed
+to the image is refused `target_unsafe` by project MCP status, connect and disconnect (they
+require the user's own `.cursor`); have root make it the user's (`chown -R <user>
+<project>/.cursor`). Follow-up: let status and removal read a root-owned `.cursor` no other account
+can write.
 
 ## Response and receipt timeout recovery
 

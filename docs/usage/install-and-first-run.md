@@ -76,7 +76,8 @@ keeps in a directory next to the installation, and that directory must belong to
 running it. So an installation another account made (for example root, in a container image whose
 agent runs as a non-root user) does not run for you unless that account prepared the directory
 for you alone: the service, the agent connection and the hooks stop with
-`release_runtime_not_owned`, setup and the full-screen interface will not connect an agent to it,
+`release_runtime_not_owned`, Yoetz will not connect an agent to it (from setup, the full-screen
+interface or the `integrate` commands),
 and `yoetz service run` prints the directory involved and what to do. If the installation is
 yours but that directory was made by someone else (for example with `sudo`), remove it and Yoetz
 recreates it as yours. Likewise, `yoetz instance create --bind-runtime` needs to write into the

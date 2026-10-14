@@ -2910,9 +2910,12 @@ the client itself: CLI/UI use their actual process working directory and the MCP
 configured/session working directory. It is never populated from an operation body or public
 `workspace_ref`. The service resolves symlinks, resolves a Git worktree to its canonical common
 repository root (or a non-Git workspace to its resolved directory; for a non-root user, a checkout
-whose nearest `.git` or working tree root owns, which Git refuses as "dubious ownership", also
-keeps its resolved-directory identity and Git is not run against it: ADR-007, 2026-10-14, item 4;
-another non-root account's checkout stays `repository_identity_unavailable`), computes the installation-keyed
+whose nearest `.git` or working tree root owns, which Git refuses as "dubious ownership", gets the
+`directory` identity of the checkout's top, `adapters/repository_identity.root_owned_checkout`,
+the same from any directory beneath it and equal to the locator workspace binding gives hooks, and
+Git is not run against it: ADR-007, 2026-10-14, item 4; check-time change capture refuses that
+checkout as `unsafe_root`; another non-root account's checkout stays
+`repository_identity_unavailable`), computes the installation-keyed
 `repository_privacy_commitment`, and keeps no other copy of the raw locator. The resulting
 `ControlSession` carries `RepositoryPrivacyContext(commitment, identity_kind)` plus, in service
 memory only and outside its equality and `repr`, the exact `workspace_locator` the commitment was
@@ -3051,7 +3054,10 @@ commands name the repair and, for `release_runtime_not_owned`, the directory and
 fits whose installation and directory it is; hooks exit 20 with no stdout and no local path).
 `cli/runtime_refusal.connect_refusal()` is the same check as `(token, next step)` for every connect
 path (`setup run` with or without `--host`, the full-screen interface's first run and `/connect`,
-and `cli/host_connection.apply_selected` for a connect); disconnect and status never consult it. The MCP bridge supplies a
+`integrate codex mcp preview|install` and so the prompt-loop menu, `integrate claude plugin`
+connect actions, `integrate cursor plugin preview|install`, `integrate cursor project-mcp
+preview|install`, and `cli/host_connection.apply_selected` for a connect); disconnect, removal,
+their previews and status never consult it. The MCP bridge supplies a
 default **30-second** call deadline for `start`, `publish_work`, and `status`, a default
 **50-second** deadline for `respond` and `receipt` (below the common 60-second host MCP tool
 limit, so the bridge's typed timeout reaches the agent first), and a default **300-second**
@@ -6425,7 +6431,8 @@ root by the shared project-root rule (`config.foreign_write.project_root_admitte
 without following a link: a folder that is the user's own or root's and that no other account can
 write is read normally; any other folder is `unknown` with detail `folder_not_owned`, so status,
 previews and the reverse sweeps never read another account's folder as this user's admission, and a
-folder root committed reads as `absent`. A preview that would change a surface requires its folder
+host folder root committed is read normally by host admission (typically `absent`; Claude Code's
+plugin and Cursor's project MCP paths still refuse such a folder, ADR-007 item 5's known gap). A preview that would change a surface requires its folder
 to be the user's own and unshared (`target_unsafe` otherwise); apply pins the project root and host
 folder by descriptor, creates an absent folder `0700`, and stages, rechecks, renames and unlinks
 relative to that descriptor. `preview_host_admission` refuses a grant unless the

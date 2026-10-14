@@ -192,18 +192,24 @@ when the user cannot create entries there, have root pre-create that directory o
 (`/app` and `/app/.git` owned by root, from `COPY` or `git clone` at image build), and the user's
 own `git init` inside a sticky root-owned `/app` (Git refuses that too, because the working tree is
 root's), are used as a plain directory: the locator is `/app` from `/app` or any directory beneath
-it, the service gives it the plain directory identity without running Git, and the service starts
-and hooks and MCP attach. Change and subject-state capture report `unsafe_root` (the receipt says
-the repository failed a safety check: another owner), so checks cover what the agent publishes,
-not a Git diff. A `.git` another non-root account owns, one others can write, or a root-owned
+it, the service gives `/app` (the checkout's top) the plain directory identity without running
+Git, whichever of those directories a host, the CLI or the full-screen interface starts from, and
+the service starts and hooks and MCP attach. Change and subject-state capture report `unsafe_root`;
+the receipt names the gap as "the repository failed a safety check (a link, another owner, a
+working tree redirected elsewhere, or a directory replaced while it was read)", so checks cover
+what the agent publishes, not a Git diff. A `.git` another non-root account owns, one others can write, or a root-owned
 `.git` file with more than one link (anyone can plant a hard link in a sticky directory) is
 refused. If you need Git-based capture, give the user the checkout (`chown -R`).
 
 **Host folders.** A `.claude`, `.codex` or `.cursor` root committed to the image is read
-normally, so admission status shows `absent` and reverse transitions (privacy ceremony, Codex
-disconnect, plugin removal) report nothing to remove; Yoetz cannot write admission entries into it
-(the user cannot either), so a grant there is refused `target_unsafe`: have root make the folder
-the user's. In a sticky project folder another account can create one of those folders first;
+normally by host admission, so admission status shows `absent` (typically) and its reverse sweeps
+(the privacy ceremony, Codex disconnect and strict re-registration, plugin removal) report nothing
+to remove; Yoetz cannot write admission entries into it (the user cannot either), so a grant there
+is refused `target_unsafe`. Known gap: Claude Code's plugin connect and remove, and Cursor's
+project MCP status, connect and disconnect, still require `.claude` and `.cursor` to be the user's
+own and refuse a root-committed one as `target_unsafe`. In both cases the repair is to have root
+make the folder the user's (`chown -R <user> /app/.claude`); a follow-up may let those paths read
+such a folder for status and removal. In a sticky project folder another account can create one of those folders first;
 admission status then reports it `unknown` (`folder_not_owned`), grant and revoke refuse it, and
 Claude Code setup refuses a squatted `.claude` (`target_unsafe`): remove it, or have root recreate
 it for the user. Writes go through the folder Yoetz checked, pinned by descriptor, never a link
@@ -225,7 +231,8 @@ serving start uses that sibling. A runtime the user cannot use this way is refus
   create it in the prefix's parent. Terminal commands print that directory and the repair that
   fits; hooks print the token only. `service status` names it, and every connect path refuses to
   connect a host to such a runtime (`setup run` with or without `--host`, the full-screen
-  interface's first run and `/connect`); disconnect and status stay available. Before, these
+  interface's first run and `/connect`, the menu, and the `integrate … install` commands for
+  Codex MCP, Claude Code and Cursor, exit 20); disconnect, removal and status stay available. Before, these
   printed `release_runtime_unavailable: permission_denied` (no directory yet) or "could not be
   verified" (root had already run Yoetz and made the directory), and setup connected anyway.
 - When the installation is the user's own but `.<prefix>-releases` is not (typically created by

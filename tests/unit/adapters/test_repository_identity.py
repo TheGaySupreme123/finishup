@@ -178,10 +178,15 @@ async def test_a_checkout_root_owns_keeps_the_plain_directory_identity(
         os.chown(app, _ROOT_PLAYED_BY, _ROOT_PLAYED_BY)
         app.chmod(0o1777)
 
+    (app / "src").mkdir(exist_ok=True)
     context = await resolve_repository_privacy_context(WorkspaceLocator(os.fspath(app)), _MacKey())
+    nested = await resolve_repository_privacy_context(
+        WorkspaceLocator(os.fspath(app / "src")), _MacKey()
+    )
 
     assert context.identity_kind == "directory"
     assert context.commitment == _directory_commitment(app)
+    assert nested == context
 
 
 @_needs_root
@@ -239,3 +244,47 @@ async def test_a_checkout_root_owns_is_never_handed_to_git(
     monkeypatch.setattr(shutil, "which", no_git)
     context = await resolve_repository_privacy_context(WorkspaceLocator(os.fspath(app)), _MacKey())
     assert context.identity_kind == "directory"
+
+
+@pytest.mark.anyio
+async def test_a_checkout_root_owns_has_one_identity_from_any_directory_in_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hooks bind the checkout top (workspace binding), while the Codex and Claude Code MCP
+    bridges, the CLI and the full-screen interface name the raw working directory. Both must
+    reach one identity, or a session started in a subdirectory is fenced off from its own hooks
+    (repository_identity_mismatch). Simulated ownership: runs on any runner."""
+
+    import shutil
+
+    from tests.builders.ownership import SUPERUSER, present_owners
+
+    from yoetz.cli.hooks import resolve_session_workspace
+
+    home = tmp_path.resolve() / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", os.fspath(home))
+    app = tmp_path.resolve() / "app"
+    _repository(app)
+    (app / "src" / "deep").mkdir(parents=True)
+    app.chmod(0o755)
+    present_owners(monkeypatch, {app: SUPERUSER, app / ".git": SUPERUSER})
+
+    def no_git(*_args: object, **_kwargs: object) -> str | None:
+        raise AssertionError("Git ran against another owner's checkout")
+
+    monkeypatch.setattr(shutil, "which", no_git)
+    key = _MacKey()
+    contexts = [
+        await resolve_repository_privacy_context(WorkspaceLocator(os.fspath(path)), key)
+        for path in (app, app / "src", app / "src" / "deep")
+    ]
+    assert {context.identity_kind for context in contexts} == {"directory"}
+    assert {context.commitment for context in contexts} == {_directory_commitment(app)}
+
+    monkeypatch.chdir(app / "src")
+    hook = resolve_session_workspace(None, {"cwd": os.fspath(app / "src")})
+    assert hook.locator == os.fspath(app)
+    hook_context = await resolve_repository_privacy_context(WorkspaceLocator(os.fspath(app)), key)
+    raw_cwd = WorkspaceLocator(os.fspath(Path.cwd().resolve(strict=True)))
+    assert hook_context == await resolve_repository_privacy_context(raw_cwd, key)

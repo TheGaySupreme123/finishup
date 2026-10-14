@@ -3281,6 +3281,23 @@ _MCP_EXIT_USAGE: Final = frozenset(
 )
 
 
+def _connect_refused() -> int | None:
+    """Refuse a connect when this installation's runtime cannot serve the running account.
+
+    Prints ``<token>: <next step>`` and returns exit 20, like the serving commands' own refusal;
+    ``None`` lets the connect proceed. Status and removal never ask.
+    """
+
+    from yoetz.cli.runtime_refusal import connect_refusal
+
+    refusal = connect_refusal()
+    if refusal is None:
+        return None
+    token, next_step = refusal
+    typer.echo(f"{token}: {next_step}", err=True)
+    return 20
+
+
 def _mcp_error_exit(reason: str) -> int:
     typer.echo(f"mcp_registration_{reason}", err=True)
     if reason == "foreign_entry_present":
@@ -3325,6 +3342,10 @@ async def integrate_mcp(
         "remove",
     }:
         return _usage_failure("the harness or action is not supported")
+    if action in {"preview", "install"}:
+        refused = _connect_refused()
+        if refused is not None:
+            return refused
     interactive = _is_interactive_terminal()
     binaries = discover_codex_binaries()
     try:

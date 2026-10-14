@@ -337,17 +337,26 @@ as `target_unsafe`.
    in exactly the case it exists for. Instead, when the nearest `.git` and the directory holding it
    are each either the user's own (not writable by others) or root's (`.git` as above; the
    directory as item 1 admits it), and root owns at least one of them, the service commits the
-   plain `directory` identity of the locator without running Git. That covers the root-built
-   checkout and the user's own `git init` inside a sticky root-owned `/app`, which Git refuses the
-   same way. Anything another non-root account owns is not matched and stays refused. What the user
-   gets: the service starts, hooks and MCP attach, and work is published and checked as for any
-   plain directory; change and subject-state capture report `unsafe_root` (the receipt says the
-   repository failed a safety check: another owner), so checks cover what the agent publishes, not
-   a Git diff. The identity differs from the one the same checkout would get if the user owned it,
-   so consent given under one does not carry to the other (it fails closed: grant again).
+   plain `directory` identity of the checkout's top (the directory holding that `.git`, found the
+   way workspace binding finds it, never past the home directory) without running Git. The
+   identity is therefore the same from the top or any directory beneath it, and equals the
+   locator workspace binding gives hooks and setup, so a session the MCP bridge, the CLI or the
+   full-screen interface starts from a subdirectory (they name the raw working directory) meets
+   its own hooks rather than `repository_identity_mismatch`. That covers the root-built checkout
+   and the user's own `git init` inside a sticky root-owned `/app`, which Git refuses the same way.
+   Anything another non-root account owns is not matched and stays refused. Check-time change
+   capture applies the same decision before running Git and reports `unsafe_root` (before, Git's
+   refusal surfaced as `not_git`, "not a Git repository"), as subject-state capture already did.
+   What the user gets: the service starts, hooks and MCP attach, and work is published and checked
+   as for any plain directory; the receipt names the capture gap as "the repository failed a
+   safety check (a link, another owner, a working tree redirected elsewhere, or a directory
+   replaced while it was read)", so checks cover what the agent publishes, not a Git diff. The
+   identity differs from the one the same checkout would get if the user owned it, so consent
+   given under one does not carry to the other (it fails closed: grant again).
 5. **Every path in and out applies the same split.** The project root is judged by item 1 on every
    path that reaches it, not only on install: Cursor's project MCP status, preview and apply (so
-   Cursor connect, disconnect and status), and Codex marketplace removal, which anchors its
+   Cursor connect, disconnect and status in a root-owned project root), and Codex marketplace
+   removal, which anchors its
    descriptor walk on the project (a Codex home anchor keeps the owner rule). Before, those paths
    still required the user to own the project root, so Cursor refused a root-owned project and a
    Codex disconnect removed the Codex configuration and then failed on the project's
@@ -373,6 +382,14 @@ as `target_unsafe`.
    repeats). One window stays outside what Yoetz can fence: when `.claude` is absent, another
    account could create it in a sticky root between Yoetz's check and Claude Code's own write;
    root can pre-create `.claude` for the user to close it.
+
+   Known gap, recorded rather than closed here: the read/write split above is host admission's
+   alone. Claude Code's plugin connect and remove and Cursor's project MCP status, connect and
+   disconnect still require `.claude` and `.cursor` to be the user's own on every path, so a
+   folder root committed to the image (`COPY . /app` with a committed `.claude` or `.cursor`) is
+   refused there as `target_unsafe` until root makes it the user's (`chown`). A follow-up may let
+   their status and removal read a root-owned folder no other account can write, as host admission
+   does, while still requiring the user's own folder for a write.
 
 Scope of the sticky arm, recorded rather than changed: item 1 admits every root-owned sticky
 directory, which includes the shared temporary directories (`/tmp`, `/var/tmp`, `/dev/shm`, and on
@@ -407,10 +424,17 @@ creates that sibling for the user (below). Both are now refused by name instead 
    `upgrade --prune-runtimes` names it. Every connect path refuses to connect a host to such a
    runtime (or one another account can write), before writing any registration: `setup run --host`,
    bare `setup run` (the Codex wizard, with or without `--codex-path`), the full-screen interface's
-   first run and `/connect` (both its host connection and its Codex preview), and, as a last
-   guard for any front end, the shared apply of a connection. Each reports the token as its reason
-   and the refusal text as the next step; disconnect and status stay open. A directory the user
-   owns that is read-only, and every other condition, keeps its existing report.
+   first run and `/connect` (both its host connection and its Codex preview), the direct
+   commands `integrate codex mcp preview|install` (also reached from the prompt-loop menu),
+   `integrate claude plugin preview|install|update|enable` (any connect action),
+   `integrate cursor plugin preview|install` (install or replace) and
+   `integrate cursor project-mcp preview|install`, and, as a last guard for any front end, the
+   shared apply of a connection. Each reports the token as its reason and the refusal text as the
+   next step (exit 20 on the direct commands); disconnect, removal, their previews and status stay
+   open. Not covered: `integrate claude plugin export`, which writes a development carrier for
+   `claude --plugin-dir` rather than connecting a host; a session started from it is refused at
+   launch like any other. A directory the user owns that is read-only, and every other condition,
+   keeps its existing report.
 
 What the rule already admits, and the 2026-10-14 container run confirmed as `nobody`: root may
 create `.<prefix>-releases` for one non-root account (`install -d -m 0700 -o <user>` before anyone

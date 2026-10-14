@@ -2540,12 +2540,22 @@ root-owned `/app`, now passes the service handshake: the service commits the pla
 identity without running Git (Git refuses another owner's checkout), so hooks and MCP attach;
 Git-based change capture reports `unsafe_root`. A root-owned `.git` file with more than one link
 is not trusted. (2) A `.codex` root committed to the image is read normally: admission status is
-`absent` and the reverse sweeps (Codex disconnect, `integrate codex plugin remove` and strict MCP re-registration) report nothing to remove instead of `write_failed`; a
+`absent` (typically) and host admission's reverse sweeps (Codex disconnect, `integrate codex plugin remove` and strict MCP re-registration) report nothing to remove instead of `write_failed`; a
 grant into it is refused `target_unsafe`. A `.codex` another account made, or one others can
 write, is `unknown` (`folder_not_owned`) in status and refused by grant and revoke; writes to
 `.codex/config.toml` go through the host folder pinned by descriptor, never a link swapped in after the
 check. (3) Codex has two connect front ends: bare `setup run` (the Codex wizard, also with `--codex-path`) and the full-screen interface's Codex preview both refuse before previewing or writing any registration, as `setup run --host codex` does. Covered by tests through the public paths with simulated ownership, and the
 repository identity with a real Git checkout owned by another uid.
+
+**Review fixes, round 3.** Decisions for Codex: (1) the plain directory identity of a root-built
+checkout is now its top's (the directory holding `.git`), the same from any subdirectory, so a
+session started below the top meets its own hooks instead of `repository_identity_mismatch`
+(same path as every host). (2) Check-time change capture reports `unsafe_root` for such a
+checkout; the receipt reads "the repository failed a safety check (a link, another owner, ...)",
+not "not a Git repository" (same path as every host). (3) `integrate codex mcp preview|install` (also the prompt-loop menu's "Install registration") now
+refuses a runtime that cannot serve this account with exit 20 and the token, before any
+registration; status, `preview-remove` and `remove` stay open. Codex has no other direct connect
+command (`integrate codex plugin` is removal only).
 
 ## Response and receipt timeout recovery
 
