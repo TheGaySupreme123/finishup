@@ -103,3 +103,29 @@ def test_non_yoetz_tools_and_non_tool_phases_are_unchanged() -> None:
     # Names that merely resemble a Yoetz tool are not Yoetz-owned.
     assert self_observation_deliverable("PostToolUse", {"tool_name": "mcp__other__status"}) is True
     assert self_observation_deliverable("PostToolUse", {"tool_name": "status_check"}) is True
+
+
+@pytest.mark.parametrize("name", _READS)
+def test_cursor_generic_mcp_spelling_of_a_yoetz_read_is_retained_locally_only(name: str) -> None:
+    """tb4 n5: Cursor's ordinary ``MCP:<tool>`` names no server; a Yoetz read stays local."""
+
+    tool = f"MCP:{name}"
+    assert self_observation_deliverable("PreToolUse", {"tool_name": tool}) is False
+    assert self_observation_deliverable("PostToolUse", {"tool_name": tool}) is False
+    assert (
+        self_observation_deliverable("PostToolUse", {"tool_name": tool, "success": False}) is True
+    )
+    assert tool not in YOETZ_OWNED_TOOL_NAMES
+
+
+@pytest.mark.parametrize("name", _MUTATIONS)
+def test_cursor_generic_mcp_spelling_of_a_yoetz_mutation_delivers_its_post(name: str) -> None:
+    tool = f"MCP:{name}"
+    assert self_observation_deliverable("PreToolUse", {"tool_name": tool}) is False
+    assert self_observation_deliverable("PostToolUse", {"tool_name": tool}) is True
+
+
+def test_cursor_generic_mcp_spelling_of_another_tool_is_unchanged() -> None:
+    for tool in ("MCP:fixture_echo", "MCP:statusx", "mcp:status", "MCP:closure_prepare"):
+        for phase in ("PreToolUse", "PostToolUse"):
+            assert self_observation_deliverable(phase, {"tool_name": tool}) is True

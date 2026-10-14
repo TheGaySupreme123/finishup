@@ -3237,10 +3237,143 @@ def test_0_159_3_calls_pair_with_outputs_on_call_id_not_their_row_ids(tmp_path: 
     batch = materialize_observation_envelope(output, task_id="task_stream_pair_1038")
     assert tuple(item.role for item in batch.drafts) == ("action", "result")
     # A completed item keeps its own id (the one decision 15 compares with a hook call id), and
-    # an MCP item keeps its server, as its hook spells it.
-    mcp = rows["McpToolCall"]
+    # an MCP item keeps its server, as its hook spells it. A successful Yoetz ``status`` read is
+    # retained locally only (#564, tb4 n5): it never reaches the outbox.
+    assert "McpToolCall" not in rows
+    (mcp,) = (
+        envelope
+        for envelope in store.list_envelopes(workspace)
+        if envelope.structural_payload.get("action") == "McpToolCall"
+    )
     assert mcp.structural_payload["tool_call_id"] == "exec-1038-mcp"
     assert mcp.structural_payload["tool_name"] == "mcp__yoetz__status"
+
+
+def _mcp_item(
+    item_id: str, server: str, tool: str, *, status: str = "completed", error: str | None = None
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "arguments": {},
+        "id": item_id,
+        "result": {"content": []},
+        "server": server,
+        "status": status,
+        "tool": tool,
+        "type": "McpToolCall",
+    }
+    if error is not None:
+        item["error"] = error
+    return item
+
+
+def test_completed_yoetz_mcp_read_items_are_not_delivered_but_others_are(tmp_path: Path) -> None:
+    """tb4 n5: a completed Yoetz ``status`` item is not appended to the ledger it read.
+
+    The rollout's completed ``McpToolCall`` item had no hook phase, so the self-observation
+    policy (#564) delivered every successful ``status`` read: each poll appended action, result
+    and evidence and moved the frontier the agent was polling. A failed Yoetz read, a Yoetz
+    mutation and another server's tool of the same name are delivered as before.
+    """
+
+    home = tmp_path / "codex-home"
+    sessions = home / "sessions"
+    sessions.mkdir(parents=True)
+    session_id = "019f9b27-c1de-7a61-9c5e-5d0b8975aa39"
+    (sessions / f"rollout-{session_id}.jsonl").write_bytes(
+        encode_lines(
+            session_meta(cli_version="0.159.3", history_mode="paginated"),
+            item_completed(_mcp_item("exec-n5-status", "yoetz", "status")),
+            item_completed(_mcp_item("exec-n5-receipt", "yoetz", "receipt")),
+            item_completed(_mcp_item("exec-n5-guidance", "yoetz", "read_guidance")),
+            item_completed(
+                _mcp_item("exec-n5-failed", "yoetz", "status", status="failed", error="boom")
+            ),
+            item_completed(_mcp_item("exec-n5-publish", "yoetz", "publish_work")),
+            item_completed(_mcp_item("exec-n5-foreign", "github", "status")),
+        )
+    )
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    session = store.session_commitment(session_id)
+    store.bind_session(workspace, session)
+
+    reconcile_session_stream(
+        store,
+        workspace_commitment=workspace,
+        session_commitment=session,
+        codex_session_id=session_id,
+        locator=CodexSessionStreamLocator(home),
+    )
+
+    delivered = {
+        str(row.envelope.structural_payload.get("tool_call_id"))
+        for row in store.list_pending_outbox_rows(workspace)
+        if row.envelope.structural_payload.get("action") == "McpToolCall"
+    }
+    assert delivered == {"exec-n5-failed", "exec-n5-publish", "exec-n5-foreign"}
+    # Every item, delivered or not, stays in the bounded local store.
+    local = {
+        str(envelope.structural_payload.get("tool_call_id"))
+        for envelope in store.list_envelopes(workspace)
+        if envelope.structural_payload.get("action") == "McpToolCall"
+    }
+    assert local == {
+        "exec-n5-status",
+        "exec-n5-receipt",
+        "exec-n5-guidance",
+        "exec-n5-failed",
+        "exec-n5-publish",
+        "exec-n5-foreign",
+    }
+    assert store.pending_rollout_items(workspace) == ()
+
+
+def _held_mcp_item(
+    position: int, identity: str, tool_name: str, *, result_status: str = "completed"
+) -> ObservationEnvelope:
+    row = _decide_row(position, hook=False, identity=identity, call_id=f"exec-{identity}")
+    return replace(
+        row,
+        structural_payload=JsonObject(
+            {
+                "action": "McpToolCall",
+                "result_status": result_status,
+                "tool_call_id": f"exec-{identity}",
+                "tool_name": tool_name,
+            }
+        ),
+    )
+
+
+def test_released_held_yoetz_read_item_is_settled_not_delivered(tmp_path: Path) -> None:
+    """tb4 n5: a held Yoetz read item is settled locally on release; other items still deliver.
+
+    The pending-item release (#910) delivered whatever it held, so a Yoetz ``status`` item held
+    for its hook post reached the ledger once the idle bound, the turn's end or a check's
+    observation wait released it.
+    """
+
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    store.bind_session(workspace, _DECIDE_SESSION)
+    held = (
+        _held_mcp_item(1, "own-status", "mcp__yoetz__status"),
+        _held_mcp_item(2, "own-failed", "mcp__yoetz__status", result_status="failed"),
+        _held_mcp_item(3, "foreign", "mcp__github__status"),
+    )
+    for item in held:
+        store.note_pending_rollout_item(workspace, _DECIDE_SESSION, "host-1", item)
+
+    still_held = stream_module.release_held_rollout_items_for_check(
+        store, workspace, lambda _item: True, now=4_000_000_000.0
+    )
+
+    assert still_held == ()
+    assert store.pending_rollout_items(workspace) == ()
+    delivered = {row.envelope.source_identity for row in store.list_pending_outbox_rows(workspace)}
+    assert delivered == {"own-failed", "foreign"}
 
 
 @pytest.mark.parametrize(

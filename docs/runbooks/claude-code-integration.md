@@ -841,7 +841,9 @@ observing itself (issue #564). The shared self-observation policy applies: a `Po
 local store but not enqueued for delivery; a `PostToolUse` of `_start`, `_publish_work`, `_check`,
 or `_respond` enqueues one row; every `PostToolUseFailure` enqueues one row. Claude sends no
 `PreToolUse` on this profile, so its reviewed pairing contract is post-only and there is no
-pre-event to hold back. Its `tool_use_id`, when present, identifies the observed result; no
+pre-event to hold back. The tb4 n5 self-observation gap (a Codex rollout's completed MCP item, and
+Cursor's server-less `MCP:<tool>`) does not exist here: every Claude Code spelling of a Yoetz tool
+names its server and arrives in an explicit hook phase. Its `tool_use_id`, when present, identifies the observed result; no
 missing-pre gap is created for a legacy post-only hook. The `PostToolUse` advice
 guard recognizes Claude's plugin spelling together with the other host spellings, so a self-owned
 hook without an explicit failure does not lease pending recommendation context for the call being

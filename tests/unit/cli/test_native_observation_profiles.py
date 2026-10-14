@@ -1110,3 +1110,63 @@ def test_unknown_runtime_authority_never_extracts_native_content(
     assert "content_capture_unavailable" in pending[0].gap_codes
     assert "content_unselected" not in pending[0].gap_codes
     assert pending[0].content_object_refs == ()
+
+
+def test_cursor_ordinary_yoetz_status_read_stays_local_while_other_mcp_calls_deliver(
+    tmp_path: Path,
+) -> None:
+    """tb4 n5: Cursor's ``MCP:status`` read is not appended to the ledger it read."""
+
+    store = LocalObservationStore(_state=tmp_path / "state")
+    commitment = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(commitment)
+
+    def emit(event: str, call_id: str, tool_name: str) -> None:
+        payload: dict[str, JsonValue] = {
+            "hook_event_name": event,
+            "session_id": "cursor-n5-ordinary",
+            "conversation_id": "cursor-n5-conversation",
+            "tool_name": tool_name,
+            "tool_use_id": call_id,
+            "tool_output": None if event == "preToolUse" else '{"isError":false}',
+        }
+        assert (
+            observe_hooks.handle_cursor_observe(
+                event_name=event,
+                stdin_bytes=canonical_encode(payload),
+                stdout=io.BytesIO(),
+                workspace=str(tmp_path),
+                _state=tmp_path / "state",
+                skip_service=True,
+                observation_profile=CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
+            )
+            == 0
+        )
+
+    for call_id, tool_name in (
+        ("cursor-n5-status", "MCP:status"),
+        ("cursor-n5-publish", "MCP:publish_work"),
+        ("cursor-n5-foreign", "MCP:fixture_echo"),
+    ):
+        emit("preToolUse", call_id, tool_name)
+        emit("postToolUse", call_id, tool_name)
+
+    reopened = LocalObservationStore(_state=tmp_path / "state")
+    delivered = {
+        (
+            row.envelope.event_kind,
+            row.envelope.structural_payload.get("tool_name"),
+        )
+        for row in reopened.list_pending_outbox_rows(commitment)
+        if row.envelope.event_kind in {"PreToolUse", "PostToolUse"}
+    }
+    assert delivered == {
+        ("PostToolUse", "MCP:publish_work"),
+        ("PreToolUse", "MCP:fixture_echo"),
+        ("PostToolUse", "MCP:fixture_echo"),
+    }
+    local = {
+        envelope.structural_payload.get("tool_name")
+        for envelope in reopened.list_envelopes(commitment)
+    }
+    assert {"MCP:status", "MCP:publish_work", "MCP:fixture_echo"} <= local

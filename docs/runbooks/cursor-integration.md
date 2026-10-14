@@ -1174,7 +1174,12 @@ is repaired by restarting a service that already reports ready.
 not enqueued for delivery, while `start`, `publish_work`, `check`, and `respond` enqueue one row
 each. Cursor's hook payload states no outcome fact for MCP executions, so a failed Yoetz call is
 indistinguishable from a successful one at this ingress; the service's own record of the call is
-the authority on its outcome. The shared advice guard recognizes both Cursor server spellings, so
+the authority on its outcome. On the ordinary-work profile Cursor's generic `preToolUse` and
+`postToolUse` spell every MCP call `MCP:<tool>` without a server; the delivery policy reads
+`MCP:<Yoetz workflow tool>` as Yoetz's own (tb4 n5), as the later-material rule already did, so a
+`status` read there is no longer appended to the ledger it read. A foreign MCP tool with exactly a
+Yoetz workflow tool's name is kept local the same way; its failures are still delivered. The
+shared advice guard recognizes both Cursor server spellings, so
 a self-owned hook without an explicit failure does not lease pending frontier or recommendation
 context for the call being observed; explicit failures remain eligible for pending advice.
 This does not change local retention or explicit failure delivery. Cursor reports

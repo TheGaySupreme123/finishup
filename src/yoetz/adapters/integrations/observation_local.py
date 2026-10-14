@@ -355,6 +355,18 @@ _YOETZ_READ_TOOL_BASENAMES: Final = ("status", "receipt", "read_guidance")
 YOETZ_READ_TOOL_NAMES: Final = frozenset(
     f"{prefix}{name}" for prefix in _YOETZ_TOOL_PREFIXES for name in _YOETZ_READ_TOOL_BASENAMES
 )
+# Cursor's ordinary ``preToolUse``/``postToolUse`` spell every MCP call ``MCP:<tool>`` and name no
+# server (tb4n1 B5). The delivery policy alone reads that spelling of a workflow tool as Yoetz's
+# own, as the later-material rule does (``domain.yoetz_tools``): without it each ordinary-profile
+# ``status`` read was delivered into the ledger it read (tb4 n5). It stays out of
+# ``YOETZ_OWNED_TOOL_NAMES``, which also gates start binding and advice, where an unowned
+# ``MCP:start`` must not count as Yoetz's.
+_YOETZ_GENERIC_MCP_TOOL_NAMES: Final = frozenset(
+    f"MCP:{name}" for name in YOETZ_WORKFLOW_TOOL_NAMES
+)
+_YOETZ_GENERIC_MCP_READ_TOOL_NAMES: Final = frozenset(
+    f"MCP:{name}" for name in _YOETZ_READ_TOOL_BASENAMES
+)
 _SELF_OBSERVATION_PHASES: Final = frozenset({"PreToolUse", "PostToolUse"})
 _SUCCESS_RESULT_STATUS: Final = frozenset({"complete", "completed", "ok", "success", "succeeded"})
 
@@ -404,12 +416,18 @@ def self_observation_deliverable(phase: str, structural: Mapping[str, JsonValue]
     - the post-event of a Yoetz-owned *mutation* (``start``, ``publish_work``,
       ``check``, ``respond``): deliverable, one row per call.
 
+    Yoetz-owned means a host spelling in ``YOETZ_OWNED_TOOL_NAMES`` or Cursor's
+    server-less ``MCP:<workflow tool>``. A Codex rollout's completed ``McpToolCall``
+    item is read in the ``PostToolUse`` phase by its caller (tb4 n5).
+
     The envelope is always ingested into the bounded local store first; this
     governs only outbox delivery, so nothing is dropped from local evidence.
     """
 
     tool = structural.get("tool_name")
-    if type(tool) is not str or tool not in YOETZ_OWNED_TOOL_NAMES:
+    if type(tool) is not str or (
+        tool not in YOETZ_OWNED_TOOL_NAMES and tool not in _YOETZ_GENERIC_MCP_TOOL_NAMES
+    ):
         return True
     if phase not in _SELF_OBSERVATION_PHASES:
         return True
@@ -417,7 +435,7 @@ def self_observation_deliverable(phase: str, structural: Mapping[str, JsonValue]
         return True
     if phase == "PreToolUse":
         return False
-    return tool not in YOETZ_READ_TOOL_NAMES
+    return tool not in YOETZ_READ_TOOL_NAMES and tool not in _YOETZ_GENERIC_MCP_READ_TOOL_NAMES
 
 
 _SESSION_DOMAIN: Final = b"yoetz/observation-session/v1\x00"
