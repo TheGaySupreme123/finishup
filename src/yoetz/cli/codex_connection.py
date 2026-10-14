@@ -16,6 +16,7 @@ from yoetz.adapters.integrations.codex_marketplace import (
     inspect_activation,
     possible_projects,
     preview_removal,
+    serving_projects,
 )
 from yoetz.adapters.integrations.codex_mcp import (
     CodexMcpAdapter,
@@ -121,6 +122,13 @@ def prepare_codex_connection(
                 excluding=project,
             )
         )
+        if legacy.route_profile_before is not None and legacy.route_changes_for:
+            # The user-level registration serves every project in the home: rewriting it on
+            # another review mode changes theirs too, so the plan names them (#1058 review P2-3).
+            admission.disclosure["route_profile_before"] = legacy.route_profile_before
+            admission.disclosure["route_changes_for"] = cast(
+                list[JsonValue], list(legacy.route_changes_for)
+            )
         activation = inspect_activation(
             IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(project)),
             executable_path=str(installation.executable),
@@ -450,10 +458,10 @@ def _other_projects_needing_transport(
 
 
 def _other_connected_projects(codex_home: Path, project: Path) -> tuple[str, ...]:
-    """Verified members of the home other than ``project`` whose directories still exist."""
+    """Verified members of the home other than ``project`` that still use its shared pieces."""
 
     try:
-        listed = connected_projects(codex_home)
+        listed = serving_projects(codex_home)
     except IntegrationError:
         return ()
     return live_projects(listed, excluding=project)
@@ -486,7 +494,9 @@ def home_projects_status(codex_home: Path) -> dict[str, JsonValue]:
     """Every project this Codex home's shared Yoetz pieces serve (#1058); empty if unreadable."""
 
     try:
-        projects = connected_projects(codex_home)
+        # Verified members that still serve the manifest: a deleted anchor, or one whose
+        # manifest is gone, is not reported as connected (#1058 review P2-2).
+        projects = serving_projects(codex_home)
         possible = possible_projects(codex_home)
     except IntegrationError:
         return {}

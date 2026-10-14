@@ -294,44 +294,177 @@ def test_lock_unavailable_says_nothing_changed_and_names_the_lock_folder(
     assert "partial connection" not in step
 
 
-@pytest.mark.parametrize("host", ["cursor-ide", "codex"])
-def test_invalid_projects_record_names_the_file_and_the_way_out(
+def _select(monkeypatch: pytest.MonkeyPatch, host: str, root: Path) -> None:
+    from typing import cast
+
+    from yoetz.adapters.integrations.host_discovery import SetupHost
+
+    installation = HostInstallation(cast(SetupHost, host), Path("/opt/host"), "1.0.0", root, "Host")
+
+    def selected(*_args: object) -> HostInstallation:
+        return installation
+
+    def no_leftover(*_args: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(cli, "select_installation", selected)
+    monkeypatch.setattr(cli, "_codex_leftover", no_leftover)
+
+
+def _damaged_record(root: Path) -> Path:
+    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+
+    root.mkdir(mode=0o700)
+    record = root / CONNECTED_PROJECTS_FILE
+    record.write_text('{"projects":["/work/a"]}\n')
+    record.chmod(0o644)  # readable by others: refused
+    return record
+
+
+@pytest.mark.parametrize(
+    ("host", "action", "status_only"),
+    [
+        ("codex", "connect", False),
+        ("codex", "connect", True),
+        ("codex", "disconnect", False),
+        ("cursor-ide", "disconnect", False),
+    ],
+)
+def test_a_damaged_record_gets_its_own_continuation_on_every_command(
     prepared: ConnectionPlan,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
     host: str,
+    action: str,
+    status_only: bool,
 ) -> None:
-    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+    """#1058 review P2-6: `setup run` and `setup status` reach Codex through a wrapper that keeps
+    only `source_invalid`; the record itself is asked, so every command names the file."""
+
+    from typing import Literal, cast
+
     from yoetz.application.host_connection import ConnectionError as SetupConnectionError
     from yoetz.ports.integrations import IntegrationError, IntegrationReason
+    from yoetz.tui.runtime import RuntimeError_
+
+    root = tmp_path / "config"
+    record = _damaged_record(root)
+    _select(monkeypatch, host, root)
 
     def invalid(*_args: object, **_kwargs: object):
-        if host == "codex":
+        if host != "codex":
+            raise SetupConnectionError("connection_projects_record_invalid")
+        if action == "disconnect":
             raise IntegrationError(
                 IntegrationReason.SOURCE_INVALID, {"conflict": "connected_projects"}
             )
-        raise SetupConnectionError("connection_projects_record_invalid")
+        # What `setup run|status --host codex` sees: the TUI runtime keeps only the reason.
+        raise RuntimeError_("source_invalid", "the Codex activation could not be previewed")
 
     monkeypatch.setattr(cli, "prepare_selected", invalid)
-
-    def no_leftover(*_args: object) -> dict[str, object]:
-        return {}
-
-    monkeypatch.setattr(cli, "_codex_leftover", no_leftover)
-    root = tmp_path / "config"
     code = cli.run_host_connection(
         host=host,
         executable=None,
         config_root=root,
         project=Path("/workspace/example/project"),
-        action="disconnect",
+        action=cast(Literal["connect", "disconnect"], action),
+        status_only=status_only,
         json_output=True,
     )
     assert code == 1
     report = json.loads(capsys.readouterr().out)
     HostConnectionReport.model_validate(report)
+    assert report["reason"] == "connection_projects_record_invalid"
     step = report["next_step"]
     assert step.startswith("Nothing was changed.")
-    assert str(root / CONNECTED_PROJECTS_FILE) in step
-    assert "remove" in step and "unknown" in step
+    assert f"chmod 600 {record}" in step
+    if host == "codex":
+        # Codex only detects its own earlier members and trusted checkouts: never "just delete".
+        assert "run setup again for every project" in step
+        assert "membership_unverified" in step
+    else:
+        assert "unknown" in step
+
+
+def test_source_invalid_with_a_valid_record_keeps_the_generic_continuation(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+    from yoetz.tui.runtime import RuntimeError_
+
+    root = tmp_path / "config"
+    root.mkdir(mode=0o700)
+    record = root / CONNECTED_PROJECTS_FILE
+    record.write_text('{"projects":["/work/a"]}\n')
+    record.chmod(0o600)
+    _select(monkeypatch, "codex", root)
+
+    def invalid(*_args: object, **_kwargs: object):
+        raise RuntimeError_("source_invalid", "the Codex activation could not be previewed")
+
+    monkeypatch.setattr(cli, "prepare_selected", invalid)
+    cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=root,
+        project=Path("/workspace/example/project"),
+        json_output=True,
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "source_invalid"
+    assert "connected" not in report["next_step"]
+
+
+def test_summary_names_projects_whose_shared_review_mode_changes() -> None:
+    """#1058 review P2-3: connecting on another review mode changes it for other projects."""
+
+    lines = cli._shared_summary(  # pyright: ignore[reportPrivateUsage]
+        {
+            "action": "connect",
+            "route_profile": "policy",
+            "route_profile_before": "strict",
+            "route_changes_for": ["/work/a"],
+            "shared_with": ["/work/a"],
+        }
+    )
+    assert any(
+        "from local only to AI-powered review" in line and "/work/a" in line for line in lines
+    )
+
+
+def test_text_preview_prints_what_the_plan_does_to_other_projects(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from dataclasses import replace
+
+    disclosed = replace(
+        prepared,
+        body={**prepared.body, "route_profile": "policy"},
+        disclosure={
+            "shared_with": ["/work/a"],
+            "route_profile_before": "strict",
+            "route_changes_for": ["/work/a"],
+        },
+    )
+
+    def prepared_plan(*_args: object, **_kwargs: object) -> ConnectionPlan:
+        return disclosed
+
+    monkeypatch.setattr(cli, "prepare_selected", prepared_plan)
+    cli.run_host_connection(
+        host="claude",
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/example/project"),
+        route="policy",
+    )
+    out = capsys.readouterr().out
+    assert "claude: preview" in out
+    assert "keep working: /work/a" in out
+    assert "from local only to AI-powered review" in out

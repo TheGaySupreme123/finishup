@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Final, Literal, Protocol, cast
 
 from yoetz import __version__
+from yoetz.adapters.integrations.host_projects import live_projects
 from yoetz.adapters.integrations.launcher import resolve_yoetz_launcher, valid_launcher
 from yoetz.adapters.integrations.portable_plugin import PackagedPortableResources
 from yoetz.config.foreign_write import writable_by_others
@@ -851,6 +852,38 @@ def installed_claude_startup_mode(
         return None
     hooks = files.get("plugins/yoetz/hooks/hooks.json", b"")
     return "required" if b" hooks startup-gate --host claude " in hooks else "optional"
+
+
+def installed_claude_route_profile(
+    target: ClaudeCodePluginTarget,
+) -> Literal["strict", "policy"] | None:
+    """The review mode of the marker-verified shared source's plugin MCP server, if any.
+
+    The source under the config root serves every project's install (#1058), so connecting a
+    project on another review mode changes the other projects' sessions too (review P2-3).
+    ``None`` when there is no verified source or it carries no recognisable Yoetz route.
+    """
+
+    _validate_target(target)
+    root = Path(target.marketplace_root)
+    if not root.exists():
+        return None
+    files = _safe_tree(root)
+    if not _valid_source_marker(files)[0]:
+        return None
+    try:
+        document = strict_json_parse(files.get("plugins/yoetz/.mcp.json", b""))
+    except ProtocolValueError, UnicodeError:
+        return None
+    servers = document.get("mcpServers") if isinstance(document, Mapping) else None
+    entry = servers.get("yoetz") if isinstance(servers, Mapping) else None
+    args = entry.get("args") if isinstance(entry, Mapping) else None
+    if not isinstance(args, (list, tuple)):
+        return None
+    arguments = [item for item in cast(Sequence[object], args) if isinstance(item, str)]
+    if "serve" not in arguments:
+        return None
+    return "strict" if arguments[-2:] == ["--semantic", "off"] else "policy"
 
 
 def render_claude_code_plugin(
@@ -2374,17 +2407,30 @@ def apply_claude_code_plugin(
             target, command_port, ("plugin", "disable", _PLUGIN_ID, "--scope", "project")
         )
     elif action is ClaudeCodePluginAction.REMOVE:
-        command_ok = _run_mutation(
-            target,
-            command_port,
-            ("plugin", "uninstall", _PLUGIN_ID, "--scope", "project", "--keep-data"),
-        )
+        before = status_claude_code_plugin(target, artifact, commands=command_port)
+        if before.discovered:
+            command_ok = _run_mutation(
+                target,
+                command_port,
+                ("plugin", "uninstall", _PLUGIN_ID, "--scope", "project", "--keep-data"),
+            )
+        # Otherwise this project's own install is already gone (an earlier disconnect kept the
+        # shared marketplace for a project that has since been deleted): only the shared
+        # marketplace and source remain to remove (#1058 review P2-1).
         if command_ok:
             # `marketplace remove` is not project-scoped: it uninstalls every project's copy.
-            # While another project still has its install, keep the shared marketplace and
-            # source; an unreadable inventory keeps them too (#1058).
+            # While another live project still has its install, keep the shared marketplace and
+            # source; an unreadable inventory keeps them too (#1058). A deleted project's row
+            # holds nothing open, exactly as the preview counted it: the last live project's
+            # removal also clears the dead rows (review P2-1).
             rows, observed = _list_plugins(target, command_port)
-            others = _other_project_paths(target, rows) if observed else None
+            others = (
+                live_projects(
+                    _other_project_paths(target, rows), excluding=Path(target.project_root)
+                )
+                if observed
+                else None
+            )
             shared_kept = not remove_shared and (others is None or bool(others))
             if shared_kept and others:
                 # The other projects keep the marketplace; this project's own declaration of

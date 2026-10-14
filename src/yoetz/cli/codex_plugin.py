@@ -83,6 +83,9 @@ def _preview_body(preview: RemovalPreview) -> dict[str, object]:
         # `detach` (#1058): other connected projects keep the home's shared pieces.
         "rebind_to": preview.rebind_to,
         "shared_with": list(preview.shared_with),
+        # Unverified projects that may still use the shared pieces (bound into the digest).
+        "possible_users": list(preview.possible_users),
+        **({"membership_unknown": True} if preview.possible_users else {}),
         "skill_tree": preview.skill_tree_state,
         "state_before": preview.inspection.state.value,
     }

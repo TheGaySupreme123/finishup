@@ -303,3 +303,82 @@ def test_declaration_left_by_an_earlier_detach_is_repairable_but_an_edited_one_i
         assert error.reason.value == "destination_conflict"
     else:
         raise AssertionError("edited declaration was not protected")
+
+
+class _StrictUninstallClaude(_RealisticClaude):
+    """`plugin uninstall --scope project` fails when this project has no install (2.1.300)."""
+
+    def run(
+        self, target: ClaudeCodePluginTarget, arguments: Sequence[str]
+    ) -> ClaudeCodeCommandResult:
+        args = tuple(arguments)
+        if args[:2] == ("plugin", "uninstall") and target.project_root not in self.rows:
+            self.calls.append((target.project_root, args))
+            return ClaudeCodeCommandResult(1, b"", b"not installed")
+        return super().run(target, arguments)
+
+
+def test_a_deleted_projects_row_does_not_keep_the_shared_marketplace(tmp_path: Path) -> None:
+    """#1058 review P2-1: apply counts other projects exactly as the preview did (live ones).
+
+    Claude Code keeps a deleted project's row; it held the marketplace open after a preview
+    that promised to remove it, and every later disconnect then failed.
+    """
+
+    project_a, project_b = _pair(tmp_path)
+    commands = _StrictUninstallClaude(
+        render_claude_code_plugin(mcp_ownership=McpOwnership.PLUGIN_MANAGED, route_profile="strict")
+    )
+    _apply(project_a, ClaudeCodePluginAction.CONNECT, commands)
+    _apply(project_b, ClaudeCodePluginAction.CONNECT, commands)
+    shutil.rmtree(project_a.project_root)
+    assert project_a.project_root in commands.rows  # Claude still lists the deleted project
+
+    assert _apply(project_b, ClaudeCodePluginAction.REMOVE, commands) is (
+        PluginOperationState.COMPLETED
+    )
+    assert any(args[:3] == ("plugin", "marketplace", "remove") for _, args in commands.calls)
+    assert not Path(project_b.marketplace_root).exists()
+    assert commands.rows == {}
+    assert _state(project_b, commands) is PluginArtifactState.ABSENT
+
+
+def test_shared_pieces_left_behind_by_an_earlier_disconnect_can_still_be_removed(
+    tmp_path: Path,
+) -> None:
+    """#1058 review P2-1: this project's install is gone but the shared marketplace stayed
+    (kept for a project that was since deleted): the disconnect removes only what remains."""
+
+    project_a, project_b = _pair(tmp_path)
+    commands = _StrictUninstallClaude(
+        render_claude_code_plugin(mcp_ownership=McpOwnership.PLUGIN_MANAGED, route_profile="strict")
+    )
+    _apply(project_a, ClaudeCodePluginAction.CONNECT, commands)
+    _apply(project_b, ClaudeCodePluginAction.CONNECT, commands)
+    shutil.rmtree(project_a.project_root)
+    # The state an earlier build left: B's own row uninstalled, the shared source kept.
+    commands.rows.pop(project_b.project_root)
+
+    assert _apply(project_b, ClaudeCodePluginAction.REMOVE, commands) is (
+        PluginOperationState.COMPLETED
+    )
+    assert not any(
+        root == project_b.project_root and args[:2] == ("plugin", "uninstall")
+        for root, args in commands.calls[-6:]
+    )
+    assert not Path(project_b.marketplace_root).exists()
+    assert _state(project_b, commands) is PluginArtifactState.ABSENT
+
+
+def test_installed_route_profile_reads_the_shared_source(tmp_path: Path) -> None:
+    """#1058 review P2-3: the shared source's review mode, which every project's install uses."""
+
+    from yoetz.adapters.integrations.claude_code_integration import installed_claude_route_profile
+
+    project_a, _project_b = _pair(tmp_path)
+    assert installed_claude_route_profile(project_a) is None
+    commands = _SharedClaude(
+        render_claude_code_plugin(mcp_ownership=McpOwnership.PLUGIN_MANAGED, route_profile="strict")
+    )
+    _apply(project_a, ClaudeCodePluginAction.CONNECT, commands)
+    assert installed_claude_route_profile(project_a) == "strict"

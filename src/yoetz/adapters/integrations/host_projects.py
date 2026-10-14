@@ -17,6 +17,13 @@ the caller holds ``host_config_lock`` and its bytes still equal the snapshot the
 was built from. A project root is the canonical path setup resolved. Two entries naming one
 directory through different paths are never admitted: the caller refuses with
 ``project_connected_via_other_path``.
+
+Each installation also keeps a *membership witness* beside its setup lock
+(``<state dir>/host-config-locks/<key>.members``): every project it recorded for that root and
+has not seen disconnect. A record that disappears (deleted by hand, or lost) therefore does not
+make this installation forget who connected: those projects stay possible users (#1058 review).
+The witness is maintained best effort after each record write and never names a project the
+record did not name at some point.
 """
 
 from __future__ import annotations
@@ -33,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, cast
 
-from yoetz.config.paths import state_dir
+from yoetz.config.paths import PathSafetyError, state_dir
 
 __all__ = [
     "CONNECTED_PROJECTS_FILE",
@@ -45,7 +52,9 @@ __all__ = [
     "lock_path_for",
     "live_projects",
     "load_connected_projects",
+    "recorded_members",
     "same_directory",
+    "witness_path_for",
     "write_connected_projects",
 ]
 
@@ -57,6 +66,7 @@ _MAX_BYTES: Final = 262_144
 _MAX_PROJECTS: Final = 256
 _MAX_PATH_CHARS: Final = 4_096
 _LOCK_DIRECTORY: Final = "host-config-locks"
+_WITNESS_SUFFIX: Final = ".members"
 
 type HostProjectsReason = Literal[
     "registry_invalid", "registry_stale", "write_failed", "lock_unavailable"
@@ -142,13 +152,7 @@ def _read_bounded(path: Path) -> bytes | None:
         os.close(descriptor)
 
 
-def load_connected_projects(config_root: Path) -> ConnectedProjects:
-    """Read the record under ``config_root``; an absent record names no projects."""
-
-    path = config_root / CONNECTED_PROJECTS_FILE
-    raw = _read_bounded(path)
-    if raw is None:
-        return ConnectedProjects(path, None, ())
+def _parse_record(raw: bytes) -> tuple[tuple[str, ...], bool]:
     try:
         parsed = json.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError) as exc:
@@ -170,9 +174,18 @@ def load_connected_projects(config_root: Path) -> ConnectedProjects:
     projects = cast(list[str], values)
     if len(set(projects)) != len(projects):
         raise HostProjectsError("registry_invalid")
-    return ConnectedProjects(
-        path, raw, tuple(sorted(projects)), document.get("unknown_members") is True
-    )
+    return tuple(sorted(projects)), document.get("unknown_members") is True
+
+
+def load_connected_projects(config_root: Path) -> ConnectedProjects:
+    """Read the record under ``config_root``; an absent record names no projects."""
+
+    path = config_root / CONNECTED_PROJECTS_FILE
+    raw = _read_bounded(path)
+    if raw is None:
+        return ConnectedProjects(path, None, ())
+    projects, unknown = _parse_record(raw)
+    return ConnectedProjects(path, raw, projects, unknown)
 
 
 def same_directory(left: Path, right: Path) -> bool:
@@ -246,12 +259,76 @@ def lock_path_for(config_root: Path) -> Path:
     return state_dir() / _LOCK_DIRECTORY / f"{digest}.lock"
 
 
+def witness_path_for(config_root: Path) -> Path:
+    """This installation's membership witness for one configuration root (beside its lock)."""
+
+    return lock_path_for(config_root).with_suffix(_WITNESS_SUFFIX)
+
+
+def recorded_members(config_root: Path) -> tuple[str, ...]:
+    """Projects this installation recorded for ``config_root`` and has not seen disconnect.
+
+    Read from the witness, not the record, so a record deleted by hand or lost still leaves
+    them known. An absent or unreadable witness names none (the witness is a safety net).
+    """
+
+    try:
+        raw = _read_bounded(witness_path_for(config_root))
+        return () if raw is None else _parse_record(raw)[0]
+    except HostProjectsError, OSError:
+        return ()
+
+
+def _update_witness(
+    config_root: Path, after: tuple[str, ...], departed: set[str], *, shared_removed: bool
+) -> None:
+    """Apply one record change to the witness: who left goes, who is recorded is added.
+
+    ``shared_removed`` (the shared pieces went: the last project left, or a home-wide
+    disconnect) forgets every project. Best effort: a failure leaves the previous witness, never
+    a partial one, and never fails the setup whose record write already succeeded.
+    """
+
+    try:
+        path = witness_path_for(config_root)
+        if shared_removed:
+            path.unlink(missing_ok=True)
+            return
+        members = (set(recorded_members(config_root)) - departed) | set(after)
+        ordered = tuple(sorted(item for item in members if _valid_root(item)))[:_MAX_PROJECTS]
+        _private_lock_directory(path.parent)
+        _replace_private_file(path, encode_projects(ordered))
+    except HostProjectsError, OSError, ValueError, PathSafetyError:
+        return
+
+
+def _replace_private_file(path: Path, payload: bytes) -> None:
+    """Write ``payload`` to ``path`` through an fsynced 0600 temporary and an atomic rename."""
+
+    try:
+        descriptor, temporary_name = tempfile.mkstemp(prefix=f"{path.name}.", dir=path.parent)
+    except OSError as exc:
+        raise HostProjectsError("write_failed") from exc
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise HostProjectsError("write_failed") from exc
+    _sync_directory(path.parent)
+
+
 def _private_lock_directory(directory: Path) -> None:
     from yoetz.config import paths
 
     try:
         paths.ensure_owner_only_dir(directory)
-    except paths.PathSafetyError:
+    except PathSafetyError:
         # A concurrent first setup may have created the directory between the existence check
         # and ``mkdir``; check what is there now rather than failing the loser of that race. A
         # directory that really is unsafe fails the same check again.
@@ -272,8 +349,6 @@ def host_config_lock(config_root: Path) -> Generator[None]:
     """
 
     import fcntl
-
-    from yoetz.config.paths import PathSafetyError
 
     path = lock_path_for(config_root)
     try:
@@ -299,13 +374,25 @@ def host_config_lock(config_root: Path) -> Generator[None]:
 
 
 def write_connected_projects(
-    snapshot: ConnectedProjects, projects: Iterable[str], *, unknown_members: bool = False
+    snapshot: ConnectedProjects,
+    projects: Iterable[str],
+    *,
+    unknown_members: bool = False,
+    departed: Iterable[str] = (),
+    shared_removed: bool = False,
 ) -> None:
     """Replace the record with ``projects`` only if it still holds ``snapshot.raw``.
 
     An empty set without unknown members removes the record. The caller holds
-    ``host_config_lock``; this compare-and-swap additionally refuses a record changed since the
-    approved plan read it.
+    ``host_config_lock`` (or, for Codex, the home's activation lock). The record is re-read and
+    compared with the bytes the approved plan read immediately before an atomic rename, which
+    refuses a record changed since the plan; it narrows, but cannot close, the window in which
+    a writer that holds neither lock (another installation) changes it between the compare and
+    the rename.
+
+    ``departed`` names the projects this change disconnects (also when a lost record no longer
+    lists them) and ``shared_removed`` says the shared pieces went; both keep the membership
+    witness in step.
     """
 
     ordered = tuple(sorted(set(projects)))
@@ -323,23 +410,9 @@ def write_connected_projects(
             except OSError as exc:
                 raise HostProjectsError("write_failed") from exc
             _sync_directory(path.parent)
-        return
-    payload = encode_projects(ordered, unknown_members=unknown_members)
-    if payload == snapshot.raw:
-        return
-    try:
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f"{path.name}.", dir=path.parent)
-    except OSError as exc:
-        raise HostProjectsError("write_failed") from exc
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
-        os.replace(temporary, path)
-    except OSError as exc:
-        temporary.unlink(missing_ok=True)
-        raise HostProjectsError("write_failed") from exc
-    _sync_directory(path.parent)
+    else:
+        payload = encode_projects(ordered, unknown_members=unknown_members)
+        if payload != snapshot.raw:
+            _replace_private_file(path, payload)
+    left = {*departed, *(set(snapshot.projects) - set(ordered))}
+    _update_witness(path.parent, ordered, left, shared_removed=shared_removed)

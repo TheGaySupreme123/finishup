@@ -180,21 +180,44 @@ def connection_summary(plan: ConnectionPlan) -> tuple[str, ...]:
     )
 
 
+_REVIEW_MODES: dict[str, str] = {
+    "strict": "local only",
+    "policy": "AI-powered review using your configured privacy policy",
+}
+
+
 def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
     """Name the other projects that share this configuration's Yoetz pieces (#1058)."""
 
     lines: list[str] = []
+    if body.get("remove_shared") is True:
+        # A home-wide disconnect is the one consent that ends Yoetz for other projects: say so
+        # and name them before the approval (#1058 review P2-7).
+        removed = body.get("shared_removed_from")
+        names = (
+            ", ".join(str(item) for item in removed)
+            if isinstance(removed, list) and removed
+            else ""
+        )
+        lines.append(
+            "Home-wide disconnect (--remove-shared): this removes Yoetz's shared pieces from this "
+            "agent configuration for every project"
+            + (f", so these connected projects stop using Yoetz too: {names}" if names else "")
+            + ". Their own project files stay."
+        )
     if body.get("membership_unknown") is True:
         lines.append(
-            "Yoetz's shared pieces here were set up before it recorded connected projects (or "
-            "that record was lost), so other projects may still use them: an ordinary "
-            "disconnect keeps them. Only --remove-shared removes them for every project."
+            "Yoetz cannot confirm every project that uses its shared pieces here (they were set "
+            "up before it recorded connected projects, its record was lost, or projects it "
+            "connected are missing from the record), so an ordinary disconnect keeps them. Only "
+            "--remove-shared removes them for every project."
         )
     possible = body.get("possible_users")
     if isinstance(possible, list) and possible:
         lines.append(
-            "Projects that may use them (trusted checkouts with Yoetz's plugin files, not "
-            "verified connections): " + ", ".join(str(item) for item in possible)
+            "Projects that may use them (connected earlier by this installation of Yoetz, or "
+            "trusted checkouts with Yoetz's plugin files; not verified connections): "
+            + ", ".join(str(item) for item in possible)
         )
     others = body.get("shared_with")
     if isinstance(others, list) and others:
@@ -205,6 +228,23 @@ def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
             if body.get("action") == "disconnect"
             else "This configuration already serves other connected projects, which keep "
             f"working: {names}"
+        )
+    before = body.get("route_profile_before")
+    changed = body.get("route_changes_for")
+    after = body.get("route_profile")
+    if (
+        isinstance(changed, list)
+        and changed
+        and isinstance(before, str)
+        and isinstance(after, str)
+        and before in _REVIEW_MODES
+        and after in _REVIEW_MODES
+        and before != after
+    ):
+        lines.append(
+            "The review mode is shared by every project using this agent configuration: this "
+            f"changes it from {_REVIEW_MODES[before]} to {_REVIEW_MODES[after]} for these "
+            "connected projects too: " + ", ".join(str(item) for item in changed)
         )
     return tuple(lines)
 
@@ -344,13 +384,14 @@ def _codex_unverified_step(config_root: Path | None, project: Path) -> str:
         possible = possible_projects(home)
     except OSError, ValueError, IntegrationError:
         home, possible = None, ()
-    names = ", ".join(possible) if possible else "other trusted projects"
+    names = ", ".join(possible) if possible else "other projects"
     target = ["--host-config-root", str(home)] if home is not None else []
     return (
-        "Nothing was changed. Yoetz's record of the projects connected to this Codex home is "
-        "missing or incomplete, and these trusted checkouts carry Yoetz's plugin files, so they "
-        f"may still use its shared pieces: {names}. None of them is a verified connection, so "
-        "Yoetz will not move the shared marketplace to one. If you use Yoetz in one of them, "
+        "Nothing was changed. Yoetz's record of the projects connected to this Codex home does "
+        "not name these projects, but this installation of Yoetz connected them earlier or they "
+        "are trusted checkouts that carry Yoetz's plugin files, so they may still use its shared "
+        f"pieces: {names}. None of them is a verified connection now, so Yoetz will not move the "
+        "shared marketplace to one or remove what they use. If you use Yoetz in one of them, "
         "connect it again (this records it), then rerun this disconnect: "
         + continuation(["setup", "run", "--host", "codex", *target, "--project", "<that project>"])
         + ". If none of them uses Yoetz, preview removing the shared pieces for every project: "
@@ -399,6 +440,27 @@ def _lock_unavailable_step(host: str, config_root: Path | None) -> str:
     )
 
 
+def _record_unreadable(host: str, config_root: Path | None) -> bool:
+    """Whether this host configuration's connected-projects record exists and is refused."""
+
+    from yoetz.adapters.integrations.host_projects import (
+        CONNECTED_PROJECTS_FILE,
+        HostProjectsError,
+        load_connected_projects,
+    )
+
+    if host not in {"codex", "cursor-ide", "cursor-cli"}:
+        return False
+    root = _selected_root(host, config_root)
+    if root is None or not os.path.lexists(root / CONNECTED_PROJECTS_FILE):
+        return False
+    try:
+        load_connected_projects(root)
+    except HostProjectsError:
+        return True
+    return False
+
+
 def _record_invalid_step(host: str, config_root: Path | None) -> str:
     """The connected-projects record cannot be trusted; nothing was changed (#1058)."""
 
@@ -406,13 +468,26 @@ def _record_invalid_step(host: str, config_root: Path | None) -> str:
 
     root = _selected_root(host, config_root)
     record = str(root / CONNECTED_PROJECTS_FILE) if root is not None else CONNECTED_PROJECTS_FILE
-    return (
+    common = (
         "Nothing was changed. Yoetz's record of the projects connected to this agent "
-        f"configuration ({record}) is not a valid record that only you can read and write, so "
-        "Yoetz cannot tell which other projects use the shared pieces. If you or another tool "
-        "changed it, restore it (owner-only, mode 0600). Otherwise remove the file and rerun "
-        "this command: Yoetz then treats the other projects as unknown and keeps whatever they "
-        "might use."
+        f"configuration ({record}) is not a regular file that only you can read and write with "
+        "valid content, so Yoetz cannot tell which other projects use the shared pieces. If only "
+        f"its permissions changed, make it yours and owner-only again (chmod 600 {record}) and "
+        "rerun this command. If you have a copy, restore it. "
+    )
+    if host == "codex":
+        return common + (
+            "If its content is damaged, remove it, then run setup again for every project that "
+            "uses Yoetz with this Codex home, before you disconnect any of them: that records "
+            "them. Until then a disconnect keeps the shared pieces for the projects this "
+            "installation of Yoetz connected and for trusted checkouts that carry Yoetz's plugin "
+            "files, and stops (membership_unverified) rather than remove what they may use. A "
+            "project connected only through another Yoetz installation is not detected."
+        )
+    return common + (
+        "If its content is damaged, remove it: Yoetz then treats the projects using this "
+        "configuration as unknown and keeps the shared plugin on an ordinary disconnect, and "
+        "running setup again for each project you use records it."
     )
 
 
@@ -738,11 +813,19 @@ def run_host_connection(
             report["next_step"] = _codex_unverified_step(config_root, project)
         if reason == "connection_lock_unavailable":
             report["next_step"] = _lock_unavailable_step(str(report["host"]), config_root)
-        if reason == "connection_projects_record_invalid" or (
-            isinstance(error, IntegrationError)
-            and error.reason is IntegrationReason.SOURCE_INVALID
-            and error.safe_details.get("conflict") == "connected_projects"
+        if (
+            reason == "connection_projects_record_invalid"
+            or (
+                isinstance(error, IntegrationError)
+                and error.reason is IntegrationReason.SOURCE_INVALID
+                and error.safe_details.get("conflict") == "connected_projects"
+            )
+            # `setup run` and `setup status` reach Codex through a wrapper that keeps only the
+            # reason; ask the record itself (#1058 review P2-6).
+            or (reason == "source_invalid" and _record_unreadable(str(report["host"]), config_root))
         ):
+            # One name for every host and command (Codex adapters say source_invalid).
+            report["reason"] = "connection_projects_record_invalid"
             report["next_step"] = _record_invalid_step(str(report["host"]), config_root)
         if reason == "project_connected_via_other_path":
             report["next_step"] = (
@@ -792,6 +875,13 @@ def run_host_connection(
                 if isinstance(warnings, list):
                     for warning in warnings:
                         typer.echo(str(warning))
+        plan_body = report.get("plan")
+        if report["outcome"] == "preview" and isinstance(plan_body, dict):
+            # What this plan does to other projects is part of what is being approved.
+            for line in _shared_summary(
+                {**plan_body, **(status if isinstance(status, dict) else {})}
+            ):
+                typer.echo(line)
         if "reason" in report:
             typer.echo(str(report["reason"]))
         if "next_step" in report:

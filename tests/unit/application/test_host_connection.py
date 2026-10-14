@@ -567,3 +567,32 @@ def test_status_step_gives_the_exact_remove_shared_preview(tmp_path: Path) -> No
         "--remove-shared"
     )
     assert "--accept" not in step
+
+
+def test_cursor_remove_shared_summary_names_who_stops_using_yoetz(tmp_path: Path) -> None:
+    """#1058 review P2-7: the consent for a home-wide disconnect names the other projects."""
+
+    from yoetz.cli.host_connection import connection_summary
+
+    installation, launcher = _cursor_install(tmp_path, "cursor-cli")
+    project_b, project_c = tmp_path / "b", tmp_path / "c"
+    project_b.mkdir(mode=0o700)
+    project_c.mkdir(mode=0o700)
+    _cursor_step(installation, project_b, "connect", launcher, Review())
+    _cursor_step(installation, project_c, "connect", launcher, Review())
+
+    plan = prepare_connection(
+        REQUEST,
+        installation,
+        project_b,
+        action="disconnect",
+        route="strict",
+        launcher=(str(launcher),),
+        remove_shared=True,
+    )
+
+    summary = connection_summary(plan)
+    assert any(
+        "Home-wide disconnect" in line and str(project_c) in line and "stop using Yoetz" in line
+        for line in summary
+    )

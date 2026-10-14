@@ -17,6 +17,7 @@ Wording rules enforced here:
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
+from typing import Final
 
 from yoetz.tui.models import (
     Detection,
@@ -240,6 +241,12 @@ def render_project_trust(detection: Detection, width: int) -> tuple[str, ...]:
     return tuple(lines)
 
 
+_REVIEW_MODE: Final = {
+    "strict": "local only",
+    "policy": "AI-powered review under your privacy policy",
+}
+
+
 def render_integration_preview(plan: IntegrationPlan, width: int) -> tuple[str, ...]:
     """The exact proposed change, in words, before anything is applied."""
 
@@ -252,8 +259,32 @@ def render_integration_preview(plan: IntegrationPlan, width: int) -> tuple[str, 
     lines.append("Project changes")
     for change in plan.changes:
         lines.extend(_indent(wrap(f"+ {change}", body - 2), width=2))
-    if plan.already_registered:
+    if plan.already_registered and not plan.mcp_reregister:
         lines.append("  · The MCP server is already registered; it will be verified, not replaced")
+    elif plan.already_registered:
+        lines.extend(
+            _indent(
+                wrap(
+                    "· The MCP server is already registered; it will be registered again for "
+                    "this review mode and launcher. Every project using this Codex home shares it.",
+                    body - 2,
+                ),
+                width=2,
+            )
+        )
+    if plan.route_profile_before is not None and plan.route_changes_for:
+        lines.extend(
+            _indent(
+                wrap(
+                    "! This also changes the review mode from "
+                    f"{_REVIEW_MODE[plan.route_profile_before]} to "
+                    f"{_REVIEW_MODE[plan.route_profile]} for the other projects connected to "
+                    "this Codex home: " + ", ".join(plan.route_changes_for),
+                    body - 2,
+                ),
+                width=2,
+            )
+        )
     lines.append("")
     lines.append("Safety")
     for note in (

@@ -332,8 +332,16 @@ class SharedProjectsStep:
                 for item in snapshot.without_project(self._project)
                 if not same_directory(Path(item), self._project)
             )
+        disconnect = action == "disconnect"
         try:
-            write_connected_projects(snapshot, projects, unknown_members=unknown)
+            write_connected_projects(
+                snapshot,
+                projects,
+                unknown_members=unknown,
+                departed=(str(self._project),) if disconnect else (),
+                # The shared pieces went with this disconnect: nobody here is connected now.
+                shared_removed=disconnect and not self.keeps_shared,
+            )
         except HostProjectsError as error:
             raise ConnectionError(
                 "connection_preview_stale"
@@ -506,11 +514,29 @@ def prepare_connection(
                 if action == "connect"
                 # Other projects keep the shared marketplace source and its plugin MCP.
                 else ["uninstall_plugin"]
-                if shared.others
-                else ["uninstall_plugin", "remove_marketplace", "remove_plugin_mcp"]
+                if shared.others and not shared.remove_shared
+                # This project's own install may already be gone (an earlier disconnect kept
+                # the shared pieces for a project since deleted): only they remain to remove.
+                else [
+                    *(["uninstall_plugin"] if before.discovered else []),
+                    "remove_marketplace",
+                    "remove_plugin_mcp",
+                ]
             )
         )
         shared.disclose(admission.disclosure)
+        route_before = claude.installed_claude_route_profile(target)
+        if (
+            action == "connect"
+            and not noop
+            and route_before is not None
+            and route_before != route
+            and shared.others
+        ):
+            # The shared source carries the plugin MCP server's review mode for every project's
+            # install: re-rendering it changes theirs too (#1058 review P2-3).
+            admission.disclosure["route_profile_before"] = route_before
+            admission.disclosure["route_changes_for"] = cast(list[JsonValue], list(shared.others))
         sweep_admission = admission.plan(body, "claude", action)
 
         def status() -> dict[str, JsonValue]:

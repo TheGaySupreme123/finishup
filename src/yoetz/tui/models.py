@@ -163,6 +163,13 @@ class IntegrationPlan:
     activation_cache_mutation_planned: bool
     mcp_isolated_root: str | None = None
     activation_mcp_command: tuple[str, ...] = ()
+    # The home's Yoetz MCP registration already exists and will be written again (another
+    # launcher, isolation root or review mode). It is shared by every project in the home.
+    mcp_reregister: bool = False
+    # When that rewrite changes the review mode: the mode before, and the other connected
+    # projects of this Codex home whose sessions change with it (#1058 review P2-3).
+    route_profile_before: Literal["policy", "strict"] | None = None
+    route_changes_for: tuple[str, ...] = ()
 
     @property
     def changes(self) -> tuple[str, ...]:

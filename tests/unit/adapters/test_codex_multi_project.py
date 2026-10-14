@@ -13,7 +13,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import cast
+from typing import Any, Literal, cast
 
 import pytest
 from tests.unit.adapters.test_codex_marketplace import (
@@ -476,3 +476,177 @@ def test_trust_row_naming_a_verified_member_another_way_is_not_a_possible_user(
     assert _disconnect(target_a, home) is RemovalOutcome.DETACH
     after = load_connected_projects(home)
     assert after.projects == (str(root_b),) and after.unknown_members is False
+
+
+def _remove(
+    target: IntegrationTarget, home: Path, *, remove_shared: bool = False
+) -> RemovalOutcome:
+    from tests.unit.adapters.test_codex_marketplace import (
+        _FakeCodex,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from yoetz.adapters.integrations.codex_marketplace import (
+        apply_removal as raw_apply,
+    )
+    from yoetz.adapters.integrations.codex_marketplace import (
+        preview_removal as raw_preview,
+    )
+
+    runner = _FakeCodex(target, home)
+    preview = raw_preview(
+        target,
+        executable_path=str(runner.executable),
+        codex_home=home,
+        remove_shared=remove_shared,
+        _run=runner,
+    )
+    return raw_apply(
+        target,
+        executable_path=str(runner.executable),
+        approved_digest=preview.preview_digest,
+        codex_home=home,
+        remove_shared=remove_shared,
+        _run=runner,
+    ).outcome
+
+
+def _shared_gone(home: Path) -> None:
+    config = _config(home)
+    assert "yoetz" not in cast(dict[str, object], config.get("marketplaces", {}))
+    assert "yoetz@yoetz" not in cast(dict[str, object], config.get("plugins", {}))
+    assert not _cache(home).exists()
+    assert not (home / CONNECTED_PROJECTS_FILE).exists()
+
+
+@pytest.mark.parametrize("remove_shared", [False, True])
+def test_after_the_anchor_is_deleted_the_last_member_can_still_disconnect(
+    tmp_path: Path, remove_shared: bool
+) -> None:
+    """#1058 review P2-2: a dangling binding no longer blocks the remaining member's disconnect."""
+
+    import shutil
+
+    from yoetz.adapters.integrations.codex_marketplace import serving_projects
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    target_b, root_b = _project(tmp_path, "b")
+    _connect(target_a, home)
+    _connect(target_b, home)
+    assert _binding(home) == str(root_a)
+    shutil.rmtree(root_a)
+    # The deleted anchor is not reported as a connected project.
+    assert serving_projects(home) == (str(root_b),)
+
+    assert _remove(target_b, home, remove_shared=remove_shared) is RemovalOutcome.REMOVE
+    _shared_gone(home)
+    assert not (root_b / ".agents/plugins/marketplace.json").exists()
+
+
+def test_an_anchor_without_its_manifest_hands_the_binding_to_a_remaining_member(
+    tmp_path: Path,
+) -> None:
+    """#1058 review P2-2: e.g. `git clean` removed the anchor's marketplace.json."""
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    target_b, _root_b = _project(tmp_path, "b")
+    target_c, root_c = _project(tmp_path, "c")
+    for target in (target_a, target_b, target_c):
+        _connect(target, home)
+    (root_a / ".agents/plugins/marketplace.json").unlink()
+
+    preview = preview_removal(target_b, codex_home=home)
+    assert preview.outcome is RemovalOutcome.DETACH
+    assert preview.rebind_to == str(root_c)
+    assert str(root_a) not in preview.shared_with
+    assert _disconnect(target_b, home) is RemovalOutcome.DETACH
+    assert _binding(home) == str(root_c)
+    assert inspect_activation(target_c, codex_home=home).state is ActivationState.ACTIVE
+
+
+def test_a_deleted_record_still_keeps_the_projects_this_installation_connected(
+    tmp_path: Path,
+) -> None:
+    """#1058 review P2-4: deleting the record (as the old advice said) never silently removes
+    what another connected project uses, even when Codex does not trust that project."""
+
+    home = _home(tmp_path)
+    target_a, _root_a = _project(tmp_path, "a")
+    target_b, root_b = _project(tmp_path, "b")
+    _connect(target_a, home)
+    _connect(target_b, home)
+    (home / CONNECTED_PROJECTS_FILE).unlink()
+    # No `[projects."<path>"]` trust rows at all: only Yoetz's own witness remembers B.
+    assert "projects" not in _config(home)
+    assert possible_projects(home) == (str(root_b),)
+
+    with pytest.raises(IntegrationError) as caught:
+        preview_removal(target_a, codex_home=home)
+    assert caught.value.reason is IntegrationReason.REMOVE_REFUSED
+    assert caught.value.safe_details.get("conflict") == "membership_unverified"
+
+    # Reconnecting B records it; then A detaches and B keeps the shared pieces.
+    _connect(target_b, home)
+    assert _disconnect(target_a, home) is RemovalOutcome.DETACH
+    assert _binding(home) == str(root_b)
+    assert inspect_activation(target_b, codex_home=home).state is ActivationState.ACTIVE
+    # The last disconnect removes everything and forgets the witness.
+    assert _disconnect(target_b, home) is RemovalOutcome.REMOVE
+    assert possible_projects(home) == ()
+
+
+def test_a_review_mode_change_names_the_other_connected_projects(tmp_path: Path) -> None:
+    """#1058 review P2-3: `[mcp_servers.yoetz]` is user-level, shared by the whole home."""
+
+    import anyio
+
+    from yoetz.ports.harness_mcp import (
+        McpRegistrationAction,
+        McpRegistrationObservation,
+        McpRegistrationPreview,
+        McpRegistrationState,
+    )
+    from yoetz.ports.integrations import HarnessId
+    from yoetz.tui import runtime
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    _target_b, root_b = _project(tmp_path, "b")
+    _connect(target_a, home)
+
+    class Service:
+        def __init__(self, route: str | None) -> None:
+            self.route = route
+
+        async def observe(self, _binary: object) -> McpRegistrationObservation:
+            return McpRegistrationObservation(
+                HarnessId.CODEX,
+                McpRegistrationState.YOETZ_OWNED,
+                cast(Literal["policy", "strict"] | None, self.route),
+                isolation_binding="ambient",
+            )
+
+    preview = McpRegistrationPreview(
+        HarnessId.CODEX,
+        McpRegistrationAction.REREGISTER,
+        McpRegistrationState.YOETZ_OWNED,
+        (),
+        "sha256:" + "a" * 64,
+    )
+
+    async def change(route: str | None) -> object:
+        return await runtime._shared_route_change(  # pyright: ignore[reportPrivateUsage]
+            cast(Any, Service(route)), cast(Any, None), preview, "policy", home, root_b
+        )
+
+    assert anyio.run(change, "strict") == ("strict", (str(root_a),))
+    # Same review mode, or connecting the only project: nothing to disclose for others.
+    assert anyio.run(change, "policy") == (None, ())
+
+    async def own() -> object:
+        return await runtime._shared_route_change(  # pyright: ignore[reportPrivateUsage]
+            cast(Any, Service("strict")), cast(Any, None), preview, "policy", home, root_a
+        )
+
+    assert anyio.run(own) == ("strict", ())

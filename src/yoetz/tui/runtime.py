@@ -50,9 +50,10 @@ from yoetz.tui.models import (
 
 if TYPE_CHECKING:  # Runtime imports stay lazy; annotations still type-check.
     from yoetz.adapters.integrations.observation_local import LocalObservationStore
+    from yoetz.application.harness_mcp import HarnessMcpService
     from yoetz.domain.observation_budget import CapacityRequest
     from yoetz.domain.observation_settings import ObservationDetailProfile
-    from yoetz.ports.harness_mcp import HarnessBinary
+    from yoetz.ports.harness_mcp import HarnessBinary, McpRegistrationPreview
     from yoetz.service.confidential_protocol import ProviderCredentialTarget
 
 __all__ = [
@@ -222,6 +223,41 @@ def _task_statement_posture(policy_map: Mapping[str, object]) -> tuple[bool | No
         and policy_map.get("review_context_profile") in {"goal_aware", "assisted", "expanded"},
     )
     return selected and channel_sends, text
+
+
+async def _shared_route_change(
+    service: HarnessMcpService,
+    binary: HarnessBinary,
+    preview: McpRegistrationPreview,
+    route: Literal["policy", "strict"],
+    codex_home: Path,
+    project: Path,
+) -> tuple[Literal["policy", "strict"] | None, tuple[str, ...]]:
+    """The review mode the home's shared registration has now, and who else it changes for.
+
+    The user-level ``[mcp_servers.yoetz]`` registration serves every project in the Codex home,
+    so rewriting it on another review mode changes those projects' sessions too (#1058 review
+    P2-3). Returns ``(None, ())`` when the registration is absent, not Yoetz's, or already on
+    ``route``; the other projects are the verified members that still serve the manifest.
+    """
+
+    from yoetz.adapters.integrations.codex_marketplace import serving_projects
+    from yoetz.adapters.integrations.host_projects import same_directory
+    from yoetz.ports.harness_mcp import McpRegistrationState
+    from yoetz.ports.integrations import IntegrationError
+
+    if preview.state_before is not McpRegistrationState.YOETZ_OWNED:
+        return None, ()
+    observed = await service.observe(binary)
+    before = observed.route_profile
+    if before is None or before == route:
+        return None, ()
+    try:
+        members = serving_projects(codex_home)
+    except IntegrationError:
+        members = ()
+    others = tuple(item for item in members if not same_directory(Path(item), project))
+    return before, others
 
 
 class RuntimeError_(Exception):
@@ -701,6 +737,7 @@ class YoetzRuntime:
         )
         from yoetz.ports.harness_mcp import (
             MCP_SERVE_COMMAND,
+            McpRegistrationAction,
             McpRegistrationError,
             McpRegistrationState,
         )
@@ -713,12 +750,20 @@ class YoetzRuntime:
             activation_preview = codex_activation_preview(binary, codex_home, root)
         except IntegrationError as error:
             raise RuntimeError_(error.reason.value, "the Codex activation could not be previewed")
+        service = HarnessMcpService(
+            CodexMcpAdapter(route_profile=route, codex_home=activation_preview.codex_home)
+        )
         try:
-            mcp_preview = await HarnessMcpService(
-                CodexMcpAdapter(route_profile=route, codex_home=activation_preview.codex_home)
-            ).preview(binary)
+            mcp_preview = await service.preview(binary)
         except McpRegistrationError as error:
             raise RuntimeError_(error.reason.value, "the Codex registration could not be previewed")
+        route_before, changes_for = await _shared_route_change(
+            service, binary, mcp_preview, route, activation_preview.codex_home, root
+        )
+        reregister = (
+            mcp_preview.state_before is McpRegistrationState.YOETZ_OWNED
+            and mcp_preview.action is McpRegistrationAction.REREGISTER
+        )
         target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(root))
         skill_preview = await project_skill_preview(root)
         plugin_preview = CodexPluginService().preview(
@@ -775,6 +820,9 @@ class YoetzRuntime:
             activation_cache_mutation_planned=activation_preview.cache_mutation_planned,
             activation_mcp_command=MCP_SERVE_COMMAND,
             mcp_isolated_root=mcp_preview.isolated_root,
+            mcp_reregister=reregister,
+            route_profile_before=route_before,
+            route_changes_for=changes_for,
         )
 
     async def apply_integration(

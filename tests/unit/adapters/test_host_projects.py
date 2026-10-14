@@ -64,7 +64,31 @@ def test_publication_and_removal_sync_the_parent_directory(
     monkeypatch.setattr(host_projects, "_sync_directory", record)
     write_connected_projects(load_connected_projects(root), ("/work/a",))
     write_connected_projects(load_connected_projects(root), ())
-    assert synced == [root, root]
+    # The record's own directory is synced after the publication and after the removal; the
+    # membership witness syncs its own (private) directory.
+    assert [directory for directory in synced if directory == root] == [root, root]
+    witness_directory = host_projects.witness_path_for(root).parent
+    assert set(synced) <= {root, witness_directory}
+
+
+def test_the_witness_remembers_members_after_the_record_is_deleted(tmp_path: Path) -> None:
+    """#1058 review P2-4: a deleted record does not make this installation forget members."""
+
+    root = _root(tmp_path)
+    write_connected_projects(load_connected_projects(root), ("/work/a",))
+    write_connected_projects(load_connected_projects(root), ("/work/a", "/work/b"))
+    witness = host_projects.witness_path_for(root)
+    assert witness.stat().st_mode & 0o777 == 0o600
+    (root / CONNECTED_PROJECTS_FILE).unlink()
+    assert host_projects.recorded_members(root) == ("/work/a", "/work/b")
+
+    # A rewrite after the loss keeps the unrecorded member; a departure removes only that one.
+    write_connected_projects(load_connected_projects(root), ("/work/c",), departed=("/work/a",))
+    assert host_projects.recorded_members(root) == ("/work/b", "/work/c")
+    # Removing the shared pieces forgets everyone.
+    write_connected_projects(load_connected_projects(root), (), shared_removed=True)
+    assert host_projects.recorded_members(root) == ()
+    assert not witness.exists()
 
 
 def test_host_config_lock_excludes_a_second_holder(tmp_path: Path) -> None:

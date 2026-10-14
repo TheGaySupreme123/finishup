@@ -37,6 +37,7 @@ from yoetz.adapters.integrations.host_projects import (
     duplicate_of,
     live_projects,
     load_connected_projects,
+    recorded_members,
     same_directory,
     write_connected_projects,
 )
@@ -713,34 +714,45 @@ def _marketplace_relation(config: Mapping[str, object], project: Path) -> tuple[
 
 
 def _possible_users(
-    config: Mapping[str, object], project: Path, verified: tuple[str, ...]
+    config: Mapping[str, object],
+    project: Path,
+    verified: tuple[str, ...],
+    *,
+    home: Path,
+    uncertain: bool,
 ) -> tuple[str, ...]:
     """Projects that may use the home's shared pieces although no record names them.
 
-    Only consulted when the record is missing or marked ``unknown_members``. A project row with
-    ``trust_level = "trusted"`` whose checkout serves the exact Yoetz manifest and plugin source
-    qualifies. That is not evidence it connected to this home (every Yoetz checkout carries those
-    files), so a possible user is never recorded as connected and never becomes the binding's
-    anchor; it only stops an ordinary disconnect from removing what it might use
-    (CHECK_MULTIPROJ_R2).
+    Two sources, each limited to a live checkout that still serves the exact Yoetz manifest and
+    a marker-valid plugin source, and never a verified member under any spelling:
+
+    - projects this installation recorded for the home and has not seen disconnect (its
+      membership witness), whatever the record now says, so a record deleted by hand or lost
+      does not make them disappear (#1058 review, P2-4);
+    - while the record is missing or marked ``unknown_members``, project rows with
+      ``trust_level = "trusted"``. That is not evidence the checkout connected to this home
+      (every Yoetz checkout carries those files).
+
+    A possible user is never recorded as connected and never becomes the binding's anchor; it
+    only stops an ordinary disconnect from removing what it might use (CHECK_MULTIPROJ_R2).
     """
 
+    keys = {key for key in recorded_members(home) if Path(key).is_absolute()}
     rows = config.get("projects")
-    if not isinstance(rows, Mapping):
-        return ()
-    keys = [
-        key
-        for key, row in cast(Mapping[str, object], rows).items()
-        if Path(key).is_absolute()
-        and isinstance(row, Mapping)
-        and cast(Mapping[str, object], row).get("trust_level") == "trusted"
-        and key not in verified
-    ]
+    if uncertain and isinstance(rows, Mapping):
+        keys.update(
+            key
+            for key, row in cast(Mapping[str, object], rows).items()
+            if Path(key).is_absolute()
+            and isinstance(row, Mapping)
+            and cast(Mapping[str, object], row).get("trust_level") == "trusted"
+        )
+    keys.difference_update(verified)
     return tuple(
         key
         for key in live_projects(keys, excluding=project)
-        # A trust row naming a verified member's directory another way (a letter-case variant
-        # on a case-insensitive filesystem) is that member, not a possible user (#1058).
+        # A row naming a verified member's directory another way (a letter-case variant on a
+        # case-insensitive filesystem) is that member, not a possible user (#1058).
         if not any(same_directory(Path(key), Path(member)) for member in verified)
         and _anchor_manifest_state(Path(key)) == "serves"
     )
@@ -761,10 +773,21 @@ def _load_projects(home: Path) -> ConnectedProjects:
 
 
 def _write_projects(
-    snapshot: ConnectedProjects, projects: tuple[str, ...], unknown: bool = False
+    snapshot: ConnectedProjects,
+    projects: tuple[str, ...],
+    unknown: bool = False,
+    *,
+    departed: tuple[str, ...] = (),
+    shared_removed: bool = False,
 ) -> None:
     try:
-        write_connected_projects(snapshot, projects, unknown_members=unknown)
+        write_connected_projects(
+            snapshot,
+            projects,
+            unknown_members=unknown,
+            departed=departed,
+            shared_removed=shared_removed,
+        )
     except HostProjectsError as exc:
         raise _error(
             IntegrationReason.PREVIEW_STALE
@@ -788,7 +811,11 @@ def _member(project: Path, relation: _Relation, members: tuple[str, ...]) -> boo
 
 
 def connected_projects(codex_home: Path | str | None) -> tuple[str, ...]:
-    """The projects connected to this Codex home through its shared Yoetz pieces (status)."""
+    """Every verified member of this Codex home: the record's projects and the bound project.
+
+    Includes members whose checkout is gone or no longer serves the manifest; status and
+    previews use ``serving_projects``.
+    """
 
     home = _codex_root(codex_home)
     projects = set(_load_projects(home).projects)
@@ -802,11 +829,28 @@ def connected_projects(codex_home: Path | str | None) -> tuple[str, ...]:
     return tuple(sorted(projects))
 
 
-def possible_projects(codex_home: Path | str | None) -> tuple[str, ...]:
-    """Trusted checkouts that may use the home's shared pieces though no record names them.
+def serving_projects(codex_home: Path | str | None) -> tuple[str, ...]:
+    """Verified members whose checkout still exists and serves the exact Yoetz manifest.
 
-    Empty unless the record is missing or marked ``unknown_members``. These are possible users,
-    not verified connections (CHECK_MULTIPROJ_R2): reconnecting one records it.
+    A deleted project, or one whose manifest is gone (a binding to it makes Codex fail every
+    plugin command), is not reported as connected (#1058 review, P2-2).
+    """
+
+    members = connected_projects(codex_home)
+    live = set(live_projects(members, excluding=Path(_codex_root(codex_home).anchor)))
+    return tuple(
+        member
+        for member in members
+        if member in live and _anchor_manifest_state(Path(member)) == "serves"
+    )
+
+
+def possible_projects(codex_home: Path | str | None) -> tuple[str, ...]:
+    """Projects that may use the home's shared pieces though the record does not name them.
+
+    This installation's earlier members (its witness) and, while the record is missing or
+    marked ``unknown_members``, trusted checkouts with Yoetz's plugin files. These are possible
+    users, not verified connections (CHECK_MULTIPROJ_R2): reconnecting one records it.
     """
 
     home = _codex_root(codex_home)
@@ -814,11 +858,21 @@ def possible_projects(codex_home: Path | str | None) -> tuple[str, ...]:
     _raw, config = _load_config(home / "config.toml")
     marketplaces = _table(config, "marketplaces")
     marketplace = None if marketplaces is None else marketplaces.get(_MARKETPLACE_NAME)
-    if snapshot.raw is not None and not snapshot.unknown_members:
+    plugins = _table(config, "plugins")
+    shared_present = marketplace is not None or (
+        plugins is not None and plugins.get(_PLUGIN_ID) is not None
+    )
+    if not shared_present:
+        # Nothing shared is left to keep for anyone.
         return ()
-    if snapshot.raw is None and marketplace is None:
-        return ()
-    return _possible_users(config, Path(home.anchor), connected_projects(home))
+    uncertain = snapshot.raw is None or snapshot.unknown_members
+    return _possible_users(
+        config,
+        Path(home.anchor),
+        connected_projects(home),
+        home=home,
+        uncertain=uncertain,
+    )
 
 
 def project_registered_elsewhere(codex_home: Path | str | None, project: Path) -> str | None:
@@ -1338,11 +1392,18 @@ def _activation_plan(
         # A home bound before #1058 has no record; its bound project stays connected.
         projects_after = tuple(sorted({*projects_after, source}))
     # A missing record with shared pieces present (a lost record), or one already marked, keeps
-    # its uncertainty while trusted checkouts that might use those pieces exist (round 3).
-    unknown_after = (
-        projects_before.unknown_members
-        or (projects_before.raw is None and relation in {"self", "shared"})
-    ) and bool(_possible_users(config, project, projects_after))
+    # its uncertainty while trusted checkouts that might use those pieces exist (round 3), and
+    # earlier members this installation recorded keep it whatever the record says (review P2-4).
+    unknown_after = bool(
+        _possible_users(
+            config,
+            project,
+            projects_after,
+            home=home,
+            uncertain=projects_before.unknown_members
+            or (projects_before.raw is None and relation in {"self", "shared", "missing"}),
+        )
+    )
     block = _activation_block(project, config)
     plugin_source_digest = _plugin_source_digest(codex_version=binary.codex_version)
     cache_members = _source_cache_members(target, codex_version=binary.codex_version)
@@ -2226,16 +2287,10 @@ def _removal_plan(
     config_bytes, config = _load_config(config_path)
     config_before = config_bytes if config_path.exists() else None
     relation, source = _marketplace_relation(config, project)
-    # Disconnecting a project also removes an entry that names its directory under another path
-    # (a symlink, a case variant, the path before a move): that entry is this same project, and
-    # removing it is the way out of a ``project_connected_via_other_path`` refusal (#1058).
-    # An explicit home-wide removal (``remove_shared``) also clears a binding that names another
-    # connected project; an ordinary one never does (#1058).
-    owned = (
-        Path(source)
-        if relation == "duplicate" or (remove_shared and relation == "shared")
-        else project
-    )
+    # ``missing``: the binding names a project that is deleted or lost its manifest, so Codex
+    # already fails every plugin command in this home (#1058 review, P2-2). The binding is then
+    # nobody's anchor: it moves to a remaining verified member, or goes with the shared pieces.
+    anchor_missing = relation == "missing"
     projects_before = _load_projects(home)
     # Verified connections that can still anchor the home's shared marketplace: the record and
     # the current binding. Only these become the anchor (#1058, CHECK_MULTIPROJ_R2).
@@ -2246,15 +2301,31 @@ def _removal_plan(
         if _anchor_manifest_state(Path(candidate)) == "serves"
     )
     uncertain = projects_before.raw is None or projects_before.unknown_members
-    possible = _possible_users(config, project, tuple(sorted(candidates))) if uncertain else ()
-    holds_shared = relation in {"self", "shared", "duplicate"} and not remove_shared
+    possible = _possible_users(
+        config, project, tuple(sorted(candidates)), home=home, uncertain=uncertain
+    )
+    holds_shared = relation in {"self", "shared", "duplicate", "missing"} and not remove_shared
     if holds_shared and not remaining and possible:
-        # No verified project can carry the binding, but trusted checkouts might still use the
-        # shared pieces: refuse before any change rather than guess (recovery: reconnect them,
-        # which records them, or remove the shared pieces explicitly with --remove-shared).
+        # No verified project can carry the binding, but projects this installation recorded
+        # earlier, or trusted checkouts, might still use the shared pieces: refuse before any
+        # change rather than guess (recovery: reconnect them, which records them, or remove the
+        # shared pieces explicitly with --remove-shared).
         _refuse_conflict("membership_unverified")
     detach = holds_shared and bool(remaining)
-    rebind_to = remaining[0] if detach and relation in {"self", "duplicate"} else None
+    rebind_to = remaining[0] if detach and relation in {"self", "duplicate", "missing"} else None
+    # Disconnecting a project also removes an entry that names its directory under another path
+    # (a symlink, a case variant, the path before a move): that entry is this same project, and
+    # removing it is the way out of a ``project_connected_via_other_path`` refusal (#1058).
+    # An explicit home-wide removal (``remove_shared``) also clears a binding that names another
+    # connected project; an ordinary one never does (#1058). A dangling binding goes with the
+    # shared pieces it no longer serves.
+    owned = (
+        Path(source)
+        if relation == "duplicate"
+        or (remove_shared and relation == "shared")
+        or (anchor_missing and not detach)
+        else project
+    )
     cache_members = render_plugin_install_tree(codex_version=binary.codex_version)
     if detach:
         # The shared plugin, its cache, its enable table, and the user-level MCP registration
@@ -2286,7 +2357,10 @@ def _removal_plan(
         )
         if cache_digests:
             _require_safe_cache_removal_primitives()
-        inventory_owned = _inventory_owned(binary, owned, _run=_run)
+        # Codex cannot read or change its plugin inventory through a dangling binding; the
+        # exact tables and managed cache trees are then removed directly, and the inventory is
+        # verified once the binding is gone.
+        inventory_owned = False if anchor_missing else _inventory_owned(binary, owned, _run=_run)
         # The last connected project's removal leaves no record behind.
         projects_after = ()
         unknown_after = False
@@ -2375,6 +2449,7 @@ def _removal_plan(
                 "shared_with": list(remaining) if detach else [],
                 "possible_users": list(possible),
                 "unknown_after": unknown_after,
+                "anchor_missing": anchor_missing,
             }
         )
     )
@@ -2384,7 +2459,8 @@ def _removal_plan(
         outcome,
         purge_cache,
         inventory_owned,
-        marketplace_table_owned,
+        # The exact table is stripped directly when the binding dangles (Codex cannot load it).
+        marketplace_table_owned and not anchor_missing,
         marketplace_json_planned,
         cache_versions,
         cache_digests,
@@ -3290,7 +3366,10 @@ def apply_removal(
             skill_state = skill_tree_state(target)
             if skill_state != preview.skill_tree_state:
                 raise _error(IntegrationReason.WRITE_FAILED)
-            _write_projects(plan.projects_before, plan.projects_after, plan.unknown_after)
+            # The shared pieces are gone: no project of this home is connected any more.
+            _write_projects(
+                plan.projects_before, plan.projects_after, plan.unknown_after, shared_removed=True
+            )
         except IntegrationError as exc:
             if mutation_started and exc.reason is not IntegrationReason.WRITE_FAILED:
                 conflict = exc.safe_details.get("conflict")
@@ -3334,7 +3413,12 @@ def _apply_detach(
                 anchor_root=project,
             )
             mutation_started = True
-        _write_projects(plan.projects_before, plan.projects_after, plan.unknown_after)
+        _write_projects(
+            plan.projects_before,
+            plan.projects_after,
+            plan.unknown_after,
+            departed=(str(project), str(plan.owned)),
+        )
         mutation_started = True
         inspection = inspect_activation(
             target, executable_path=executable_path, codex_home=home, _run=_run

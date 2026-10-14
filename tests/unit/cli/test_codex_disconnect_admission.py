@@ -738,8 +738,20 @@ def test_remove_shared_preview_names_the_connected_projects_that_lose_yoetz(
     home, project, installation = _layout(tmp_path)
     fake = FakeCodex(home, project)
     _wire(monkeypatch, fake, list[str](), plugin=RemovalOutcome.REMOVE)
+    from tests.unit.adapters.test_codex_marketplace import (
+        _install,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    from yoetz.adapters.integrations.codex_marketplace import (
+        _canonical_marketplace_bytes,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.ports.integrations import IntegrationScope, IntegrationTarget
+
     other, gone = tmp_path / "other", tmp_path / "gone"
     other.mkdir(mode=0o700)
+    # A connected project that still serves Yoetz's manifest and plugin source.
+    _install(IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(other)))
+    (other / ".agents/plugins/marketplace.json").write_bytes(_canonical_marketplace_bytes())
     record = home / CONNECTED_PROJECTS_FILE
     record.write_bytes(encode_projects((str(project), str(other), str(gone))))
     record.chmod(0o600)
@@ -754,5 +766,10 @@ def test_remove_shared_preview_names_the_connected_projects_that_lose_yoetz(
     )
 
     assert plan.disclosure["remove_shared"] is True
-    # A deleted project no longer uses anything; the connecting project is not "another".
+    # A deleted project no longer uses anything; the disconnecting project is not "another".
     assert plan.disclosure["shared_removed_from"] == [str(other)]
+    summary = connection_summary(plan)
+    assert any(
+        "Home-wide disconnect" in line and str(other) in line and "stop using Yoetz" in line
+        for line in summary
+    )
