@@ -1837,6 +1837,21 @@ is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succe
 `.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
 hook paths, not a Claude Code session); the Claude Code connect refusal is unit-tested.
 
+**Review fixes (independent review of #1071).** Decisions for Claude Code: (1) a checkout root
+made (`/app/.git` owned by root) is the project, used as a plain directory, through the shared
+workspace binding (same path as every host); (2) Claude-specific: every plugin mutation runs
+`claude plugin ... --scope project`, which writes `<project>/.claude/settings.json`, so preview
+(and therefore apply) now refuses a `.claude` another account created or others can write
+(`target_unsafe`) before any command runs; an absent `.claude` is left for Claude Code to create
+(in a sticky root another account could create it in the instant before Claude Code does, which
+Yoetz cannot fence; root can pre-create `.claude` for the user to close it);
+(3) host admission refuses such a `.claude` at preview and before writing
+`.claude/settings.local.json` (same path as every host). Not changed: Claude Code's executable must
+still be the user's own, so a root-installed `claude` is refused (`target_unsafe`) for a non-root
+user, unlike the Codex launcher, which accepts a root-owned executable. Covered by tests through the
+public preview/apply functions (connect and remove in 0755 and sticky root-owned projects, and a
+squatted `.claude`) with simulated ownership.
+
 ## Response and receipt timeout recovery
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the

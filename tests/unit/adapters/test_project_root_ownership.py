@@ -106,3 +106,270 @@ def test_other_owner_or_shared_project_root_is_still_refused(
     with pytest.raises(Exception) as caught:  # noqa: PT011 - each host raises its own typed error
         CHECKS[name](root)
     assert "target_unsafe" in repr(caught.value) or "TARGET_UNSAFE" in repr(caught.value)
+
+
+# --- Public paths in a root-owned project (independent review of #1071) ---------------------
+#
+# Each lifecycle runs through the adapter's public status/preview/apply functions, and its way
+# out as well as its way in. Ownership is simulated by ``tests.builders.ownership`` so these run
+# on a non-root runner too: the runner is the user, ``/app`` is reported as the superuser's.
+
+_LAUNCHER = ("/opt/yoetz-test/bin/yoetz", "--runtime")
+
+
+@pytest.mark.parametrize("mode", [0o755, 0o1777], ids=["0755", "1777"])
+def test_cursor_project_mcp_install_and_remove_in_a_root_owned_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int
+) -> None:
+    """Status, preview and apply judged the project root by the owner rule (target_unsafe)."""
+
+    from tests.builders.ownership import root_owned_project
+
+    from yoetz.adapters.integrations.cursor_project_mcp import (
+        CursorProjectMcpTarget,
+        apply_cursor_project_mcp,
+        preview_cursor_project_mcp,
+        status_cursor_project_mcp,
+    )
+
+    # In a 0755 root-owned /app only root can create .cursor, so root made it for the user.
+    project = root_owned_project(
+        monkeypatch, tmp_path, mode=mode, made_for_user=(".cursor",) if mode == 0o755 else ()
+    )
+    config = tmp_path / "cursor-config"
+    config.mkdir(mode=0o700)
+    target = CursorProjectMcpTarget(project, config)
+
+    def status() -> object:
+        return status_cursor_project_mcp(target, launcher=_LAUNCHER, isolation_root=None)["state"]
+
+    def change(action: str) -> None:
+        preview = preview_cursor_project_mcp(
+            target, action=action, launcher=_LAUNCHER, route_profile="policy", isolation_root=None
+        )
+        apply_cursor_project_mcp(
+            target,
+            action=action,
+            launcher=_LAUNCHER,
+            route_profile="policy",
+            isolation_root=None,
+            preview_digest=str(preview["preview_digest"]),
+            accept=True,
+        )
+
+    assert status() == "absent"
+    change("install")
+    assert status() == "yoetz_owned"
+    change("remove")
+    assert status() == "absent"
+
+
+@pytest.mark.parametrize("mode", [0o755, 0o777], ids=["0755", "0777"])
+def test_cursor_project_mcp_refuses_a_cursor_directory_another_account_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int
+) -> None:
+    from tests.builders.ownership import root_owned_project
+
+    from yoetz.adapters.integrations.cursor_project_mcp import (
+        CursorProjectMcpError,
+        CursorProjectMcpTarget,
+        preview_cursor_project_mcp,
+    )
+
+    project = root_owned_project(monkeypatch, tmp_path, mode=0o1777, other_owned={".cursor": mode})
+    config = tmp_path / "cursor-config"
+    config.mkdir(mode=0o700)
+    with pytest.raises(CursorProjectMcpError, match="target_unsafe"):
+        preview_cursor_project_mcp(
+            CursorProjectMcpTarget(project, config),
+            action="install",
+            launcher=_LAUNCHER,
+            route_profile="policy",
+            isolation_root=None,
+        )
+    assert list((project / ".cursor").iterdir()) == []
+
+
+@pytest.mark.parametrize("host", ["cursor-ide", "cursor-cli"])
+def test_cursor_connect_disconnect_reconnect_in_a_root_owned_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    """The setup composition (application/host_connection) reaches the same adapter checks."""
+
+    from typing import cast
+
+    from tests.builders.ownership import root_owned_project
+
+    from yoetz.adapters.integrations.host_discovery import HostInstallation, SetupHost
+    from yoetz.application.host_connection import (
+        ConnectionAction,
+        ConnectionPlan,
+        apply_connection,
+        prepare_connection,
+    )
+    from yoetz.domain.values import request_id
+    from yoetz.ports.plugin_artifacts import ArtifactAuthority
+
+    project = root_owned_project(monkeypatch, tmp_path, mode=0o1777)
+    config = tmp_path / "cursor"
+    config.mkdir(mode=0o700)
+    launcher = tmp_path / "yoetz"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o700)
+    installation = HostInstallation(cast(SetupHost, host), launcher, "2026.09.19", config, "Cursor")
+    request = request_id("req_65c9c29d-7e67-4a52-88a9-a68c3c570ebb")
+
+    class Review:
+        def consume_artifact_review(
+            self, authority: ArtifactAuthority, preview_digest: str
+        ) -> None:
+            assert authority.target_digest == preview_digest
+
+        def consume_setup_authority(
+            self, authority: ArtifactAuthority, preview_digest: str
+        ) -> None:
+            raise AssertionError("only the complete connection is reviewed")
+
+    for action in ("connect", "disconnect", "connect"):
+
+        def prepare(action: str = action) -> ConnectionPlan:
+            return prepare_connection(
+                request,
+                installation,
+                project,
+                action=cast(ConnectionAction, action),
+                route="strict",
+                launcher=(str(launcher),),
+            )
+
+        plan = prepare()
+        result = apply_connection(
+            plan,
+            accepted_digest=plan.digest,
+            refresh=prepare,
+            authority=ArtifactAuthority("review_only", plan.digest, "test"),
+            review=Review(),
+        )
+        assert result["configured"] is (action == "connect")
+
+
+@pytest.mark.parametrize(
+    ("host", "directory", "owner"),
+    [
+        ("claude", ".claude", "plugin"),
+        ("codex", ".codex", "external"),
+        ("cursor", ".cursor", "plugin"),
+    ],
+)
+@pytest.mark.parametrize("squat_mode", [0o755, 0o777], ids=["0755", "0777"])
+def test_host_admission_never_writes_into_a_directory_another_account_made(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    directory: str,
+    owner: str,
+    squat_mode: int,
+) -> None:
+    """A sticky root-owned /app lets any account create .claude first; it is not the user's."""
+
+    from tests.builders.ownership import root_owned_project
+
+    from yoetz.adapters.integrations.host_admission import (
+        HostAdmissionAction,
+        HostAdmissionError,
+        HostAdmissionReason,
+        apply_host_admission,
+        preview_host_admission,
+    )
+
+    project = root_owned_project(
+        monkeypatch, tmp_path, mode=0o1777, other_owned={directory: squat_mode}
+    )
+    for action in (HostAdmissionAction.GRANT, HostAdmissionAction.REVOKE):
+        with pytest.raises(HostAdmissionError) as refused:
+            preview_host_admission(
+                host,  # type: ignore[arg-type]
+                project,
+                action,
+                route_profile="policy",
+                grant_permits=True,
+                owner=owner,  # type: ignore[arg-type]
+            )
+        assert refused.value.reason is HostAdmissionReason.TARGET_UNSAFE
+    assert list((project / directory).iterdir()) == []
+
+    # The write path refuses on its own too, whatever preview was accepted.
+    import yoetz.adapters.integrations.host_admission as module
+
+    def unchecked(_host: object, _root: Path) -> None:
+        return None
+
+    monkeypatch.setattr(module, "_require_owned_host_directories", unchecked)
+    preview = preview_host_admission(
+        host,  # type: ignore[arg-type]
+        project,
+        HostAdmissionAction.GRANT,
+        route_profile="policy",
+        grant_permits=True,
+        owner=owner,  # type: ignore[arg-type]
+    )
+    with pytest.raises(HostAdmissionError) as refused_write:
+        apply_host_admission(preview, project, accepted_preview_digest=preview.preview_digest)
+    assert refused_write.value.reason is HostAdmissionReason.TARGET_UNSAFE
+    assert list((project / directory).iterdir()) == []
+
+
+@pytest.mark.parametrize("mode", [0o755, 0o1777], ids=["0755", "1777"])
+def test_host_admission_grant_and_revoke_in_a_root_owned_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int
+) -> None:
+    from tests.builders.ownership import root_owned_project
+
+    from yoetz.adapters.integrations.host_admission import (
+        HostAdmissionAction,
+        HostAdmissionState,
+        apply_host_admission,
+        observe_host_admission,
+        preview_host_admission,
+    )
+
+    project = root_owned_project(
+        monkeypatch, tmp_path, mode=mode, made_for_user=(".claude",) if mode == 0o755 else ()
+    )
+    for action, expected in (
+        (HostAdmissionAction.GRANT, HostAdmissionState.PRESENT),
+        (HostAdmissionAction.REVOKE, HostAdmissionState.ABSENT),
+    ):
+        preview = preview_host_admission(
+            "claude",
+            project,
+            action,
+            route_profile="policy",
+            grant_permits=True,
+            owner="plugin",
+        )
+        apply_host_admission(preview, project, accepted_preview_digest=preview.preview_digest)
+        assert observe_host_admission("claude", project, owner="plugin").state is expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "owner"), [(0o755, "other"), (0o777, "superuser")], ids=["other_0755", "root_0777"]
+)
+def test_host_admission_refuses_a_project_root_the_rule_does_not_admit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int, owner: str
+) -> None:
+    from tests.builders.ownership import OTHER, SUPERUSER, present_owners
+
+    from yoetz.adapters.integrations.host_admission import (
+        HostAdmissionError,
+        HostAdmissionReason,
+        observe_host_admission,
+    )
+
+    project = tmp_path.resolve() / "app"
+    project.mkdir()
+    project.chmod(mode)
+    present_owners(monkeypatch, {project: OTHER if owner == "other" else SUPERUSER})
+    with pytest.raises(HostAdmissionError) as refused:
+        observe_host_admission("claude", project, owner="plugin")
+    assert refused.value.reason is HostAdmissionReason.TARGET_UNSAFE

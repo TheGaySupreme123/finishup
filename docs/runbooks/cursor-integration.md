@@ -1984,6 +1984,18 @@ is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succe
 `.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
 hook paths, not a Cursor session); the Cursor connect refusal is unit-tested.
 
+**Review fixes (independent review of #1071).** Decisions for Cursor: (1) a checkout root made
+(`/app/.git` owned by root) is the project, used as a plain directory, through the shared
+workspace binding (same path as every host); (2) Cursor-specific: project MCP status, preview and
+apply now judge the project root by the project-root rule on the read path too (before, only the
+write path did, so status, preview, connect and disconnect refused a root-owned project with
+`cursor_project_mcp_target_unsafe`); the Cursor configuration root and the project `.cursor` stay
+the user's own; (3) host admission refuses a `.cursor` another account created or others can write
+(`target_unsafe`) at preview and before writing `.cursor/permissions.json` or `.cursor/cli.json`
+(same path as every host). Covered by tests through the public status/preview/apply functions and
+the connect, disconnect and reconnect composition for Cursor IDE and Agent CLI, with simulated
+ownership.
+
 ## Response and receipt timeout recovery
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the

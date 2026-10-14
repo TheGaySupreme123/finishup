@@ -185,10 +185,18 @@ Container images often keep the working directory root-owned and run the agent a
 `USER` (for example `/app` as `root:root 0755`, or sticky `1777`, with `USER nobody`). Yoetz
 admits such a project root for the non-root user when no other account can write it, or when it is
 sticky (ADR-007, 2026-10-14); a directory another non-root account owns stays refused. Everything
-Yoetz creates inside it (`.agents/`, `.cursor/`) must belong to the user, so when the user cannot
-create entries there, have root pre-create that directory owned by the user. Git refuses a
-root-owned worktree for another user, so such a project is used as a plain directory, not a
-repository. For the runtime itself in such an image: install it as the user (or give the user its
+Yoetz creates inside it (`.agents/`, `.cursor/`, `.claude/`, `.codex/`) must belong to the user, so
+when the user cannot create entries there, have root pre-create that directory owned by the user.
+In a sticky project folder another account can create one of those folders first; Yoetz then
+refuses it (`target_unsafe`) instead of writing into it: remove it, or have root recreate it for
+the user. Git refuses a root-owned worktree for another user, so a checkout root made (`/app/.git`
+owned by root, from `COPY` or `git clone` at image build) is used as a plain directory, not a
+repository; it is still the project from `/app` or any directory beneath it. A `.git` another
+non-root account owns, or that others can write, is refused. The rule admits every root-owned
+sticky directory, so a non-root user can also bind `/tmp`, `/var/tmp` or `/dev/shm` (on macOS
+`/private/tmp` and the shared folder under `/Users`) as a project; Yoetz's own state still refuses shared
+temporary directories. A root-installed `claude` executable is still refused for a non-root user
+(Claude Code's executable must be the user's own), while Codex accepts a root-owned launcher. For the runtime itself in such an image: install it as the user (or give the user its
 prefix and a 0700 `.<prefix>-releases` sibling), because binding an instance writes into the
 prefix and every serving start uses that sibling. A runtime the user cannot use this way is
 refused by name (ADR-007, 2026-10-14):

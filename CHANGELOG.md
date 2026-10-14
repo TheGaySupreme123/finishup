@@ -16,6 +16,14 @@ reverse-chronological released versions.
   project must still belong to the user, and a root-owned Git worktree is used as a plain
   directory, because Git itself refuses another owner's worktree.
 
+- In such a root-owned project, a checkout root made (`/app/.git` owned by root) is now accepted
+  as the project instead of refused, Cursor's project registration status, connect and
+  disconnect work there, and a Codex disconnect removes the project's `marketplace.json` instead
+  of failing half-way on every retry. Yoetz also no longer writes host settings into a `.claude`,
+  `.codex` or `.cursor` folder that another account created (possible in a shared, sticky
+  project folder such as `/app` with mode 1777): auto-review admission and Claude Code's
+  project-scope setup now refuse it with `target_unsafe`.
+
 - `yoetz instance create --bind-runtime` on a Yoetz runtime the current user cannot write (for
   example one root installed in a container image) now fails with `runtime_pin_unwritable` and
   removes what it created. Before, it reported `internal_error` and left a half-created instance

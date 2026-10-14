@@ -286,6 +286,12 @@ def writable_by_others(facts: os.stat_result) -> bool:
     return foreign_write(facts) is not None
 
 
+def superuser_owned(facts: os.stat_result) -> bool:
+    """Whether the superuser owns the object (the owner ``project_root_admitted`` also trusts)."""
+
+    return facts.st_uid == _SUPERUSER_UID
+
+
 def project_root_admitted(facts: os.stat_result) -> bool:
     """Whether a project root directory's owner and mode admit it as the running user's project.
 
@@ -306,6 +312,6 @@ def project_root_admitted(facts: os.stat_result) -> bool:
     euid = os.geteuid()
     if facts.st_uid == euid:
         return not writable_by_others(facts)
-    if facts.st_uid == _SUPERUSER_UID:
+    if superuser_owned(facts):
         return not writable_by_others(facts) or bool(facts.st_mode & stat.S_ISVTX)
     return False

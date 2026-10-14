@@ -2523,6 +2523,17 @@ is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succe
 `.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
 hook paths, not a Codex session); the Codex connect refusal is unit-tested.
 
+**Review fixes (independent review of #1071).** Decisions for Codex: (1) a checkout root made
+(`/app/.git` owned by root) is the project, used as a plain directory, through the shared
+workspace binding (same path as every host); (2) Codex-specific: marketplace removal anchors its
+descriptor walk on the project root and now judges that anchor by the project-root rule, as install
+does, so `integrate codex plugin remove` and Codex disconnect remove `.agents/plugins/marketplace.json`
+in a root-owned project instead of failing with `write_failed` (`conflict: repository_marketplace`)
+after stripping the Codex config, on every retry; the Codex home keeps the owner rule; (3) host
+admission refuses a `.codex` another account created or others can write (`target_unsafe`) at
+preview and before writing `.codex/config.toml` (same path as every host). Covered by tests through
+the public install, activation and removal functions with simulated ownership.
+
 ## Response and receipt timeout recovery
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the

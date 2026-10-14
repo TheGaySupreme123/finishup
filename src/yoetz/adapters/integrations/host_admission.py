@@ -36,6 +36,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Final, Literal, cast
 
+from yoetz.config.foreign_write import project_root_admitted, writable_by_others
 from yoetz.protocol.canonical import (
     JsonValue,
     ProtocolValueError,
@@ -308,14 +309,50 @@ class _Read:
 
 
 def _validated_root(project_root: Path) -> Path:
+    """The project root, judged by the shared project-root rule (ADR-007, 2026-10-14).
+
+    That is the running user's own directory no other account can write or, for a non-root
+    user, a root-owned one that no other account can write or that is sticky. A link, a
+    non-directory and any other owner are refused.
+    """
+
     if not project_root.is_absolute():
         raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
     try:
-        if project_root.is_symlink() or not project_root.is_dir():
-            raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
+        facts = project_root.lstat()
     except OSError as exc:
         raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE) from exc
+    if not project_root_admitted(facts):
+        raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
     return project_root
+
+
+def _require_owned_host_directory(directory: Path) -> None:
+    """A host configuration directory in the project must be the running user's own.
+
+    The project root may be root's, and in a sticky one any account can create entries, so a
+    ``.claude``, ``.codex`` or ``.cursor`` another account made (or one others can write) is
+    refused rather than read as this user's admission or written into: its owner could replace
+    whatever Yoetz writes there. An absent directory passes; Yoetz creates it owner-only. A link
+    or a non-directory keeps its existing report (``unknown`` on read, ``target_unsafe`` on
+    write), and is never followed.
+    """
+
+    try:
+        facts = directory.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE) from exc
+    if not stat.S_ISDIR(facts.st_mode):
+        return
+    if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or writable_by_others(facts):
+        raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
+
+
+def _require_owned_host_directories(host: HostAdmissionHost, root: Path) -> None:
+    for surface in admission_surfaces(host):
+        _require_owned_host_directory((root / surface).parent)
 
 
 def _read(path: Path) -> _Read:
@@ -903,6 +940,7 @@ def preview_host_admission(
     if action is HostAdmissionAction.NOOP:
         raise HostAdmissionError(HostAdmissionReason.HOST_INVALID)
     root = _validated_root(project_root)
+    _require_owned_host_directories(host, root)
     # Revoke is ownership-independent: its job is to remove every exact Yoetz admission form,
     # including one left behind by an earlier route-owner transition.
     effective_owner = owner if action is HostAdmissionAction.GRANT else None
@@ -982,6 +1020,7 @@ def _write_private(path: Path, payload: bytes, *, expected_digest: str | None) -
             parent.mkdir(mode=0o700, parents=False)
         elif not parent.is_dir():
             raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
+        _require_owned_host_directory(parent)
         if path.is_symlink():
             raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
         descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=parent)
@@ -1008,6 +1047,7 @@ def _write_private(path: Path, payload: bytes, *, expected_digest: str | None) -
 
 
 def _delete_or_write(path: Path, payload: bytes, *, expected_digest: str | None) -> None:
+    _require_owned_host_directory(path.parent)
     _require_expected_file(path, expected_digest)
     if payload == b"":
         # A host file emptied by removal reverts to "no file", the state before grant.

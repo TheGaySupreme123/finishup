@@ -422,7 +422,13 @@ def _inspect(
     identities: list[JsonValue] = []
     project_identity: tuple[int, int] | None = None
     for path in (target.project_root, target.cursor_config_root):
-        with _directory(path, optional=path == target.cursor_config_root) as descriptor:
+        # The project root is judged by the project rule, as on the write path; the Cursor
+        # configuration root stays the running user's own.
+        with _directory(
+            path,
+            optional=path == target.cursor_config_root,
+            project=path == target.project_root,
+        ) as descriptor:
             if descriptor is None:
                 identities.append([str(path), None])
                 continue

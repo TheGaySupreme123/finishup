@@ -5139,8 +5139,12 @@ Consent, status, pause, resume, revoke, setup probes, and hook ingress all canon
 Git subdirectory to the same nearest safe Git project root; a non-Git directory remains its exact
 safe locator. A safe project root is the running user's own directory that no other account can
 write or, for a non-root user, a root-owned directory that no other account can write or that is
-sticky (ADR-007, 2026-10-14); anything Yoetz writes inside it must still be the user's own. There
-is no ancestor-commitment fallback. A legacy grant recorded against an exact
+sticky (ADR-007, 2026-10-14); anything Yoetz writes inside it must still be the user's own. The
+nearest `.git` (directory or worktree file) ends the walk when the user owns it, or, for a non-root
+user, when root owns it and no other account can write it (an image built as root): that directory
+is the locator, judged by the same rule and used as a plain directory, since Git capture refuses
+another owner's worktree; a `.git` another non-root account owns or others can write fails the
+locator closed. There is no ancestor-commitment fallback. A legacy grant recorded against an exact
 Git subdirectory does not authorize its ancestor and must be explicitly granted again.
 The normalized locator is authenticated encrypted content; plaintext keeps only commitment and
 object ID. Revocation disables/removes the active locator and trust binding while retaining already
@@ -6408,7 +6412,13 @@ non-exact table (`entry_not_exact`), a Codex server-level default (`server_defau
 the tool in both `allow` and `ask` (`allow_and_ask_present`) is `foreign`; a symlinked, oversized,
 unparseable, or wrongly shaped file (including JSON `null` where an object or list is required) is
 `unknown` (`file_symlink|file_too_large|file_unreadable|
-file_invalid|shape_invalid|file_not_regular`). `preview_host_admission` refuses a grant unless the
+file_invalid|shape_invalid|file_not_regular`). Every operation judges the project root by the
+shared project-root rule (`config.foreign_write.project_root_admitted`, ADR-007 2026-10-14) and,
+before reading for a preview and again immediately before each write or removal, requires each
+host directory that exists as a directory (`.claude`, `.codex`, `.cursor`) to be the running
+user's own and not writable by another account, else `target_unsafe`, so a host directory another
+account created in a sticky root is never written into (a symlinked or non-directory host parent
+keeps its `unknown` read and `target_unsafe` write report). `preview_host_admission` refuses a grant unless the
 caller's exclusively observed owner is `external|plugin`, its route is `policy`, and the observed
 grant permits review (`None` is unread and
 refuses), refuses both actions on `unknown`, refuses a grant on `foreign`, and binds the
@@ -6661,7 +6671,10 @@ observable additions/changes before unlink, restores the exact version name when
 before the first unlink, preserves the remainder after deletion starts, and never sweeps an
 unapproved name into deletion.
 Repository `marketplace.json` and any host-created empty `config.toml` cleanup use the same
-descriptor/inode/byte-bound private-quarantine rule rather than pathname-only unlink.
+descriptor/inode/byte-bound private-quarantine rule rather than pathname-only unlink. The
+repository walk is anchored on the project root, which is judged by the shared project-root rule
+exactly as install judged it (ADR-007, 2026-10-14); a Codex-home anchor and every descendant stay
+the running user's own.
 Pre-mutation drift is `preview_stale`; once any accepted host/config/filesystem mutation has
 started, including a zero-exit mutating host command whose JSON result is malformed, a later
 conflict is `write_failed` because partial state is possible. A successful
@@ -6894,7 +6907,9 @@ The POSIX project-registration adapter exposes preview, status, apply, and remov
 `integrate cursor project-mcp`; its only owned file entry is project `.cursor/mcp.json` key
 `mcpServers.yoetz` with the exact invoking launcher, native Cursor serve suffix, and isolated-root
 binding. It refuses any same-name user or plugin source, duplicate source, or foreign project
-entry. A preview binds target directory identities, all three configuration preimages, route,
+entry. Status, preview and apply judge the project root by the shared project-root rule
+(ADR-007, 2026-10-14) and keep the Cursor configuration root and project `.cursor` the running
+user's own. A preview binds target directory identities, all three configuration preimages, route,
 launcher, and replacement digest. Apply rereads the inputs, atomically replaces through a pinned
 directory, and verifies the resulting configuration before reporting success. Host writers do
 not participate in compare-and-swap, so that limitation remains explicit. Status proves only
