@@ -66,6 +66,11 @@ request is involved:
    file-writing tool for the sandbox to confine. The check passes. `status`, `setup` and `repair`
    report `codex_sandbox_unavailable: true`, and the terminal interface notes it. Any other
    warning text still fails closed.
+
+   The admission holds only for source-reviewed releases (today `0.162.1`). Another release
+   sending the warning is refused as `codex_sandbox_unavailable_unreviewed_runtime`, and setup or
+   repair falls back to an older reviewed release if one is installed. To proceed, install a
+   reviewed release or enable unprivileged user namespaces.
 5. **Model.** The dedicated home's readiness probe (`account/read`, then `model/list`, then the
    same barrier and allowlist check) must list the configured model with every configured
    effort; a release that warns only under the signed-in home is passed over. A home Codex reports signed in whose model

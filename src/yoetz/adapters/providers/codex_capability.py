@@ -960,8 +960,9 @@ def _group_gone(group: int) -> bool:
     ``ESRCH`` confirms the group is empty. macOS briefly answers ``EPERM`` for a group whose
     killed members are still exiting, so ``EPERM`` is re-polled rather than taken as final; a
     member that genuinely survives (or genuinely cannot be signalled) keeps the group visible
-    until the grace expires, which stays unconfirmed. A visible group is sent ``SIGKILL`` again
-    on each poll.
+    until the grace expires, which stays unconfirmed. The poll only observes: it never signals
+    the numeric group again, because once the leader is reaped that id could in principle be
+    reused by an unrelated group, and SIGKILL is not ignorable, so the one kill above suffices.
     """
 
     deadline = time.monotonic() + _GROUP_CLEANUP_GRACE_SECONDS
@@ -978,10 +979,6 @@ def _group_gone(group: int) -> bool:
             if _only_zombies(group):
                 # Killed members already exited; only their reaping (by init) is outstanding.
                 return True
-            try:
-                os.killpg(group, signal.SIGKILL)
-            except OSError:
-                pass
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.01)

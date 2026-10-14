@@ -419,7 +419,9 @@ class _Candidate:
 
 @pytest.fixture
 def short_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(module, "_SUBPROCESS_TIMEOUT_SECONDS", 1.0)
+    # Long enough for the candidate's shell to record its descendant's pid under a loaded host
+    # (at 1 s, 1 run in 30 timed out first), short enough to keep the timeout path fast.
+    monkeypatch.setattr(module, "_SUBPROCESS_TIMEOUT_SECONDS", 3.0)
 
 
 @_POSIX_ONLY
@@ -553,6 +555,38 @@ def test_a_group_that_stays_visible_past_the_grace_is_unconfirmed(
     try:
         with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed"):
             codex_cli_version(candidate.executable, scratch_parent=scratch)
+    finally:
+        monkeypatch.undo()
+        candidate.reap_own_descendant()
+
+
+@_POSIX_ONLY
+def test_the_presence_poll_never_signals_the_numeric_group_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Once the leader is reaped the group id is only observed, never re-killed (reuse race)."""
+
+    candidate = _Candidate(tmp_path / "candidate", stdout_line="codex-cli 0.162.1", hang=False)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    real_killpg = os.killpg
+    kills: list[int] = []
+    probes: list[int] = []
+
+    def slow_to_vanish(group: int, sig: int) -> None:
+        if sig == 0:
+            probes.append(group)
+            if len(probes) <= 3:
+                return None  # still visible for a few polls
+        else:
+            kills.append(sig)
+        real_killpg(group, sig)
+
+    monkeypatch.setattr(module.os, "killpg", slow_to_vanish)
+    try:
+        assert codex_cli_version(candidate.executable, scratch_parent=scratch) == "0.162.1"
+        assert kills == [signal.SIGKILL]
+        assert len(probes) > 3
     finally:
         monkeypatch.undo()
         candidate.reap_own_descendant()

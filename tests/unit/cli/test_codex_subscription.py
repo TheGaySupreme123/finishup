@@ -1358,6 +1358,32 @@ async def test_setup_reports_codex_sandbox_unavailable_without_refusing(
     assert len(written) == 1
 
 
+@pytest.mark.anyio
+async def test_an_unreviewed_release_sending_the_sandbox_warning_falls_back_to_an_older_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checked = _three_releases(
+        monkeypatch, {"0.162.1": "codex_sandbox_unavailable_unreviewed_runtime"}
+    )
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    monkeypatch.setattr(module, "codex_account_status", _ready_probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert checked == ["0.162.1", "0.159.0"]
+    assert result["runtime_version"] == "0.159.0"
+    assert result["runtimes_passed_over"] == ["codex_sandbox_unavailable_unreviewed_runtime"]
+
+
+def test_the_unreviewed_sandbox_refusal_names_its_continuation() -> None:
+    text = module.subscription_remediation("codex_sandbox_unavailable_unreviewed_runtime") or ""
+    assert "0.162.1" in text and "user namespaces" in text
+    assert "repair" in text
+
+
 def test_the_terminal_interface_names_an_unavailable_codex_sandbox_in_plain_words() -> None:
     from yoetz.tui.app import codex_sandbox_lines
 

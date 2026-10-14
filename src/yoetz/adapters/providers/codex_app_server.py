@@ -348,6 +348,13 @@ _PREDISCLOSURE_NOTIFICATION_METHODS: Final = frozenset(
 _SANDBOX_UNAVAILABLE_SUMMARY: Final = (
     "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
 )
+# That reasoning was verified against one release's source; no app-server method exposes the
+# effective tool registry or patch-approval semantics without a model call, so it cannot be proven
+# at runtime. The admission is therefore bound to the releases whose source was reviewed (the
+# release ``initialize`` proved). Any other release sending the same warning fails closed with
+# ``codex_sandbox_unavailable_unreviewed_runtime``; selection then falls back to an older
+# reviewed release when one is installed. Extend this set only after re-reviewing the source.
+SANDBOX_UNAVAILABLE_REVIEWED_RELEASES: Final = frozenset({"0.162.1"})
 _LAUNCH_OVERRIDES: Final = (
     "analytics.enabled=false",
     'approval_policy="never"',
@@ -1234,6 +1241,7 @@ def _login_challenge(result: Mapping[str, object]) -> CodexLoginChallenge:
 def _validate_predisclosure_notification(
     message: Mapping[str, object],
     *,
+    runtime_version: str,
     invalid_token: str = "codex_app_server_predisclosure_event_forbidden",
 ) -> bool:
     """Validate one reviewed pre-disclosure notification and retain no native payload."""
@@ -1252,6 +1260,8 @@ def _validate_predisclosure_notification(
     elif method == "configWarning":
         if not _is_sandbox_unavailable_warning(message):
             raise ValueError(invalid_token)
+        if runtime_version not in SANDBOX_UNAVAILABLE_REVIEWED_RELEASES:
+            raise ValueError("codex_sandbox_unavailable_unreviewed_runtime")
     elif method == "remoteControl/status/changed":
         params = _object(message.get("params"))
         if set(params) != {"environmentId", "installationId", "serverName", "status"}:
@@ -1288,7 +1298,7 @@ def _is_sandbox_unavailable_warning(message: Mapping[str, object]) -> bool:
 
 
 def _login_notification(
-    message: Mapping[str, object], login_id: str
+    message: Mapping[str, object], login_id: str, *, runtime_version: str
 ) -> Literal["account_updated", "completed", "predisclosure"]:
     """Validate one login notification without retaining any native payload text."""
 
@@ -1298,7 +1308,7 @@ def _login_notification(
     if type(method) is str and method in _PREDISCLOSURE_NOTIFICATION_METHODS:
         try:
             updated = _validate_predisclosure_notification(
-                message, invalid_token="codex_login_event_invalid"
+                message, runtime_version=runtime_version, invalid_token="codex_login_event_invalid"
             )
         except _CodexRuntimeWarning as warning:
             # A native warning is not a login event. It ends the login with the bounded login
@@ -1342,7 +1352,9 @@ def _take_account_updated(runtime: _CodexProcess) -> bool:
     pending = runtime.pending_notifications
     runtime.pending_notifications = deque()
     for message in pending:
-        notification = _login_notification(message, "")
+        notification = _login_notification(
+            message, "", runtime_version=runtime.profile.runtime_version
+        )
         if notification == "account_updated":
             updated = True
             continue
@@ -1360,7 +1372,9 @@ async def _wait_for_account_updated(runtime: _CodexProcess, deadline: float) -> 
             if remaining <= 0.0:
                 return False
             message = await runtime.read(remaining)
-            notification = _login_notification(message, "")
+            notification = _login_notification(
+                message, "", runtime_version=runtime.profile.runtime_version
+            )
             if notification == "account_updated":
                 return True
             if notification == "predisclosure":
@@ -1455,7 +1469,9 @@ async def codex_login(
                 except TimeoutError:
                     break
                 events_seen += 1
-                notification = _login_notification(message, login_id)
+                notification = _login_notification(
+                    message, login_id, runtime_version=runtime.profile.runtime_version
+                )
                 if notification == "account_updated":
                     account_updated_seen = True
                     continue
@@ -1486,7 +1502,9 @@ async def codex_login(
                     except TimeoutError as error:
                         raise TimeoutError from error
                     events_seen += 1
-                    notification = _login_notification(message, login_id)
+                    notification = _login_notification(
+                        message, login_id, runtime_version=runtime.profile.runtime_version
+                    )
                     if notification == "account_updated":
                         account_updated_seen = True
                         continue
@@ -1868,7 +1886,9 @@ def _turn_failure(error: object) -> _CodexTurnFailure:
 
 def _validate_predisclosure_notifications(runtime: _CodexProcess) -> None:
     for message in runtime.pending_notifications:
-        _validate_predisclosure_notification(message)
+        _validate_predisclosure_notification(
+            message, runtime_version=runtime.profile.runtime_version
+        )
     runtime.pending_notifications.clear()
 
 
@@ -1916,6 +1936,7 @@ _FAILURE_STAGE_BY_TOKEN: Final[Mapping[str, str]] = {
     "codex_model_catalog_invalid": "model_unavailable",
     "codex_thread_isolation_unproven": "thread_invalid",
     "codex_app_server_predisclosure_event_forbidden": "predisclosure_event_forbidden",
+    "codex_sandbox_unavailable_unreviewed_runtime": "predisclosure_event_forbidden",
     "codex_app_server_remote_control_state_invalid": "predisclosure_event_forbidden",
     "codex_app_server_remote_control_not_disabled": "predisclosure_event_forbidden",
     "codex_runtime_case_invalid": "case_invalid",

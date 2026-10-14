@@ -637,6 +637,21 @@ pre-disclosure gate refused every warning, so the capability check and each atte
    That includes the missing-bubblewrap and WSL1 warnings, any detail, path or range, and the same
    text sent through `warning`. Admission applies to the capability check, the readiness and
    login probes, and every attempt.
+
+   **Bound to reviewed releases.** Point 1 was verified against one release's source and cannot be
+   proven at runtime. No app-server method returns the effective tool registry without a model
+   call: `config/read` returns config values, not registered handlers, and
+   `codex debug prompt-input` renders input items only. Even a tool list would not prove that a
+   patch is rejected before it runs. The admission is therefore limited to the reviewed set
+   `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES = {0.162.1}`, matched against the release that
+   `initialize` proved. That is the newest stable npm release on 2026-10-14; 0.159.x sends this
+   warning only in the terminal UI, not through the app-server.
+
+   Any other release that sends the same warning fails closed before disclosure with
+   `codex_sandbox_unavailable_unreviewed_runtime`, recorded as the `predisclosure_event_forbidden`
+   stage. That token is a per-candidate refusal, so newest-first selection falls back to an older
+   reviewed release when one is installed. Its continuation names a reviewed release and enabling
+   user namespaces. Adding a release to the set requires re-reviewing every item of point 1 in its source.
 3. **Surfaced, not hidden.** A probe that saw the warning reports `sandbox_unavailable`.
    `provider codex-subscription status`, `setup` and `repair` add
    `codex_sandbox_unavailable: true|false`, which `yoetz setup` keeps. The terminal interface shows
@@ -646,9 +661,9 @@ pre-disclosure gate refused every warning, so the capability check and each atte
    Receipts' `runtime_evidence` does not carry the flag yet, because that needs a new
    `runtime-attempt-evidence` schema version and its event/receipt cascade. That is a follow-up;
    until then the receipt's claim is unchanged by this host fact (point 1).
-4. **Re-review trigger.** Re-check this admission whenever Codex enables a command-running tool
-   for this config, or when the warning text, shape or `should_warn_about_system_bwrap` changes.
-   A new text simply fails closed again.
+4. **Re-review trigger.** Each new Codex release is outside the reviewed set until its source is
+   re-checked: no command-running tool for this config, patch rejection under read-only and
+   `never`, and the code-mode host outside bubblewrap. A new text or shape fails closed regardless.
 
 ## Fallback endpoint amendment (2026-09-04, issue #582)
 

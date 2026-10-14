@@ -3051,11 +3051,34 @@ _NOT_THE_SANDBOX_WARNING: list[dict[str, object]] = [
 ]
 
 
+def _reviewed_profile(version: str = "0.162.1") -> CodexAppServerProfile:
+    """A profile for a release whose source review covers the sandbox warning (or ``version``)."""
+
+    return profile_for(record_for(b"codex", b"host", version=version))
+
+
+async def _release_responses(
+    profile: CodexAppServerProfile, *steps: tuple[int, str] | dict[str, object]
+) -> list[dict[str, object]]:
+    """``_responses`` whose ``initialize`` reports the profile's own release, as Codex does."""
+
+    lines = await _responses(profile, *steps)
+    first = cast(dict[str, object], lines[0]["result"])
+    first["userAgent"] = (
+        f"yoetz_semantic_evaluator/{profile.runtime_version} (Linux 6.8; x86_64) unknown"
+    )
+    return lines
+
+
+def test_the_sandbox_warning_is_reviewed_only_for_source_verified_releases() -> None:
+    assert module.SANDBOX_UNAVAILABLE_REVIEWED_RELEASES == frozenset({"0.162.1"})
+
+
 async def test_capability_probe_admits_the_exact_sandbox_unavailable_warning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    profile = _profile()
-    lines = await _responses(
+    profile = _reviewed_profile()
+    lines = await _release_responses(
         profile,
         (0, "initialize"),
         _SANDBOX_UNAVAILABLE_EVENT,
@@ -3076,8 +3099,8 @@ async def test_capability_probe_admits_the_exact_sandbox_unavailable_warning(
 async def test_capability_probe_still_refuses_every_other_config_warning(
     monkeypatch: pytest.MonkeyPatch, event: dict[str, object]
 ) -> None:
-    profile = _profile()
-    lines = await _responses(
+    profile = _reviewed_profile()
+    lines = await _release_responses(
         profile,
         (0, "initialize"),
         event,
@@ -3096,8 +3119,8 @@ async def test_capability_probe_still_refuses_every_other_config_warning(
 async def test_readiness_reports_the_unavailable_sandbox_and_stays_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    profile = _profile()
-    lines = await _responses(
+    profile = _reviewed_profile()
+    lines = await _release_responses(
         profile,
         (0, "initialize"),
         _SANDBOX_UNAVAILABLE_EVENT,
@@ -3120,8 +3143,8 @@ async def test_readiness_reports_the_unavailable_sandbox_and_stays_ready(
 async def test_readiness_without_the_warning_reports_no_unavailable_sandbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    profile = _profile()
-    lines = await _responses(
+    profile = _reviewed_profile()
+    lines = await _release_responses(
         profile, (0, "initialize"), (1, "account/read"), (10, "model/list"), (32, "account/read")
     )
     runtime, _stdin = _stream_runtime(profile, lines)
@@ -3133,8 +3156,8 @@ async def test_readiness_without_the_warning_reports_no_unavailable_sandbox(
 async def test_an_attempt_discloses_the_case_despite_the_sandbox_unavailable_warning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    profile = _profile()
-    lines = await _responses(
+    profile = _reviewed_profile()
+    lines = await _release_responses(
         profile,
         (0, "initialize"),
         _SANDBOX_UNAVAILABLE_EVENT,
@@ -3157,3 +3180,79 @@ async def test_an_attempt_discloses_the_case_despite_the_sandbox_unavailable_war
     assert result.provenance.runtime_evidence is not None
     assert result.provenance.runtime_evidence.case_disclosed is True
     assert any(message.get("method") == "turn/start" for message in stdin.messages)
+
+
+# A release outside the reviewed set: an older admitted one, and a synthetic newer one that keeps
+# the same warning and protocol but whose tool semantics nobody has reviewed.
+_UNREVIEWED_RELEASES = ["0.159.0", "1.0.0"]
+
+
+@pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+async def test_capability_probe_refuses_the_sandbox_warning_from_an_unreviewed_release(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    profile = _reviewed_profile(version)
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        _SANDBOX_UNAVAILABLE_EVENT,
+        (1, "account/read"),
+        (30, "thread/start"),
+        (32, "account/read"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_sandbox_unavailable_unreviewed_runtime"):
+        await module.codex_capability_probe(profile)
+    assert all(message.get("method") != "turn/start" for message in stdin.messages)
+
+
+@pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+async def test_readiness_refuses_the_sandbox_warning_from_an_unreviewed_release(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    profile = _reviewed_profile(version)
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        _SANDBOX_UNAVAILABLE_EVENT,
+        (1, "account/read"),
+        (10, "model/list"),
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_sandbox_unavailable_unreviewed_runtime"):
+        await module.codex_account_status(profile)
+
+
+@pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+async def test_an_attempt_on_an_unreviewed_release_never_discloses_after_the_warning(
+    monkeypatch: pytest.MonkeyPatch, version: str
+) -> None:
+    profile = _reviewed_profile(version)
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        _SANDBOX_UNAVAILABLE_EVENT,
+        (1, "account/read"),
+        (10, "model/list"),
+        (30, "thread/start"),
+        (32, "account/read"),
+        (31, "turn/start"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+    case = _case()
+    binding, authority = _attempt(case)
+    evaluator = CodexAppServerEvaluator(profile, binding, authority, _Clock())
+
+    result = await evaluator.evaluate(case, Deadline(_NOW + timedelta(seconds=30), 30.0))
+
+    assert type(result) is SemanticResultUnavailable
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.case_disclosed is False
+    assert result.provenance.runtime_evidence.failure_stage == "predisclosure_event_forbidden"
+    assert all(message.get("method") != "turn/start" for message in stdin.messages)

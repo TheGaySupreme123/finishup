@@ -154,6 +154,7 @@ _PROVIDER_SETUP_DIRECT_REASONS: Final = frozenset(
         "codex_runtime_protocol_incompatible",
         "codex_runtime_protocol_unavailable",
         "codex_app_server_predisclosure_event_forbidden",
+        "codex_sandbox_unavailable_unreviewed_runtime",
         "codex_thread_isolation_unproven",
         "codex_capability_probe_cleanup_unconfirmed",
         "codex_model_unavailable",
