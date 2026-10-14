@@ -10,6 +10,7 @@ describe structurally admissible, policy-bound findings rather than free-form pr
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from typing import Any, cast
 
@@ -603,7 +604,14 @@ def _finding_expectation(value: CandidateFinding | dict[str, object]) -> dict[st
             "detail": value.detail,
             "priority": value.priority,
         }
-    return {key: cast(JsonValue, value[key]) for key in _FINDING_EXPECTATION_KEYS}
+    expected = {key: cast(JsonValue, value[key]) for key in _FINDING_EXPECTATION_KEYS}
+    # The fixture records pre-rename wording and keeps its exact bytes (ADR-048). Compare the
+    # current engine against a separate current-brand expectation, leaving every other field
+    # and the original fixture untouched, as the receipt-rendering conformance does.
+    expected["detail"] = (
+        cast(str, expected["detail"]).replace("Yoetz", "FinishUP").replace("yoetz-", "finishup-")
+    )
+    return expected
 
 
 def _finding_set_bytes(
@@ -660,6 +668,17 @@ def _decode_findings(variant: dict[str, object]) -> tuple[Finding, ...]:
         wire = {key: value for key, value in raw.items() if key in _FINDING_WIRE_KEYS}
         findings.append(finding_from_json(freeze_json(cast(JsonValue, wire))))
     return tuple(findings)
+
+
+def test_pre_rename_adversarial_vector_retains_its_recorded_bytes(
+    fixture_loader: FixtureLoader,
+) -> None:
+    """A brand-only golden refresh must never overwrite the historical adversarial vector."""
+
+    recorded = fixture_loader.load_bytes(_fixture_path("ADV-001-abandoned-obligation"))
+    assert hashlib.sha256(recorded).hexdigest() == (
+        "d7a62d9af0bcbfe13d35c23141fd97549456244dde8ae7e27923a1e0ed309a49"
+    )
 
 
 def test_adversarial_expected_findings_match_deterministic_engine(
