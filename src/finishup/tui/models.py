@@ -353,6 +353,17 @@ class PrivacyPosture:
     # ``machine_default``) from the repository setup read, the same derivation status shows
     # (issue #982); ``None`` when it could not be read.
     credential_heuristic: tuple[str, str] | None = None
+    # The owner's conversation setting the composed policy means (ADR-049): the explicit token,
+    # or the released reading of a policy that predates it; ``None`` when unreadable.
+    conversation_review: str | None = None
+
+    @property
+    def conversation_review_summary(self) -> str | None:
+        """How tasks use AI-powered review, in the shared wording, with the changing command."""
+
+        from finishup.cli.render import conversation_setting_text
+
+        return conversation_setting_text(self.conversation_review) or None
 
     @property
     def credential_heuristic_disabled(self) -> bool:
