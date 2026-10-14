@@ -683,9 +683,10 @@ missing-bubblewrap, WSL1 and user-namespace warnings.
 
 1. **Same reasoning.** Point 1 above does not depend on which sandbox Codex has: no
    command-running tool is registered, every patch is rejected before it runs, and the code-mode
-   host is not under bubblewrap. Without a system `bwrap`, Codex falls back to its bundled copy,
-   whose namespace access it does not probe, so its Linux sandbox is unverified. That widens
-   nothing a review can do.
+   host is not under bubblewrap. Without a system `bwrap`, Codex attempts its bundled copy when
+   that resource is present; Yoetz does not retain it (#874), and the warning itself proves
+   neither a usable sandbox nor user-namespace access, so its Linux sandbox is unverified. That
+   widens nothing a review can do.
 2. **Same narrow admission.** The warning is admitted only with the closed shape of point 2 and
    that summary byte for byte. It is admitted only from `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES`
    (`{0.162.1}`); any other release sending it fails closed with

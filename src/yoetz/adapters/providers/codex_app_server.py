@@ -342,8 +342,9 @@ _PREDISCLOSURE_NOTIFICATION_METHODS: Final = frozenset(
 # - ``USER_NAMESPACE_WARNING``: a system bubblewrap exists but cannot create user namespaces
 #   (Docker's default seccomp, gVisor, kernels without unprivileged user namespaces);
 # - ``MISSING_BWRAP_WARNING``: no system ``bwrap`` is on ``PATH`` (an official task container
-#   without the distribution ``bubblewrap`` package). Codex then falls back to its bundled
-#   bubblewrap, whose namespace access it does not probe, so its Linux sandbox is unverified.
+#   without the distribution ``bubblewrap`` package). Codex then attempts its bundled
+#   bubblewrap when that resource is present; Yoetz does not retain it (#874), and the warning
+#   proves neither a usable sandbox nor user-namespace access, so the sandbox is unverified.
 # The evaluator's isolated config exposes no tool that bubblewrap would confine:
 # ``features.shell_tool=false`` removes command execution, ``read-only`` with
 # ``approval_policy=never`` rejects every patch before it runs, and no MCP server, plugin, app or
