@@ -209,3 +209,51 @@ def test_failed_connection_names_a_runtime_another_account_can_write(
     HostConnectionReport.model_validate(report)
     assert report["reason"] == "release_runtime_group_writable"
     assert "chmod -R go-w /x" in report["next_step"]
+
+
+def test_connect_preflight_refuses_but_disconnect_and_status_proceed(
+    prepared: ConnectionPlan, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import yoetz.cli.runtime_refusal as refusal
+
+    monkeypatch.setattr(
+        refusal,
+        "installed_runtime_refusal_text",
+        lambda: ("release_runtime_world_writable", "release_runtime_world_writable: repair\n"),
+    )
+    project = Path("/workspace/example/project")
+    assert (
+        cli.run_host_connection(
+            project=project, json_output=True, host="claude", executable=None, config_root=None
+        )
+        == 1
+    )
+    report = json.loads(capsys.readouterr().out)
+    HostConnectionReport.model_validate(report)
+    assert (report["outcome"], report["reason"]) == ("incomplete", "release_runtime_world_writable")
+    assert "plan" not in report
+    # The way out and the read-only view stay available.
+    assert (
+        cli.run_host_connection(
+            project=project,
+            json_output=True,
+            status_only=True,
+            host="claude",
+            executable=None,
+            config_root=None,
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["outcome"] == "status"
+    assert (
+        cli.run_host_connection(
+            project=project,
+            json_output=True,
+            action="disconnect",
+            host="claude",
+            executable=None,
+            config_root=None,
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["outcome"] == "preview"

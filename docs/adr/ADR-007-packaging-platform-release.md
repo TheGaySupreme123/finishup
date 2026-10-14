@@ -210,7 +210,8 @@ host configuration roots (`target_unsafe`).
    Hooks keep the existing non-blocking exit 20 with no stdout decision and print the token
    without local paths. A spawned `service run` records the token as its startup failure, so
    the command that started it names it; every CLI `service_unavailable` and `setup` probe the
-   installed runtime read-only and print the same refusal instead of a supervisor hint.
+   installed runtime read-only and print the same refusal instead of a supervisor hint. `setup run` refuses to connect any host to such a runtime (reason = the token, next step = the repair);
+   its status view and disconnect stay available.
 3. **Our own installs are owner-only.** `yoetz upgrade --accept` runs `uv tool install` under
    umask 022, the npm launcher installs under umask 022, and the test-instance provisioner runs
    uv under umask 022 and clears group/other write on the runtime it created (uv can hard-link

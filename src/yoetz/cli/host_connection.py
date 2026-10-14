@@ -252,6 +252,13 @@ def run_host_connection(
     try:
         selected = select_installation(host, executable, config_root)
         report["host"] = selected.host
+        if action == "connect" and not status_only:
+            from yoetz.cli.runtime_refusal import installed_runtime_refusal_text
+
+            if installed_runtime_refusal_text() is not None:
+                # Every host would launch this runtime and every launch would be refused; the
+                # except branch below names the token and repair. Disconnect stays available.
+                raise ConnectionError("release_runtime_refused")
         request = request_value or new_id(IdKind.REQUEST)
 
         def prepare() -> ConnectionPlan:

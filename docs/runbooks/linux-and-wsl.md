@@ -156,7 +156,9 @@ commands print the exact repair for that installation, for example
 /home/alice/.local/share/uv/python/cpython-3.14.6-linux-x86_64-gnu`; hooks print the token
 without paths and point at `yoetz service run`. A service started on demand records the token as
 its startup failure (`stage: import; …; release_runtime_group_writable`), and CLI
-`service_unavailable` results, `yoetz service status` and `yoetz setup` print the same refusal.
+`service_unavailable` results, `yoetz service status` and `yoetz setup status` print the same
+refusal; `yoetz setup run` refuses to connect Codex, Claude Code or Cursor to that runtime
+(`reason` is the token, `next_step` the repair) while its status view and disconnect still work.
 `yoetz upgrade --accept`, `npx yoetz` and `scripts/provision_test_instance.py` install under umask
 022; the provisioner also clears group/other write on the runtime it creates.
 
