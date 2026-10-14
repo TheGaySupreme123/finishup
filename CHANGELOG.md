@@ -15,8 +15,11 @@ reverse-chronological released versions.
   Metadata only recipe, or `preview_required` on the AI-powered review channel). It shows
   `advice_semantic_preview_required`; nothing is queued or sent, no approval waits for you, and no
   provider attempt or retry backoff is recorded. Explicit checks keep their preview. The advice
-  packet follows your review-context choice, and `yoetz privacy receipts get|list` now marks
-  refused receipts whose category approvals were never sent (#1019).
+  packet follows your review-context choice (a choice changed while a review waits is applied, never
+  the stale one), a policy change that lands mid-request is recorded as not sent rather than as a
+  provider failure, the MCP status advice text names the preview skip, and
+  `yoetz privacy receipts get|list` now marks refused receipts whose category approvals were never
+  sent (#1019).
 
 ### Added
 

@@ -1,9 +1,16 @@
-"""Automatic advice must retain approved content through the semantic assembler (#1019)."""
+"""Background advice through the composed service, privacy coordinator and provider seam (#1019).
+
+Each case runs the composed scheduler, worker, dispatch and the real ``PrivacyCoordinator`` with
+its classifier and audit store; only the provider gateway call and the policy-store reads are
+faked. Policy switches go through the same fake store, so the coordinator's own fences (the
+preview guard, the profile fence and the repository-authority digest check) see them.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from dataclasses import replace
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -11,6 +18,8 @@ from typing import Any, cast
 
 import pytest
 
+from builders.privacy_policies import minimal_external_policy
+from builders.privacy_widenings import with_llm, with_review
 from integration.service.test_ready_composition import (
     _INSTALLATION_ID,  # pyright: ignore[reportPrivateUsage]
     _INSTANCE_ID,  # pyright: ignore[reportPrivateUsage]
@@ -26,8 +35,11 @@ from unit.application.test_observation_advice_semantic import (
 )
 from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore
 from yoetz.adapters.keys.secret_memory import LocalSecretMemory
+from yoetz.adapters.privacy.gateway import PolicyEnforcingOutboundGateway
 from yoetz.adapters.providers.fake import scripted_success
+from yoetz.adapters.providers.openai_responses_factory import provider_binding_from_config
 from yoetz.application.observation_advice import (
+    ADVICE_SEMANTIC_DEFERRED_GAP,
     ADVICE_SEMANTIC_PENDING_GAP,
     ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP,
     minimized_semantic_evidence_packet,
@@ -35,11 +47,14 @@ from yoetz.application.observation_advice import (
 from yoetz.application.observation_advice_semantic import (
     ObservationAdviceSemanticAttempt,
     ObservationAdviceSemanticWorker,
+    advice_semantic_retry_delay_seconds,
 )
 from yoetz.config.models import VerificationConfig, YoetzConfig
 from yoetz.config.write import fireworks_provider
-from yoetz.domain.privacy import EgressChannel, PrivacyPolicy
+from yoetz.domain.observation import AdviceSnapshot
+from yoetz.domain.privacy import EgressChannel, PrivacyPolicy, ReviewContextProfile
 from yoetz.ports.control import ServiceState
+from yoetz.ports.privacy import EffectivePrivacyPolicy
 from yoetz.ports.secret_memory import SecretPurpose
 from yoetz.ports.semantic import SemanticJudgment
 from yoetz.protocol.canonical import (
@@ -53,8 +68,17 @@ from yoetz.service.lifecycle import ServiceLifecycle
 from yoetz.service.ready_composition import build_ready_application_factory
 from yoetz.service.vault import VaultMode, VaultService
 
+_UNATTENDED = with_llm(
+    with_review(minimal_external_policy(), ReviewContextProfile.ASSISTED),
+    provider_binding=provider_binding_from_config(
+        fireworks_provider(model="accounts/fireworks/models/minimax-m3")
+    ),
+)
+_PREVIEW = with_llm(_UNATTENDED, preview_required=True)
+_STRUCTURAL = with_review(_UNATTENDED, ReviewContextProfile.STRUCTURAL)
 
-def unattended_provider_id(policy: PrivacyPolicy) -> str:
+
+def _provider_id(policy: PrivacyPolicy) -> str:
     llm = next(c for c in policy.channel_policies if c.channel is EgressChannel.LLM_INFERENCE)
     assert llm.provider_binding is not None
     return llm.provider_binding.provider_id
@@ -69,14 +93,55 @@ def private_advice_root() -> Iterator[Path]:
         yield root
 
 
-@pytest.mark.anyio
-@pytest.mark.parametrize("preview", [False, True])
-async def test_background_advice_sends_approved_packet_or_skips_for_preview(
-    private_advice_root: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    preview: bool,
-) -> None:
-    tmp_path = private_advice_root
+@dataclass
+class _Harness:
+    app: Any
+    coordinator: Any
+    route: Any
+    policy: PrivacyPolicy
+    sent: list[Any] = field(default_factory=lambda: [])
+    generation: int = 0
+    provider_raises: bool = False
+
+    def switch(self, policy: PrivacyPolicy) -> None:
+        # Every owner policy change is a new repository authority, as in the real store.
+        self.policy = policy
+        self.generation += 1
+
+    @property
+    def now(self) -> str:
+        scheduler = self.coordinator.advice_context_builder.semantic_scheduler
+        return cast(str, scheduler.now())
+
+    async def build(self, store: _Store) -> AdviceSnapshot:
+        snapshot = await self.coordinator.advice_context_builder.build(
+            _COMMITMENT, store, yoetz_session_id=self.route.session_id
+        )
+        assert snapshot is not None
+        return cast(AdviceSnapshot, snapshot)
+
+    async def drain(self, store: _Store) -> ObservationAdviceSemanticAttempt:
+        worker = ObservationAdviceSemanticWorker(
+            repository=store.repository,
+            dispatch=self.coordinator.advice_semantic_dispatch,
+            service_generation=1,
+            lease_owner="svc-test",
+            now=lambda: self.now,
+            lease_expires_at=lambda: "2099-01-01T00:00:00.000Z",
+        )
+        drained = await worker.run_once()
+        assert drained is not None
+        row = store.repository.lookup(
+            yoetz_session_id=drained.yoetz_session_id, basis_digest=drained.basis_digest
+        )
+        assert row is not None
+        return row
+
+
+@asynccontextmanager
+async def _composed(
+    root: Path, monkeypatch: pytest.MonkeyPatch, policy: PrivacyPolicy
+) -> AsyncGenerator[_Harness]:
     clock = _Clock()
     memory = LocalSecretMemory()
     lifecycle = ServiceLifecycle(
@@ -93,7 +158,7 @@ async def test_background_advice_sends_approved_packet_or_skips_for_preview(
         mode=VaultMode.UNINITIALIZED,
         secret_memory=memory,
         clock=clock,
-        vault_store_factory=lambda: EncryptedVaultStore(tmp_path / "vault"),
+        vault_store_factory=lambda: EncryptedVaultStore(root / "vault"),
         pristine_state_digest="sha256:" + "e" * 64,
     )
     secret = memory.capture(SecretPurpose.VAULT_INITIALIZE, bytearray(b"correct horse battery"))
@@ -108,7 +173,7 @@ async def test_background_advice_sends_approved_packet_or_skips_for_preview(
                 provider=fireworks_provider(model="accounts/fireworks/models/minimax-m3"),
                 verification=VerificationConfig(semantic="required"),
             ),
-            paths=_Paths(tmp_path),
+            paths=_Paths(root),
             clock=clock,
             secret_memory=memory,
             diagnostics=_Diagnostics(),
@@ -139,6 +204,7 @@ async def test_background_advice_sends_approved_packet_or_skips_for_preview(
         created_route = await app.start_catalog.task_route(started.task_id)
         assert created_route is not None
         route = replace(created_route, repository_privacy_commitment=_COMMITMENT)
+        harness = _Harness(app, coordinator, route, policy)
 
         async def resolve_route(_self: object, _session: str) -> object:
             return route
@@ -146,63 +212,40 @@ async def test_background_advice_sends_approved_packet_or_skips_for_preview(
         async def credential_present(*_args: object) -> bool:
             return True
 
-        sent: list[Any] = []
-
-        async def fake_provider(
-            _self: object, case: Any, authorization: Any, _deadline: object
-        ) -> object:
-            assert case.authorization_id == authorization.authorization_id
-            sent.append(case)
-            return scripted_success(SemanticJudgment("no_material_discrepancy", ())).result
-
-        from builders.privacy_policies import minimal_external_policy
-        from builders.privacy_widenings import with_llm
-        from yoetz.adapters.providers.openai_responses_factory import provider_binding_from_config
-        from yoetz.ports.privacy import EffectivePrivacyPolicy
-
-        unattended = with_llm(
-            minimal_external_policy(),
-            provider_binding=provider_binding_from_config(
-                fireworks_provider(model="accounts/fireworks/models/minimax-m3")
-            ),
-        )
-        preview_policy = with_llm(unattended, preview_required=True)
-        current = {"policy": preview_policy if preview else unattended}
-
         async def effective_policy(*_args: object) -> EffectivePrivacyPolicy:
-            policy = current["policy"]
-            return EffectivePrivacyPolicy(policy, 1, policy.policy_digest)
-
-        assert app.privacy.policy_application is not None
-        monkeypatch.setattr(
-            type(app.privacy.policy_application.policy_store), "effective_policy", effective_policy
-        )
-        monkeypatch.setattr(type(app.start_catalog), "resolve_route", resolve_route)
-        monkeypatch.setattr(type(vault), "has_provider_credential", credential_present)
-        from yoetz.adapters.privacy.gateway import PolicyEnforcingOutboundGateway
-
-        def connected(*_args: object) -> bool:
-            return True
-
-        monkeypatch.setattr(
-            PolicyEnforcingOutboundGateway, "has_connected_provider_binding", connected
-        )
+            return EffectivePrivacyPolicy(harness.policy, 1, harness.policy.policy_digest)
 
         async def repository_authority(_self: object, scope: Any) -> object:
             return SimpleNamespace(
                 effective=await effective_policy(),
                 grant_state="granted",
                 repository_privacy_commitment=scope.workspace_ref_commitment,
-                authority_digest="sha256:" + "9" * 64,
+                authority_digest=canonical_digest({"authority": harness.generation}),
             )
 
         async def reconcile(*_args: object, **_kwargs: object) -> None:
             return None
 
+        def connected(*_args: object) -> bool:
+            return True
+
+        async def fake_provider(
+            _self: object, case: Any, authorization: Any, _deadline: object
+        ) -> object:
+            assert case.authorization_id == authorization.authorization_id
+            if harness.provider_raises:
+                raise ConnectionError("transport dropped after the request may have left")
+            harness.sent.append(case)
+            return scripted_success(SemanticJudgment("no_material_discrepancy", ())).result
+
+        assert app.privacy.policy_application is not None
+        policy_store = app.privacy.policy_application.policy_store
+        monkeypatch.setattr(type(policy_store), "effective_policy", effective_policy)
+        monkeypatch.setattr(type(policy_store), "repository_authority", repository_authority)
+        monkeypatch.setattr(type(app.start_catalog), "resolve_route", resolve_route)
+        monkeypatch.setattr(type(vault), "has_provider_credential", credential_present)
         monkeypatch.setattr(
-            type(app.privacy.policy_application.policy_store),
-            "repository_authority",
-            repository_authority,
+            PolicyEnforcingOutboundGateway, "has_connected_provider_binding", connected
         )
         monkeypatch.setattr(
             PolicyEnforcingOutboundGateway, "reconcile_repository_policy", reconcile
@@ -210,70 +253,107 @@ async def test_background_advice_sends_approved_packet_or_skips_for_preview(
         monkeypatch.setattr(
             PolicyEnforcingOutboundGateway, "dispatch_external_semantic", fake_provider
         )
-        # The background path: the composed scheduler admits (or skips) the advice the hook
-        # build asks for, and the worker drains the row through the composed dispatch.
-        db, repository = _repository()
-        store = _Store(repository)
-        builder = coordinator.advice_context_builder
-        snapshot = await builder.build(_COMMITMENT, store, yoetz_session_id=route.session_id)
-        assert snapshot is not None
-        gaps = snapshot.confidence_coverage.known_gaps
-        rows = db.execute(
-            "SELECT status, failure_reason, provider_identity "
-            "FROM observation_advice_semantic_attempts"
-        ).fetchall()
-        if preview:
-            # Skipped with a typed reason: no row, provider identity, backoff or proposal.
-            assert ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP in gaps
-            assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
-            assert snapshot.semantic_attempt_state == "disabled"
-            assert rows == []
-            assert sent == []
-        else:
-            assert ADVICE_SEMANTIC_PENDING_GAP in gaps
-            assert ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP not in gaps
-            assert [row[0] for row in rows] == ["pending"]
-            worker = ObservationAdviceSemanticWorker(
-                repository=repository,
-                dispatch=coordinator.advice_semantic_dispatch,
-                service_generation=1,
-                lease_owner="svc-test",
-                now=lambda: "2026-09-08T21:00:00.000Z",
-                lease_expires_at=lambda: "2026-09-08T23:00:00.000Z",
-            )
-            drained = await worker.run_once()
-            assert drained is not None
-            # The approved packet actually reached the provider seam.
-            assert len(sent) == 1
-            payload: Any = strict_json_parse(sent[0].payload)
-            assert payload["schema"] == "yoetz.review-packet-case/2"
-            assert payload["review_context_profile"] == unattended.review_context_profile.value
-            assert b"failed_command_unresolved" in sent[0].payload
-            ((status, failure, provider),) = db.execute(
-                "SELECT status, failure_reason, provider_identity "
-                "FROM observation_advice_semantic_attempts"
-            ).fetchall()
-            assert (status, failure) == ("succeeded", None)
-            assert provider == unattended_provider_id(unattended)
+        yield harness
+        # No disclosure ever waits for the owner. (A refusal at the coordinator's final
+        # authority check can leave its prepared proposal ``reserved`` until the short
+        # authorization TTL; that pre-existing audit behaviour is shared with explicit checks.)
+        catalog_db = getattr(app.start_catalog, "_db")
+        assert catalog_db.execute(
+            "SELECT COUNT(*) FROM privacy_audit_records WHERE state = 'awaiting_human'"
+        ).fetchall() == [(0,)]
+    finally:
+        if app is not None:
+            await app.close()
+        await vault.close()
+        memory.close()
+        await lifecycle.close()
 
-            # A row queued before the owner switched to a preview-required policy closes
-            # without a provider attempt, provider identity or awaiting-human proposal.
-            packet = canonical_encode(
-                cast(
-                    JsonValue,
-                    minimized_semantic_evidence_packet(
-                        (),
-                        "sha256:" + "b" * 64,
-                        coverage_gaps=("source_lag",),
-                        finding_summaries=("rule",),
-                    ),
-                )
+
+def _switch_before(
+    monkeypatch: pytest.MonkeyPatch,
+    owner: object,
+    name: str,
+    harness: _Harness,
+    policy: PrivacyPolicy,
+) -> None:
+    """Switch the owner's policy once, immediately before ``owner.name`` runs.
+
+    Patched on the class (slotted instances are read-only); only this instance switches.
+    """
+
+    cls = type(owner)
+    original = cast(Callable[..., Awaitable[object]], getattr(cls, name))
+    switched = False
+
+    async def wrapper(self: object, *args: object, **kwargs: object) -> object:
+        nonlocal switched
+        if self is owner and not switched:
+            switched = True
+            harness.switch(policy)
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(cls, name, wrapper)
+
+
+@pytest.mark.anyio
+async def test_background_advice_sends_the_approved_packet(
+    private_advice_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with _composed(private_advice_root, monkeypatch, _UNATTENDED) as harness:
+        _db, repository = _repository()
+        store = _Store(repository)
+        snapshot = await harness.build(store)
+        gaps = snapshot.confidence_coverage.known_gaps
+        assert ADVICE_SEMANTIC_PENDING_GAP in gaps
+        assert ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP not in gaps
+        row = await harness.drain(store)
+        # The approved packet actually reached the provider seam.
+        assert len(harness.sent) == 1
+        payload: Any = strict_json_parse(harness.sent[0].payload)
+        assert payload["schema"] == "yoetz.review-packet-case/2"
+        assert payload["review_context_profile"] == "assisted"
+        assert b"failed_command_unresolved" in harness.sent[0].payload
+        assert (row.status, row.failure_reason) == ("succeeded", None)
+        assert row.provider_identity == _provider_id(_UNATTENDED)
+        assert row.attempt_receipt is not None
+
+
+@pytest.mark.anyio
+async def test_preview_policy_skips_background_advice_with_a_typed_reason(
+    private_advice_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with _composed(private_advice_root, monkeypatch, _PREVIEW) as harness:
+        db, repository = _repository()
+        snapshot = await harness.build(_Store(repository))
+        gaps = snapshot.confidence_coverage.known_gaps
+        assert ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP in gaps
+        assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+        assert snapshot.semantic_attempt_state == "disabled"
+        assert db.execute(
+            "SELECT COUNT(*) FROM observation_advice_semantic_attempts"
+        ).fetchall() == [(0,)]
+        assert harness.sent == []
+
+
+@pytest.mark.anyio
+async def test_row_queued_before_a_preview_switch_closes_without_provider_identity(
+    private_advice_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with _composed(private_advice_root, monkeypatch, _UNATTENDED) as harness:
+        packet = canonical_encode(
+            cast(
+                JsonValue,
+                minimized_semantic_evidence_packet(
+                    (), "sha256:" + "b" * 64, coverage_gaps=("source_lag",)
+                ),
             )
-            current["policy"] = preview_policy
-            queued = ObservationAdviceSemanticAttempt(
+        )
+        harness.switch(_PREVIEW)
+        closed = await harness.coordinator.advice_semantic_dispatch(
+            ObservationAdviceSemanticAttempt(
                 "attempt",
                 _COMMITMENT,
-                route.session_id,
+                harness.route.session_id,
                 "basis",
                 canonical_digest(strict_json_parse(packet)),
                 ("source_lag",),
@@ -281,25 +361,99 @@ async def test_background_advice_sends_approved_packet_or_skips_for_preview(
                 "running",
                 1,
             )
-            closed = await coordinator.advice_semantic_dispatch(queued)
-            assert (closed.status, closed.failure_reason) == (
-                "unavailable",
-                "authorization_missing",
-            )
-            assert closed.provider_identity is None
-            assert closed.attempt_receipt is None
-            assert len(sent) == 1
-        catalog_db = getattr(app.start_catalog, "_db")
-        assert (
-            catalog_db.execute(
-                "SELECT COUNT(*) FROM privacy_audit_records "
-                "WHERE state IN ('awaiting_human', 'reserved')"
-            ).fetchone()[0]
-            == 0
         )
-    finally:
-        if app is not None:
-            await app.close()
-        await vault.close()
-        memory.close()
-        await lifecycle.close()
+        assert (closed.status, closed.failure_reason) == ("unavailable", "authorization_missing")
+        assert closed.provider_identity is None
+        assert harness.sent == []
+
+
+# (owner attribute path, method): the switch lands just before that method runs.
+_SWITCH_POINTS = {
+    # After the service's own preflight read, before the coordinator admits the request:
+    # refused by the coordinator's preview guard (``policy_denied``).
+    "after_preflight": ("privacy", "evaluate_semantic"),
+    # After classification, at the coordinator's first authority recheck (``scope_mismatch``).
+    "after_classification": ("privacy", "_repository_authority_is_current"),
+    # While the disclosure proposal is prepared: refused at the final authority check right
+    # before authorize/consume (``scope_mismatch`` from the dispatch step).
+    "during_preparation": ("privacy._audit", "prepare_disclosure_proposal"),
+}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("point", sorted(_SWITCH_POINTS))
+async def test_late_preview_switch_is_recorded_as_unsent(
+    private_advice_root: Path, monkeypatch: pytest.MonkeyPatch, point: str
+) -> None:
+    """#1019 r3: a refused late switch is not a provider failure and charges no provider rate."""
+
+    async with _composed(private_advice_root, monkeypatch, _UNATTENDED) as harness:
+        path, name = _SWITCH_POINTS[point]
+        owner: object = harness.app
+        for part in path.split("."):
+            owner = getattr(owner, part)
+        _db, repository = _repository()
+        store = _Store(repository)
+        assert (
+            ADVICE_SEMANTIC_PENDING_GAP
+            in (await harness.build(store)).confidence_coverage.known_gaps
+        )
+        _switch_before(monkeypatch, owner, name, harness, _PREVIEW)
+        row = await harness.drain(store)
+        assert harness.generation == 1, "the switch point was not reached"
+        assert harness.sent == []
+        assert (row.status, row.failure_reason) == ("unavailable", "authorization_missing")
+        assert row.provider_identity is None
+        assert row.attempt_receipt is not None
+        # Base-only retry for the same condition, never the provider-failure growth.
+        assert advice_semantic_retry_delay_seconds(row, generation=2, base_seconds=180) == 180
+        # No session provider-rate charge: a different condition is admitted at once.
+        harness.switch(_UNATTENDED)
+        store.gaps = ("source_lag",)
+        snapshot = await harness.build(store)
+        gaps = snapshot.confidence_coverage.known_gaps
+        assert ADVICE_SEMANTIC_DEFERRED_GAP not in gaps
+        assert ADVICE_SEMANTIC_PENDING_GAP in gaps
+
+
+@pytest.mark.anyio
+async def test_outcome_unknown_keeps_provider_identity_and_charges_the_rate(
+    private_advice_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with _composed(private_advice_root, monkeypatch, _UNATTENDED) as harness:
+        _db, repository = _repository()
+        store = _Store(repository)
+        await harness.build(store)
+        harness.provider_raises = True
+        row = await harness.drain(store)
+        # The request may have left the machine: provenance stays truthful.
+        assert (row.status, row.failure_reason) == ("failed", "provider_failed")
+        assert row.provider_identity == _provider_id(_UNATTENDED)
+        store.gaps = ("source_lag",)
+        snapshot = await harness.build(store)
+        assert ADVICE_SEMANTIC_DEFERRED_GAP in snapshot.confidence_coverage.known_gaps
+
+
+@pytest.mark.anyio
+async def test_profile_tightened_while_waiting_for_admission_never_sends_the_stale_selection(
+    private_advice_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with _composed(private_advice_root, monkeypatch, _UNATTENDED) as harness:
+        _db, repository = _repository()
+        store = _Store(repository)
+        await harness.build(store)
+        # The service composed an Assisted candidate; Structural is in force at admission.
+        _switch_before(monkeypatch, harness.app.privacy, "evaluate_semantic", harness, _STRUCTURAL)
+        row = await harness.drain(store)
+        assert harness.sent == []
+        assert (row.status, row.failure_reason) == ("unavailable", "authorization_missing")
+        assert row.provider_identity is None
+        # The next admission is rebuilt from the effective profile.
+        store.gaps = ("source_lag",)
+        await harness.build(store)
+        rebuilt = await harness.drain(store)
+        assert rebuilt.status == "succeeded"
+        (case,) = harness.sent
+        payload: Any = strict_json_parse(case.payload)
+        assert payload["review_context_profile"] == "structural"
+        assert all(row["category"] != "finding_summary" for row in payload["items"])

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, cast
 from yoetz.adapters.privacy.local_enforcer import SecretScanRuleset
 from yoetz.domain.findings import SemanticDispatchKind
 from yoetz.domain.privacy import (
+    REVIEW_PACKET_ITEM_ID,
     ApprovedLocalDisclosureCase,
     ApprovedLocalItem,
     ApprovedOutboundCase,
@@ -107,6 +108,7 @@ __all__ = [
     "SemanticEgressProviderOutcome",
     "SemanticEgressResult",
     "SemanticEgressSuccess",
+    "advice_selection_is_current",
     "semantic_policy_refusal",
     "semantic_preview_required",
 ]
@@ -263,6 +265,35 @@ def semantic_preview_required(policy: PrivacyPolicy) -> bool:
     """The same human-preview decision for foreground checks and background admission."""
     llm = next(c for c in policy.channel_policies if c.channel is EgressChannel.LLM_INFERENCE)
     return policy.profile is PrivacyProfile.CONFIRM_EVERY_REQUEST or llm.preview_required
+
+
+def advice_selection_is_current(candidate: CandidateContext, policy: PrivacyPolicy) -> bool:
+    """Whether a background advice candidate was built for the policy now in force (#1019 r3).
+
+    The service composes the advice envelope from the review-context profile it read before
+    waiting for privacy admission. A profile tightened in between (Assisted to Structural) must
+    not send the stale selection: the envelope must name the effective profile, and finding prose
+    may travel only when the effective selection includes it. A malformed envelope is left to the
+    assembler's own fail-closed checks.
+    """
+
+    if (
+        any(item.category is DataCategory.FINDING_SUMMARY for item in candidate.items)
+        and not policy.review_selection.include_finding_prose
+    ):
+        return False
+    for item in candidate.items:
+        if item.item_id != REVIEW_PACKET_ITEM_ID:
+            continue
+        try:
+            envelope = strict_json_parse(item.plaintext)
+        except ValueError, TypeError, UnicodeDecodeError:
+            return True
+        if isinstance(envelope, dict):
+            named = envelope.get("review_context_profile")
+            if type(named) is str and named != policy.review_context_profile.value:
+                return False
+    return True
 
 
 def semantic_policy_refusal(
@@ -1596,12 +1627,26 @@ class PrivacyCoordinator:
         # Background advice has no human to preview it and no continuation to resume. Refuse it
         # before classification, so no proposal is reserved and the receipt asserts no category
         # approval, even if the policy changed after the service's own preflight (#1019).
-        if egress_origin_operation(
-            candidate.purpose, (i.item_id for i in candidate.items)
-        ) is EgressOriginOperation.OBSERVATION_ADVICE and semantic_preview_required(policy):
-            return await self._complete_semantic_predispatch(
-                candidate, effective, PrivacyOutcome.BLOCKED_BY_POLICY, PrivacyReason.POLICY_DENIED
-            )
+        if (
+            egress_origin_operation(candidate.purpose, (i.item_id for i in candidate.items))
+            is EgressOriginOperation.OBSERVATION_ADVICE
+        ):
+            if semantic_preview_required(policy):
+                return await self._complete_semantic_predispatch(
+                    candidate,
+                    effective,
+                    PrivacyOutcome.BLOCKED_BY_POLICY,
+                    PrivacyReason.POLICY_DENIED,
+                )
+            if not advice_selection_is_current(candidate, policy):
+                # Built for a review-context profile that is no longer in force; the next
+                # admission rebuilds it from the current policy (#1019 r3).
+                return await self._complete_semantic_predispatch(
+                    candidate,
+                    effective,
+                    PrivacyOutcome.BLOCKED_BY_POLICY,
+                    PrivacyReason.SCOPE_MISMATCH,
+                )
 
         classified = self._classifier.classify(candidate, effective)
         decision = self._semantic_decision(classified, effective, binding)

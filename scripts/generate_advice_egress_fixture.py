@@ -78,9 +78,9 @@ def document() -> dict[str, JsonValue]:
         provider_binding=ProviderBinding(
             "fixture", "fixture/model", "fixture-external", "1.0.0", "external"
         ),
-        # A custom profile that includes finding prose: the frozen vector predates profile
-        # threading (#1019 r2) and keeps its exact bytes; runtime tests cover each profile.
-        review_context_profile=ReviewContextProfile.CUSTOM,
+        # The recommended Assisted profile, which includes finding prose. The egress pipeline
+        # refuses an advice envelope naming any profile other than the effective one (#1019 r3).
+        review_context_profile=ReviewContextProfile.ASSISTED,
         include_finding_prose=True,
     )
     # The builder envelope is the golden vector; runtime tests apply the real classifier and

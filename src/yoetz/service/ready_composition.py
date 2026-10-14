@@ -432,6 +432,52 @@ _ZERO_DIGEST = "sha256:" + "0" * 64
 _LEGACY_HOOK_SPOOL_BATCH_LIMIT: Final = DEFAULT_HOOK_SPOOL_CLAIM_LIMIT
 # The egress purpose every background advice dispatch carries; admission judges the same one.
 _ADVICE_SEMANTIC_PURPOSE: Final = "semantic-review"
+# Privacy refusals that mean the owner's authority or policy no longer admits this unattended
+# request (#1019 r3): a preview-required switch, a repository authority that changed while the
+# packet was prepared, a narrowed purpose, destination or channel. They close an advice row as
+# ``authorization_missing`` like any other lost authority.
+_ADVICE_AUTHORITY_REFUSALS: Final = frozenset(
+    {
+        PrivacyReason.POLICY_DENIED,
+        PrivacyReason.SCOPE_MISMATCH,
+        PrivacyReason.PURPOSE_NOT_ALLOWED,
+        PrivacyReason.DESTINATION_NOT_ALLOWED,
+        PrivacyReason.CHANNEL_UNAVAILABLE,
+        PrivacyReason.AUTHORIZATION_STALE,
+    }
+)
+
+
+def advice_outcome_for_blocked(
+    result: SemanticEgressBlocked, provider_id: str
+) -> ObservationAdviceSemanticOutcome:
+    """Map a privacy-blocked advice request from its typed provenance, never from the binding.
+
+    ``SemanticEgressBlocked`` is the egress pipeline's pre-dispatch (or human) refusal; the only
+    blocked result that may follow a gateway call is ``outcome_unknown``, which keeps the provider
+    identity because the request may have left the machine. Every other refusal proves no
+    dispatch: it records no provider identity and links the terminal privacy record. Authority and
+    policy-change refusals close ``unavailable`` / ``authorization_missing``, so they neither
+    charge the session's provider interval nor grow the provider-failure backoff (the base retry
+    still applies); other pre-dispatch refusals (category, never-send, audit, deadline) stay
+    ``failed`` / ``provider_failed`` without claiming a provider was reached.
+    """
+
+    link = result.receipt_id or result.privacy_proposal_id
+    if result.reason is PrivacyReason.OUTCOME_UNKNOWN:
+        return ObservationAdviceSemanticOutcome(
+            status="failed",
+            failure_reason="provider_failed",
+            attempt_receipt=link,
+            provider_identity=provider_id,
+        )
+    if result.reason in _ADVICE_AUTHORITY_REFUSALS:
+        return ObservationAdviceSemanticOutcome(
+            status="unavailable", failure_reason="authorization_missing", attempt_receipt=link
+        )
+    return ObservationAdviceSemanticOutcome(
+        status="failed", failure_reason="provider_failed", attempt_receipt=link
+    )
 
 
 def _admits_llm_inference(policy: PrivacyPolicy) -> bool:
@@ -6700,12 +6746,6 @@ async def provide_service_ready_context(
         )
         return semantic_preview_required(authority.effective.policy)
 
-    async def _advice_preview_required_now(session_id: str) -> bool:
-        try:
-            return await _advice_preview_required(session_id)
-        except Exception:  # noqa: BLE001 - unreadable policy keeps the ordinary failure record
-            return False
-
     async def _dispatch_observation_advice_semantic(
         attempt: ObservationAdviceSemanticAttempt,
     ) -> ObservationAdviceSemanticOutcome:
@@ -6757,6 +6797,8 @@ async def provide_service_ready_context(
         if semantic_preview_required(advice_policy):
             # Queued before the owner switched to a preview-required policy (#1019): close it
             # with no provider identity or proposal; admission now reports ``preview_required``.
+            # ``authorization_missing`` charges no session provider interval and keeps only the
+            # base retry interval, never the exponential provider-failure backoff.
             return ObservationAdviceSemanticOutcome(
                 status="unavailable", failure_reason="authorization_missing"
             )
@@ -6789,18 +6831,13 @@ async def provide_service_ready_context(
         advice_semantic_inflight[attempt.attempt_id] = (candidate.request_id, binding.provider_id)
         result = await cast(PrivacyCoordinator, privacy).evaluate_semantic(candidate, deadline)
         advice_semantic_inflight.pop(attempt.attempt_id, None)
-        if (
-            type(result) is SemanticEgressBlocked
-            and result.reason is PrivacyReason.POLICY_DENIED
-            and await _advice_preview_required_now(attempt.yoetz_session_id)
-        ):
-            # The policy turned preview-required between the read above and the egress
-            # pipeline's own refusal: nothing was sent, so no provider identity or backoff.
-            return ObservationAdviceSemanticOutcome(
-                status="unavailable",
-                failure_reason="authorization_missing",
-                attempt_receipt=result.receipt_id,
-            )
+        if type(result) is SemanticEgressBlocked:
+            # A policy or authority switch after the read above (preview turned on, the
+            # repository authority changed while the packet was prepared) is refused by the
+            # egress pipeline itself. Its typed provenance, not the configured binding, says
+            # whether anything was sent: no provider identity, no session provider-rate charge
+            # and no exponential provider-failure growth; the base retry interval still applies.
+            return advice_outcome_for_blocked(result, binding.provider_id)
         if type(result) is not SemanticEgressSuccess:
             return ObservationAdviceSemanticOutcome(
                 status="failed",

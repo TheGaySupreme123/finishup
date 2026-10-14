@@ -1943,3 +1943,8 @@ backoff or disclosure proposal results. A row queued before the policy changed c
 as `authorization_missing` without provider identity, so it neither charges the session interval
 nor grows the provider-failure backoff. The advice packet follows the effective review-context
 profile. The privacy decision is recorded in ADR-009.
+
+Round 3: a late policy or authority switch refused inside the egress pipeline closes the row
+`authorization_missing` without provider identity, mapped from the typed refusal (ADR-009); only
+`outcome_unknown` is recorded as a possibly provider-reaching failure. A candidate built for a
+review-context profile no longer in force is refused and rebuilt on the next admission.

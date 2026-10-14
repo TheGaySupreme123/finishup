@@ -51,6 +51,7 @@ from yoetz.domain.privacy import (
     EgressAuthorization,
     EgressChannel,
     EgressOriginOperation,
+    PrivacyOutcome,
     PrivacyProfile,
     PrivacyReason,
     ProviderBinding,
@@ -375,7 +376,9 @@ async def test_advice_golden_vector_is_the_exact_approved_packet(summaries: bool
     )
     assert isinstance(fixture, dict)
     source = cast(dict[str, JsonValue], fixture["input"])
-    candidate = _candidate(canonical_encode(source["packet"]), profile=ReviewContextProfile.CUSTOM)
+    candidate = _candidate(
+        canonical_encode(source["packet"]), profile=ReviewContextProfile.ASSISTED
+    )
     assert [
         {
             "item_id": item.item_id,
@@ -485,3 +488,54 @@ async def test_preview_required_advice_never_creates_a_proposal() -> None:
     assert receipt.approved_categories == ()
     assert receipt.counts.approved_items == 0
     assert receipt.counts.included_items == 0
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("built", "effective"),
+    [
+        (ReviewContextProfile.ASSISTED, ReviewContextProfile.STRUCTURAL),
+        (ReviewContextProfile.STRUCTURAL, ReviewContextProfile.ASSISTED),
+    ],
+)
+async def test_advice_built_for_another_profile_is_fenced_before_classification(
+    built: ReviewContextProfile, effective: ReviewContextProfile
+) -> None:
+    """#1019 r3: a stale review-context selection never reaches the provider."""
+
+    candidate = _candidate(
+        profile=built, include_finding_prose=built is not ReviewContextProfile.STRUCTURAL
+    )
+    result, audit, provider = await _evaluate(candidate, profile=effective)
+    assert isinstance(result, SemanticEgressBlocked)
+    assert result.reason is PrivacyReason.SCOPE_MISMATCH
+    assert audit.proposal is None
+    assert provider.cases == []
+    (receipt,) = audit.receipts
+    assert receipt.approved_categories == ()
+
+
+@pytest.mark.parametrize(
+    ("reason", "outcome", "expected"),
+    [
+        (PrivacyReason.POLICY_DENIED, PrivacyOutcome.BLOCKED_BY_POLICY, "unavailable"),
+        (PrivacyReason.SCOPE_MISMATCH, PrivacyOutcome.BLOCKED_BY_POLICY, "unavailable"),
+        (PrivacyReason.CATEGORY_NOT_ALLOWED, PrivacyOutcome.BLOCKED_BY_POLICY, "failed"),
+        (PrivacyReason.OUTCOME_UNKNOWN, PrivacyOutcome.TRANSPORT_FAILED, "failed"),
+    ],
+)
+def test_blocked_advice_outcome_follows_typed_provenance(
+    reason: PrivacyReason, outcome: PrivacyOutcome, expected: str
+) -> None:
+    from yoetz.service.ready_composition import advice_outcome_for_blocked
+
+    mapped = advice_outcome_for_blocked(
+        SemanticEgressBlocked(_REQUEST, outcome, reason, privacy_proposal_id="ppr_x"),
+        "fireworks",
+    )
+    assert mapped.status == expected
+    assert mapped.attempt_receipt == "ppr_x"
+    # Only a request that may have left the machine names the provider.
+    assert (mapped.provider_identity == "fireworks") is (reason is PrivacyReason.OUTCOME_UNKNOWN)
+    if expected == "unavailable":
+        assert mapped.failure_reason == "authorization_missing"

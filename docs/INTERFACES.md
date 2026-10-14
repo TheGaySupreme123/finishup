@@ -4970,7 +4970,18 @@ Shared closed types:
   `disabled` (gap rule G5b, disclosed). A row queued before such a policy change closes at dispatch
   as `unavailable` / `authorization_missing` with no provider identity, and `PrivacyCoordinator`
   refuses an `observation_advice` candidate under such a policy before classification
-  (`blocked_by_policy` / `policy_denied`, no proposal, no category approval) (#1019 r2). Only a `succeeded` row with validated finding ids adds
+  (`blocked_by_policy` / `policy_denied`, no proposal, no category approval) (#1019 r2). It
+  likewise refuses (`scope_mismatch`) an advice candidate whose envelope names a review-context
+  profile other than the effective one, or that offers `finding_summary` prose the effective
+  selection excludes (`advice_selection_is_current`, `application.egress`). The dispatch maps a
+  `SemanticEgressBlocked` result from its typed reason, never from the configured binding
+  (`advice_outcome_for_blocked`, `service.ready_composition`): `outcome_unknown` keeps
+  `failed` / `provider_failed` with the provider identity; `policy_denied`, `scope_mismatch`,
+  `purpose_not_allowed`, `destination_not_allowed`, `channel_unavailable` and
+  `authorization_stale` close `unavailable` / `authorization_missing`; other pre-dispatch refusals
+  stay `failed` / `provider_failed`; none of the proven-unsent ones names a provider, and each links
+  its privacy receipt or proposal id as `attempt_receipt` (#1019 r3). The MCP `status` advice text
+  adds one fixed sentence when the snapshot carries `advice_semantic_preview_required`. Only a `succeeded` row with validated finding ids adds
   `semantic_model_derived`; a succeeded attempt that returned no challenges is an honest receipt and
   no finding.
 

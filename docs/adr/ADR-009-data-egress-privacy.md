@@ -1000,3 +1000,13 @@ Maintainer acknowledgement: the owner requested this scoped follow-up to the ame
   `--json` and the wire are unchanged.
 - Shared service behaviour for Codex, Claude Code and Cursor on macOS, Linux and Windows through
   WSL 2. No migration: the skip writes no row, and a race closes with an existing reason.
+
+Round 3 (same day, same issue): a preview switch that lands after the service's own read (while
+the coordinator prepares the packet, or at its final repository-authority check) is refused by the
+egress pipeline as `scope_mismatch` or `policy_denied`. The advice row is now mapped from that typed
+pre-dispatch refusal, not from the configured binding: `unavailable` / `authorization_missing`, no
+provider identity, the privacy record linked, no session provider-rate charge and only the base
+retry. Only `outcome_unknown` keeps the provider identity. The coordinator also refuses an advice
+candidate built for a review-context profile that is no longer in force (`scope_mismatch`); the
+next admission rebuilds it from the current profile. The gateway's own consume fence for a switch
+after authorization is unchanged and not re-tested here (the provider gateway is faked).
