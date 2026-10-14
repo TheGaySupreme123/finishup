@@ -9839,7 +9839,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   character, no leading `/`, no empty, `.` or `..` segment; the only path text the check records)
   with `undeclared_reference_count` when more were found than are named, and since tb4n5
   `undeclared_reference_ambiguous`, how many created files it names only ambiguously, never
-  which); absent when the check read no declared output file. Status
+  which; `undeclared_references_created_in_task` (`const true`) is read-compatibility only for
+  payloads intermediate tb4n5 builds wrote before that provenance was withdrawn: it decodes and
+  re-encodes byte-identically, no build produces it, and nothing consults it); absent when the
+  check read no declared output file. Status
   `closure_readiness.undeclared_references` (optional on the unreleased status-result 1.4.0, at
   most 16 rows `{obligation_id, item_index, paths, total}`,
   `closure_readiness.current_undeclared_references` over the applicable check) carries them; each
