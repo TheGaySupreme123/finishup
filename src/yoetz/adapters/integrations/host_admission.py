@@ -24,11 +24,11 @@ Rules shared by every host surface:
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import stat
-import tempfile
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -36,7 +36,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Final, Literal, cast
 
-from yoetz.config.foreign_write import project_root_admitted, writable_by_others
+from yoetz.config.foreign_write import (
+    project_root_admitted,
+    superuser_owned,
+    writable_by_others,
+)
 from yoetz.protocol.canonical import (
     JsonValue,
     ProtocolValueError,
@@ -327,36 +331,44 @@ def _validated_root(project_root: Path) -> Path:
     return project_root
 
 
-def _require_owned_host_directory(directory: Path) -> None:
-    """A host configuration directory in the project must be the running user's own.
+_DIRECTORY_FLAGS: Final = (
+    os.O_RDONLY
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_CLOEXEC", 0)
+)
+_FILE_READ_FLAGS: Final = (
+    os.O_RDONLY
+    | getattr(os, "O_CLOEXEC", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+)
 
-    The project root may be root's, and in a sticky one any account can create entries, so a
-    ``.claude``, ``.codex`` or ``.cursor`` another account made (or one others can write) is
-    refused rather than read as this user's admission or written into: its owner could replace
-    whatever Yoetz writes there. An absent directory passes; Yoetz creates it owner-only. A link
-    or a non-directory keeps its existing report (``unknown`` on read, ``target_unsafe`` on
-    write), and is never followed.
+
+def _host_folder_readable(facts: os.stat_result) -> bool:
+    """Whether a host folder's contents can be read as this user's admission.
+
+    The running user's own folder no other account can write, or one root made that no other
+    account can write (a committed ``.claude`` in an image built as root): root is already trusted
+    with everything the user runs. A folder another non-root account made, or one others can
+    write (a sticky project root lets any account create ``.claude`` first), is not.
     """
 
-    try:
-        facts = directory.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE) from exc
-    if not stat.S_ISDIR(facts.st_mode):
-        return
-    if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or writable_by_others(facts):
-        raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
+    if writable_by_others(facts):
+        return False
+    return not hasattr(os, "geteuid") or facts.st_uid == os.geteuid() or superuser_owned(facts)
 
 
-def _require_owned_host_directories(host: HostAdmissionHost, root: Path) -> None:
-    for surface in admission_surfaces(host):
-        _require_owned_host_directory((root / surface).parent)
+def _host_folder_writable(facts: os.stat_result) -> bool:
+    """Whether Yoetz may write into a host folder: only the running user's own, unshared."""
+
+    if writable_by_others(facts):
+        return False
+    return not hasattr(os, "geteuid") or facts.st_uid == os.geteuid()
 
 
-def _read(path: Path) -> _Read:
-    """Read one bounded regular file without following its final symlink.
+def _read_at(folder: int, name: str) -> _Read:
+    """Read one bounded regular file in a pinned folder without following a link.
 
     Host configuration writers do not share a lock with Yoetz. Retaining one descriptor and
     comparing its before/after metadata prevents a replace or in-place write during this read from
@@ -365,22 +377,16 @@ def _read(path: Path) -> _Read:
     """
 
     try:
-        if path.parent.is_symlink() or path.is_symlink():
-            return _Read(None, "file_symlink")
-        flags = (
-            os.O_RDONLY
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_NONBLOCK", 0)
-        )
-        descriptor = os.open(path, flags)
+        descriptor = os.open(name, _FILE_READ_FLAGS, dir_fd=folder)
     except FileNotFoundError:
         return _Read(None, None)
-    except OSError:
-        return _Read(None, "file_unreadable")
+    except OSError as exc:
+        return _Read(None, "file_symlink" if exc.errno == errno.ELOOP else "file_unreadable")
     try:
         with os.fdopen(descriptor, "rb") as handle:
             before = os.fstat(handle.fileno())
+            if stat.S_ISLNK(before.st_mode):
+                return _Read(None, "file_symlink")
             if not stat.S_ISREG(before.st_mode):
                 return _Read(None, "file_not_regular")
             if before.st_size > _MAX_FILE_BYTES:
@@ -408,6 +414,45 @@ def _read(path: Path) -> _Read:
         return _Read(raw, None)
     except OSError:
         return _Read(None, "file_unreadable")
+
+
+def _open_folder(path: Path) -> int | None:
+    """Pin one existing host folder by descriptor without following a link; None when absent."""
+
+    try:
+        return os.open(path, _DIRECTORY_FLAGS)
+    except FileNotFoundError:
+        return None
+
+
+def _read(path: Path) -> _Read:
+    """Read ``<root>/<host folder>/<file>`` through the pinned host folder.
+
+    A linked folder is ``file_symlink``, as is a linked file. A folder whose contents cannot be
+    read as this user's admission (``_host_folder_readable``) is ``folder_not_owned``, so status
+    never reports an admission another account could have written.
+    """
+
+    try:
+        folder = _open_folder(path.parent)
+    except OSError as exc:
+        if exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            try:
+                linked = path.parent.is_symlink()
+            except OSError:
+                linked = False
+            return _Read(None, "file_symlink" if linked else "file_unreadable")
+        return _Read(None, "file_unreadable")
+    if folder is None:
+        return _Read(None, None)
+    try:
+        if not _host_folder_readable(os.fstat(folder)):
+            return _Read(None, "folder_not_owned")
+        return _read_at(folder, path.name)
+    except OSError:
+        return _Read(None, "file_unreadable")
+    finally:
+        os.close(folder)
 
 
 def _unknown(surface: str, entry: str, problem: str) -> HostAdmissionEntry:
@@ -940,7 +985,6 @@ def preview_host_admission(
     if action is HostAdmissionAction.NOOP:
         raise HostAdmissionError(HostAdmissionReason.HOST_INVALID)
     root = _validated_root(project_root)
-    _require_owned_host_directories(host, root)
     # Revoke is ownership-independent: its job is to remove every exact Yoetz admission form,
     # including one left behind by an earlier route-owner transition.
     effective_owner = owner if action is HostAdmissionAction.GRANT else None
@@ -969,6 +1013,10 @@ def preview_host_admission(
     files_after = _files_after(
         host, root, action, effective_owner, checkpoint=checkpoint, entries=entries
     )
+    # Only a surface this preview would change needs a folder Yoetz may write: a revoke with
+    # nothing to remove stays a no-op beside a host folder root committed to the image.
+    for surface in files_after:
+        _require_writable_host_folder((root / surface).parent)
     effective = action if files_after else HostAdmissionAction.NOOP
     if effective is not HostAdmissionAction.NOOP:
         warnings.append("host_config_not_compare_and_swap")
@@ -998,68 +1046,128 @@ def preview_host_admission(
 # --- apply --------------------------------------------------------------------------------
 
 
-def _require_expected_file(path: Path, expected_digest: str | None) -> None:
-    """Refuse when the current path is not the exact byte preimage used by the fresh preview."""
+def _require_writable_host_folder(folder: Path) -> None:
+    """Refuse a host folder Yoetz may not write: a link, a non-directory, or not the user's own.
+
+    An absent folder passes; Yoetz creates it owner-only, pinned by descriptor.
+    """
 
     try:
-        if path.parent.is_symlink() or path.is_symlink():
-            raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
+        descriptor = _open_folder(folder)
     except OSError as exc:
         raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE) from exc
-    current = _read(path)
+    if descriptor is None:
+        return
+    try:
+        if not _host_folder_writable(os.fstat(descriptor)):
+            raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
+    finally:
+        os.close(descriptor)
+
+
+def _pinned_host_folder(path: Path, *, create: bool) -> int | None:
+    """Pin ``<root>/<host folder>`` by descriptor for a write or removal of ``path``.
+
+    The project root is opened without following a link and judged by the project-root rule; the
+    host folder is opened (or created owner-only) relative to it, without following a link, and
+    must be the running user's own and not writable by another account. Every later step uses
+    this descriptor, so swapping the folder for a link or another account's folder after the
+    check cannot redirect the write.
+    """
+
+    folder = path.parent
+    try:
+        root = os.open(folder.parent, _DIRECTORY_FLAGS)
+    except OSError as exc:
+        raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE) from exc
+    try:
+        if not project_root_admitted(os.fstat(root)):
+            raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
+        try:
+            descriptor = os.open(folder.name, _DIRECTORY_FLAGS, dir_fd=root)
+        except FileNotFoundError:
+            if not create:
+                return None
+            try:
+                os.mkdir(folder.name, 0o700, dir_fd=root)
+                descriptor = os.open(folder.name, _DIRECTORY_FLAGS, dir_fd=root)
+            except OSError as exc:
+                raise HostAdmissionError(HostAdmissionReason.WRITE_FAILED) from exc
+        except OSError as exc:
+            raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE) from exc
+    finally:
+        os.close(root)
+    try:
+        if not _host_folder_writable(os.fstat(descriptor)):
+            raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _require_expected_at(folder: int, name: str, expected_digest: str | None) -> None:
+    """Refuse when the pinned file is not the exact byte preimage used by the fresh preview."""
+
+    current = _read_at(folder, name)
     if current.problem is not None or current.digest != expected_digest:
         raise HostAdmissionError(HostAdmissionReason.PREVIEW_STALE)
 
 
-def _write_private(path: Path, payload: bytes, *, expected_digest: str | None) -> None:
-    parent = path.parent
+def _write_private(folder: int, name: str, payload: bytes, *, expected_digest: str | None) -> None:
+    temporary = f".{name}.{os.urandom(8).hex()}.tmp"
     try:
-        if parent.is_symlink():
-            raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
-        if not parent.exists():
-            parent.mkdir(mode=0o700, parents=False)
-        elif not parent.is_dir():
-            raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
-        _require_owned_host_directory(parent)
-        if path.is_symlink():
-            raise HostAdmissionError(HostAdmissionReason.TARGET_UNSAFE)
-        descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=parent)
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=folder,
+        )
     except OSError as exc:
         raise HostAdmissionError(HostAdmissionReason.WRITE_FAILED) from exc
-    temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
         # Re-read after staging, immediately before replacement. A non-cooperating same-UID writer
         # can still win the final syscall window; the preview warning and runbook disclose that
         # host limitation instead of claiming a compare-and-swap primitive POSIX does not provide.
-        _require_expected_file(path, expected_digest)
-        os.replace(temporary, path)
-    except HostAdmissionError:
-        temporary.unlink(missing_ok=True)
+        _require_expected_at(folder, name, expected_digest)
+        os.replace(temporary, name, src_dir_fd=folder, dst_dir_fd=folder)
+    except BaseException as exc:
+        try:
+            os.unlink(temporary, dir_fd=folder)
+        except OSError:
+            pass
+        if isinstance(exc, OSError):
+            raise HostAdmissionError(HostAdmissionReason.WRITE_FAILED) from exc
         raise
-    except OSError as exc:
-        temporary.unlink(missing_ok=True)
-        raise HostAdmissionError(HostAdmissionReason.WRITE_FAILED) from exc
 
 
 def _delete_or_write(path: Path, payload: bytes, *, expected_digest: str | None) -> None:
-    _require_owned_host_directory(path.parent)
-    _require_expected_file(path, expected_digest)
-    if payload == b"":
-        # A host file emptied by removal reverts to "no file", the state before grant.
-        try:
-            # Keep the byte and symlink check adjacent to unlink. This narrows the host-writer
-            # window and, critically, never follows a symlinked host-config parent.
-            _require_expected_file(path, expected_digest)
-            path.unlink(missing_ok=True)
-        except OSError as exc:
-            raise HostAdmissionError(HostAdmissionReason.WRITE_FAILED) from exc
+    """Write or remove ``<root>/<host folder>/<file>`` through the pinned host folder."""
+
+    folder = _pinned_host_folder(path, create=payload != b"")
+    if folder is None:
+        # Nothing to remove, and the preview saw no file either, or the folder vanished.
+        if expected_digest is not None:
+            raise HostAdmissionError(HostAdmissionReason.PREVIEW_STALE)
         return
-    _write_private(path, payload, expected_digest=expected_digest)
+    try:
+        _require_expected_at(folder, path.name, expected_digest)
+        if payload == b"":
+            # A host file emptied by removal reverts to "no file", the state before grant.
+            try:
+                os.unlink(path.name, dir_fd=folder)
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise HostAdmissionError(HostAdmissionReason.WRITE_FAILED) from exc
+            return
+        _write_private(folder, path.name, payload, expected_digest=expected_digest)
+    finally:
+        os.close(folder)
 
 
 def apply_host_admission(

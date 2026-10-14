@@ -2516,8 +2516,8 @@ and setup code; no host-specific change). A runtime root installed and a non-roo
 `yoetz mcp serve`, `service run` and every hook with `release_runtime_not_owned` (exit 20) instead
 of `release_runtime_unavailable: permission_denied` or "could not be verified". Codex shows the MCP server's startup error with that text; its hooks exit 20 with no stdout, so they make no allow or block decision and Codex continues the turn. Terminal
 commands print the `.<prefix>-releases` directory the user must own; hook stderr carries the token
-without local paths. `setup run` refuses to connect Codex to such a runtime with that reason and
-leaves status and disconnect available. `yoetz instance create --bind-runtime` on such a runtime
+without local paths. Every connect path refuses to connect Codex to such a runtime (or one another
+account can write) with that reason and leaves status and disconnect available. `yoetz instance create --bind-runtime` on such a runtime
 is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succeeds (ADR-028,
 2026-10-14 amendment). Install Yoetz as the user, or see the Linux runbook for the one-user
 `.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
@@ -2530,9 +2530,22 @@ descriptor walk on the project root and now judges that anchor by the project-ro
 does, so `integrate codex plugin remove` and Codex disconnect remove `.agents/plugins/marketplace.json`
 in a root-owned project instead of failing with `write_failed` (`conflict: repository_marketplace`)
 after stripping the Codex config, on every retry; the Codex home keeps the owner rule; (3) host
-admission refuses a `.codex` another account created or others can write (`target_unsafe`) at
-preview and before writing `.codex/config.toml` (same path as every host). Covered by tests through
+admission never writes `.codex/config.toml` into a `.codex` another account created or others can
+write (same path as every host; refined in round 2 below). Covered by tests through
 the public install, activation and removal functions with simulated ownership.
+
+**Review fixes, round 2.** Decisions for Codex (same path as every host unless named): (1) a
+checkout root made (`/app` and `/app/.git` root-owned), or the user's own `git init` in a sticky
+root-owned `/app`, now passes the service handshake: the service commits the plain directory
+identity without running Git (Git refuses another owner's checkout), so hooks and MCP attach;
+Git-based change capture reports `unsafe_root`. A root-owned `.git` file with more than one link
+is not trusted. (2) A `.codex` root committed to the image is read normally: admission status is
+`absent` and the reverse sweeps (Codex disconnect, `integrate codex plugin remove` and strict MCP re-registration) report nothing to remove instead of `write_failed`; a
+grant into it is refused `target_unsafe`. A `.codex` another account made, or one others can
+write, is `unknown` (`folder_not_owned`) in status and refused by grant and revoke; writes to
+`.codex/config.toml` go through the host folder pinned by descriptor, never a link swapped in after the
+check. (3) Codex has two connect front ends: bare `setup run` (the Codex wizard, also with `--codex-path`) and the full-screen interface's Codex preview both refuse before previewing or writing any registration, as `setup run --host codex` does. Covered by tests through the public paths with simulated ownership, and the
+repository identity with a real Git checkout owned by another uid.
 
 ## Response and receipt timeout recovery
 

@@ -15,6 +15,11 @@ from yoetz.adapters.git_version import (
     git_version_async,
     git_version_supported,
 )
+from yoetz.config.foreign_write import (
+    project_root_admitted,
+    superuser_checkout_marker,
+    writable_by_others,
+)
 from yoetz.ports.control import RepositoryPrivacyContext, WorkspaceLocator
 from yoetz.ports.keys import REPOSITORY_PRIVACY_MAC_DOMAIN, MacKeyHandle
 
@@ -191,6 +196,50 @@ def _is_git_directory(candidate: Path) -> bool:
     return os.access(common / "objects", os.X_OK) and os.access(common / "refs", os.X_OK)
 
 
+def _another_owners_checkout(directory: Path) -> bool:
+    """Whether Git's ownership guard refuses ``directory`` only because root owns the checkout.
+
+    Git (2.35.2 and later) refuses a repository whose working tree or ``.git`` is not owned by
+    the running user ("dubious ownership"), and this module runs Git without any configuration
+    that could set ``safe.directory``. A container image built as root keeps ``/app`` and
+    ``/app/.git`` root-owned and runs the agent as a non-root ``USER``; in a sticky root-owned
+    ``/app`` the agent's own ``git init`` is refused the same way, because the working tree is
+    root's. True when the nearest ``.git`` Git would find sits in a directory the project-root
+    rule admits, the marker is the user's own and unshared or root's checkout marker
+    (``superuser_checkout_marker``), and root owns at least one of the two. Such a checkout keeps
+    the plain ``directory`` identity, as workspace binding already treats it (ADR-007,
+    2026-10-14); Git is not run against it. Anything owned by another non-root account is not
+    matched and stays refused when Git refuses it.
+    """
+
+    if not hasattr(os, "geteuid"):
+        return False
+    euid = os.geteuid()
+    for candidate in (directory, *directory.parents):
+        try:
+            marker = (candidate / ".git").lstat()
+        except FileNotFoundError:
+            if _is_git_directory(candidate):
+                return False
+            continue
+        except OSError:
+            return False
+        try:
+            worktree = candidate.stat()
+        except OSError:
+            return False
+        if marker.st_uid == euid:
+            if stat.S_ISLNK(marker.st_mode) or writable_by_others(marker):
+                return False
+        elif not superuser_checkout_marker(marker):
+            return False
+        if not project_root_admitted(worktree):
+            return False
+        # Admitted owners are this user or root; Git refuses when either is root's.
+        return marker.st_uid != euid or worktree.st_uid != euid
+    return False
+
+
 def _has_git_marker(directory: Path) -> bool:
     """Whether Git would find a repository at ``directory`` or any directory above it."""
 
@@ -201,6 +250,8 @@ def _has_git_marker(directory: Path) -> bool:
 
 
 async def _bounded_git_common_directory(directory: Path) -> Path | None:
+    if _another_owners_checkout(directory):
+        return None
     executable = shutil.which("git", path=os.defpath)
     if executable is None:
         if _has_git_marker(directory):

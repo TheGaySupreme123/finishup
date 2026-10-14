@@ -187,26 +187,52 @@ admits such a project root for the non-root user when no other account can write
 sticky (ADR-007, 2026-10-14); a directory another non-root account owns stays refused. Everything
 Yoetz creates inside it (`.agents/`, `.cursor/`, `.claude/`, `.codex/`) must belong to the user, so
 when the user cannot create entries there, have root pre-create that directory owned by the user.
-In a sticky project folder another account can create one of those folders first; Yoetz then
-refuses it (`target_unsafe`) instead of writing into it: remove it, or have root recreate it for
-the user. Git refuses a root-owned worktree for another user, so a checkout root made (`/app/.git`
-owned by root, from `COPY` or `git clone` at image build) is used as a plain directory, not a
-repository; it is still the project from `/app` or any directory beneath it. A `.git` another
-non-root account owns, or that others can write, is refused. The rule admits every root-owned
-sticky directory, so a non-root user can also bind `/tmp`, `/var/tmp` or `/dev/shm` (on macOS
-`/private/tmp` and the shared folder under `/Users`) as a project; Yoetz's own state still refuses shared
-temporary directories. A root-installed `claude` executable is still refused for a non-root user
-(Claude Code's executable must be the user's own), while Codex accepts a root-owned launcher. For the runtime itself in such an image: install it as the user (or give the user its
-prefix and a 0700 `.<prefix>-releases` sibling), because binding an instance writes into the
-prefix and every serving start uses that sibling. A runtime the user cannot use this way is
-refused by name (ADR-007, 2026-10-14):
+
+**Checkouts.** Git refuses another owner's checkout ("dubious ownership"). A checkout root made
+(`/app` and `/app/.git` owned by root, from `COPY` or `git clone` at image build), and the user's
+own `git init` inside a sticky root-owned `/app` (Git refuses that too, because the working tree is
+root's), are used as a plain directory: the locator is `/app` from `/app` or any directory beneath
+it, the service gives it the plain directory identity without running Git, and the service starts
+and hooks and MCP attach. Change and subject-state capture report `unsafe_root` (the receipt says
+the repository failed a safety check: another owner), so checks cover what the agent publishes,
+not a Git diff. A `.git` another non-root account owns, one others can write, or a root-owned
+`.git` file with more than one link (anyone can plant a hard link in a sticky directory) is
+refused. If you need Git-based capture, give the user the checkout (`chown -R`).
+
+**Host folders.** A `.claude`, `.codex` or `.cursor` root committed to the image is read
+normally, so admission status shows `absent` and reverse transitions (privacy ceremony, Codex
+disconnect, plugin removal) report nothing to remove; Yoetz cannot write admission entries into it
+(the user cannot either), so a grant there is refused `target_unsafe`: have root make the folder
+the user's. In a sticky project folder another account can create one of those folders first;
+admission status then reports it `unknown` (`folder_not_owned`), grant and revoke refuse it, and
+Claude Code setup refuses a squatted `.claude` (`target_unsafe`): remove it, or have root recreate
+it for the user. Writes go through the folder Yoetz checked, pinned by descriptor, never a link
+swapped in after the check.
+
+**Scope.** The rule admits every root-owned sticky directory, so a non-root user can also bind
+`/tmp`, `/var/tmp` or `/dev/shm` (on macOS `/private/tmp` and the shared folder under `/Users`) as
+a project; Yoetz's own state still refuses shared temporary directories. A root-installed `claude`
+executable is still refused for a non-root user (Claude Code's executable must be the user's own),
+while Codex accepts a root-owned launcher.
+
+**The runtime.** Install it as the user (or give the user its prefix and a 0700
+`.<prefix>-releases` sibling), because binding an instance writes into the prefix and every
+serving start uses that sibling. A runtime the user cannot use this way is refused by name
+(ADR-007, 2026-10-14):
 
 - `release_runtime_not_owned` (exit 20) from `service run`, `mcp serve`, `upgrade` and every hook
   when `.<prefix>-releases` belongs to another account, or does not exist and the user cannot
-  create it in the prefix's parent. Terminal commands print that directory; hooks print the token
-  only. `setup run` refuses to connect a host to such a runtime and `service status` names it.
-  Before, these printed `release_runtime_unavailable: permission_denied` (no directory yet) or
-  "could not be verified" (root had already run Yoetz and made the directory).
+  create it in the prefix's parent. Terminal commands print that directory and the repair that
+  fits; hooks print the token only. `service status` names it, and every connect path refuses to
+  connect a host to such a runtime (`setup run` with or without `--host`, the full-screen
+  interface's first run and `/connect`); disconnect and status stay available. Before, these
+  printed `release_runtime_unavailable: permission_denied` (no directory yet) or "could not be
+  verified" (root had already run Yoetz and made the directory), and setup connected anyway.
+- When the installation is the user's own but `.<prefix>-releases` is not (typically created by
+  running Yoetz once with `sudo`), the repair is to remove that directory (it holds only that
+  account's runtime copies; stop anything that account runs from it first) and let Yoetz recreate
+  it as the user's, 0700. When it is absent and the user cannot create it, have the owner of the
+  prefix's parent create it for the user (`install -d -m 0700 -o <user> <dir>`).
 - `runtime_pin_unwritable` (exit 20) from `instance create --bind-runtime` when the user cannot
   write the prefix; the command keeps nothing, so it can simply be run again after the repair.
 
@@ -221,7 +247,11 @@ That user then builds and serves its own private copies from root's files (verif
 2026-10-14). Root itself is then refused by the same rule, the runtime serves only that user, and
 it cannot be pinned (a pin must be the running user's own), so a pinned instance still needs a
 runtime the user owns. If root has already run Yoetz from that runtime, the existing sibling holds
-root's copies and lock: leave it and install a runtime for the user instead.
+root's copies and lock: leave it and install a runtime for the user instead. Lifecycle in this
+layout: root upgrades the package with its package manager (for example `uv tool upgrade yoetz`;
+`yoetz upgrade --accept` run as root is refused by the same rule); the user's next serving start
+builds a fresh copy and removes unused older ones, and the user can remove unused copies at any
+time with `yoetz upgrade --prune-runtimes`. Sessions already open keep their copy until they end.
 
 ## Retained-runtime bytecode and slow starts
 

@@ -322,6 +322,33 @@ def test_a_pin_conflict_found_at_write_time_rolls_back_only_this_create(
     assert (prefix / RUNTIME_PIN_NAME).read_bytes() == pinned
 
 
+def test_a_seal_that_fails_after_its_rename_is_unwound_too(
+    cell: Path, prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The marker is renamed into place before its directory is synced; a failing sync must
+    not leave that marker behind for the retry to report as ``instance_exists``."""
+
+    import stat
+
+    _scrub(monkeypatch)
+    root = cell / "state"
+    real_fsync = os.fsync
+
+    def failing_directory_sync(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", failing_directory_sync)
+    with pytest.raises(OSError):
+        create_instance(root=root, lifecycle="persistent", now=_NOW, runtime_prefix=prefix)
+    monkeypatch.setattr(os, "fsync", real_fsync)
+
+    assert not root.exists()
+    created = create_instance(root=root, lifecycle="persistent", now=_NOW, runtime_prefix=prefix)
+    assert created["created"] is True
+
+
 def test_parse_expiry_accepts_exactly_one_spelling() -> None:
     assert parse_expiry(now=_NOW, expires_in_hours=None, expires_at=None) is None
     assert parse_expiry(now=_NOW, expires_in_hours=2, expires_at=None) == _NOW + timedelta(hours=2)

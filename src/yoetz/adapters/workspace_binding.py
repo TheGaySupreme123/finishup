@@ -19,7 +19,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, cast
 
-from yoetz.config.foreign_write import project_root_admitted, superuser_owned, writable_by_others
+from yoetz.config.foreign_write import (
+    project_root_admitted,
+    superuser_checkout_marker,
+    writable_by_others,
+)
 
 __all__ = [
     "MAX_WORKSPACE_LOCATOR_BYTES",
@@ -144,7 +148,9 @@ def _git_marker(path: Path) -> bool | None:
     and runs the agent as a non-root ``USER``. The locator is then ``path``, judged like any
     project root by ``project_root_admitted``; it is used as a plain directory, because Git
     capture refuses another owner's worktree on its own (ADR-007, 2026-10-14). A marker another
-    non-root account owns stays unsafe.
+    non-root account owns stays unsafe, and so does a root-owned regular file with more than one
+    link: in a sticky directory anyone may plant a hard link to a root file
+    (``superuser_checkout_marker``).
     """
 
     marker = path / ".git"
@@ -160,7 +166,7 @@ def _git_marker(path: Path) -> bool | None:
         if writable_by_others(facts):
             return None
         if hasattr(os, "geteuid") and facts.st_uid != os.geteuid():
-            return True if superuser_owned(facts) else None
+            return True if superuser_checkout_marker(facts) else None
         return True
     return None
 

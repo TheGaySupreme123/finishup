@@ -165,18 +165,18 @@ def create_instance(
         package_digest=package_digest,
     )
     root_existed = root.exists()
-    sealed = False
     try:
         ensure_owner_only_dir(root)
         ensure_owner_only_dir(root / _STATE_DIR_NAME)
         write_instance_identity(root / _STATE_DIR_NAME, identity)
-        sealed = True
         pin_state = "none"
         if bind_runtime:
             write_runtime_pin(prefix, root, identity.installation_id)
             pin_state = "bound"
     except BaseException:
-        _unwind_create(root, identity if sealed else None, root_existed=root_existed)
+        # The marker may be in place even when sealing failed (its directory sync comes after
+        # the rename); the unwind removes it only while it still holds this identity.
+        _unwind_create(root, identity, root_existed=root_existed)
         raise
     return {
         "created": True,
@@ -187,7 +187,7 @@ def create_instance(
     }
 
 
-def _unwind_create(root: Path, identity: InstanceIdentity | None, *, root_existed: bool) -> None:
+def _unwind_create(root: Path, identity: InstanceIdentity, *, root_existed: bool) -> None:
     """Undo a create that failed part-way, removing only what that create made.
 
     The marker is removed only while it still holds this create's identity, then the state
@@ -198,12 +198,11 @@ def _unwind_create(root: Path, identity: InstanceIdentity | None, *, root_existe
     """
 
     state = root / _STATE_DIR_NAME
-    if identity is not None:
-        try:
-            if read_instance_identity(state) == identity:
-                instance_identity_path(state).unlink()
-        except InstanceIdentityError, OSError:
-            return
+    try:
+        if read_instance_identity(state) == identity:
+            instance_identity_path(state).unlink()
+    except InstanceIdentityError, OSError:
+        return
     for directory in (state,) if root_existed else (state, root):
         try:
             directory.rmdir()

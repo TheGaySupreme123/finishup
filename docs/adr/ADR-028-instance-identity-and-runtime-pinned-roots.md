@@ -140,8 +140,10 @@ reported `internal_error`, and the retry after fixing permissions reported `inst
    Yoetz as the account that runs it, or fix the environment directory. The pin's temporary file
    is removed on every failure, as is the marker's.
 2. **Rollback of exactly what this command made.** When sealing the marker or writing the pin
-   fails, `create` removes its own marker (only while it still holds this command's identity),
-   then the state directory and, when this command created it, the root, each only when empty.
+   fails, `create` removes its own marker (only while it still holds this command's identity,
+   which also covers a seal that failed after the marker was renamed into place, while its
+   directory was being synced), then the state directory and, when this command created it, the
+   root, each only when empty.
    A root the operator created beforehand stays, empty as it was; another instance's pin is never
    touched; nothing is removed recursively. The refusal is raised after the rollback, so the same
    command succeeds once the cause is fixed. The rollback covers every refusal after the root is

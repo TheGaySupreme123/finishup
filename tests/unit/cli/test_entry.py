@@ -627,16 +627,40 @@ def _refuse_not_owned(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     "argv", [["service", "run"], ["mcp", "serve"], ["upgrade"]], ids=["service", "mcp", "upgrade"]
 )
+@pytest.mark.parametrize(
+    ("installation", "directory", "repair"),
+    [
+        ("root", "absent", "Install Yoetz as this account"),
+        ("root", "root", "Install Yoetz as this account"),
+        ("mine", "root", "Remove it, or have its owner remove it"),
+        ("mine", "absent", "Have the owner of the directory that holds this installation"),
+    ],
+    ids=["root_install", "root_install_root_dir", "own_install_sudo_dir", "own_install_no_dir"],
+)
 def test_another_accounts_runtime_names_its_token_and_the_directory_it_needs(
     argv: list[str],
+    installation: str,
+    directory: str,
+    repair: str,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    """A root-installed runtime started by a non-root user (before: "permission_denied")."""
+    """A runtime whose retained-runtime directory is another account's (before:
+    "permission_denied"), with the repair that fits who owns what."""
 
-    prefix = tmp_path / "opt" / "yoetz"
+    from tests.builders.ownership import SUPERUSER, present_owners
+
+    prefix = tmp_path.resolve() / "opt" / "yoetz"
     (prefix / "bin").mkdir(parents=True)
+    releases = prefix.parent / ".yoetz-releases"
+    owners: dict[Path, int] = {}
+    if installation == "root":
+        owners[prefix] = SUPERUSER
+    if directory == "root":
+        releases.mkdir(mode=0o700)
+        owners[releases] = SUPERUSER
+    present_owners(monkeypatch, owners)
     monkeypatch.setattr(sys, "prefix", str(prefix))
     _refuse_not_owned(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["yoetz", *argv])
@@ -647,8 +671,8 @@ def test_another_accounts_runtime_names_its_token_and_the_directory_it_needs(
     assert captured.out == ""
     assert captured.err.startswith("release_runtime_not_owned: ")
     assert "release_runtime_unavailable" not in captured.err
-    assert f"  {prefix.resolve().parent / '.yoetz-releases'}\n" in captured.err
-    assert "Install Yoetz as this account" in captured.err
+    assert f"  {releases}\n" in captured.err
+    assert repair in captured.err
 
 
 def test_another_accounts_runtime_hook_names_token_without_paths(

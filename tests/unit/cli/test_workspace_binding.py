@@ -407,3 +407,30 @@ def test_a_checkout_marker_another_account_controls_still_fails_closed(
 
     assert canonical_workspace_locator(app, env=_env(home)) is None
     assert resolve_workspace_locator(explicit=app, payload={}, env=_env(home)) is None
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+@pytest.mark.parametrize(
+    ("links", "admitted"), [(1, True), (2, False)], ids=["single", "hard_link"]
+)
+def test_a_root_owned_gitfile_counts_only_when_nobody_could_have_linked_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, links: int, admitted: bool
+) -> None:
+    """In a sticky shared directory anyone can plant a hard link to a root-owned file; such a
+    ``.git`` proves nothing about who made the checkout and must not move the locator."""
+
+    from tests.builders.ownership import SUPERUSER, present_owners
+
+    home = tmp_path / "home"
+    app = tmp_path.resolve() / "app"
+    app.mkdir()
+    gitfile = app / ".git"
+    gitfile.write_text("gitdir: /private/git/worktree\n", encoding="utf-8")
+    if links == 2:
+        os.link(gitfile, tmp_path.resolve() / "elsewhere")
+    app.chmod(0o1777)
+    present_owners(monkeypatch, {app: SUPERUSER, gitfile: SUPERUSER})
+
+    expected = os.fspath(app) if admitted else None
+    assert canonical_workspace_locator(app, env=_env(home)) == expected
+    assert resolve_workspace_locator(explicit=app, payload={}, env=_env(home)) == expected

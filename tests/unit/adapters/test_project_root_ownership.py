@@ -253,16 +253,16 @@ def test_cursor_connect_disconnect_reconnect_in_a_root_owned_project(
         assert result["configured"] is (action == "connect")
 
 
-@pytest.mark.parametrize(
-    ("host", "directory", "owner"),
-    [
-        ("claude", ".claude", "plugin"),
-        ("codex", ".codex", "external"),
-        ("cursor", ".cursor", "plugin"),
-    ],
-)
+_HOST_FOLDERS = [
+    ("claude", ".claude", "plugin"),
+    ("codex", ".codex", "external"),
+    ("cursor", ".cursor", "plugin"),
+]
+
+
+@pytest.mark.parametrize(("host", "directory", "owner"), _HOST_FOLDERS)
 @pytest.mark.parametrize("squat_mode", [0o755, 0o777], ids=["0755", "0777"])
-def test_host_admission_never_writes_into_a_directory_another_account_made(
+def test_host_admission_never_reads_or_writes_a_folder_another_account_made(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     host: str,
@@ -270,7 +270,11 @@ def test_host_admission_never_writes_into_a_directory_another_account_made(
     owner: str,
     squat_mode: int,
 ) -> None:
-    """A sticky root-owned /app lets any account create .claude first; it is not the user's."""
+    """A sticky root-owned /app lets any account create .claude first; it is not the user's.
+
+    Status reports it ``unknown`` (``folder_not_owned``) rather than this user's admission,
+    and both grant and revoke refuse it before anything is written.
+    """
 
     from tests.builders.ownership import root_owned_project
 
@@ -278,13 +282,17 @@ def test_host_admission_never_writes_into_a_directory_another_account_made(
         HostAdmissionAction,
         HostAdmissionError,
         HostAdmissionReason,
-        apply_host_admission,
+        HostAdmissionState,
+        observe_host_admission,
         preview_host_admission,
     )
 
     project = root_owned_project(
         monkeypatch, tmp_path, mode=0o1777, other_owned={directory: squat_mode}
     )
+    observation = observe_host_admission(host, project, owner=owner)  # type: ignore[arg-type]
+    assert observation.state is HostAdmissionState.UNKNOWN
+    assert {entry.detail for entry in observation.entries} == {"folder_not_owned"}
     for action in (HostAdmissionAction.GRANT, HostAdmissionAction.REVOKE):
         with pytest.raises(HostAdmissionError) as refused:
             preview_host_admission(
@@ -295,28 +303,126 @@ def test_host_admission_never_writes_into_a_directory_another_account_made(
                 grant_permits=True,
                 owner=owner,  # type: ignore[arg-type]
             )
-        assert refused.value.reason is HostAdmissionReason.TARGET_UNSAFE
+        assert refused.value.reason is HostAdmissionReason.ENTRY_UNREADABLE
     assert list((project / directory).iterdir()) == []
 
-    # The write path refuses on its own too, whatever preview was accepted.
+
+@pytest.mark.parametrize("swap", ["symlink", "other_account_folder"])
+def test_host_admission_write_is_pinned_to_the_folder_it_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, swap: str
+) -> None:
+    """The folder is swapped after the fresh preview, just before the write: the descriptor-
+    pinned write refuses instead of following a link into the user's other project, or writing
+    into a folder the squatter owns."""
+
+    import json
+
+    from tests.builders.ownership import OTHER, SUPERUSER, present_owners
+
     import yoetz.adapters.integrations.host_admission as module
+    from yoetz.adapters.integrations.host_admission import (
+        HostAdmissionAction,
+        HostAdmissionError,
+        HostAdmissionReason,
+        apply_host_admission,
+        preview_host_admission,
+    )
 
-    def unchecked(_host: object, _root: Path) -> None:
-        return None
-
-    monkeypatch.setattr(module, "_require_owned_host_directories", unchecked)
+    project = tmp_path.resolve() / "app"
+    project.mkdir()
+    project.chmod(0o1777)
+    victim = tmp_path.resolve() / "other-project" / ".claude"
+    victim.mkdir(parents=True, mode=0o700)
+    original = json.dumps({"permissions": {"deny": ["Bash(curl:*)"]}}).encode()
+    (victim / "settings.local.json").write_bytes(original)
+    squat = tmp_path.resolve() / "squat"
+    squat.mkdir()
+    present_owners(monkeypatch, {project: SUPERUSER, squat: OTHER})
     preview = preview_host_admission(
-        host,  # type: ignore[arg-type]
+        "claude",
         project,
         HostAdmissionAction.GRANT,
         route_profile="policy",
         grant_permits=True,
-        owner=owner,  # type: ignore[arg-type]
+        owner="plugin",
     )
-    with pytest.raises(HostAdmissionError) as refused_write:
+    real_mutator = module._delete_or_write  # pyright: ignore[reportPrivateUsage]
+
+    def swapped_first(path: Path, payload: bytes, *, expected_digest: str | None) -> None:
+        if swap == "symlink":
+            (project / ".claude").symlink_to(victim, target_is_directory=True)
+        else:
+            squat.rename(project / ".claude")
+        real_mutator(path, payload, expected_digest=expected_digest)
+
+    monkeypatch.setattr(module, "_delete_or_write", swapped_first)
+    with pytest.raises(HostAdmissionError) as refused:
         apply_host_admission(preview, project, accepted_preview_digest=preview.preview_digest)
-    assert refused_write.value.reason is HostAdmissionReason.TARGET_UNSAFE
-    assert list((project / directory).iterdir()) == []
+
+    assert refused.value.reason is HostAdmissionReason.TARGET_UNSAFE
+    assert (victim / "settings.local.json").read_bytes() == original
+    assert sorted(path.name for path in victim.iterdir()) == ["settings.local.json"]
+    if swap == "other_account_folder":
+        assert list((project / ".claude").iterdir()) == []
+
+
+@pytest.mark.parametrize(("host", "directory", "owner"), _HOST_FOLDERS)
+def test_reverse_sweeps_stay_absent_beside_host_folders_root_committed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    host: str,
+    directory: str,
+    owner: str,
+) -> None:
+    """``COPY . /app`` with a committed root-owned .claude/.codex/.cursor: nothing to remove.
+
+    Before, every reverse transition (privacy ceremony, Codex disconnect, plugin removal)
+    reported write_failed and suggested a revoke that then failed target_unsafe.
+    """
+
+    from types import SimpleNamespace
+    from typing import cast
+
+    from tests.builders.ownership import SUPERUSER, present_owners, root_owned_project
+
+    from yoetz.adapters.integrations.host_admission import (
+        HostAdmissionAction,
+        HostAdmissionError,
+        HostAdmissionReason,
+        preview_host_admission,
+    )
+    from yoetz.cli.host_admission import admission_cleanup_preview, reverse_sweep
+    from yoetz.cli.privacy_setup import (
+        _reconcile_host_admission,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.domain.privacy import PrivacyPolicy
+
+    project = root_owned_project(monkeypatch, tmp_path, mode=0o755)
+    committed = project / directory
+    committed.mkdir(mode=0o755)
+    (committed / "settings.json").write_text("{}\n", encoding="utf-8")
+    committed.chmod(0o755)
+    present_owners(monkeypatch, {committed: SUPERUSER})
+
+    assert admission_cleanup_preview(host, project)["state"] == "absent"  # type: ignore[arg-type]
+    assert reverse_sweep(host, project)["outcome"] == "absent"  # type: ignore[arg-type]
+    policy = cast(
+        PrivacyPolicy, SimpleNamespace(network_egress_permitted=False, channel_policies=())
+    )
+    _reconcile_host_admission(policy, project)
+    assert "Could not remove" not in capsys.readouterr().out
+    # A grant would have to write into root's folder, which the user cannot: refused up front.
+    with pytest.raises(HostAdmissionError) as refused:
+        preview_host_admission(
+            host,  # type: ignore[arg-type]
+            project,
+            HostAdmissionAction.GRANT,
+            route_profile="policy",
+            grant_permits=True,
+            owner=owner,  # type: ignore[arg-type]
+        )
+    assert refused.value.reason is HostAdmissionReason.TARGET_UNSAFE
 
 
 @pytest.mark.parametrize("mode", [0o755, 0o1777], ids=["0755", "1777"])

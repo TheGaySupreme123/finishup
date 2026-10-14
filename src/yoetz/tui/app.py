@@ -1600,6 +1600,19 @@ class YoetzTui(App[int]):
         from yoetz.protocol.ids import IdKind, new_id
 
         request = new_id(IdKind.REQUEST)
+        if not disconnect:
+            from yoetz.cli.runtime_refusal import connect_refusal
+
+            refusal = await run_sync(connect_refusal)
+            if refusal is not None:
+                token, next_step = refusal
+                self.say(
+                    Level.BLOCKED,
+                    "Yoetz cannot run from this installation for this account",
+                    tuple(line.strip() for line in next_step.splitlines() if line.strip()),
+                    details=(f"reason={token}",),
+                )
+                return False
         try:
             selected = await run_sync(
                 lambda: select_installation(

@@ -238,7 +238,7 @@ def test_connect_preflight_names_a_runtime_another_account_installed(
     report = json.loads(capsys.readouterr().out)
     HostConnectionReport.model_validate(report)
     assert (report["outcome"], report["reason"]) == ("incomplete", "release_runtime_not_owned")
-    assert "Install Yoetz as this account" in report["next_step"]
+    assert "must belong to the account running Yoetz" in report["next_step"]
     assert "plan" not in report
 
 
@@ -288,3 +288,111 @@ def test_connect_preflight_refuses_but_disconnect_and_status_proceed(
         == 0
     )
     assert json.loads(capsys.readouterr().out)["outcome"] == "preview"
+
+
+# --- Every connect path refuses a runtime that cannot serve this account -------------------
+
+
+def _runtime_cannot_serve(monkeypatch: pytest.MonkeyPatch) -> None:
+    from yoetz.adapters import release_runtime
+
+    monkeypatch.setattr(
+        release_runtime,
+        "installed_runtime_refusal",
+        lambda: release_runtime.ReleaseRuntimeError("release_runtime_not_owned"),
+    )
+
+
+def test_bare_setup_run_registers_nothing_for_a_runtime_that_cannot_serve(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """``setup run`` without ``--host`` (the Codex wizard) used to register Codex anyway."""
+
+    import anyio
+
+    import yoetz.cli.setup as setup
+    from yoetz.adapters.integrations import host_discovery
+
+    _runtime_cannot_serve(monkeypatch)
+    monkeypatch.setattr(host_discovery, "discover_hosts", lambda: ())
+    from yoetz.ports.harness_mcp import HarnessBinary, HarnessId
+
+    executable = tmp_path / "codex"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    binary = HarnessBinary(HarnessId.CODEX, str(executable), "0.162.1", "untested")
+    monkeypatch.setattr(setup, "discover_codex_binaries", lambda: (binary,))
+
+    def no_registration(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("the Codex integration went past the runtime refusal")
+
+    monkeypatch.setattr(setup, "CodexPluginService", no_registration)
+    monkeypatch.setattr(setup, "resolve_codex_home_for_binary", no_registration)
+
+    async def unreachable(**_kwargs: object) -> dict[str, object]:
+        return {"reachable": False, "state": None, "vault_mode": None}
+
+    monkeypatch.setattr(setup, "_service_reachability", unreachable)
+
+    def marker_written(*_args: object) -> bool:
+        return True
+
+    monkeypatch.setattr(setup, "_write_setup_marker", marker_written)
+
+    async def run() -> int:
+        return await setup.run_setup_wizard(
+            non_interactive=True,
+            codex_path=None,
+            codex_home=tmp_path / "codex-home",
+            accept=True,
+            json_output=True,
+            project=tmp_path,
+        )
+
+    anyio.run(run)
+    report = json.loads(capsys.readouterr().out)
+    registration = report["registration"]
+    assert (registration["outcome"], registration["reason"]) == (
+        "failed",
+        "release_runtime_not_owned",
+    )
+    assert any(
+        "must belong to the account running Yoetz" in str(step) for step in report["next_steps"]
+    )
+
+
+def test_apply_selected_refuses_a_connect_but_never_a_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard every front end's connect passes through, the TUI's included."""
+
+    from types import SimpleNamespace
+
+    from yoetz.application.host_connection import ConnectionError
+
+    _runtime_cannot_serve(monkeypatch)
+    applied: list[str] = []
+
+    def apply(plan: object, **_kwargs: object) -> dict[str, object]:
+        applied.append(cast_action(plan))
+        return {}
+
+    def cast_action(plan: object) -> str:
+        return str(getattr(plan, "body")["action"])
+
+    monkeypatch.setattr(cli, "apply_connection", apply)
+    connect = SimpleNamespace(
+        body={"action": "connect", "requires_os_presence": False, "changes": []},
+        unchanged=True,
+        digest="sha256:" + "0" * 64,
+    )
+    with pytest.raises(ConnectionError) as refused:
+        cli.apply_selected(connect, lambda: connect)  # type: ignore[arg-type]
+    assert str(refused.value) == "release_runtime_refused"
+    disconnect = SimpleNamespace(
+        body={"action": "disconnect", "requires_os_presence": False, "changes": []},
+        unchanged=True,
+        digest="sha256:" + "0" * 64,
+    )
+    cli.apply_selected(disconnect, lambda: disconnect)  # type: ignore[arg-type]
+    assert applied == ["disconnect"]

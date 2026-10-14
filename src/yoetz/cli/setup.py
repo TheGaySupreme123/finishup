@@ -1283,6 +1283,23 @@ async def _codex_integration_step(
     silently rewrite a previously chosen route (#389 / ADR-018).
     """
 
+    from yoetz.cli.runtime_refusal import connect_refusal
+
+    refusal = connect_refusal()
+    if refusal is not None:
+        # Codex would launch this runtime for MCP and every hook, and each launch would be
+        # refused: register nothing, and say why and what to do (ADR-007, 2026-10-14).
+        token, next_step = refusal
+        return {
+            "outcome": "failed",
+            "reason": token,
+            "next_step": next_step,
+            "state": None,
+            "plugin": {"outcome": "skipped", "presence": None},
+            "plugin_activation": {"outcome": "skipped", "state": "unknown"},
+            "skill": {"outcome": "skipped", "presence": None},
+            "observation_consent": {"outcome": "absent", "workspace_commitment": None},
+        }
     plugin_service = CodexPluginService()
     project = _integration_target(workspace)
     selected_codex_home: Path | None = None

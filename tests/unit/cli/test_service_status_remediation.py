@@ -311,7 +311,7 @@ def test_service_status_names_a_runtime_another_account_installed(
     code, err = _status_stderr(monkeypatch, ControlError("service_unavailable", retryable=True))
     assert code == 20
     assert err.startswith("release_runtime_not_owned: ")
-    assert "Install Yoetz as this account" in err
+    assert "must belong to the account running Yoetz" in err
     assert "under your selected user supervisor" not in err
 
 

@@ -304,23 +304,47 @@ as `target_unsafe`.
    a sticky directory no other account can rename or remove the entries the user creates. Any
    other owner is refused, sticky or not, and so is a non-sticky root-owned directory others can
    write.
-2. **Only the root itself.** Every file and directory Yoetz writes or reads inside the project
-   (`.agents/…`, `.cursor/…`, `.claude/…`, `.codex/…`, captured files) is still checked against
-   the running user. A root-owned worktree is therefore not a Git repository Yoetz will read: Git
+2. **Only the root itself.** Every file and directory Yoetz writes inside the project
+   (`.agents/…`, `.cursor/…`, `.claude/…`, `.codex/…`) must still be the running user's own, and
+   captured files are checked against the running user. What Yoetz reads there as the user's own
+   configuration is the user's or root's, never another non-root account's (item 5). A root-owned
+   worktree is therefore not a Git repository Yoetz will read: Git
    refuses another owner's worktree ("dubious ownership") and Yoetz runs Git with no system or
    global configuration, so no `safe.directory` can be configured around it. Such a project keeps
    its plain-directory identity; subject-state and change capture report their existing
    limitations.
 3. **All hosts.** Workspace binding is shared by hooks, MCP and the CLI for Codex, Claude Code and
    Cursor, and the same rule replaces each host's project-root ownership check.
-4. **A root-owned checkout is the project.** An image built as root (`COPY . /app` or a
-   `git clone` into `/app`) keeps `/app/.git` root-owned. Workspace binding walks up to the
-   nearest `.git`, and a marker another account owned failed the locator closed, so such a project
-   was still refused (`workspace_locator_invalid`) despite item 1. A `.git` (directory or worktree
-   file) that root owns and no other account can write now ends the walk like the user's own: the
-   locator is that directory, judged by item 1, from the root or any directory beneath it, and is
-   used as a plain directory (item 2). A `.git` another non-root account owns, or one others can
-   write, still fails closed.
+4. **A root-owned checkout is the project, as a plain directory.** An image built as root
+   (`COPY . /app` or a `git clone` into `/app`) keeps `/app` and `/app/.git` root-owned. Workspace
+   binding walks up to the nearest `.git`, and a marker another account owned failed the locator
+   closed, so such a project was still refused (`workspace_locator_invalid`) despite item 1. A
+   `.git` that root owns and no other account can write now ends the walk like the user's own when
+   it is a directory or a regular file with a single link (a sticky shared directory lets anyone
+   plant a hard link to a root-owned file, which proves nothing about who made the checkout): the
+   locator is that directory, judged by item 1, from the root or any directory beneath it. A `.git`
+   another non-root account owns, one others can write, or a hard-linked root file still fails
+   closed.
+
+   The service then gives the workspace its repository identity, and Git (2.35.2 and later)
+   refuses a repository whose working tree or `.git` another account owns ("dubious ownership"),
+   so every handshake for such a workspace failed (`repository_identity_unavailable`, a
+   non-retryable `service_unavailable`). Two ways out were weighed. Passing
+   `-c safe.directory=<that path>` to Yoetz's Git would give the checkout its Git identity, but
+   would bring nothing else back: subject-state and change capture independently require the
+   working tree, `.git` and every captured entry to be the user's own and report `unsafe_root`
+   otherwise, so no Git-based capture would work; and it would switch off Git's own ownership guard
+   in exactly the case it exists for. Instead, when the nearest `.git` and the directory holding it
+   are each either the user's own (not writable by others) or root's (`.git` as above; the
+   directory as item 1 admits it), and root owns at least one of them, the service commits the
+   plain `directory` identity of the locator without running Git. That covers the root-built
+   checkout and the user's own `git init` inside a sticky root-owned `/app`, which Git refuses the
+   same way. Anything another non-root account owns is not matched and stays refused. What the user
+   gets: the service starts, hooks and MCP attach, and work is published and checked as for any
+   plain directory; change and subject-state capture report `unsafe_root` (the receipt says the
+   repository failed a safety check: another owner), so checks cover what the agent publishes, not
+   a Git diff. The identity differs from the one the same checkout would get if the user owned it,
+   so consent given under one does not carry to the other (it fails closed: grant again).
 5. **Every path in and out applies the same split.** The project root is judged by item 1 on every
    path that reaches it, not only on install: Cursor's project MCP status, preview and apply (so
    Cursor connect, disconnect and status), and Codex marketplace removal, which anchors its
@@ -329,16 +353,26 @@ as `target_unsafe`.
    Codex disconnect removed the Codex configuration and then failed on the project's
    `marketplace.json`, on every retry. Host admission (`.claude/settings.local.json`,
    `.codex/config.toml`, `.cursor/permissions.json` and `.cursor/cli.json`) now judges the project
-   root by item 1 (it checked no owner at all) and requires each existing host directory to be the
-   user's own and not writable by others, at preview and again immediately before each write or
-   removal; Claude Code's `--scope project` commands, which write `.claude/settings.json`, require
-   the same of `.claude` before any command runs. In a sticky root another account can create
-   `.claude`, `.codex` or `.cursor` first; Yoetz now refuses that directory (`target_unsafe`)
-   instead of writing into it, where its owner could replace what Yoetz wrote. The checks are by
-   path, not by descriptor: in a directory item 1 admits, no other account can rename or replace
-   an entry the user owns. One window stays outside what Yoetz can fence: when `.claude` is absent,
-   another account could create it in a sticky root between Yoetz's check and Claude Code's own
-   write of `settings.json`.
+   root by item 1 (it checked no owner at all) and splits its host folders by use:
+   - **Read** (status, previews, the reverse sweeps): a folder that is the user's own, or root's,
+     and that no other account can write is read normally, so a folder root committed to the image
+     reads as `absent` and a revoke with nothing to remove stays a no-op. A folder another non-root
+     account made, or one others can write (in a sticky root any account can create `.claude`
+     first), is reported `unknown` (`folder_not_owned`): status never reports admission another
+     account could have written, and both grant and revoke refuse it as `entry_unreadable`.
+   - **Write** (only the surfaces a preview would change): the folder must be the user's own and
+     not writable by others. Preview refuses anything else as `target_unsafe` (including a grant
+     into a folder root committed, which the user could not write anyway), and apply pins the
+     project root and the host folder by descriptor (no link followed), creates the folder
+     owner-only when absent, and stages, rechecks, renames and removes through that descriptor, so
+     swapping the folder for a link or another account's folder after the check cannot redirect
+     the write.
+
+   Claude Code's `--scope project` commands, which write `.claude/settings.json`, require `.claude`
+   to be the user's own and not writable by others before any command runs (preview, which apply
+   repeats). One window stays outside what Yoetz can fence: when `.claude` is absent, another
+   account could create it in a sticky root between Yoetz's check and Claude Code's own write;
+   root can pre-create `.claude` for the user to close it.
 
 Scope of the sticky arm, recorded rather than changed: item 1 admits every root-owned sticky
 directory, which includes the shared temporary directories (`/tmp`, `/var/tmp`, `/dev/shm`, and on
@@ -363,33 +397,45 @@ creates that sibling for the user (below). Both are now refused by name instead 
    `release_runtime_not_owned` instead of the generic "could not be verified" (an existing
    directory) or `release_runtime_unavailable: permission_denied` (none yet). The ownership rule
    is unchanged: generations stay the running user's own, 0700. Terminal commands name the
-   directory and the repair (install Yoetz as the account that runs it); hooks keep the
-   non-blocking exit 20 with no stdout decision and print the token without local paths. A
-   spawned `service run` records the token as its startup failure, the CLI's
-   `service_unavailable` and `setup` probes report it read-only (they create nothing), `setup run`
-   refuses to connect a host to such a runtime with the token as its reason, and
-   `upgrade --prune-runtimes` names it. A directory the user owns that is read-only, and every
-   other condition, keeps its existing report.
+   directory and the repair that fits: when the installation is the user's own, remove a
+   directory another account made (for example with sudo) and Yoetz recreates it, or have the
+   parent's owner create it for the user; when the installation is another account's, install
+   Yoetz as the user, or have the installation's owner create the directory for that one user.
+   Hooks keep the non-blocking exit 20 with no stdout decision and print the token without local
+   paths. A spawned `service run` records the token as its startup failure, the CLI's
+   `service_unavailable` and `setup` probes report it read-only (they create nothing), and
+   `upgrade --prune-runtimes` names it. Every connect path refuses to connect a host to such a
+   runtime (or one another account can write), before writing any registration: `setup run --host`,
+   bare `setup run` (the Codex wizard, with or without `--codex-path`), the full-screen interface's
+   first run and `/connect` (both its host connection and its Codex preview), and, as a last
+   guard for any front end, the shared apply of a connection. Each reports the token as its reason
+   and the refusal text as the next step; disconnect and status stay open. A directory the user
+   owns that is read-only, and every other condition, keeps its existing report.
 
 What the rule already admits, and the 2026-10-14 container run confirmed as `nobody`: root may
 create `.<prefix>-releases` for one non-root account (`install -d -m 0700 -o <user>` before anyone
 runs Yoetz) and leave the runtime root-owned; that account then builds and serves its own
 generations from root's files, which no other account can write. Such a runtime serves only that
 account (root is then refused by the same rule) and cannot carry a pin, because a pin must be the
-running user's own; a pinned instance needs a runtime the user owns. A separate per-user location
-for generations, so one root-installed runtime could serve every account, is not part of this
-change.
+running user's own; a pinned instance needs a runtime the user owns. Root upgrades it with its
+package manager (`uv tool upgrade`; `yoetz upgrade --accept` as root is refused by the same rule),
+and the user removes unused generations with `yoetz upgrade --prune-runtimes`. A separate per-user
+location for generations, so one root-installed runtime could serve every account, is not part of
+this change.
 
 Verification: synthetic-stat unit tests of the rule; per-host tests in which the test runner's
 uid plays root and the process another account; a Boat container run of the full benchmark
 bootstrap and an MCP `start`/`publish_work`/`receipt` lifecycle as `nobody` in a root-owned
 `/app` (risk-scorer-replay) and as `agent` in a sticky root-owned `/app` (rs-archive-clone). For
-items 4 and 5 (found by an independent review of the change): tests through each public path (the
+items 4, 5 and 7 (found by two independent reviews of the change): tests through each public path (the
 workspace locators and setup's workspace selection; Cursor project MCP install and remove and the
 Cursor connect, disconnect and reconnect composition; Codex install, activation and removal; host
-admission grant and revoke; Claude Code connect and remove), in a 0755 and a sticky root-owned
-project and against a host directory another account created, with ownership simulated by
-rewriting the owner the kernel reports, so they run on non-root runners too. For items 6 and 7:
+admission grant, revoke, status and the reverse sweeps, including the privacy ceremony's; Claude
+Code connect and remove; the repository identity the service handshake resolves, with a real Git
+checkout owned by another uid; every connect path for a runtime that cannot serve), in a 0755 and
+a sticky root-owned project and against a host folder another account created or swapped after
+the check, with ownership simulated by rewriting the owner the kernel reports where a real chown
+needs root, so most run on non-root runners too. For items 6 and 7:
 unit tests in which another effective uid plays the non-root user against files the runner owns, and a Linux run as `nobody` against a root-owned runtime (`mcp serve`,
 `service run`, a hook, `service status` and `instance create --bind-runtime`; the previous release
 printed `permission_denied`, "could not be verified" and `internal_error`), including the

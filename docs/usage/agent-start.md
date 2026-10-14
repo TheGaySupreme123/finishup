@@ -112,8 +112,9 @@ a program others can replace. Ubuntu's and Fedora's default umask `0002` is fine
 leaves writable is the user's own. If the service or MCP reports `release_runtime_group_writable`
 or `release_runtime_world_writable`, show the user the `chmod -R go-w …` line that `yoetz service
 run` prints; it changes permissions on their files, so it is theirs to run. If it reports
-`release_runtime_not_owned`, another account (often root, in a container) installed Yoetz:
-install it as the user who runs the agent instead. Do not connect an agent from a one-off
+`release_runtime_not_owned`, the directory Yoetz runs from belongs to another account (often
+root installed Yoetz in a container): show the user the directory and repair that `yoetz service
+run` prints; usually that means installing Yoetz as the user who runs the agent. Do not connect an agent from a one-off
 `uvx yoetz` run either; it lives in `uv`'s cache and a later `uv cache clean` would break the
 connection. If the install fails, read the `uv` error: the only two blocking configurations are
 `python-downloads = "never"` and `python-preference = "only-system"` without a 3.14 present, and

@@ -292,6 +292,25 @@ def superuser_owned(facts: os.stat_result) -> bool:
     return facts.st_uid == _SUPERUSER_UID
 
 
+def superuser_checkout_marker(facts: os.stat_result) -> bool:
+    """Whether a ``.git`` marker that is not the running user's is root's checkout marker.
+
+    True for a non-root user when the superuser owns the marker, no other account can write it,
+    and it is a directory or a regular file with a single link. A directory cannot be
+    hard-linked; a regular file with more than one link may be a hard link another account made
+    to a root-owned file elsewhere (in a sticky shared directory anyone can create entries), so
+    it proves nothing about who put it there.
+    """
+
+    if not superuser_owned(facts) or writable_by_others(facts):
+        return False
+    if hasattr(os, "geteuid") and facts.st_uid == os.geteuid():
+        return False
+    if stat.S_ISDIR(facts.st_mode):
+        return True
+    return stat.S_ISREG(facts.st_mode) and facts.st_nlink == 1
+
+
 def project_root_admitted(facts: os.stat_result) -> bool:
     """Whether a project root directory's owner and mode admit it as the running user's project.
 

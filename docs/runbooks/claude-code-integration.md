@@ -1830,8 +1830,8 @@ and setup code; no host-specific change). A runtime root installed and a non-roo
 `yoetz mcp serve`, `service run` and every hook with `release_runtime_not_owned` (exit 20) instead
 of `release_runtime_unavailable: permission_denied` or "could not be verified". `/mcp` shows the server as failed and `claude --debug` shows its stderr; its hooks exit 20 with no stdout, so they make no allow or block decision and Claude Code shows a non-blocking hook error. Terminal
 commands print the `.<prefix>-releases` directory the user must own; hook stderr carries the token
-without local paths. `setup run` refuses to connect Claude Code to such a runtime with that reason and
-leaves status and disconnect available. `yoetz instance create --bind-runtime` on such a runtime
+without local paths. Every connect path refuses to connect Claude Code to such a runtime (or one another
+account can write) with that reason and leaves status and disconnect available. `yoetz instance create --bind-runtime` on such a runtime
 is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succeeds (ADR-028,
 2026-10-14 amendment). Install Yoetz as the user, or see the Linux runbook for the one-user
 `.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
@@ -1845,12 +1845,25 @@ workspace binding (same path as every host); (2) Claude-specific: every plugin m
 (`target_unsafe`) before any command runs; an absent `.claude` is left for Claude Code to create
 (in a sticky root another account could create it in the instant before Claude Code does, which
 Yoetz cannot fence; root can pre-create `.claude` for the user to close it);
-(3) host admission refuses such a `.claude` at preview and before writing
-`.claude/settings.local.json` (same path as every host). Not changed: Claude Code's executable must
+(3) host admission never writes `.claude/settings.local.json` into such a `.claude` (same path as
+every host; refined in round 2 below). Not changed: Claude Code's executable must
 still be the user's own, so a root-installed `claude` is refused (`target_unsafe`) for a non-root
 user, unlike the Codex launcher, which accepts a root-owned executable. Covered by tests through the
 public preview/apply functions (connect and remove in 0755 and sticky root-owned projects, and a
 squatted `.claude`) with simulated ownership.
+
+**Review fixes, round 2.** Decisions for Claude Code (same path as every host unless named): (1) a
+checkout root made (`/app` and `/app/.git` root-owned), or the user's own `git init` in a sticky
+root-owned `/app`, now passes the service handshake: the service commits the plain directory
+identity without running Git (Git refuses another owner's checkout), so hooks and MCP attach;
+Git-based change capture reports `unsafe_root`. A root-owned `.git` file with more than one link
+is not trusted. (2) A `.claude` root committed to the image is read normally: admission status is
+`absent` and the reverse sweeps (Claude plugin removal and the privacy ceremony) report nothing to remove instead of `write_failed`; a
+grant into it is refused `target_unsafe`. A `.claude` another account made, or one others can
+write, is `unknown` (`folder_not_owned`) in status and refused by grant and revoke; writes to
+`.claude/settings.local.json` go through the host folder pinned by descriptor, never a link swapped in after the
+check. (3) `setup run --host claude` and the full-screen interface's `/connect` refuse before any `claude plugin` command runs. Covered by tests through the public paths with simulated ownership, and the
+repository identity with a real Git checkout owned by another uid.
 
 ## Response and receipt timeout recovery
 
