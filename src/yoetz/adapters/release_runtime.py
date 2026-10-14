@@ -151,6 +151,34 @@ def _release_key(prefix: Path) -> str:
     return digest.hexdigest()
 
 
+def _refuse_foreign_interpreter_chain(link: Path) -> None:
+    """Whoever can write the interpreter or its directories can swap it between runs."""
+
+    target = link.resolve(strict=True)
+    for item in (target, target.parent, target.parent.parent):
+        _refuse_foreign_write(item.stat(), area="interpreter")
+
+
+def _revalidate_interpreter_links(generation: Path) -> None:
+    """Re-check the external interpreter a retained generation links to, at every reuse.
+
+    A generation copies the environment but links its base interpreter, which stays outside the
+    sealed tree. Group membership or modes can change after the copy was made, so the same
+    foreign-write rule is applied again before any process enters the generation.
+    """
+
+    try:
+        entries = list((generation / "bin").iterdir())
+    except OSError as error:
+        raise ReleaseRuntimeIOError(error, "snapshot") from None
+    for entry in entries:
+        if entry.is_symlink():
+            try:
+                _refuse_foreign_interpreter_chain(entry)
+            except OSError as error:
+                raise ReleaseRuntimeIOError(error, "snapshot") from None
+
+
 def _members(prefix: Path) -> tuple[tuple[Path, tuple[int, int, int, int]], ...]:
     """Enumerate only the environment, refusing mutable external package links."""
 
@@ -177,10 +205,7 @@ def _members(prefix: Path) -> tuple[tuple[Path, tuple[int, int, int, int]], ...]
                 raise ReleaseRuntimeError("release_runtime_external_link")
             info = path.stat()
             area = "interpreter"
-            # Whoever can write the interpreter's directories can swap the file between runs.
-            target = path.resolve(strict=True)
-            for directory in (target.parent, target.parent.parent):
-                _refuse_foreign_write(directory.stat(), area=area)
+            _refuse_foreign_interpreter_chain(path)
         _refuse_foreign_write(info, area=area)
         if stat.S_ISDIR(info.st_mode):
             pending.extend(path.iterdir())
@@ -242,6 +267,7 @@ def _prepare_locked(prefix: Path, root: Path) -> Path:
         marker = _marker(target)
         if marker is None or marker["origin"] != str(prefix):
             raise ReleaseRuntimeError("release_runtime_invalid")
+        _revalidate_interpreter_links(target)
         return target
     before = _members(prefix)
     temporary = Path(tempfile.mkdtemp(prefix=".creating-", dir=root))
@@ -466,6 +492,9 @@ def enter_release_runtime(arguments: list[str]) -> None:
     prefix = Path(sys.prefix)
     marker = _marker(prefix)
     if marker is not None:
+        # A process started inside a generation (a service spawned by a retained bridge) hands
+        # off here; the linked interpreter is re-checked exactly as on reuse.
+        _revalidate_interpreter_links(prefix)
         if _process_lease is None:
             # The launching process already holds the shared lease across exec. Opening another
             # lease also protects services subsequently spawned from this generation.

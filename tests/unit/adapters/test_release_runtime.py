@@ -390,3 +390,55 @@ def test_installed_runtime_probe_ignores_other_refusals(
     (prefix / "lib/external.pth").write_text(str(tmp_path))
     (prefix / "lib/external.pth").chmod(0o644)
     assert runtimes.installed_runtime_refusal() is None
+
+
+@pytest.mark.parametrize("change", ["group_shared", "world_writable", "directory_shared"])
+def test_reused_generation_revalidates_its_interpreter(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, change: str
+) -> None:
+    """A generation made while the interpreter was private is not reused once it is not."""
+
+    _group_is_private(monkeypatch, True)
+    base = tmp_path / "cpython"
+    (base / "bin").mkdir(parents=True)
+    binary = base / "bin/python3.14"
+    binary.write_bytes(b"interpreter")
+    for path in (base, base / "bin", binary):
+        path.chmod(0o775)
+    (prefix / "bin/python").unlink()
+    (prefix / "bin/python").symlink_to(binary)
+    target = runtimes.prepare_release_runtime(prefix)
+    assert runtimes.prepare_release_runtime(prefix) == target
+    if change == "group_shared":
+        # Bob joins the interpreter's group after the generation was made.
+        _group_is_private(monkeypatch, False)
+        token = "release_runtime_group_writable"
+    elif change == "world_writable":
+        binary.chmod(0o777)
+        token = "release_runtime_world_writable"
+    else:
+        _group_is_private(monkeypatch, False)
+        binary.chmod(0o755)
+        token = "release_runtime_group_writable"
+    with pytest.raises(runtimes.ReleaseRuntimeError, match=token) as error:
+        runtimes.prepare_release_runtime(prefix)
+    assert error.value.area == "interpreter"
+
+
+def test_process_inside_a_generation_revalidates_before_serving(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _group_is_private(monkeypatch, True)
+    base = tmp_path / "cpython"
+    (base / "bin").mkdir(parents=True)
+    binary = base / "bin/python3.14"
+    binary.write_bytes(b"interpreter")
+    for path in (base, base / "bin", binary):
+        path.chmod(0o755)
+    (prefix / "bin/python").unlink()
+    (prefix / "bin/python").symlink_to(binary)
+    target = runtimes.prepare_release_runtime(prefix)
+    monkeypatch.setattr(runtimes.sys, "prefix", str(target))
+    binary.chmod(0o757)
+    with pytest.raises(runtimes.ReleaseRuntimeError, match="release_runtime_world_writable"):
+        runtimes.enter_release_runtime([])

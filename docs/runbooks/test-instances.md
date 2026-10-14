@@ -47,7 +47,9 @@ What happens, in order:
 3. `uv venv` plus `uv pip install <wheel>` creates `<base>/<tag>/runtime/`, a runtime holding
    only that wheel. Every uv command runs under umask 022 and the script then clears group and
    other write on the runtime it created (uv may hard-link files from a cache written under a
-   looser umask), so an operator with Ubuntu's umask 0002 gets a runtime Yoetz accepts. A
+   looser umask), so an operator with Ubuntu's umask 0002 gets a runtime Yoetz accepts. Because
+   such files are hard links, clearing their group write also changes the matching files in
+   uv's cache (for example 0664 to 0644); that only tightens the operator's own cache. A
    previously downloaded uv-managed interpreter that a shared group can write is not changed;
    the instance's service then names `release_runtime_group_writable` and its repair.
 4. The snapshot's own launcher runs `yoetz instance create --root <base>/<tag>/state --lifecycle

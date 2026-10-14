@@ -144,8 +144,13 @@ Ubuntu, Debian, Fedora and RHEL create normal accounts with a user-private group
 defaults. Every file such an account creates, including `uv tool install`'s environment and uv's
 managed interpreter under `~/.local/share/uv/python`, is group-writable by a group of one.
 Yoetz treats that group write as owner-only (ADR-007, 2026-10-14 amendment): the group must be
-the owner's primary group, named like the owner, with no other member and no other enumerated
-account using it as its primary group. World write, and group write through any other group, are
+the owner's primary group, named like the owner, with no other member and no other account using
+it as its primary group, as read from `/etc/passwd`, `/etc/group` and (when readable)
+`/etc/gshadow`. That is only trusted when `/etc/nsswitch.conf` serves `passwd` and `group` from
+`files`/`systemd` alone (the Ubuntu, Debian and Fedora defaults) with no userdb records beyond
+dynamic users. On machines joined to a directory service (`sss`, `ldap`, `nis`, `winbind`),
+membership cannot be proved complete, so group write is treated as shared: install with
+`umask 022`, or run the printed `chmod -R go-w`. World write, and group write through any other group, are
 refused everywhere Yoetz checks who can write (installed runtime, launcher, host configuration
 roots, workspace and Git capture).
 
@@ -167,10 +172,10 @@ Evidence (2026-10-14, Boat Ubuntu 24.04, fresh normal account, `umask` 0002 from
 `mcp serve` (initialize, tools/list), Codex, Claude Code and Cursor hooks (exit 0), `state capture`
 on a 775 repository, and `setup run` previews for Codex, Claude Code (user-owned executable) and
 Cursor Agent CLI all succeeded. The previous release refused every one of them. Moving the
-runtime to a group shared with a second account produced the token on each surface. Not covered:
-directory-service (LDAP/SSSD) accounts that are not enumerated, and a root-owned Claude Code
-executable, which the separate executable-ownership rule refuses as `target_unsafe` regardless
-of umask.
+runtime to a group shared with a second account produced the token on each surface. Not covered: a
+root-owned Claude Code executable, which the separate executable-ownership rule refuses as
+`target_unsafe` regardless of umask. The interpreter a retained generation links to is
+re-checked on every reuse, so a later group change is refused then too.
 
 ## Approved-check sandbox
 

@@ -56,7 +56,9 @@ Yoetz refuses to run from files another account could change, because your agent
 launch a program someone else can replace. A file only you can write is fine. A file your *own*
 group can write is also fine when that group is yours alone: Ubuntu, Debian, Fedora and RHEL give
 each account a private group of the same name and a umask of `0002`, so an ordinary `uv tool
-install` there works as is. A file writable by everyone, or by a group someone else belongs to (a
+install` there works as is (on a machine whose accounts come from a directory service such as
+LDAP or SSSD, Yoetz cannot prove the group is yours alone and treats it as shared; use the
+`umask 022` below). A file writable by everyone, or by a group someone else belongs to (a
 shared `venv`, Homebrew's `/opt/homebrew`, or a `users` group), is refused. The service, the agent
 connection (MCP) and the hooks then stop with `release_runtime_group_writable` or
 `release_runtime_world_writable`, and `yoetz service run` in a terminal prints the exact repair

@@ -192,18 +192,28 @@ host configuration roots (`target_unsafe`).
 1. **One rule.** An object is unsafe when an account other than its owner can write it. World
    write always qualifies. Group write qualifies unless the group is the owner's user-private
    group: the owner's primary group, named like the owner, with no supplementary member other
-   than the owner and no other enumerated account using it as its primary group. A missing
-   account or group, a name mismatch, or an account database that cannot be enumerated counts as
-   shared. Accounts a directory service does not enumerate cannot be seen; giving one of them
-   another user's private group as its primary group is outside the rule. Answers are cached for
-   five seconds so a long-lived service notices membership changes. `yoetz.config.foreign_write`
+   than the owner and no other account using it as its primary group. Completeness must be
+   provable, so the answer is read from `/etc/passwd` and `/etc/group` themselves (and
+   `/etc/gshadow` when readable), and only when `/etc/nsswitch.conf` serves `passwd`, `group`
+   (and `initgroups` when named) exclusively from `files` and `systemd`, with no userdb service
+   beyond dynamic users and no userdb drop-in record. A directory service (SSSD, LDAP, NIS,
+   winbind) may not enumerate accounts and may report a populated group as empty, so on such a
+   machine, on macOS (no `nsswitch.conf`) and with any NIS compat line, duplicate gid, name
+   mismatch or unreadable file, group write counts as shared: those users install with
+   `umask 022` or run the printed `chmod`. `/etc/gshadow` is unreadable to ordinary accounts; the
+   account tools keep its member list in step with `/etc/group`, and a group password set with
+   `gpasswd` is outside the rule. Answers are cached for five seconds so a long-lived service
+   notices membership changes. `yoetz.config.foreign_write`
    owns the rule; every former `mode & 0o022` owner-write check uses it (release runtime, runtime
    pin, workspace binding, structural and check-time Git capture, Codex launcher, and the Codex,
    Claude Code, Cursor and portable plugin targets). Owner-only `0o077` checks on material Yoetz
    creates itself are unchanged.
 2. **The runtime check covers what it follows.** The retained-runtime walk also checks the
    environment prefix itself and, for a `bin/python` link, the resolved interpreter, its
-   directory and that directory's parent. A refusal is `release_runtime_group_writable` or
+   directory and that directory's parent. Because a generation links that interpreter rather than
+   copying it, the interpreter check is repeated every time an existing generation is reused and
+   when a process inside a generation starts (a later group change or modification is refused
+   then, not only at creation). A refusal is `release_runtime_group_writable` or
    `release_runtime_world_writable`, never the generic message. Terminal commands (`service
    run`, `mcp serve`, `upgrade`) print the exact repair, `chmod -R go-w <environment>
    <interpreter tree when owned by this account>`, and suggest `umask 022` before reinstalling.

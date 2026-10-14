@@ -417,8 +417,9 @@ reverse-chronological released versions.
   release runtime the service, the agent connection (MCP) and every hook refused to start on
   Codex, Claude Code and Cursor with only "The retained runtime could not be verified". The same rule refused such
   users' repositories (`unsafe_root`), Codex launchers and host settings folders
-  (`target_unsafe`). Group write now counts as owner-only when the group is the owner's own
-  private group with no other member; world write, or group write through a group someone else
+  (`target_unsafe`). Group write now counts as owner-only when the local account files prove the
+  group is the owner's own private group with no other member (machines whose accounts come
+  from a directory service such as LDAP or SSSD still need `umask 022`); world write, or group write through a group someone else
   is in, is still refused, now as `release_runtime_group_writable` or
   `release_runtime_world_writable` with the exact `chmod -R go-w …` repair on `yoetz service run`,
   `yoetz mcp serve` and `yoetz upgrade`, on `yoetz service status` and other commands that find
