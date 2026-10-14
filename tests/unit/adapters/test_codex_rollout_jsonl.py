@@ -790,3 +790,28 @@ def test_compatible_hook_prompt_is_bookkeeping_without_promoting_an_exact_cell()
     )
     assert exact.statuses[1] is ImportLineStatus.UNKNOWN
     assert exact.reason_codes[1] == "unknown_item_type"
+
+
+def test_native_stream_parser_does_not_load_ledger_mapping_or_public_request_models() -> None:
+    import subprocess
+    import sys
+
+    probe = r"""
+import sys
+import pickle
+from yoetz.adapters.importers.codex_jsonl import CodexCapabilityProfile
+from yoetz.adapters.importers.codex_rollout_jsonl import parse_codex_rollout_jsonl, profile_for_rollout_version
+from yoetz.adapters.integrations.codex_session_stream import should_trigger_stream_reconcile
+from yoetz.ports.importer import ImportLineStatus
+assert pickle.loads(b'cyoetz.adapters.importers.codex_jsonl\nCodexCapabilityProfile\n.') is CodexCapabilityProfile
+assert pickle.loads(b'cyoetz.ports.importer\nImportLineStatus\n.') is ImportLineStatus
+assert parse_codex_rollout_jsonl(b'not-json\n', profile_for_rollout_version('0.148.0'), require_admission=False).statuses == (ImportLineStatus.MALFORMED,)
+assert should_trigger_stream_reconcile('PostToolUse', last_reconcile_mono=None)
+assert 'yoetz.domain.events' not in sys.modules
+assert 'yoetz.ports.ledger' not in sys.modules
+assert 'yoetz.protocol.models' not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", probe], capture_output=True, check=False
+    )
+    assert completed.returncode == 0, completed.stderr.decode()

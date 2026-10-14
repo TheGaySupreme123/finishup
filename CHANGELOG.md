@@ -8,6 +8,9 @@ reverse-chronological released versions.
 
 ### Added
 
+- Codex stream parsing defers ledger mapping imports until needed, reducing cold hook startup
+  work while preserving public import names, parser profiles and wire bytes.
+
 - Provider packet supply markers now have a packaged row schema and golden vectors. A follow-up
   round whose requested excerpts are entirely withheld reports them unavailable with empty
   supply refs; room cuts still report pending. The dispatch remains counted.

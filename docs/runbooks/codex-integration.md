@@ -997,6 +997,22 @@ run `yoetz observe drain --workspace . --json` after the agent stops and require
 `reasons` (a check barrier's `operation_pending` clears when the check completes), and
 `pass_limit` means a producer is still adding rows.
 
+### Cold parser startup (N5 robustness)
+
+The native stream parser imports its structural values and exact profiles without loading ledger
+publication models. `yoetz.adapters.importers.codex_jsonl` and `yoetz.ports.importer` retain their
+public names and lazily load mapping/publication implementations when those names are requested.
+The original class lookup paths remain usable for older serialized values. No profile, parser
+rule, stream-reconciliation cadence, capture scope, privacy decision or wire byte changes.
+
+The cold-hook process regression still enforces 1.5 seconds including startup and verifies that
+the realistic observation store changed. Its temporary home and workspace are mode 0700, so a
+shared-group umask does not turn the measurement into a workspace-safety refusal. A separate
+fresh-process regression parses a malformed rollout and checks that ledger events, ledger ports
+and public request models were not loaded. Parser and mapper suites still exercise both paths.
+The measured profiled pass fell from 1.39 seconds to 0.67 seconds on the development Mac; these
+are individual observations, not a latency guarantee for every host or installed package path.
+
 ### Legacy synchronous-hook latency
 
 Codex versions older than `0.148.0-alpha.6` use a synchronous `hooks spool` command for
