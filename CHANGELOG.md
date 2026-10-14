@@ -64,6 +64,52 @@ unreleased above reverse-chronological released versions.
   with, and expires within 15 minutes as usual.
 ### Fixed
 
+- A non-root user can now use FinishUP in a project directory that root owns, as container images
+  commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
+  and MCP tools accept such a project root when no other account can write it, or when it is a
+  sticky directory, for Codex, Claude Code and Cursor alike. Before, `setup run` failed with
+  `internal_error` and host connections with `target_unsafe`. Files FinishUP writes inside the
+  project must still belong to the user, and a root-owned Git worktree is used as a plain
+  directory, because Git itself refuses another owner's worktree. Claude Code's own executable
+  must still be installed as the user who runs it: a root-installed `claude` is refused
+  (`target_unsafe`), whereas Codex accepts a root-owned launcher.
+
+- In such a root-owned project, a checkout root made (`/app` and `/app/.git` owned by root, or
+  your own `git init` in a sticky root-owned `/app`) now works as a plain directory instead of
+  being refused at every service connection: the service starts, hooks and MCP attach from the
+  checkout's top or any folder beneath it (one identity for all of them), and work is checked as
+  published. Git-based change capture does not read it, because Git refuses another owner's
+  checkout; the receipt says "the repository failed a safety check (… another owner …)" rather
+  than "not a Git repository". Cursor's project registration status, connect and disconnect work
+  in a root-owned project, and a Codex disconnect removes the project's `marketplace.json` instead
+  of failing half-way on every retry. A `.claude`, `.codex` or `.cursor` folder root committed to
+  the image no longer makes revoking auto-review admission, a Codex disconnect or the privacy
+  ceremony report a failure; Claude Code's plugin setup and Cursor's project registration still
+  refuse such a folder (`target_unsafe`) until root makes it the user's. FinishUP also no longer reads or writes host settings in such a folder
+  that another account created (possible in a shared, sticky project folder such as `/app` with
+  mode 1777): admission status reports it as unknown, auto-review admission and Claude Code's
+  project-scope setup refuse it, and writes go through the folder FinishUP checked, never a link
+  swapped in after.
+
+- `finishup instance create --bind-runtime` on a FinishUP runtime the current user cannot write (for
+  example one root installed in a container image) now fails with `runtime_pin_unwritable` and
+  removes what it created. Before, it reported `internal_error` and left a half-created instance
+  behind, so the retry after fixing permissions reported `instance_exists`.
+
+- A FinishUP installation whose private runtime directory (`.<name>-releases`, next to the
+  installation) belongs to another account is now refused by name, `release_runtime_not_owned`,
+  with that directory and the repair that fits: install FinishUP as the account that runs it (or have
+  root prepare that directory for that one user), or, when the installation is yours and the
+  directory was made by someone else (for example with sudo), remove it and FinishUP recreates it.
+  Before, the service, MCP connection and hooks stopped with
+  `release_runtime_unavailable: permission_denied` or "could not be verified", and setup connected
+  agents to a runtime that could not start. Every way of connecting an agent (`setup run`, with or
+  without `--host`, the full-screen interface's first run and `/connect`, the menu,
+  `finishup integrate … install` for Codex MCP, Claude Code and Cursor, and
+  `finishup recommend accept codex-plugin-activation`) now refuses that connection,
+  and one another account can write, with the same reason; disconnect, removal and status still
+  work.
+
 - The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
   in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find
   bubblewrap on PATH" warning is admitted the same way as its user-namespace warning: the reviewer

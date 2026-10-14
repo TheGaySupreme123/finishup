@@ -50,6 +50,7 @@ from finishup.adapters.git_version import (
     git_version,
     git_version_supported,
 )
+from finishup.adapters.repository_identity import root_owned_checkout
 from finishup.config.foreign_write import owner_private_group
 from finishup.observability.logging import record_unexpected_exception_without_raising
 from finishup.ports.change_capture import (
@@ -2184,6 +2185,15 @@ class GitChangeCaptureAdapter:
         if not git_version_supported(git_version(executable)):
             # Named rather than left to fail as ``git_failed`` on the first option it lacks.
             raise ChangeCaptureUnavailable(GIT_VERSION_UNSUPPORTED)
+        try:
+            resolved = Path(workspace).resolve(strict=True)
+        except OSError, RuntimeError:
+            resolved = None
+        if resolved is not None and root_owned_checkout(resolved) is not None:
+            # A checkout root owns, served to a non-root user: Git refuses it ("dubious
+            # ownership") and would read as not_git; the capture's own owner fence is the true
+            # reason, as the subject-state capture already reports (ADR-007, 2026-10-14).
+            raise ChangeCaptureUnavailable("unsafe_root")
         try:
             root = discover_workspace_root(Path(workspace), timeout_seconds=_remaining(deadline))
             handle = open_local_workspace(root, timeout_seconds=_remaining(deadline))

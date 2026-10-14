@@ -576,6 +576,15 @@ def recommend_accept(
     if recommendation_id == "codex-plugin-activation" and codex_home is None:
         typer.echo("recommendation_error: activation_codex_home_required", err=True)
         raise typer.Exit(2)
+    if recommendation_id == "codex-plugin-activation":
+        from finishup.cli.runtime_refusal import connect_refusal
+
+        refusal = connect_refusal()
+        if refusal is not None:
+            # Activation enables the plugin and its hooks, and every launch of this runtime would
+            # be refused: connect nothing. `recommend list` and `decline` never ask.
+            typer.echo(f"{refusal[0]}: {refusal[1]}", err=True)
+            raise typer.Exit(20)
     activation_decision_recorded = False
     try:
 

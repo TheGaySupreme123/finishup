@@ -389,6 +389,50 @@ def test_plain_directory_is_not_git(tmp_path: Path) -> None:
     assert caught.value.reason == "not_git"
 
 
+@pytest.mark.parametrize("start", ["top", "subdirectory"])
+def test_a_checkout_root_owns_is_refused_as_another_owners_not_as_not_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, start: str
+) -> None:
+    """A root-built /app served to a non-root user: Git refuses it ("dubious ownership"), which
+    read as ``not_git`` ("not a Git repository"). It is another owner's checkout: ``unsafe_root``.
+    Simulated ownership, so it runs on any runner; Git itself is never consulted."""
+
+    from tests.builders.ownership import SUPERUSER, present_owners
+
+    repository = _repository(tmp_path)
+    (repository / "src").mkdir()
+    present_owners(monkeypatch, {repository: SUPERUSER, repository / ".git": SUPERUSER})
+    workspace = repository if start == "top" else repository / "src"
+
+    with pytest.raises(ChangeCaptureUnavailable) as caught:
+        GitChangeCaptureAdapter().capture(os.fspath(workspace), None)
+    assert caught.value.reason == "unsafe_root"
+
+
+@pytest.mark.skipif(
+    not hasattr(os, "geteuid") or os.geteuid() != 0, reason="a real chown needs root"
+)
+def test_a_real_checkout_root_owns_reports_unsafe_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With real ownership Git itself refuses the checkout, which used to surface as not_git."""
+
+    from finishup.config import foreign_write
+
+    played_root = 41006
+    monkeypatch.setattr(foreign_write, "_SUPERUSER_UID", played_root)
+    repository = _repository(tmp_path)
+    for directory, _subdirectories, files in os.walk(repository):
+        os.chown(directory, played_root, played_root)
+        for name in files:
+            os.chown(os.path.join(directory, name), played_root, played_root)
+    repository.chmod(0o755)
+
+    with pytest.raises(ChangeCaptureUnavailable) as caught:
+        GitChangeCaptureAdapter().capture(os.fspath(repository), None)
+    assert caught.value.reason == "unsafe_root"
+
+
 def test_capture_round_trips_through_its_object_encoding(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     (repository / "selectors.ts").write_text("export const é = 'ü';\n", encoding="utf-8")

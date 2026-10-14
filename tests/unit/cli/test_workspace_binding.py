@@ -307,3 +307,130 @@ def _private_group_is(value: bool) -> Callable[[int, int], bool]:
         return value
 
     return answer
+
+
+def _as_other_user_under_superuser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run as another account while the test runner's own uid plays the superuser (``/app``)."""
+    from finishup.config import foreign_write
+
+    real = os.geteuid()
+    monkeypatch.setattr(foreign_write, "_SUPERUSER_UID", real)
+    monkeypatch.setattr(os, "geteuid", lambda: real + 1)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+@pytest.mark.parametrize(("mode", "admitted"), [(0o755, True), (0o1777, True), (0o777, False)])
+def test_superuser_owned_workspace_is_a_non_root_users_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int, admitted: bool
+) -> None:
+    # A container image keeps /app root-owned (0755, or sticky 1777) and runs the agent as a
+    # non-root USER; the workspace is still that user's project unless others can replace it.
+    home = tmp_path / "home"
+    workspace = tmp_path / "app"
+    workspace.mkdir()
+    workspace.chmod(mode)
+    _as_other_user_under_superuser(monkeypatch)
+
+    expected = os.fspath(workspace) if admitted else None
+    assert resolve_workspace_locator(explicit=workspace, payload={}, env=_env(home)) == expected
+    assert canonical_workspace_locator(workspace, env=_env(home)) == expected
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+def test_another_non_root_users_workspace_stays_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.config import foreign_write
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "theirs"
+    workspace.mkdir(mode=0o755)
+    real = os.geteuid()
+    monkeypatch.setattr(foreign_write, "_SUPERUSER_UID", real + 7)
+    monkeypatch.setattr(os, "geteuid", lambda: real + 1)
+
+    assert resolve_workspace_locator(explicit=workspace, payload={}, env=_env(home)) is None
+    assert canonical_workspace_locator(workspace, env=_env(home)) is None
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+@pytest.mark.parametrize("worktree_file", [False, True], ids=["git_dir", "git_file"])
+def test_superuser_owned_checkout_is_a_non_root_users_plain_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, worktree_file: bool
+) -> None:
+    """An image built as root (``COPY . /app`` or ``git clone``) with ``USER agent``.
+
+    Before, the root-owned ``.git`` failed the locator closed, so ``setup run`` reported
+    internal_error (workspace_locator_invalid) and hooks and MCP bound no workspace. The checkout
+    is the project, used as a plain directory, from the root or any directory beneath it.
+    """
+
+    from finishup.cli.setup import _canonical_setup_workspace  # pyright: ignore[reportPrivateUsage]
+
+    home = tmp_path / "home"
+    app = tmp_path.resolve() / "app"
+    _git(app, worktree_file=worktree_file)
+    (app / "src").mkdir()
+    app.chmod(0o755)
+    _as_other_user_under_superuser(monkeypatch)
+
+    for selected in (app, app / "src"):
+        assert canonical_workspace_locator(selected, env=_env(home)) == os.fspath(app)
+        assert resolve_workspace_locator(
+            explicit=selected, payload={}, env=_env(home)
+        ) == os.fspath(app)
+        assert resolve_workspace_locator(
+            payload={"workspace_roots": [os.fspath(selected)]}, env=_env(home)
+        ) == os.fspath(app)
+    assert _canonical_setup_workspace(app / "src") == app
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+@pytest.mark.parametrize("marker_owner", ["other_user", "superuser_shared"])
+def test_a_checkout_marker_another_account_controls_still_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, marker_owner: str
+) -> None:
+    from finishup.config import foreign_write
+
+    home = tmp_path / "home"
+    app = tmp_path.resolve() / "app"
+    _git(app)
+    app.chmod(0o755)
+    real = os.geteuid()
+    if marker_owner == "superuser_shared":
+        (app / ".git").chmod(0o777)
+        monkeypatch.setattr(foreign_write, "_SUPERUSER_UID", real)
+    else:
+        # The runner's uid plays a second non-root account that owns the checkout.
+        monkeypatch.setattr(foreign_write, "_SUPERUSER_UID", real + 7)
+    monkeypatch.setattr(os, "geteuid", lambda: real + 1)
+
+    assert canonical_workspace_locator(app, env=_env(home)) is None
+    assert resolve_workspace_locator(explicit=app, payload={}, env=_env(home)) is None
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+@pytest.mark.parametrize(
+    ("links", "admitted"), [(1, True), (2, False)], ids=["single", "hard_link"]
+)
+def test_a_root_owned_gitfile_counts_only_when_nobody_could_have_linked_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, links: int, admitted: bool
+) -> None:
+    """In a sticky shared directory anyone can plant a hard link to a root-owned file; such a
+    ``.git`` proves nothing about who made the checkout and must not move the locator."""
+
+    from tests.builders.ownership import SUPERUSER, present_owners
+
+    home = tmp_path / "home"
+    app = tmp_path.resolve() / "app"
+    app.mkdir()
+    gitfile = app / ".git"
+    gitfile.write_text("gitdir: /private/git/worktree\n", encoding="utf-8")
+    if links == 2:
+        os.link(gitfile, tmp_path.resolve() / "elsewhere")
+    app.chmod(0o1777)
+    present_owners(monkeypatch, {app: SUPERUSER, gitfile: SUPERUSER})
+
+    expected = os.fspath(app) if admitted else None
+    assert canonical_workspace_locator(app, env=_env(home)) == expected
+    assert resolve_workspace_locator(explicit=app, payload={}, env=_env(home)) == expected

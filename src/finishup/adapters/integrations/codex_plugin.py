@@ -20,7 +20,7 @@ from finishup.adapters.integrations.codex_skill import (
     load_packaged_skill_source,
     validated_managed_parent,
 )
-from finishup.config.foreign_write import writable_by_others
+from finishup.config.foreign_write import project_root_admitted
 from finishup.domain.values import JsonValue as DomainJsonValue
 from finishup.ports.harness_mcp import MCP_SERVE_COMMAND, MCP_SERVER_NAME
 from finishup.ports.integrations import (
@@ -379,9 +379,7 @@ def _validated_project(target: IntegrationTarget) -> Path:
         stat = root.stat()
     except OSError as exc:
         raise _error(IntegrationReason.TARGET_UNSAFE) from exc
-    if hasattr(os, "geteuid") and stat.st_uid != os.geteuid():
-        raise _error(IntegrationReason.TARGET_UNSAFE)
-    if writable_by_others(stat):
+    if not project_root_admitted(stat):
         raise _error(IntegrationReason.TARGET_UNSAFE)
     return root
 

@@ -1922,6 +1922,68 @@ adapter is unchanged. A foreground-cancelled call that may have started names it
 (usage unknown). This is service-side and identical on every host and supported OS; hook advice
 rendering is unchanged.
 
+## Root-owned project roots (non-root container users)
+
+Claude Code project setup, hooks and MCP use the shared project-root rule (ADR-007, 2026-10-14): a
+non-root user may use a root-owned project root that no other account can write, or a sticky one.
+Files FinishUP writes inside the project must still be the user's own. Verified for Codex in a Boat
+container as `nobody` and `agent`; the same check path is unit-tested for this host.
+
+**Runtime another account installed.** Decision for Claude Code: same path as every host (shared entry
+and setup code; no host-specific change). A runtime root installed and a non-root user runs stops
+`finishup mcp serve`, `service run` and every hook with `release_runtime_not_owned` (exit 20) instead
+of `release_runtime_unavailable: permission_denied` or "could not be verified". `/mcp` shows the server as failed and `claude --debug` shows its stderr; its hooks exit 20 with no stdout, so they make no allow or block decision and Claude Code shows a non-blocking hook error. Terminal
+commands print the `.<prefix>-releases` directory the user must own; hook stderr carries the token
+without local paths. Every connect path refuses to connect Claude Code to such a runtime (or one another
+account can write) with that reason and leaves status and disconnect available. `finishup instance create --bind-runtime` on such a runtime
+is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succeeds (ADR-028,
+2026-10-14 amendment). Install FinishUP as the user, or see the Linux runbook for the one-user
+`.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
+hook paths, not a Claude Code session); the Claude Code connect refusal is unit-tested.
+
+**Review fixes (independent review of #1071).** Decisions for Claude Code: (1) a checkout root
+made (`/app/.git` owned by root) is the project, used as a plain directory, through the shared
+workspace binding (same path as every host); (2) Claude-specific: every plugin mutation runs
+`claude plugin ... --scope project`, which writes `<project>/.claude/settings.json`, so preview
+(and therefore apply) now refuses a `.claude` another account created or others can write
+(`target_unsafe`) before any command runs; an absent `.claude` is left for Claude Code to create
+(in a sticky root another account could create it in the instant before Claude Code does, which
+FinishUP cannot fence; root can pre-create `.claude` for the user to close it);
+(3) host admission never writes `.claude/settings.local.json` into such a `.claude` (same path as
+every host; refined in round 2 below). Not changed: Claude Code's executable must
+still be the user's own, so a root-installed `claude` is refused (`target_unsafe`) for a non-root
+user, unlike the Codex launcher, which accepts a root-owned executable. Covered by tests through the
+public preview/apply functions (connect and remove in 0755 and sticky root-owned projects, and a
+squatted `.claude`) with simulated ownership.
+
+**Review fixes, round 2.** Decisions for Claude Code (same path as every host unless named): (1) a
+checkout root made (`/app` and `/app/.git` root-owned), or the user's own `git init` in a sticky
+root-owned `/app`, now passes the service handshake: the service commits the plain directory
+identity without running Git (Git refuses another owner's checkout), so hooks and MCP attach;
+Git-based change capture reports `unsafe_root`. A root-owned `.git` file with more than one link
+is not trusted. (2) A `.claude` root committed to the image is read normally: admission status is
+`absent` (typically) and host admission's own reverse sweep (the privacy ceremony) reports nothing to remove instead of `write_failed`; a
+grant into it is refused `target_unsafe`. A `.claude` another account made, or one others can
+write, is `unknown` (`folder_not_owned`) in status and refused by grant and revoke; writes to
+`.claude/settings.local.json` go through the host folder pinned by descriptor, never a link swapped in after the
+check. (3) `setup run --host claude` and the full-screen interface's `/connect` refuse before any `claude plugin` command runs. Covered by tests through the public paths with simulated ownership, and the
+repository identity with a real Git checkout owned by another uid.
+
+**Review fixes, round 3.** Decisions for Claude Code: (1) the plain directory identity of a root-built
+checkout is now its top's (the directory holding `.git`), the same from any subdirectory, so a
+session started below the top meets its own hooks instead of `repository_identity_mismatch`
+(same path as every host). (2) Check-time change capture reports `unsafe_root` for such a
+checkout; the receipt reads "the repository failed a safety check (a link, another owner, ...)",
+not "not a Git repository" (same path as every host). (3) `integrate claude plugin preview|install|update|enable` (any connect action) now refuses a runtime
+that cannot serve this account with exit 20 and the token, before host discovery or any `claude
+plugin` command; `disable`, `remove`, the removal preview and `status` stay open. Not covered:
+`integrate claude plugin export`, a development carrier for `claude --plugin-dir`, not a
+connection. Known gap: a `.claude` root committed to the image is refused `target_unsafe` by
+every Claude Code plugin change (install, update, enable, disable, remove; status still reads it),
+because each requires the user's own `.claude`; have root make it the user's (`chown -R <user>
+<project>/.claude`). Follow-up: let removal read a root-owned `.claude` no other account can
+write.
+
 ## Response and receipt timeout recovery
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the

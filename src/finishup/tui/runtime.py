@@ -822,6 +822,7 @@ class FinishUpRuntime:
         from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter
         from finishup.application.codex_plugin import CodexPluginService
         from finishup.application.harness_mcp import HarnessMcpService
+        from finishup.cli.runtime_refusal import connect_refusal
         from finishup.cli.setup import (
             check_policy_preview,
             codex_activation_preview,
@@ -840,6 +841,14 @@ class FinishUpRuntime:
             IntegrationTarget,
         )
 
+        refusal = connect_refusal()
+        if refusal is not None:
+            token, next_step = refusal
+            raise RuntimeError_(
+                token,
+                "FinishUP cannot run from this installation for this account",
+                details=tuple(line.strip() for line in next_step.splitlines() if line.strip()),
+            )
         binary = self._binary_for(option)
         root = self.project_root()
         route = configured_mcp_route_profile() if route_profile is None else route_profile

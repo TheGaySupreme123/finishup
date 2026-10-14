@@ -37,6 +37,8 @@ WORLD: Final[ForeignWrite] = "world"
 
 # The filesystem root the account files are read under; tests point it at a fixture tree.
 _ROOT: Path = Path("/")
+# The superuser whose project roots ``project_root_admitted`` trusts; tests point it at the runner.
+_SUPERUSER_UID: int = 0
 _LOCAL_SOURCES: Final = frozenset({"files", "systemd"})
 # glibc's nsswitch.conf grammar (nss/nss_database.c, nss/nss_action_parse.c): C-locale
 # whitespace, the status and action words of a ``[STATUS=ACTION ...]`` clause.
@@ -282,3 +284,53 @@ def writable_by_others(facts: os.stat_result) -> bool:
     """Drop-in for ``facts.st_mode & 0o022`` that accepts the owner's private group."""
 
     return foreign_write(facts) is not None
+
+
+def superuser_owned(facts: os.stat_result) -> bool:
+    """Whether the superuser owns the object (the owner ``project_root_admitted`` also trusts)."""
+
+    return facts.st_uid == _SUPERUSER_UID
+
+
+def superuser_checkout_marker(facts: os.stat_result) -> bool:
+    """Whether a ``.git`` marker that is not the running user's is root's checkout marker.
+
+    True for a non-root user when the superuser owns the marker, no other account can write it,
+    and it is a directory or a regular file with a single link. A directory cannot be
+    hard-linked; a regular file with more than one link may be a hard link another account made
+    to a root-owned file elsewhere (in a sticky shared directory anyone can create entries), so
+    it proves nothing about who put it there.
+    """
+
+    if not superuser_owned(facts) or writable_by_others(facts):
+        return False
+    if hasattr(os, "geteuid") and facts.st_uid == os.geteuid():
+        return False
+    if stat.S_ISDIR(facts.st_mode):
+        return True
+    return stat.S_ISREG(facts.st_mode) and facts.st_nlink == 1
+
+
+def project_root_admitted(facts: os.stat_result) -> bool:
+    """Whether a project root directory's owner and mode admit it as the running user's project.
+
+    The running user's own directory is admitted when no other account can write it, as before.
+    For a non-root user, a directory root owns is admitted as well when no other account can write
+    it, or when it is sticky: root is already trusted with everything this user runs, and in a
+    sticky directory no other account can rename or remove the entries this user creates there.
+    Container images commonly keep the agent's working directory root-owned (``/app`` with mode
+    0755 or 1777) and run the agent as a non-root ``USER``. Only the project root itself is judged
+    here: every file and directory FinishUP writes inside it must still be the running user's own.
+    A link, a non-directory and any other owner are refused.
+    """
+
+    if stat.S_ISLNK(facts.st_mode) or not stat.S_ISDIR(facts.st_mode):
+        return False
+    if not hasattr(os, "geteuid"):
+        return not writable_by_others(facts)
+    euid = os.geteuid()
+    if facts.st_uid == euid:
+        return not writable_by_others(facts)
+    if superuser_owned(facts):
+        return not writable_by_others(facts) or bool(facts.st_mode & stat.S_ISVTX)
+    return False

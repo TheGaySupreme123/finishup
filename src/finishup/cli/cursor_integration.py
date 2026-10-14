@@ -238,6 +238,17 @@ def run_cursor_plugin_command(
     if harness != "cursor" or command not in CURSOR_PLUGIN_COMMANDS:
         sys.stderr.write("cursor_plugin_command_invalid\n")
         return 2
+    if command == "install" or (
+        command == "preview" and requested_action != PluginArtifactAction.REMOVE.value
+    ):
+        from finishup.cli.runtime_refusal import connect_refusal
+
+        refusal = connect_refusal()
+        if refusal is not None:
+            # Cursor would launch this runtime for MCP and every hook, and each launch would be
+            # refused. Removal, its preview and status never ask.
+            sys.stderr.write(f"{refusal[0]}: {refusal[1]}\n")
+            return 20
     try:
         target = CursorPluginTarget(str(cursor_config_root.expanduser().absolute()))
         installed_mode = installed_cursor_startup_mode(target)

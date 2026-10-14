@@ -109,6 +109,7 @@ _REASONS: Final = frozenset(
         "instance_service_running",
         "runtime_pin_conflict",
         "runtime_pin_invalid",
+        "runtime_pin_unwritable",
     }
 )
 
@@ -336,8 +337,13 @@ def read_instance_identity(state_root: Path) -> InstanceIdentity | None:
         raise InstanceIdentityError("instance_identity_invalid") from exc
 
 
-def _write_private_atomic(path: Path, encoded: bytes) -> None:
-    ensure_owner_only_dir(path.parent)
+def _write_temporary_then_replace(path: Path, encoded: bytes, *, sync_directory: bool) -> None:
+    """Write ``encoded`` to a fresh owner-only temporary beside ``path`` and rename it into place.
+
+    A failure at any step removes the temporary, so a refused write leaves nothing behind: the
+    caller can unwind the directory it created, and a retry finds it as it was.
+    """
+
     temporary = path.with_name(f".{path.name}.{os.urandom(12).hex()}.tmp")
     descriptor = os.open(
         temporary,
@@ -345,28 +351,34 @@ def _write_private_atomic(path: Path, encoded: bytes) -> None:
         0o600,
     )
     try:
-        view = memoryview(encoded)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise OSError("short_write")
-            view = view[written:]
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    try:
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
         try:
-            os.fsync(directory)
+            view = memoryview(encoded)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("short_write")
+                view = view[written:]
+            os.fsync(descriptor)
         finally:
-            os.close(directory)
+            os.close(descriptor)
+        os.replace(temporary, path)
     except BaseException:
         try:
             os.unlink(temporary)
         except OSError:
             pass
         raise
+    if sync_directory:
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
+def _write_private_atomic(path: Path, encoded: bytes) -> None:
+    ensure_owner_only_dir(path.parent)
+    _write_temporary_then_replace(path, encoded, sync_directory=True)
 
 
 def write_instance_identity(state_root: Path, identity: InstanceIdentity) -> Path:
@@ -422,7 +434,11 @@ def _pinned_root(path: Path) -> str | None:
 
 
 def write_runtime_pin(prefix: Path, root: Path, installation_id: str) -> Path:
-    """Bind the runtime at ``prefix`` to ``root``; an existing pin must name the same root."""
+    """Bind the runtime at ``prefix`` to ``root``; an existing pin must name the same root.
+
+    A prefix the current user cannot write (a runtime another account installed, a read-only
+    image layer, a full disk) is ``runtime_pin_unwritable`` with no temporary file left behind.
+    """
 
     validate_id(IdKind.INSTALLATION, installation_id)
     if not root.is_absolute() or not prefix.is_dir():
@@ -438,23 +454,11 @@ def write_runtime_pin(prefix: Path, root: Path, installation_id: str) -> Path:
         "installation_id": installation_id,
     }
     encoded = canonical_encode(cast(JsonValue, body)) + b"\n"
-    temporary = path.with_name(f".{path.name}.{os.urandom(12).hex()}.tmp")
-    descriptor = os.open(
-        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600
-    )
     try:
-        os.write(descriptor, encoded)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
-    try:
-        os.replace(temporary, path)
-    except BaseException:
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
-        raise
+        _write_temporary_then_replace(path, encoded, sync_directory=False)
+    except OSError:
+        # Closed token only: the OS message names the prefix, a local path.
+        raise InstanceIdentityError("runtime_pin_unwritable") from None
     return path
 
 

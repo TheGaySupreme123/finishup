@@ -9,7 +9,12 @@ import typer
 
 from finishup.adapters.integrations.launcher import invoked_through_legacy_alias
 from finishup.adapters.package_upgrade import execute_package_upgrade, read_uv_receipt
-from finishup.adapters.release_runtime import installation_prefix, prune_release_runtimes
+from finishup.adapters.release_runtime import (
+    NOT_OWNED_TOKEN,
+    ReleaseRuntimeError,
+    installation_prefix,
+    prune_release_runtimes,
+)
 from finishup.application.upgrade import HOSTS, build_upgrade_plan, legacy_tool_extras
 from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
 
@@ -40,6 +45,17 @@ def run_upgrade(
             return 2
         try:
             removed, retained = prune_release_runtimes(installation_prefix())
+        except ReleaseRuntimeError as error:
+            if str(error) != NOT_OWNED_TOKEN:
+                typer.echo(
+                    "Runtime cleanup could not safely complete; running sessions were not stopped.",
+                    err=True,
+                )
+                return 2
+            from finishup.cli.runtime_refusal import not_owned_refusal
+
+            typer.echo(not_owned_refusal(hook=False).rstrip("\n"), err=True)
+            return 2
         except OSError, ValueError:
             typer.echo(
                 "Runtime cleanup could not safely complete; running sessions were not stopped.",

@@ -293,6 +293,28 @@ def test_service_status_names_a_runtime_another_account_can_write(
     assert "under your selected user supervisor" not in err
 
 
+def test_service_status_names_a_runtime_another_account_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import finishup.cli.runtime_refusal as refusal
+    from finishup.adapters import release_runtime
+
+    monkeypatch.setattr(
+        release_runtime,
+        "installed_runtime_refusal",
+        lambda: release_runtime.ReleaseRuntimeError("release_runtime_not_owned"),
+    )
+    assert refusal.installed_runtime_refusal_text() == (
+        "release_runtime_not_owned",
+        refusal.not_owned_refusal(hook=False),
+    )
+    code, err = _status_stderr(monkeypatch, ControlError("service_unavailable", retryable=True))
+    assert code == 20
+    assert err.startswith("release_runtime_not_owned: ")
+    assert "must belong to the account running FinishUP" in err
+    assert "under your selected user supervisor" not in err
+
+
 def test_runtime_probe_is_silent_for_a_source_checkout() -> None:
     from finishup.cli.runtime_refusal import installed_runtime_refusal_text
 

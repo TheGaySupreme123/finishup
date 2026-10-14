@@ -374,7 +374,7 @@ def main() -> None:
         and "--prune-runtimes" not in argv
     ):
         from finishup.adapters.release_runtime import (
-            FOREIGN_WRITE_TOKENS,
+            OWNERSHIP_TOKENS,
             ReleaseRuntimeError,
             ReleaseRuntimeIOError,
             enter_release_runtime,
@@ -384,11 +384,11 @@ def main() -> None:
             enter_release_runtime(argv)
         except ReleaseRuntimeError as error:
             token = str(error)
-            if token in FOREIGN_WRITE_TOKENS:
-                from finishup.cli.runtime_refusal import foreign_write_refusal
+            if token in OWNERSHIP_TOKENS:
+                from finishup.cli.runtime_refusal import runtime_refusal
 
                 _record_spawned_service_refusal(argv, error, token)
-                sys.stderr.write(foreign_write_refusal(token, hook=argv[:1] == ["hooks"]))
+                sys.stderr.write(runtime_refusal(token, hook=argv[:1] == ["hooks"]))
                 raise SystemExit(20) from None
             message = {
                 "release_runtime_busy": "A package update is running. Retry after it finishes.",

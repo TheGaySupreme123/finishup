@@ -769,6 +769,7 @@ _LOCAL_REASON_CONTINUATIONS: Final[Mapping[str, str]] = MappingProxyType(
         "isolation_root_invalid": "config_correction_required",
         "runtime_pin_conflict": "instance_identity_repair",
         "runtime_pin_invalid": "instance_identity_repair",
+        "runtime_pin_unwritable": "local_state_repair",
         # Local storage, workspace, and service lifecycle (issues #237, #428).
         "git_config_limit_exceeded": "local_state_repair",
         "git_version_unsupported": "system_git_upgrade_required",

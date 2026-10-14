@@ -9,6 +9,7 @@ an in-use generation out of pruning. No environment variable can select or bypas
 from __future__ import annotations
 
 import contextlib
+import errno
 import fcntl
 import hashlib
 import importlib.util
@@ -48,6 +49,7 @@ _MODULE_LAUNCHERS: Final = frozenset({"finishup", "yoetz"})
 # and prunes the old one once unused. Frozen legacy identifier (ADR-048): the tag stays in the
 # protocol-0.1 ``yoetz.<name>/<n>`` namespace; it is part of every retained generation's key.
 _LAYOUT: Final = b"yoetz.release-runtime-layout/3:unchecked-hash-bytecode\x00"
+NOT_OWNED_TOKEN: Final = "release_runtime_not_owned"
 # Kept open for the lifetime of this process; intentionally not inherited by unrelated children.
 _process_lease: int | None = None
 _original_interpreter: str | None = None
@@ -109,6 +111,64 @@ def _manager(prefix: Path) -> Path:
     return prefix.parent / f".{prefix.name}-releases"
 
 
+def retained_runtime_directory(prefix: Path) -> Path:
+    """Where the generations of the installation at ``prefix`` live: its private sibling."""
+
+    return _manager(prefix)
+
+
+def _another_account_owns(path: Path) -> bool:
+    try:
+        return path.stat().st_uid != os.geteuid()
+    except OSError:
+        return False
+
+
+def _manager_directory(root: Path) -> None:
+    """Create (when absent) and verify the manager directory this account serves from.
+
+    The generations a process runs from must be this account's own, so the directory holding
+    them must be too. An installation another account made (root, in a container image whose
+    agent runs as a non-root ``USER``) therefore cannot serve this account: an existing
+    directory owned by another account, or none and a parent this account cannot create it in,
+    is ``release_runtime_not_owned`` rather than the generic ``release_runtime_unsafe`` or a
+    bare permission error. The ownership requirement itself is unchanged.
+    """
+
+    try:
+        root.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    except OSError as error:
+        if error.errno in {errno.EACCES, errno.EPERM, errno.EROFS} and _another_account_owns(
+            root.parent
+        ):
+            raise ReleaseRuntimeError(NOT_OWNED_TOKEN) from None
+        raise
+    info = root.lstat()
+    if stat.S_ISDIR(info.st_mode) and info.st_uid != os.geteuid():
+        raise ReleaseRuntimeError(NOT_OWNED_TOKEN)
+    _private_directory(root)
+
+
+def _manager_refusal(root: Path) -> ReleaseRuntimeError | None:
+    """Read-only twin of ``_manager_directory``: the refusal it would raise, creating nothing."""
+
+    try:
+        info = root.lstat()
+    except FileNotFoundError:
+        parent = root.parent
+        writable = os.access(
+            parent, os.W_OK | os.X_OK, effective_ids=os.access in os.supports_effective_ids
+        )
+        if _another_account_owns(parent) and not writable:
+            return ReleaseRuntimeError(NOT_OWNED_TOKEN)
+        return None
+    if stat.S_ISDIR(info.st_mode) and info.st_uid != os.geteuid():
+        return ReleaseRuntimeError(NOT_OWNED_TOKEN)
+    return None
+
+
 def _open_lock(path: Path) -> int:
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     info = os.fstat(fd)
@@ -123,7 +183,7 @@ def release_update_lock(prefix: Path, *, timeout: float = 10.0) -> Generator[Pat
     """Fence snapshots against the supported package replacement and cleanup paths."""
 
     root = _manager(prefix)
-    _private_directory(root, create=True)
+    _manager_directory(root)
     fd = _open_lock(root / ".lock")
     deadline = time.monotonic() + timeout
     try:
@@ -595,13 +655,18 @@ def installation_prefix() -> Path:
 FOREIGN_WRITE_TOKENS: Final = frozenset(
     {"release_runtime_group_writable", "release_runtime_world_writable"}
 )
+# Refusals the installation cannot outgrow by retrying: each surface names the token and its
+# repair instead of the generic "could not be verified".
+OWNERSHIP_TOKENS: Final = FOREIGN_WRITE_TOKENS | {NOT_OWNED_TOKEN}
 
 
 def installed_runtime_refusal() -> ReleaseRuntimeError | None:
-    """Read-only: the foreign-write refusal a serving process of this install would hit.
+    """Read-only: the ownership refusal a serving process of this install would hit.
 
-    ``None`` for a source checkout, a runtime that verifies, or any other condition (those are
-    reported where the runtime is entered). Never takes the manager lock or creates a copy.
+    That is another account able to write the runtime, or a runtime another account installed
+    (``release_runtime_not_owned``). ``None`` for a source checkout, a runtime that verifies, or
+    any other condition (those are reported where the runtime is entered). Never takes the
+    manager lock or creates a copy.
     """
 
     try:
@@ -613,10 +678,14 @@ def installed_runtime_refusal() -> ReleaseRuntimeError | None:
             prefix.resolve()
         ):
             return None
+        # Serving checks the manager directory first, so the probe does too.
+        refusal = _manager_refusal(_manager(prefix))
+        if refusal is not None:
+            return refusal
         _release_key(prefix)
         _members(prefix)
     except ReleaseRuntimeError as error:
-        return error if str(error) in FOREIGN_WRITE_TOKENS else None
+        return error if str(error) in OWNERSHIP_TOKENS else None
     except OSError, ValueError:
         return None
     return None

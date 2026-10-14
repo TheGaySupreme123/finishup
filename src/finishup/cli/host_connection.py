@@ -205,11 +205,32 @@ def prepare_selected(
     )
 
 
+def refuse_unservable_runtime() -> None:
+    """Refuse a connect when this installation's runtime cannot serve the running account.
+
+    Every host would launch this runtime and every launch would be refused (another account
+    can write it, or another account owns the directory it runs from). Callers that render
+    their own report name the token through ``cli.runtime_refusal.connect_refusal``.
+    """
+
+    from finishup.cli.runtime_refusal import connect_refusal
+
+    if connect_refusal() is not None:
+        raise ConnectionError("release_runtime_refused")
+
+
 def apply_selected(plan: ConnectionPlan, refresh: object) -> dict[str, JsonValue]:
-    """Prepare the one reviewed target only after exact integration acceptance."""
+    """Prepare the one reviewed target only after exact integration acceptance.
+
+    A connect is refused here too, whatever front end prepared it, when this installation's
+    runtime cannot serve the running account; a disconnect is never refused for that.
+    """
     from collections.abc import Callable
 
     from finishup.service.elevated_bootstrap import load_pending, prepare_pending
+
+    if plan.body.get("action") == "connect":
+        refuse_unservable_runtime()
 
     authority = None
     if not plan.unchanged and plan.body.get("requires_os_presence") is not False:
@@ -253,12 +274,8 @@ def run_host_connection(
         selected = select_installation(host, executable, config_root)
         report["host"] = selected.host
         if action == "connect" and not status_only:
-            from finishup.cli.runtime_refusal import installed_runtime_refusal_text
-
-            if installed_runtime_refusal_text() is not None:
-                # Every host would launch this runtime and every launch would be refused; the
-                # except branch below names the token and repair. Disconnect stays available.
-                raise ConnectionError("release_runtime_refused")
+            # The except branch below names the token and repair. Disconnect stays available.
+            refuse_unservable_runtime()
         request = request_value or new_id(IdKind.REQUEST)
 
         def prepare() -> ConnectionPlan:

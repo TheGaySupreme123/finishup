@@ -2043,6 +2043,63 @@ adapter is unchanged. A foreground-cancelled call that may have started names it
 (usage unknown). This is service-side and identical on every host and supported OS; hook advice
 rendering is unchanged.
 
+## Root-owned project roots (non-root container users)
+
+Cursor project setup, hooks and MCP use the shared project-root rule (ADR-007, 2026-10-14): a
+non-root user may use a root-owned project root that no other account can write, or a sticky one.
+Files FinishUP writes inside the project must still be the user's own. Verified for Codex in a Boat
+container as `nobody` and `agent`; the same check path is unit-tested for this host.
+
+**Runtime another account installed.** Decision for Cursor: same path as every host (shared entry
+and setup code; no host-specific change). A runtime root installed and a non-root user runs stops
+`finishup mcp serve`, `service run` and every hook with `release_runtime_not_owned` (exit 20) instead
+of `release_runtime_unavailable: permission_denied` or "could not be verified". Cursor lists the MCP server as failed and keeps its stderr in the MCP log; its hooks exit 20 with no stdout, so they make no allow or block decision and Cursor proceeds with the action. Terminal
+commands print the `.<prefix>-releases` directory the user must own; hook stderr carries the token
+without local paths. Every connect path refuses to connect Cursor to such a runtime (or one another
+account can write) with that reason and leaves status and disconnect available. `finishup instance create --bind-runtime` on such a runtime
+is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succeeds (ADR-028,
+2026-10-14 amendment). Install FinishUP as the user, or see the Linux runbook for the one-user
+`.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
+hook paths, not a Cursor session); the Cursor connect refusal is unit-tested.
+
+**Review fixes (independent review of #1071).** Decisions for Cursor: (1) a checkout root made
+(`/app/.git` owned by root) is the project, used as a plain directory, through the shared
+workspace binding (same path as every host); (2) Cursor-specific: project MCP status, preview and
+apply now judge the project root by the project-root rule on the read path too (before, only the
+write path did, so status, preview, connect and disconnect refused a root-owned project with
+`cursor_project_mcp_target_unsafe`); the Cursor configuration root and the project `.cursor` stay
+the user's own; (3) host admission never writes `.cursor/permissions.json` or `.cursor/cli.json` into a
+`.cursor` another account created or others can write (same path as every host; refined in
+round 2 below). Covered by tests through the public status/preview/apply functions and
+the connect, disconnect and reconnect composition for Cursor IDE and Agent CLI, with simulated
+ownership.
+
+**Review fixes, round 2.** Decisions for Cursor (same path as every host unless named): (1) a
+checkout root made (`/app` and `/app/.git` root-owned), or the user's own `git init` in a sticky
+root-owned `/app`, now passes the service handshake: the service commits the plain directory
+identity without running Git (Git refuses another owner's checkout), so hooks and MCP attach;
+Git-based change capture reports `unsafe_root`. A root-owned `.git` file with more than one link
+is not trusted. (2) A `.cursor` root committed to the image is read normally: admission status is
+`absent` (typically) and host admission's own reverse sweep (the privacy ceremony) reports nothing to remove instead of `write_failed`; a
+grant into it is refused `target_unsafe`. A `.cursor` another account made, or one others can
+write, is `unknown` (`folder_not_owned`) in status and refused by grant and revoke; writes to
+`.cursor/permissions.json` and `.cursor/cli.json` go through the host folder pinned by descriptor, never a link swapped in after the
+check. (3) `setup run --host cursor-ide|cursor-cli` and the full-screen interface's `/connect` refuse before any registration is written. Covered by tests through the public paths with simulated ownership, and the
+repository identity with a real Git checkout owned by another uid.
+
+**Review fixes, round 3.** Decisions for Cursor: (1) the plain directory identity of a root-built
+checkout is now its top's (the directory holding `.git`), the same from any subdirectory, so a
+session started below the top meets its own hooks instead of `repository_identity_mismatch`
+(same path as every host). (2) Check-time change capture reports `unsafe_root` for such a
+checkout; the receipt reads "the repository failed a safety check (a link, another owner, ...)",
+not "not a Git repository" (same path as every host). (3) `integrate cursor plugin preview|install` (install or replace) and `integrate cursor project-mcp
+preview|install` now refuse a runtime that cannot serve this account with exit 20 and the token,
+before any write; removal, its preview and status stay open. Known gap: a `.cursor` root committed
+to the image is refused `target_unsafe` by project MCP status, connect and disconnect (they
+require the user's own `.cursor`); have root make it the user's (`chown -R <user>
+<project>/.cursor`). Follow-up: let status and removal read a root-owned `.cursor` no other account
+can write.
+
 ## Response and receipt timeout recovery
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the

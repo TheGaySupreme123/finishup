@@ -2656,6 +2656,61 @@ adapter is unchanged. A foreground-cancelled call that may have started names it
 (usage unknown). This is service-side and identical on every host and supported OS; hook advice
 rendering is unchanged.
 
+## Root-owned project roots (non-root container users)
+
+Codex project setup, hooks and MCP use the shared project-root rule (ADR-007, 2026-10-14): a
+non-root user may use a root-owned project root that no other account can write, or a sticky one.
+Files FinishUP writes inside the project must still be the user's own. Verified for Codex in a Boat
+container as `nobody` and `agent`; Claude Code and Cursor are unit-tested on the same rule.
+
+**Runtime another account installed.** Decision for Codex: same path as every host (shared entry
+and setup code; no host-specific change). A runtime root installed and a non-root user runs stops
+`finishup mcp serve`, `service run` and every hook with `release_runtime_not_owned` (exit 20) instead
+of `release_runtime_unavailable: permission_denied` or "could not be verified". Codex shows the MCP server's startup error with that text; its hooks exit 20 with no stdout, so they make no allow or block decision and Codex continues the turn. Terminal
+commands print the `.<prefix>-releases` directory the user must own; hook stderr carries the token
+without local paths. Every connect path refuses to connect Codex to such a runtime (or one another
+account can write) with that reason and leaves status and disconnect available. `finishup instance create --bind-runtime` on such a runtime
+is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succeeds (ADR-028,
+2026-10-14 amendment). Install FinishUP as the user, or see the Linux runbook for the one-user
+`.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
+hook paths, not a Codex session); the Codex connect refusal is unit-tested.
+
+**Review fixes (independent review of #1071).** Decisions for Codex: (1) a checkout root made
+(`/app/.git` owned by root) is the project, used as a plain directory, through the shared
+workspace binding (same path as every host); (2) Codex-specific: marketplace removal anchors its
+descriptor walk on the project root and now judges that anchor by the project-root rule, as install
+does, so `integrate codex plugin remove` and Codex disconnect remove `.agents/plugins/marketplace.json`
+in a root-owned project instead of failing with `write_failed` (`conflict: repository_marketplace`)
+after stripping the Codex config, on every retry; the Codex home keeps the owner rule; (3) host
+admission never writes `.codex/config.toml` into a `.codex` another account created or others can
+write (same path as every host; refined in round 2 below). Covered by tests through
+the public install, activation and removal functions with simulated ownership.
+
+**Review fixes, round 2.** Decisions for Codex (same path as every host unless named): (1) a
+checkout root made (`/app` and `/app/.git` root-owned), or the user's own `git init` in a sticky
+root-owned `/app`, now passes the service handshake: the service commits the plain directory
+identity without running Git (Git refuses another owner's checkout), so hooks and MCP attach;
+Git-based change capture reports `unsafe_root`. A root-owned `.git` file with more than one link
+is not trusted. (2) A `.codex` root committed to the image is read normally: admission status is
+`absent` (typically) and host admission's reverse sweeps (Codex disconnect, `integrate codex plugin remove` and strict MCP re-registration) report nothing to remove instead of `write_failed`; a
+grant into it is refused `target_unsafe`. A `.codex` another account made, or one others can
+write, is `unknown` (`folder_not_owned`) in status and refused by grant and revoke; writes to
+`.codex/config.toml` go through the host folder pinned by descriptor, never a link swapped in after the
+check. (3) Codex has two connect front ends: bare `setup run` (the Codex wizard, also with `--codex-path`) and the full-screen interface's Codex preview both refuse before previewing or writing any registration, as `setup run --host codex` does. Covered by tests through the public paths with simulated ownership, and the
+repository identity with a real Git checkout owned by another uid.
+
+**Review fixes, round 3.** Decisions for Codex: (1) the plain directory identity of a root-built
+checkout is now its top's (the directory holding `.git`), the same from any subdirectory, so a
+session started below the top meets its own hooks instead of `repository_identity_mismatch`
+(same path as every host). (2) Check-time change capture reports `unsafe_root` for such a
+checkout; the receipt reads "the repository failed a safety check (a link, another owner, ...)",
+not "not a Git repository" (same path as every host). (3) `integrate codex mcp preview|install` (also the prompt-loop menu's "Install registration") now
+refuses a runtime that cannot serve this account with exit 20 and the token, before any
+registration; status, `preview-remove` and `remove` stay open. `finishup recommend accept
+codex-plugin-activation` (setup's next command, which enables the Codex plugin and its hooks)
+refuses the same way before refreshing or previewing; `recommend list` and `decline` stay open.
+`integrate codex plugin` is removal only and is not refused.
+
 ## Response and receipt timeout recovery
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the

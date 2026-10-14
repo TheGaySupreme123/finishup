@@ -1380,6 +1380,23 @@ async def _codex_integration_step(
     silently rewrite a previously chosen route (#389 / ADR-018).
     """
 
+    from finishup.cli.runtime_refusal import connect_refusal
+
+    refusal = connect_refusal()
+    if refusal is not None:
+        # Codex would launch this runtime for MCP and every hook, and each launch would be
+        # refused: register nothing, and say why and what to do (ADR-007, 2026-10-14).
+        token, next_step = refusal
+        return {
+            "outcome": "failed",
+            "reason": token,
+            "next_step": next_step,
+            "state": None,
+            "plugin": {"outcome": "skipped", "presence": None},
+            "plugin_activation": {"outcome": "skipped", "state": "unknown"},
+            "skill": {"outcome": "skipped", "presence": None},
+            "observation_consent": {"outcome": "absent", "workspace_commitment": None},
+        }
     plugin_service = CodexPluginService()
     project = _integration_target(workspace)
     selected_codex_home: Path | None = None
@@ -3426,6 +3443,23 @@ _MCP_EXIT_USAGE: Final = frozenset(
 )
 
 
+def _connect_refused() -> int | None:
+    """Refuse a connect when this installation's runtime cannot serve the running account.
+
+    Prints ``<token>: <next step>`` and returns exit 20, like the serving commands' own refusal;
+    ``None`` lets the connect proceed. Status and removal never ask.
+    """
+
+    from finishup.cli.runtime_refusal import connect_refusal
+
+    refusal = connect_refusal()
+    if refusal is None:
+        return None
+    token, next_step = refusal
+    typer.echo(f"{token}: {next_step}", err=True)
+    return 20
+
+
 def _mcp_error_exit(reason: str) -> int:
     typer.echo(f"mcp_registration_{reason}", err=True)
     if reason == "foreign_entry_present":
@@ -3470,6 +3504,10 @@ async def integrate_mcp(
         "remove",
     }:
         return _usage_failure("the harness or action is not supported")
+    if action in {"preview", "install"}:
+        refused = _connect_refused()
+        if refused is not None:
+            return refused
     interactive = _is_interactive_terminal()
     binaries = discover_codex_binaries()
     try:

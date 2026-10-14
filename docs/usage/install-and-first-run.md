@@ -71,6 +71,19 @@ chmod -R go-w ~/.local/share/uv/tools/finishup ~/.local/share/uv/python/cpython-
 To keep a later reinstall private from the start, run `umask 022` in that shell before
 `uv tool install`.
 
+Install FinishUP as the account that will use it. FinishUP runs from a private copy of itself that it
+keeps in a directory next to the installation, and that directory must belong to the account
+running it. So an installation another account made (for example root, in a container image whose
+agent runs as a non-root user) does not run for you unless that account prepared the directory
+for you alone: the service, the agent connection and the hooks stop with
+`release_runtime_not_owned`, FinishUP will not connect an agent to it (from setup, the full-screen
+interface or the `integrate` commands),
+and `finishup service run` prints the directory involved and what to do. If the installation is
+yours but that directory was made by someone else (for example with `sudo`), remove it and FinishUP
+recreates it as yours. Likewise, `finishup instance create --bind-runtime` needs to write into the
+installation, so on someone else's installation it stops with `runtime_pin_unwritable` and keeps
+nothing; run it again once FinishUP is installed as you.
+
 `uvx --python 3.14 finishup` works for a one-off run, but do not connect an agent from it: a one-off
 run lives in `uv`'s cache, and connecting an agent binds the agent to that exact launcher. If you
 are a coding agent installing FinishUP on a user's behalf, follow [Agent start](agent-start.md)

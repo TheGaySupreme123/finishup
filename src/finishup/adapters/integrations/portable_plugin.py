@@ -16,7 +16,7 @@ from jsonschema.exceptions import ValidationError
 
 from finishup import __version__
 from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
-from finishup.config.foreign_write import writable_by_others
+from finishup.config.foreign_write import project_root_admitted, writable_by_others
 from finishup.domain.values import RequestId
 from finishup.domain.values import request_id as validate_request_id
 from finishup.legacy_names import (
@@ -733,9 +733,7 @@ def _validate_project(target: ArtifactTarget) -> tuple[Path, str]:
         facts = root.stat()
     except OSError as exc:
         raise _error(PluginArtifactReason.TARGET_UNSAFE) from exc
-    if hasattr(os, "geteuid") and facts.st_uid != os.geteuid():
-        raise _error(PluginArtifactReason.TARGET_UNSAFE)
-    if writable_by_others(facts):
+    if not project_root_admitted(facts):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
     return root, canonical_digest(
         {"device": facts.st_dev, "inode": facts.st_ino, "mode": facts.st_mode & 0o777}

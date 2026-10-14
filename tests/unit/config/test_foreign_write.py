@@ -295,3 +295,52 @@ def test_real_account_files_decide_for_the_current_user(tmp_path: Path) -> None:
         facts.st_uid, facts.st_gid
     )
     assert foreign_write.writable_by_others(facts) is not expected
+
+
+def _dir_facts(mode: int, uid: int, gid: int = 4242) -> os.stat_result:
+    return os.stat_result((mode, 1, 1, 1, uid, gid, 0, 0, 0, 0))
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+@pytest.mark.parametrize(
+    ("mode", "owner", "admitted"),
+    [
+        # The running user's own project root, as before.
+        (0o040755, "self", True),
+        (0o040757, "self", False),
+        (0o041777, "self", False),
+        # A root-owned project root (container ``/app``): admitted unless others can write it,
+        # and admitted when sticky, where no other account can replace the user's entries.
+        (0o040755, "root", True),
+        (0o040555, "root", True),
+        (0o041777, "root", True),
+        (0o040777, "root", False),
+        (0o040757, "root", False),
+        # Any other owner is never the user's project, sticky or not.
+        (0o040755, "other", False),
+        (0o041777, "other", False),
+        # Only a real directory.
+        (0o120777, "self", False),
+        (0o100644, "root", False),
+    ],
+)
+def test_project_root_admitted(
+    monkeypatch: pytest.MonkeyPatch, mode: int, owner: str, admitted: bool
+) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 1001)
+    monkeypatch.setattr(foreign_write, "_SUPERUSER_UID", 0)
+    uid = {"self": 1001, "root": 0, "other": 1002}[owner]
+
+    assert foreign_write.project_root_admitted(_dir_facts(mode, uid)) is admitted
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+def test_project_root_admitted_as_root_keeps_the_own_directory_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(os, "geteuid", lambda: 0)
+    monkeypatch.setattr(foreign_write, "_SUPERUSER_UID", 0)
+
+    assert foreign_write.project_root_admitted(_dir_facts(0o040755, 0)) is True
+    assert foreign_write.project_root_admitted(_dir_facts(0o041777, 0)) is False
+    assert foreign_write.project_root_admitted(_dir_facts(0o040755, 1001)) is False

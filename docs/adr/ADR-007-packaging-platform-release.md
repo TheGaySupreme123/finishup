@@ -290,6 +290,188 @@ the five-second handshake and services the restart budget.
    unchanged: hook auto-attach keeps its one-second fail-open budget and on-demand start its 30
    seconds; with bytecode, a generation starts as fast as the ordinary environment.
 
+## Amendment — a root-owned project root is a non-root user's project (2026-10-14, owner decision)
+
+The owner decided that the Terminal-Bench 4 FinishUP arms must run as each task image's own non-root
+`USER`, as the official run does, instead of skipping those tasks. Container images commonly keep
+the working directory root-owned (`/app` with mode 0755, or sticky 1777) and run the agent as
+`nobody` or `agent`. Every project-root check refused that directory because it required the
+running user to own it: workspace binding refused the locator (`setup run` then failed as
+`internal_error` from `workspace_locator_invalid`), and the Codex skill, plugin and marketplace,
+the portable plugin, Claude Code's project target and Cursor's project MCP registration refused it
+as `target_unsafe`.
+
+1. **One project-root rule** (`config.foreign_write.project_root_admitted`). A project root is
+   admitted when it is a real directory and either the running user owns it and no other account
+   can write it (unchanged), or, for a non-root user, root owns it and no other account can write
+   it, or root owns it and it is sticky. Root is already trusted with everything the user runs; in
+   a sticky directory no other account can rename or remove the entries the user creates. Any
+   other owner is refused, sticky or not, and so is a non-sticky root-owned directory others can
+   write.
+2. **Only the root itself.** Every file and directory FinishUP writes inside the project
+   (`.agents/…`, `.cursor/…`, `.claude/…`, `.codex/…`) must still be the running user's own, and
+   captured files are checked against the running user. What FinishUP reads there as the user's own
+   configuration is the user's or root's, never another non-root account's (item 5). A root-owned
+   worktree is therefore not a Git repository FinishUP will read: Git
+   refuses another owner's worktree ("dubious ownership") and FinishUP runs Git with no system or
+   global configuration, so no `safe.directory` can be configured around it. Such a project keeps
+   its plain-directory identity; subject-state and change capture report their existing
+   limitations.
+3. **All hosts.** Workspace binding is shared by hooks, MCP and the CLI for Codex, Claude Code and
+   Cursor, and the same rule replaces each host's project-root ownership check.
+4. **A root-owned checkout is the project, as a plain directory.** An image built as root
+   (`COPY . /app` or a `git clone` into `/app`) keeps `/app` and `/app/.git` root-owned. Workspace
+   binding walks up to the nearest `.git`, and a marker another account owned failed the locator
+   closed, so such a project was still refused (`workspace_locator_invalid`) despite item 1. A
+   `.git` that root owns and no other account can write now ends the walk like the user's own when
+   it is a directory or a regular file with a single link (a sticky shared directory lets anyone
+   plant a hard link to a root-owned file, which proves nothing about who made the checkout): the
+   locator is that directory, judged by item 1, from the root or any directory beneath it. A `.git`
+   another non-root account owns, one others can write, or a hard-linked root file still fails
+   closed.
+
+   The service then gives the workspace its repository identity, and Git (2.35.2 and later)
+   refuses a repository whose working tree or `.git` another account owns ("dubious ownership"),
+   so every handshake for such a workspace failed (`repository_identity_unavailable`, a
+   non-retryable `service_unavailable`). Two ways out were weighed. Passing
+   `-c safe.directory=<that path>` to FinishUP's Git would give the checkout its Git identity, but
+   would bring nothing else back: subject-state and change capture independently require the
+   working tree, `.git` and every captured entry to be the user's own and report `unsafe_root`
+   otherwise, so no Git-based capture would work; and it would switch off Git's own ownership guard
+   in exactly the case it exists for. Instead, when the nearest `.git` and the directory holding it
+   are each either the user's own (not writable by others) or root's (`.git` as above; the
+   directory as item 1 admits it), and root owns at least one of them, the service commits the
+   plain `directory` identity of the checkout's top (the directory holding that `.git`, found the
+   way workspace binding finds it, never past the home directory) without running Git. The
+   identity is therefore the same from the top or any directory beneath it, and equals the
+   locator workspace binding gives hooks and setup, so a session the MCP bridge, the CLI or the
+   full-screen interface starts from a subdirectory (they name the raw working directory) meets
+   its own hooks rather than `repository_identity_mismatch`. That covers the root-built checkout
+   and the user's own `git init` inside a sticky root-owned `/app`, which Git refuses the same way.
+   Anything another non-root account owns is not matched and stays refused. Check-time change
+   capture applies the same decision before running Git and reports `unsafe_root` (before, Git's
+   refusal surfaced as `not_git`, "not a Git repository"), as subject-state capture already did.
+   What the user gets: the service starts, hooks and MCP attach, and work is published and checked
+   as for any plain directory; the receipt names the capture gap as "the repository failed a
+   safety check (a link, another owner, a working tree redirected elsewhere, or a directory
+   replaced while it was read)", so checks cover what the agent publishes, not a Git diff. The
+   identity differs from the one the same checkout would get if the user owned it, so consent
+   given under one does not carry to the other (it fails closed: grant again).
+5. **Every path in and out applies the same split.** The project root is judged by item 1 on every
+   path that reaches it, not only on install: Cursor's project MCP status, preview and apply (so
+   Cursor connect, disconnect and status in a root-owned project root), and Codex marketplace
+   removal, which anchors its
+   descriptor walk on the project (a Codex home anchor keeps the owner rule). Before, those paths
+   still required the user to own the project root, so Cursor refused a root-owned project and a
+   Codex disconnect removed the Codex configuration and then failed on the project's
+   `marketplace.json`, on every retry. Host admission (`.claude/settings.local.json`,
+   `.codex/config.toml`, `.cursor/permissions.json` and `.cursor/cli.json`) now judges the project
+   root by item 1 (it checked no owner at all) and splits its host folders by use:
+   - **Read** (status, previews, the reverse sweeps): a folder that is the user's own, or root's,
+     and that no other account can write is read normally, so a folder root committed to the image
+     reads as `absent` and a revoke with nothing to remove stays a no-op. A folder another non-root
+     account made, or one others can write (in a sticky root any account can create `.claude`
+     first), is reported `unknown` (`folder_not_owned`): status never reports admission another
+     account could have written, and both grant and revoke refuse it as `entry_unreadable`.
+   - **Write** (only the surfaces a preview would change): the folder must be the user's own and
+     not writable by others. Preview refuses anything else as `target_unsafe` (including a grant
+     into a folder root committed, which the user could not write anyway), and apply pins the
+     project root and the host folder by descriptor (no link followed), creates the folder
+     owner-only when absent, and stages, rechecks, renames and removes through that descriptor, so
+     swapping the folder for a link or another account's folder after the check cannot redirect
+     the write.
+
+   Claude Code's `--scope project` commands, which write `.claude/settings.json`, require `.claude`
+   to be the user's own and not writable by others before any command runs (preview, which apply
+   repeats). One window stays outside what FinishUP can fence: when `.claude` is absent, another
+   account could create it in a sticky root between FinishUP's check and Claude Code's own write;
+   root can pre-create `.claude` for the user to close it.
+
+   Known gap, recorded rather than closed here: the read/write split above is host admission's
+   alone. Every Claude Code plugin change (install, update, enable, disable, remove; status still
+   reads it) and Cursor's project MCP status, connect and disconnect still require `.claude` and
+   `.cursor` to be the user's own, so a
+   folder root committed to the image (`COPY . /app` with a committed `.claude` or `.cursor`) is
+   refused there as `target_unsafe` until root makes it the user's (`chown`). A follow-up may let
+   their status and removal read a root-owned folder no other account can write, as host admission
+   does, while still requiring the user's own folder for a write.
+
+Scope of the sticky arm, recorded rather than changed: item 1 admits every root-owned sticky
+directory, which includes the shared temporary directories (`/tmp`, `/var/tmp`, `/dev/shm`, and on
+macOS `/private/tmp` and the shared folder under `/Users`). A non-root user can therefore bind one of them as a
+project, as the owner's rule intends for a sticky `/app`. Everything FinishUP creates there is still
+the user's own (item 2), and FinishUP's own state keeps refusing shared temporary directories under
+its separate path-safety rule. Executables are a separate rule: the Codex launcher accepts a
+root-owned executable, while Claude Code's executable must still be the user's own, so a
+root-installed `claude` is refused (`target_unsafe`).
+
+Known limits: the runtime prefix must be writable by the user who binds an instance to it
+(`instance create --bind-runtime` writes the pin there), and a serving start needs the user's own
+0700 `.<prefix>-releases` sibling, so a runtime root installed serves only root unless root
+creates that sibling for the user (below). Both are now refused by name instead of
+`internal_error` or a bare permission error:
+
+6. **`runtime_pin_unwritable`.** `instance create --bind-runtime` on a prefix the user cannot
+   write is a typed refusal and creates nothing that stays (ADR-028, 2026-10-14 amendment).
+7. **`release_runtime_not_owned`.** A serving start (`service run`, `mcp serve`, every hook,
+   `upgrade`) whose `.<prefix>-releases` directory belongs to another account, or is absent from a
+   parent another account owns and this user cannot write, is refused with
+   `release_runtime_not_owned` instead of the generic "could not be verified" (an existing
+   directory) or `release_runtime_unavailable: permission_denied` (none yet). The ownership rule
+   is unchanged: generations stay the running user's own, 0700. Terminal commands name the
+   directory and the repair that fits: when the installation is the user's own, remove a
+   directory another account made (for example with sudo) and FinishUP recreates it, or have the
+   parent's owner create it for the user; when the installation is another account's, install
+   FinishUP as the user, or have the installation's owner create the directory for that one user.
+   Hooks keep the non-blocking exit 20 with no stdout decision and print the token without local
+   paths. A spawned `service run` records the token as its startup failure, the CLI's
+   `service_unavailable` and `setup` probes report it read-only (they create nothing), and
+   `upgrade --prune-runtimes` names it. Every connect path refuses to connect a host to such a
+   runtime (or one another account can write), before writing any registration: `setup run --host`,
+   bare `setup run` (the Codex wizard, with or without `--codex-path`), the full-screen interface's
+   first run and `/connect` (both its host connection and its Codex preview), the direct
+   commands `integrate codex mcp preview|install` (also reached from the prompt-loop menu) and
+   `recommend accept codex-plugin-activation` (setup's next command, which enables the Codex
+   plugin and its hooks; `recommend list` and `decline` stay open),
+   `integrate claude plugin preview|install|update|enable` (any connect action),
+   `integrate cursor plugin preview|install` (install or replace) and
+   `integrate cursor project-mcp preview|install`, and, as a last guard for any front end, the
+   shared apply of a connection. Each reports the token as its reason and the refusal text as the
+   next step (exit 20 on the direct commands); disconnect, removal, their previews and status stay
+   open. Not covered: `integrate claude plugin export`, which writes a development carrier for
+   `claude --plugin-dir` rather than connecting a host; a session started from it is refused at
+   launch like any other. A directory the user owns that is read-only, and every other condition,
+   keeps its existing report.
+
+What the rule already admits, and the 2026-10-14 container run confirmed as `nobody`: root may
+create `.<prefix>-releases` for one non-root account (`install -d -m 0700 -o <user>` before anyone
+runs FinishUP) and leave the runtime root-owned; that account then builds and serves its own
+generations from root's files, which no other account can write. Such a runtime serves only that
+account (root is then refused by the same rule) and cannot carry a pin, because a pin must be the
+running user's own; a pinned instance needs a runtime the user owns. Root upgrades it with its
+package manager (`uv tool upgrade`; `finishup upgrade --accept` as root is refused by the same rule),
+and the user removes unused generations with `finishup upgrade --prune-runtimes`. A separate per-user
+location for generations, so one root-installed runtime could serve every account, is not part of
+this change.
+
+Verification: synthetic-stat unit tests of the rule; per-host tests in which the test runner's
+uid plays root and the process another account; a Boat container run of the full benchmark
+bootstrap and an MCP `start`/`publish_work`/`receipt` lifecycle as `nobody` in a root-owned
+`/app` (risk-scorer-replay) and as `agent` in a sticky root-owned `/app` (rs-archive-clone). For
+items 4, 5 and 7 (found by two independent reviews of the change): tests through each public path (the
+workspace locators and setup's workspace selection; Cursor project MCP install and remove and the
+Cursor connect, disconnect and reconnect composition; Codex install, activation and removal; host
+admission grant, revoke, status and the reverse sweeps, including the privacy ceremony's; Claude
+Code connect and remove; the repository identity the service handshake resolves, with a real Git
+checkout owned by another uid; every connect path for a runtime that cannot serve), in a 0755 and
+a sticky root-owned project and against a host folder another account created or swapped after
+the check, with ownership simulated by rewriting the owner the kernel reports where a real chown
+needs root, so most run on non-root runners too. For items 6 and 7:
+unit tests in which another effective uid plays the non-root user against files the runner owns, and a Linux run as `nobody` against a root-owned runtime (`mcp serve`,
+`service run`, a hook, `service status` and `instance create --bind-runtime`; the previous release
+printed `permission_denied`, "could not be verified" and `internal_error`), including the
+root-created `.<prefix>-releases` layout above serving a hook.
+
 ## Implementation-lock identities
 
 The 2026-07-17 implementation lock freezes the direct dependency declarations below. All are

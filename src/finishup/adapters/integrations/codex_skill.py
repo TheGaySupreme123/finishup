@@ -12,7 +12,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Final, Literal, Protocol, cast
 
-from finishup.config.foreign_write import writable_by_others
+from finishup.config.foreign_write import project_root_admitted, writable_by_others
 from finishup.domain.values import JsonObject
 from finishup.ports.integrations import (
     HarnessId,
@@ -423,9 +423,7 @@ def _validated_project(target: IntegrationTarget) -> tuple[Path, str]:
         facts = root.stat()
     except OSError as exc:
         raise _error(IntegrationReason.TARGET_UNSAFE) from exc
-    if hasattr(os, "geteuid") and facts.st_uid != os.geteuid():
-        raise _error(IntegrationReason.TARGET_UNSAFE)
-    if writable_by_others(facts):
+    if not project_root_admitted(facts):
         raise _error(IntegrationReason.TARGET_UNSAFE)
     identity = _inode_identity(facts)
     return root, identity
@@ -488,7 +486,12 @@ def _skill_parent_identity(root: Path) -> str:
         facts = identity_path.lstat()
     except OSError as exc:
         raise _error(IntegrationReason.TARGET_UNSAFE) from exc
-    _owned_stat_not_writable(facts, directory=True)
+    if identity_path == root:
+        # No managed parent yet: the project root itself, judged as a project root.
+        if not project_root_admitted(facts):
+            raise _error(IntegrationReason.TARGET_UNSAFE)
+    else:
+        _owned_stat_not_writable(facts, directory=True)
     return _inode_identity(facts)
 
 
@@ -882,7 +885,8 @@ def _open_skill_parent_fd(
     current_fd = os.open(root, _directory_open_flags())
     try:
         root_facts = os.fstat(current_fd)
-        _owned_stat_not_writable(root_facts, directory=True)
+        if not project_root_admitted(root_facts):
+            raise _error(IntegrationReason.TARGET_UNSAFE)
         root_identity = _inode_identity(root_facts)
         if root_identity != target_identity:
             raise _error(IntegrationReason.PREVIEW_STALE)

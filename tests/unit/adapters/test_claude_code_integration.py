@@ -262,6 +262,87 @@ def test_connect_installs_and_enables_with_one_review_and_replays_without_review
     assert review.consumed == [preview.preview_digest]
 
 
+def _root_owned_project_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    mode: int,
+    claude_directory: str | None,
+) -> ClaudeCodePluginTarget:
+    """``_target`` with ``project`` reported as the superuser's (``tests.builders.ownership``).
+
+    ``claude_directory``: ``"user"`` when root made ``.claude`` for the user, ``"other"`` (or
+    ``"other_shared"``, mode 0777) when another account created it first, ``None`` when absent.
+    """
+
+    from tests.builders.ownership import OTHER, SUPERUSER, present_owners
+
+    target = _target(tmp_path)
+    project = Path(target.project_root)
+    owners = {project: SUPERUSER}
+    if claude_directory is not None:
+        directory = project / ".claude"
+        directory.mkdir(mode=0o700)
+        if claude_directory == "other_shared":
+            directory.chmod(0o777)
+        if claude_directory != "user":
+            owners[directory] = OTHER
+    project.chmod(mode)
+    present_owners(monkeypatch, owners)
+    return target
+
+
+@pytest.mark.parametrize(
+    ("mode", "claude_directory"), [(0o755, "user"), (0o1777, None)], ids=["0755", "1777"]
+)
+def test_connect_and_remove_in_a_root_owned_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int, claude_directory: str | None
+) -> None:
+    target = _root_owned_project_target(
+        tmp_path, monkeypatch, mode=mode, claude_directory=claude_directory
+    )
+    artifact = render_claude_code_plugin(
+        mcp_ownership=McpOwnership.PLUGIN_MANAGED, route_profile="strict"
+    )
+    commands = _ClaudeFixture(artifact)
+    for action in (ClaudeCodePluginAction.CONNECT, ClaudeCodePluginAction.REMOVE):
+        preview = preview_claude_code_plugin(_REQUEST, target, action, artifact, commands=commands)
+        result = apply_claude_code_plugin(
+            _REQUEST,
+            target,
+            action,
+            artifact,
+            accepted_preview_digest=preview.preview_digest,
+            authority=_authority(preview.preview_digest),
+            review=_Review(),
+            commands=commands,
+        )
+        assert result.operation_state is PluginOperationState.COMPLETED
+
+
+@pytest.mark.parametrize("claude_directory", ["other", "other_shared"])
+def test_project_scope_commands_never_run_in_a_claude_directory_another_account_made(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, claude_directory: str
+) -> None:
+    """A sticky root-owned /app lets another account create .claude first; Claude's
+    ``--scope project`` commands would write settings.json into it."""
+
+    target = _root_owned_project_target(
+        tmp_path, monkeypatch, mode=0o1777, claude_directory=claude_directory
+    )
+    artifact = render_claude_code_plugin(
+        mcp_ownership=McpOwnership.PLUGIN_MANAGED, route_profile="strict"
+    )
+    commands = _ClaudeFixture(artifact)
+    with pytest.raises(ClaudeCodeIntegrationError) as refused:
+        preview_claude_code_plugin(
+            _REQUEST, target, ClaudeCodePluginAction.CONNECT, artifact, commands=commands
+        )
+    assert refused.value.reason is PluginArtifactReason.TARGET_UNSAFE
+    assert not [call for call in commands.calls if call[:2] != ("plugin", "list")]
+    assert list((Path(target.project_root) / ".claude").iterdir()) == []
+
+
 def test_connect_resumes_installed_disabled_without_reinstall(tmp_path: Path) -> None:
     target = _target(tmp_path)
     artifact = render_claude_code_plugin(

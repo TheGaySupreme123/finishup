@@ -5,7 +5,7 @@ from __future__ import annotations
 import shlex
 import sys
 from pathlib import Path
-from typing import Literal, cast
+from typing import Final, Literal, cast
 
 from finishup.adapters.integrations.artifact_presence import (
     describe_artifact_presence,
@@ -221,6 +221,30 @@ def _status_body(status: ClaudeCodePluginStatus) -> dict[str, object]:
     }
 
 
+# Actions that leave Claude Code launching this runtime; disable, remove and status never ask.
+_CONNECT_ACTIONS: Final = frozenset(
+    action.value
+    for action in (
+        ClaudeCodePluginAction.CONNECT,
+        ClaudeCodePluginAction.INSTALL,
+        ClaudeCodePluginAction.UPDATE,
+        ClaudeCodePluginAction.ENABLE,
+    )
+)
+
+
+def _connect_refused() -> int | None:
+    """``<token>: <next step>`` and exit 20 when this runtime cannot serve the running account."""
+
+    from finishup.cli.runtime_refusal import connect_refusal
+
+    refusal = connect_refusal()
+    if refusal is None:
+        return None
+    sys.stderr.write(f"{refusal[0]}: {refusal[1]}\n")
+    return 20
+
+
 def run_claude_code_plugin_command(
     command: str,
     *,
@@ -261,6 +285,11 @@ def run_claude_code_plugin_command(
     ):
         sys.stderr.write("claude_code_plugin_command_invalid\n")
         return 2
+    requested = (requested_action if command == "preview" else command) or "install"
+    if command != "status" and requested in _CONNECT_ACTIONS:
+        refused = _connect_refused()
+        if refused is not None:
+            return refused
     try:
         executable = claude_path.expanduser().resolve(strict=True)
         identity = discover_claude_code(executable)

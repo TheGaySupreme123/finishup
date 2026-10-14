@@ -129,3 +129,32 @@ disposal as a no-op.
   sweeps, relaxing `tests/packaging` serialization or the `~/.yz-*` shared-root rule, per-worker
   CI fixture adoption beyond the documented script, and live-host activation proof of Claude Code
   or Cursor plugins on a pinned snapshot.
+
+## Amendment — `instance create` is whole or nothing (2026-10-14, owner request)
+
+The owner asked for this fix while admitting non-root container users (ADR-007, 2026-10-14
+amendment, issue #1073). `finishup instance create --bind-runtime` on a runtime the current user
+cannot write (a runtime another account installed, as root does in a container image) created the
+root and sealed its marker, then failed writing the pin with a raw permission error: the command
+reported `internal_error`, and the retry after fixing permissions reported `instance_exists`.
+
+1. **A typed refusal.** Any failure writing the pin (no write permission, a read-only or full
+   disk) is `runtime_pin_unwritable` (`STORAGE_UNSAFE`, exit 20, continuation
+   `local_state_repair`), with a remediation that names both causes and both repairs: install
+   FinishUP as the account that runs it, or fix the environment directory. The pin's temporary file
+   is removed on every failure, as is the marker's.
+2. **Rollback of exactly what this command made.** When sealing the marker or writing the pin
+   fails, `create` removes its own marker (only while it still holds this command's identity,
+   which also covers a seal that failed after the marker was renamed into place, while its
+   directory was being synced), then the state directory and, when this command created it, the
+   root, each only when empty.
+   A root the operator created beforehand stays, empty as it was; another instance's pin is never
+   touched; nothing is removed recursively. The refusal is raised after the rollback, so the same
+   command succeeds once the cause is fixed. The rollback covers every refusal after the root is
+   created, including a pin conflict found only at write time.
+
+Verification: unit tests that simulate the kernel's refusal for a superuser runner (and use the
+real mode bits otherwise), a pre-existing empty root, a late pin conflict, and failed open, write
+and rename of the pin; and a real run as `nobody` against a root-owned runtime (previous release:
+`internal_error`, then `instance_exists`; now `runtime_pin_unwritable` with nothing left, and the
+retry succeeds once the prefix is the user's).

@@ -179,6 +179,89 @@ root-owned Claude Code executable, which the separate executable-ownership rule 
 `target_unsafe` regardless of umask. The interpreter a retained generation links to is
 re-checked on every reuse, so a later group change is refused then too.
 
+## Root-owned project directories (containers)
+
+Container images often keep the working directory root-owned and run the agent as a non-root
+`USER` (for example `/app` as `root:root 0755`, or sticky `1777`, with `USER nobody`). FinishUP
+admits such a project root for the non-root user when no other account can write it, or when it is
+sticky (ADR-007, 2026-10-14); a directory another non-root account owns stays refused. Everything
+FinishUP creates inside it (`.agents/`, `.cursor/`, `.claude/`, `.codex/`) must belong to the user, so
+when the user cannot create entries there, have root pre-create that directory owned by the user.
+
+**Checkouts.** Git refuses another owner's checkout ("dubious ownership"). A checkout root made
+(`/app` and `/app/.git` owned by root, from `COPY` or `git clone` at image build), and the user's
+own `git init` inside a sticky root-owned `/app` (Git refuses that too, because the working tree is
+root's), are used as a plain directory: the locator is `/app` from `/app` or any directory beneath
+it, the service gives `/app` (the checkout's top) the plain directory identity without running
+Git, whichever of those directories a host, the CLI or the full-screen interface starts from, and
+the service starts and hooks and MCP attach. Change and subject-state capture report `unsafe_root`;
+the receipt names the gap as "the repository failed a safety check (a link, another owner, a
+working tree redirected elsewhere, or a directory replaced while it was read)", so checks cover
+what the agent publishes, not a Git diff. A `.git` another non-root account owns, one others can write, or a root-owned
+`.git` file with more than one link (anyone can plant a hard link in a sticky directory) is
+refused. If you need Git-based capture, give the user the checkout (`chown -R`).
+
+**Host folders.** A `.claude`, `.codex` or `.cursor` root committed to the image is read
+normally by host admission, so admission status shows `absent` (typically) and its reverse sweeps
+(the privacy ceremony, Codex disconnect and strict re-registration, plugin removal) report nothing
+to remove; FinishUP cannot write admission entries into it (the user cannot either), so a grant there
+is refused `target_unsafe`. Known gap: every Claude Code plugin change (install, update, enable,
+disable, remove; status still reads it), and Cursor's project MCP status, connect and disconnect,
+still require `.claude` and `.cursor` to be the user's own and refuse a root-committed one as
+`target_unsafe`. In both cases the repair is to have root
+make the folder the user's (`chown -R <user> /app/.claude`); a follow-up may let those paths read
+such a folder for status and removal. In a sticky project folder another account can create one of those folders first;
+admission status then reports it `unknown` (`folder_not_owned`), grant and revoke refuse it, and
+Claude Code setup refuses a squatted `.claude` (`target_unsafe`): remove it, or have root recreate
+it for the user. Writes go through the folder FinishUP checked, pinned by descriptor, never a link
+swapped in after the check.
+
+**Scope.** The rule admits every root-owned sticky directory, so a non-root user can also bind
+`/tmp`, `/var/tmp` or `/dev/shm` (on macOS `/private/tmp` and the shared folder under `/Users`) as
+a project; FinishUP's own state still refuses shared temporary directories. A root-installed `claude`
+executable is still refused for a non-root user (Claude Code's executable must be the user's own),
+while Codex accepts a root-owned launcher.
+
+**The runtime.** Install it as the user (or give the user its prefix and a 0700
+`.<prefix>-releases` sibling), because binding an instance writes into the prefix and every
+serving start uses that sibling. A runtime the user cannot use this way is refused by name
+(ADR-007, 2026-10-14):
+
+- `release_runtime_not_owned` (exit 20) from `service run`, `mcp serve`, `upgrade` and every hook
+  when `.<prefix>-releases` belongs to another account, or does not exist and the user cannot
+  create it in the prefix's parent. Terminal commands print that directory and the repair that
+  fits; hooks print the token only. `service status` names it, and every connect path refuses to
+  connect a host to such a runtime (`setup run` with or without `--host`, the full-screen
+  interface's first run and `/connect`, the menu, the `integrate … install` commands for Codex
+  MCP, Claude Code and Cursor, and `recommend accept codex-plugin-activation`, exit 20);
+  disconnect, removal and status stay available. Before, these
+  printed `release_runtime_unavailable: permission_denied` (no directory yet) or "could not be
+  verified" (root had already run FinishUP and made the directory), and setup connected anyway.
+- When the installation is the user's own but `.<prefix>-releases` is not (typically created by
+  running FinishUP once with `sudo`), the repair is to remove that directory (it holds only that
+  account's runtime copies; stop anything that account runs from it first) and let FinishUP recreate
+  it as the user's, 0700. When it is absent and the user cannot create it, have the owner of the
+  prefix's parent create it for the user (`install -d -m 0700 -o <user> <dir>`).
+- `runtime_pin_unwritable` (exit 20) from `instance create --bind-runtime` when the user cannot
+  write the prefix; the command keeps nothing, so it can simply be run again after the repair.
+
+If the image must keep the runtime root-owned, root can create the sibling for exactly one user
+before anyone runs FinishUP:
+
+```bash
+install -d -m 0700 -o agent /opt/yu/.runtime-releases   # for a runtime at /opt/yu/runtime
+```
+
+That user then builds and serves its own private copies from root's files (verified as `nobody`,
+2026-10-14). Root itself is then refused by the same rule, the runtime serves only that user, and
+it cannot be pinned (a pin must be the running user's own), so a pinned instance still needs a
+runtime the user owns. If root has already run FinishUP from that runtime, the existing sibling holds
+root's copies and lock: leave it and install a runtime for the user instead. Lifecycle in this
+layout: root upgrades the package with its package manager (for example `uv tool upgrade yoetz`;
+`finishup upgrade --accept` run as root is refused by the same rule); the user's next serving start
+builds a fresh copy and removes unused older ones, and the user can remove unused copies at any
+time with `finishup upgrade --prune-runtimes`. Sessions already open keep their copy until they end.
+
 ## Retained-runtime bytecode and slow starts
 
 Serving processes (`service run`, `mcp serve`, every hook, `upgrade`) run from a sealed,

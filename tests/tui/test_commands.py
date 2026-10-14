@@ -105,6 +105,63 @@ async def test_connection_handover_preserves_foreground_authority_and_continuati
             assert continuation in transcript(app)
 
 
+@pytest.mark.parametrize("disconnect", [False, True], ids=["connect", "disconnect"])
+async def test_connecting_a_host_names_a_runtime_that_cannot_serve_this_account(
+    make_app: MakeApp, monkeypatch: pytest.MonkeyPatch, disconnect: bool
+) -> None:
+    """``/connect`` and first-run used to connect anyway; every launch would then be refused.
+    Disconnect stays open."""
+
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from finishup.adapters import release_runtime
+    from finishup.cli import host_connection
+    from finishup.tui.models import HarnessOption
+
+    monkeypatch.setattr(
+        release_runtime,
+        "installed_runtime_refusal",
+        lambda: release_runtime.ReleaseRuntimeError("release_runtime_not_owned"),
+    )
+    plan = SimpleNamespace(unchanged=False, body={"action": "disconnect"})
+    prepared: list[bool] = []
+
+    def prepare(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        prepared.append(True)
+        return plan
+
+    def apply(*_args: object) -> dict[str, object]:
+        return {}
+
+    def summary(_plan: object) -> tuple[str, ...]:
+        return ("Preview",)
+
+    def select(*_args: object) -> object:
+        return object()
+
+    monkeypatch.setattr(host_connection, "select_installation", select)
+    monkeypatch.setattr(host_connection, "prepare_selected", prepare)
+    monkeypatch.setattr(host_connection, "connection_summary", summary)
+    monkeypatch.setattr(host_connection, "apply_selected", apply)
+    app = make_app()
+
+    async def approve(_view: object) -> str:
+        return "apply"
+
+    monkeypatch.setattr(app, "ask", approve)
+    option = HarnessOption(str(Path("/opt/claude")), "2.1.0", "Claude", "", host="claude")
+    async with app.run_test(size=WIDE):
+        result = await app._connect_selected_host(option, disconnect=disconnect)  # pyright: ignore[reportPrivateUsage]
+    if disconnect:
+        assert result is True and prepared == [True]
+    else:
+        assert result is False and prepared == []
+        shown = transcript(app)
+        assert "FinishUP cannot run from this installation for this account" in shown
+        assert "must belong to the account running FinishUP" in shown
+
+
 # ---------------------------------------------------------------------------
 # Landing surface
 # ---------------------------------------------------------------------------
