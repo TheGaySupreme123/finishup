@@ -8,10 +8,10 @@ import json
 import os
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 
 import pytest
 
@@ -53,6 +53,33 @@ from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, Public
 from finishup.protocol.models import StartRequest
 
 _KEY = b"k" * 32
+
+
+@pytest.fixture(autouse=True)
+def _no_real_service_start(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """Fail a case whose hook reached the real on-demand service launcher.
+
+    Given the production connector (``connect=None``), a consented SessionStart primes the service
+    through ``connect_service_on_demand``, which spawns a detached ``finishup service run`` in its
+    own session under the ambient installation: the developer's own outside an isolated run. No
+    teardown stops it, and the hook swallows a launcher failure into an auto-attach reason, so the
+    case still passes while the service outlives it. Cases pass a test connector instead; one
+    that tests the launcher patches ``_spawn_service_process`` itself, which replaces this guard.
+    """
+
+    import finishup.service.client as service_client
+
+    attempts: list[None] = []
+
+    def refused() -> NoReturn:
+        attempts.append(None)
+        raise OSError("unit tests never start a real service")
+
+    monkeypatch.setattr(service_client, "_spawn_service_process", refused)
+    yield
+    assert not attempts, "a hook reached the real on-demand service launcher"
 
 
 def test_map_supported_hook_payloads_structural_only(tmp_path: Path) -> None:
@@ -7275,6 +7302,21 @@ def test_non_attachment_hooks_never_spawn_a_service(
 # --- #843: session end after capacity is lowered above the 1 MiB fallback ---
 
 
+async def _no_running_service(_kind: object) -> NoReturn:
+    """The connector when no service is running: what the production connector raises then.
+
+    These cases test local accounting, never a service. ``connect=None`` would select the
+    production connector, and a consented SessionStart primes the service with it through the
+    on-demand launcher: a real detached ``finishup service run`` under the ambient installation
+    (the developer's own outside an isolated run) that outlived the case and served its later
+    drains (``_no_real_service_start``).
+    """
+
+    from finishup.ports.control import ControlError
+
+    raise ControlError("service_unavailable", retryable=True)
+
+
 def _lowered_over_target_session(
     tmp_path: Path, source: ObservationSource, host_session: str
 ) -> tuple[LocalObservationStore, str, str, Callable[[str], int]]:
@@ -7304,7 +7346,7 @@ def _lowered_over_target_session(
             stdout=io.BytesIO(),
             workspace=locator,
             _state=tmp_path,
-            connect=None,
+            connect=_no_running_service,
             source=source,
         )
 
@@ -7419,7 +7461,7 @@ def test_an_unpersisted_session_end_is_named_not_swallowed(
             stdout=io.BytesIO(),
             workspace=locator,
             _state=tmp_path,
-            connect=None,
+            connect=_no_running_service,
             source=source,
         )
 
@@ -7487,7 +7529,7 @@ def test_deferred_session_end_batch_failure_is_named(
             stdout=io.BytesIO(),
             workspace=locator,
             _state=tmp_path,
-            connect=None,
+            connect=_no_running_service,
             source=ObservationSource.CODEX_HOOK,
         )
 
@@ -7549,7 +7591,7 @@ def test_deferred_session_end_pending_cap_is_named(
                 stdout=io.BytesIO(),
                 workspace=locator,
                 _state=tmp_path,
-                connect=None,
+                connect=_no_running_service,
                 source=ObservationSource.CODEX_HOOK,
             )
             == 0
