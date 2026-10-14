@@ -3932,9 +3932,10 @@ class CheckReviewModeModel(_ClosedModel):
 
     mode: Literal["ai_powered", "local"]
     source: Literal["check_request", "conversation_default", "conversation_switch"]
-    local_reason: Literal["ai_review_not_set_up", "owner_local_only", "route_local_only"] | None = (
-        None
-    )
+    local_reason: (
+        Literal["ai_review_not_set_up", "owner_local_only", "review_disabled", "route_local_only"]
+        | None
+    ) = None
     switch_event_id: EventIdWire | None = None
 
     @model_validator(mode="after")
@@ -5074,12 +5075,14 @@ class StatusReviewModeModel(_ClosedModel):
     mode: Literal["ai_powered", "local"]
     requested: Literal["ai_powered", "local"]
     setting: Literal["ai_powered", "local_agent_opt_in", "local_only", "local_owner_approval"]
+    setting_explicit: bool
     ai_review_available: bool
     local_reason: (
         Literal[
             "ai_review_not_set_up",
             "conversation_default",
             "owner_local_only",
+            "review_disabled",
             "route_local_only",
             "switched_to_local",
         ]
@@ -7204,6 +7207,7 @@ _STATUS_COMMON_STRUCTURAL_POINTERS: Final = (
             "mode",
             "requested",
             "setting",
+            "setting_explicit",
             "switch_event_id",
             "switch_sequence",
         ),
@@ -8004,10 +8008,10 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1622
+        len(result) != 1623
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
-        # #1047 +2 (follow_up_round), ADR-049 +4 check / +7 status (review_mode)
+        # #1047 +2 (follow_up_round), ADR-049 +4 check / +8 status (review_mode)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

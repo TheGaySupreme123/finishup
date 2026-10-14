@@ -2078,6 +2078,7 @@ def test_review_mode_omits_unset_reason_and_switch() -> None:
             "mode": "local",
             "requested": "local",
             "setting": "local_agent_opt_in",
+            "setting_explicit": True,
             "ai_review_available": True,
         }
     )
@@ -2092,6 +2093,7 @@ def test_review_mode_omits_unset_reason_and_switch() -> None:
                     "mode": "local",
                     "requested": "local",
                     "setting": "local_agent_opt_in",
+                    "setting_explicit": True,
                     "ai_review_available": True,
                     field: None,
                 }

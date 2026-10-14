@@ -126,6 +126,7 @@ from finishup.kernel.closure_class import (
     finding_closures,
     obligation_closures,
 )
+from finishup.kernel.closure_readiness import semantic_review_used
 from finishup.kernel.concern import (
     ConcernKey,
     concern_key,
@@ -204,6 +205,7 @@ from finishup.kernel.review_frame import agent_probe_only, finishup_process_stat
 from finishup.kernel.review_mode import (
     REQUESTED_BUT_LOCAL_REASONS,
     ConversationReviewContext,
+    ConversationReviewMode,
     conversation_review_mode,
 )
 from finishup.kernel.review_round import review_round_stopped
@@ -4795,11 +4797,12 @@ def _sorted_verdicts(
 
 async def _conversation_review_context(
     app: Application, runtime: TaskRuntime, request_id: str
-) -> ConversationReviewContext | None:
+) -> ConversationReviewContext | None | Literal["unreadable"]:
     """The owner's conversation setting and review availability for this task (ADR-049).
 
-    ``None`` when the application cannot say (a composition without the reader, or a failed
-    read): the check then keeps the released behaviour and records no review mode.
+    ``None`` when the application has no reader (a composition that predates the setting): the
+    check then keeps the released behaviour and records no review mode. ``"unreadable"`` when the
+    reader failed: the check fails closed (``_resolve_check_review_mode``).
     """
 
     reader = getattr(app, "conversation_review_context", None)
@@ -4816,8 +4819,37 @@ async def _conversation_review_context(
             operation="conversation_review_context_failed",
             request_id=request_id,
         )
-        return None
+        return "unreadable"
     return context if type(context) is ConversationReviewContext else None
+
+
+async def _semantic_review_used_at(
+    runtime: TaskRuntime, request: CheckRequest, frozen: FrozenCase
+) -> bool:
+    """Whether the frozen prefix already used AI-powered review; read for the closing review only.
+
+    Only a ``final_review: true`` check that names no mode asks: in a task now running local, that
+    check is the closing review the task owes (ADR-049). A failed read says no, so the check runs
+    in the task's mode and the closing review stays owed rather than dispatched unasked.
+    """
+
+    if not request.final_review:
+        return False
+    try:
+        records = tuple(
+            [
+                record
+                async for record in runtime.ledger.load_events(
+                    runtime.session_id, through=frozen.case.frontier.sequence
+                )
+            ]
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc, component="check", operation="review_used_read", request_id=request.request_id
+        )
+        return False
+    return semantic_review_used(records)
 
 
 async def _check_review_mode(
@@ -4841,6 +4873,8 @@ async def _check_review_mode(
         frozen=frozen,
         context=await _conversation_review_context(app, runtime, request.request_id),
         route_profile=route_profile,
+        review_used=not mode_explicit and await _semantic_review_used_at(runtime, request, frozen),
+        review_enabled=app.verification_policy.semantic != "disabled",
     )
     return (
         resolved,
@@ -4849,32 +4883,77 @@ async def _check_review_mode(
     )
 
 
+def _requested_review(
+    request: CheckRequest,
+    conversation: ConversationReviewMode,
+    context: ConversationReviewContext,
+    *,
+    route_profile: Literal["policy", "strict"],
+    keeps_requirement: bool,
+) -> tuple[CheckRequest, CheckReviewMode, Literal["optional", "required"] | None]:
+    """A check's own request for AI-powered review (``source`` ``check_request``).
+
+    It runs under the effective privacy policy (which may still ask the owner per review), except
+    where the owner explicitly chose local only, where it runs local: a ``semantic_required``
+    request the caller named keeps its requirement there (``keeps_requirement``), so the missing
+    review stays an honest gap rather than a clean local result. On the strict route nothing can
+    dispatch, and the recorded mode says so.
+    """
+
+    if conversation.setting is ConversationReview.LOCAL_ONLY and (
+        context.setting_explicit or context.ai_review_available
+    ):
+        # The owner chose local checks only: an agent's one-check request does not opt in.
+        return (
+            request.model_copy(update={"mode": "deterministic_only"}),
+            CheckReviewMode(ReviewMode.LOCAL, "check_request", "owner_local_only"),
+            "required" if keeps_requirement else "optional",
+        )
+    if route_profile == "strict":
+        return request, CheckReviewMode(ReviewMode.LOCAL, "check_request", "route_local_only"), None
+    return request, CheckReviewMode(ReviewMode.AI_POWERED, "check_request"), None
+
+
 def _resolve_check_review_mode(
     request: CheckRequest,
     *,
     mode_explicit: bool,
     frozen: FrozenCase,
-    context: ConversationReviewContext | None,
+    context: ConversationReviewContext | None | Literal["unreadable"],
     route_profile: Literal["policy", "strict"] = "policy",
+    review_used: bool = False,
+    review_enabled: bool = True,
 ) -> tuple[CheckRequest, CheckReviewMode | None, Literal["optional", "required"] | None]:
     """``(request, recorded review mode, verification override)`` for one check (ADR-049).
 
-    A check that did not name its mode runs in its conversation's mode: a local conversation's
-    check becomes ``deterministic_only`` on a route that did not require AI-powered review
-    (override ``optional``), so it completes at local coverage and discloses that. A check that
-    names an AI-powered mode is that check's own request: it runs under the effective privacy
-    policy (which may still ask the owner per review), except where the owner explicitly chose
-    local only, where it runs local; a ``semantic_required`` request there keeps its requirement
-    (override ``required``), so the missing review stays an honest gap rather than a clean local
-    result. A check that names ``deterministic_only`` runs local. Without a context nothing
+    A check that did not name its mode runs in its conversation's mode. A conversation local by a
+    choice its owner's setting allows runs ``deterministic_only`` on a route that did not require
+    AI-powered review (override ``optional``), so it completes at local coverage and discloses
+    that. Under the owner's "every task" setting a switch to local decides nothing: the check runs
+    as configured and a missing review stays the owner's required-review gap.
+
+    A ``final_review: true`` check that names no mode, in a task that already used AI-powered
+    review and now runs local, is the closing review the task owes (the Stop gate's instruction):
+    it is that check's own request. A check that names an AI-powered mode is that check's own
+    request (``_requested_review``). A check that names ``deterministic_only`` runs local; it
+    lowers the requirement only in a conversation local by choice. Without a context nothing
     changes and no mode is recorded (``None`` override: the configured verification policy).
 
     Upgrade rule: where the owner's policy predates the setting and the conversation recorded no
     switch, the check keeps its released behaviour exactly and records no mode, so an existing
     installation's checks and receipts are unchanged until the owner chooses a setting or an
     agent switches the task.
+
+    Fail closed: where the owner's setting could not be read, a check that names no mode runs
+    local checks only under the configured requirement (a required review stays a bounding gap)
+    and records no mode; a check that named its mode keeps it, and the privacy gateway still
+    enforces the owner's policy at dispatch.
     """
 
+    if context == "unreadable":
+        if mode_explicit:
+            return request, None, None
+        return request.model_copy(update={"mode": "deterministic_only"}), None, None
     if context is None:
         return request, None, None
     conversation = conversation_review_mode(
@@ -4883,11 +4962,30 @@ def _resolve_check_review_mode(
         ai_review_available=context.ai_review_available,
         setting_explicit=context.setting_explicit,
         route_allows_review=route_profile == "policy",
+        review_enabled=review_enabled,
     )
     if not context.setting_explicit and not conversation.switches:
         return request, None, None
-    switch = conversation.latest_switch
+    if (
+        not mode_explicit
+        and review_used
+        and request.final_review
+        and conversation.mode is ReviewMode.LOCAL
+    ):
+        # The closing review of a task that already used AI-powered review (review round 1).
+        if request.mode == "deterministic_only":
+            # The verification settings turn review off for checks that name no mode: the
+            # closing review cannot run here, and the recorded reason says so.
+            return (
+                request,
+                CheckReviewMode(ReviewMode.LOCAL, "check_request", "review_disabled"),
+                "optional" if conversation.local_by_choice else None,
+            )
+        return _requested_review(
+            request, conversation, context, route_profile=route_profile, keeps_requirement=False
+        )
     if not mode_explicit:
+        switch = conversation.latest_switch if conversation.driven_by_switch else None
         source = "conversation_switch" if switch is not None else "conversation_default"
         switch_id = None if switch is None else switch.event_id
         if conversation.mode is ReviewMode.LOCAL:
@@ -4899,28 +4997,22 @@ def _resolve_check_review_mode(
             return (
                 request.model_copy(update={"mode": "deterministic_only"}),
                 CheckReviewMode(ReviewMode.LOCAL, source, reason, switch_id),
-                "optional",
+                "optional" if conversation.local_by_choice else None,
             )
-        if request.mode == "deterministic_only":
-            # The owner's verification setting disabled AI-powered review outright.
-            return request, CheckReviewMode(ReviewMode.LOCAL, source, None, switch_id), None
         return request, CheckReviewMode(ReviewMode.AI_POWERED, source, None, switch_id), None
     if request.mode == "deterministic_only":
         return (
             request,
             CheckReviewMode(ReviewMode.LOCAL, "check_request"),
-            "optional" if conversation.mode is ReviewMode.LOCAL else None,
+            "optional" if conversation.local_by_choice else None,
         )
-    if conversation.setting is ConversationReview.LOCAL_ONLY and (
-        context.setting_explicit or context.ai_review_available
-    ):
-        # The owner chose local checks only: an agent's one-check request does not opt in.
-        return (
-            request.model_copy(update={"mode": "deterministic_only"}),
-            CheckReviewMode(ReviewMode.LOCAL, "check_request", "owner_local_only"),
-            "required" if request.mode == "semantic_required" else "optional",
-        )
-    return request, CheckReviewMode(ReviewMode.AI_POWERED, "check_request"), None
+    return _requested_review(
+        request,
+        conversation,
+        context,
+        route_profile=route_profile,
+        keeps_requirement=request.mode == "semantic_required",
+    )
 
 
 def semantic_route_required(

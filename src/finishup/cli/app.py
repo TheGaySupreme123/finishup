@@ -2041,7 +2041,7 @@ def privacy_conversations_local_only(json_output: _JSON = False) -> None:
 
 @privacy_conversations_app.command("ai-powered")
 def privacy_conversations_ai_powered(json_output: _JSON = False) -> None:
-    """Every task starts with AI-powered review (the behaviour before this setting existed)."""
+    """Every task runs with AI-powered review (the behaviour before this setting existed)."""
 
     _finish(run_async(lambda: _run_conversation_review_command("ai-powered", json_output)))
 
@@ -2067,7 +2067,9 @@ async def _run_conversation_review_status(json_output: bool) -> int:
     policy = snapshot.composed_policy
     effective = policy.effective_conversation_review.value
     if not json_output:
-        typer.echo(conversation_setting_text(effective))
+        typer.echo(
+            conversation_setting_text(effective, explicit=policy.conversation_review is not None)
+        )
         return 0
     _human_or_json(
         {

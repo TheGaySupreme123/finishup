@@ -356,6 +356,8 @@ class PrivacyPosture:
     # The owner's conversation setting the composed policy means (ADR-049): the explicit token,
     # or the released reading of a policy that predates it; ``None`` when unreadable.
     conversation_review: str | None = None
+    # Whether the owner chose that setting; a released ``local_only`` says nothing is set up.
+    conversation_review_explicit: bool = True
 
     @property
     def conversation_review_summary(self) -> str | None:
@@ -363,7 +365,12 @@ class PrivacyPosture:
 
         from finishup.cli.render import conversation_setting_text
 
-        return conversation_setting_text(self.conversation_review) or None
+        return (
+            conversation_setting_text(
+                self.conversation_review, explicit=self.conversation_review_explicit
+            )
+            or None
+        )
 
     @property
     def credential_heuristic_disabled(self) -> bool:

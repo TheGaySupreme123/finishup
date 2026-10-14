@@ -706,14 +706,15 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
 _FILTER_WORDS: Final = {"enforced": "on", "disabled": "off", "unknown": "unknown"}
 
 
-def conversation_setting_text(setting: object) -> str:
+def conversation_setting_text(setting: object, *, explicit: bool = True) -> str:
     """The owner's conversation setting as one sentence (ADR-049); ``""`` when unknown.
 
-    Every human surface (``finishup privacy show``, the terminal interface) uses this text for
-    the same token, and it names the command that changes it.
+    Every human surface (``finishup privacy conversations status``, the terminal interface) uses
+    this text for the same token, and it names the command that changes it. ``explicit`` false
+    is a policy that predates the setting (a released ``local_only`` says nothing is set up).
     """
 
-    return conversation_setting_line(setting)
+    return conversation_setting_line(setting, explicit=explicit)
 
 
 def credential_heuristic_line(repository: object, machine_default: object) -> str:
@@ -1071,11 +1072,15 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     return "\n".join(lines)
 
 
-_RECEIPT_REVIEW_MODE_PREFIX: Final = "Review mode switches recorded for this task:"
+_RECEIPT_REVIEW_MODE_PREFIXES: Final = (
+    "Review mode switches recorded for this task:",
+    "The applicable check ran local checks only (FinishUP)",
+    "The applicable check ran with AI-powered review requested.",
+)
 
 
 def _receipt_review_mode_lines(document: Mapping[str, JsonValue]) -> list[str]:
-    """The receipt's review-mode sentence from its limitations section, when it has one."""
+    """The receipt's review-mode sentences from its limitations section, when it has them."""
 
     sections = document.get("sections")
     if not isinstance(sections, (list, tuple)):
@@ -1087,9 +1092,11 @@ def _receipt_review_mode_lines(document: Mapping[str, JsonValue]) -> list[str]:
         body = section.get("body")
         if section.get("key") != "limitations_and_coverage" or type(body) is not str:
             continue
-        start = body.find(_RECEIPT_REVIEW_MODE_PREFIX)
-        if start >= 0:
-            return [body[start:]]
+        starts = [
+            found for prefix in _RECEIPT_REVIEW_MODE_PREFIXES if (found := body.find(prefix)) >= 0
+        ]
+        if starts:
+            return [body[min(starts) :]]
     return []
 
 

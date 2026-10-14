@@ -3155,7 +3155,7 @@ CHECK_REVIEW_MODE_SOURCES: Final = frozenset(
     {"conversation_default", "conversation_switch", "check_request"}
 )
 CHECK_REVIEW_MODE_LOCAL_REASONS: Final = frozenset(
-    {"owner_local_only", "route_local_only", "ai_review_not_set_up"}
+    {"owner_local_only", "route_local_only", "review_disabled", "ai_review_not_set_up"}
 )
 
 

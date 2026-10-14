@@ -1343,6 +1343,7 @@ class FinishUpRuntime:
         task_statement_sent, task_statement_disclosure = _task_statement_posture(policy_map)
         return PrivacyPosture(
             conversation_review=_conversation_review_token(policy_map, llm_enabled),
+            conversation_review_explicit=policy_map.get("conversation_review") is not None,
             recipe_outdated=_review_recipe_outdated(policy_map),
             credential_heuristic=_credential_heuristic_pair(response.get("credential_heuristic")),
             profile=profile if isinstance(profile, str) else None,

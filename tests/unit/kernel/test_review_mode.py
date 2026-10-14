@@ -157,13 +157,61 @@ def test_the_released_ai_powered_setting_keeps_its_honest_unavailable_review() -
 
     projection, _ = _projection()
     resolved = conversation_review_mode(
-        projection,
-        ConversationReview.AI_POWERED,
-        ai_review_available=False,
-        route_allows_review=False,
+        projection, ConversationReview.AI_POWERED, ai_review_available=False
     )
     assert resolved.mode is ReviewMode.AI_POWERED
     assert resolved.local_reason is None
+
+
+@pytest.mark.parametrize("setting", [ConversationReview.AI_POWERED, None])
+def test_every_task_on_a_strict_route_says_the_route_keeps_it_local(
+    setting: ConversationReview | None,
+) -> None:
+    """Review of ADR-049: a strict connection never dispatches review, whatever the setting."""
+
+    projection, _ = _projection()
+    resolved = conversation_review_mode(projection, setting, route_allows_review=False)
+    assert resolved.mode is ReviewMode.LOCAL
+    assert resolved.requested is ReviewMode.AI_POWERED
+    assert resolved.local_reason == "route_local_only"
+
+
+@pytest.mark.parametrize(
+    "setting", [ConversationReview.AI_POWERED, ConversationReview.LOCAL_AGENT_OPT_IN]
+)
+def test_review_turned_off_in_the_verification_settings_has_its_own_reason(
+    setting: ConversationReview,
+) -> None:
+    projection, _ = _projection(ReviewMode.AI_POWERED)
+    resolved = conversation_review_mode(
+        projection, setting, setting_explicit=True, review_enabled=False
+    )
+    assert resolved.mode is ReviewMode.LOCAL
+    assert resolved.local_reason == "review_disabled"
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+def test_under_every_task_an_agent_switch_to_local_does_not_lower_review(explicit: bool) -> None:
+    """Review round 1 (P2-1): the owner's setting reviews every task; a switch is a request.
+
+    Explicit ``ai_powered`` and the released reading (an unset policy with inference on) both
+    keep the task AI-powered: the switch is recorded, but it neither changes the mode nor drives
+    it, so no check can drop the owner's required review by switching.
+    """
+
+    projection, (_on, off) = _projection(ReviewMode.AI_POWERED, ReviewMode.LOCAL)
+    for setting in (ConversationReview.AI_POWERED, None):
+        resolved = conversation_review_mode(projection, setting, setting_explicit=explicit)
+        assert resolved.mode is ReviewMode.AI_POWERED
+        assert resolved.requested is ReviewMode.LOCAL
+        assert resolved.local_reason is None
+        assert resolved.latest_switch is not None and resolved.latest_switch.event_id == off
+        assert not resolved.driven_by_switch
+        assert not resolved.local_by_choice
+    hybrid = conversation_review_mode(
+        projection, ConversationReview.LOCAL_AGENT_OPT_IN, setting_explicit=True
+    )
+    assert hybrid.driven_by_switch and hybrid.local_by_choice
 
 
 def test_a_redacted_switch_switches_nothing() -> None:
