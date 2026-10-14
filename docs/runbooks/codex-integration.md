@@ -50,7 +50,8 @@ in `status.admission_other_projects` (with a revoke continuation where only exac
 remain) and warns `mcp_registration_kept_for_other_projects`. Projects with only the plugin-scoped
 approval table or their own transport load without it and are not listed. `setup disconnect
 --remove-shared` is the explicit home-wide disconnect: it also removes the shared plugin, binding,
-cache, record and registration even while other connected projects use them, and still refuses
+cache, record and registration even while other connected projects use them (the preview lists
+those projects in `status.shared_removed_from`, and any `possible_users`), and still refuses
 (`connection_other_projects_need_registration`) while another project's configuration needs the
 registration. It does not edit other projects. The preview's `status.admission_cleanup` names the selected project's surfaces. Record native installation, fresh-session
 discovery/start, disconnect and reconnect for macOS, Linux and WSL 2 separately in #767. Desktop

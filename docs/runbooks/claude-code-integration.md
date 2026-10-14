@@ -54,8 +54,8 @@ re-renders it for every project. `setup disconnect --remove-shared` is the expli
 it runs the marketplace removal even while other projects keep their rows, so they stop using
 Yoetz too. A disconnect whose approval file (`.claude/settings.local.json`) cannot be read safely,
 such as a symlink, stops before any change as `connection_admission_cleanup_failed`.
-Because Claude Code's rows are the membership, this host has no unknown membership, no possible
-users and no `membership_unverified` refusal (those are Codex and Cursor states). Like every
+Because Claude Code's rows are the membership, this host has no unknown membership (a Codex and
+Cursor state) and no possible users or `membership_unverified` refusal (Codex only). Like every
 host, each setup apply holds Yoetz's per-configuration lock from revalidation through the last
 change: an exclusive `flock` on a 0600 file under Yoetz's own state directory
 (`host-config-locks/`), keyed by the config root's resolved path, NFC, case-folded, never inside

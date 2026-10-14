@@ -726,3 +726,33 @@ def test_connecting_project_is_not_its_own_possible_user(tmp_path: Path) -> None
     assert (
         codex_connection.possible_users_disclosure((str(connecting),), excluding=connecting) == {}
     )
+
+
+def test_remove_shared_preview_names_the_connected_projects_that_lose_yoetz(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1058: Codex's home-wide disconnect discloses who loses the shared pieces, like Cursor."""
+
+    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE, encode_projects
+
+    home, project, installation = _layout(tmp_path)
+    fake = FakeCodex(home, project)
+    _wire(monkeypatch, fake, list[str](), plugin=RemovalOutcome.REMOVE)
+    other, gone = tmp_path / "other", tmp_path / "gone"
+    other.mkdir(mode=0o700)
+    record = home / CONNECTED_PROJECTS_FILE
+    record.write_bytes(encode_projects((str(project), str(other), str(gone))))
+    record.chmod(0o600)
+
+    plan = codex_connection.prepare_codex_connection(
+        installation,
+        project,
+        action="disconnect",
+        route="strict",
+        request_value=REQUEST,
+        remove_shared=True,
+    )
+
+    assert plan.disclosure["remove_shared"] is True
+    # A deleted project no longer uses anything; the connecting project is not "another".
+    assert plan.disclosure["shared_removed_from"] == [str(other)]

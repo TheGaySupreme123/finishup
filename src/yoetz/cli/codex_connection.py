@@ -26,7 +26,7 @@ from yoetz.adapters.integrations.codex_mcp import (
 )
 from yoetz.adapters.integrations.codex_skill import CodexSkillIntegration
 from yoetz.adapters.integrations.host_discovery import HostInstallation
-from yoetz.adapters.integrations.host_projects import same_directory
+from yoetz.adapters.integrations.host_projects import live_projects, same_directory
 from yoetz.application.harness_mcp import (
     HarnessMcpService,
     McpRegistrationConfirmation,
@@ -264,6 +264,14 @@ def prepare_codex_connection(
         admission.disclosure.update(possible_users_disclosure(removal.possible_users))
         if remove_shared:
             admission.disclosure["remove_shared"] = True
+            if removal.outcome is not RemovalOutcome.ALREADY_ABSENT:
+                # The verified projects that stop using Yoetz with this home-wide disconnect,
+                # disclosed as Claude Code and Cursor do (#1058).
+                affected = _other_connected_projects(installation.config_root, project)
+                if affected:
+                    admission.disclosure["shared_removed_from"] = cast(
+                        list[JsonValue], list(affected)
+                    )
         body["changes"] = (
             []
             if removal.outcome is RemovalOutcome.ALREADY_ABSENT
@@ -439,6 +447,16 @@ def _other_projects_needing_transport(
         else {}
     )
     return found, enumeration
+
+
+def _other_connected_projects(codex_home: Path, project: Path) -> tuple[str, ...]:
+    """Verified members of the home other than ``project`` whose directories still exist."""
+
+    try:
+        listed = connected_projects(codex_home)
+    except IntegrationError:
+        return ()
+    return live_projects(listed, excluding=project)
 
 
 def possible_users_disclosure(

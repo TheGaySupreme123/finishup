@@ -519,7 +519,6 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    shared registration: connecting a second project with another route re-registers it for
    every project, as before; a registration from another Yoetz installation stays
    `foreign_entry_present`.
-
 6. **One setup at a time per configuration root.** Every setup apply for any host (connect or
    disconnect, through `apply_connection`) holds an exclusive `flock` from plan revalidation
    through the shared changes and the record update, so a concurrent setup finds the earlier
@@ -544,9 +543,9 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    `apply_connection`.
 7. **Untested lock boundary.** The lock file is exercised by unit tests on macOS (APFS) and
    Linux (ext4), and natively on Linux (ext4) by the Codex 0.144.6 and Claude Code 2.1.300 runs
-   recorded in the host runbooks. It is untested where Yoetz's state directory sits
-   on NFS, SMB/CIFS, a WSL DrvFS (`/mnt/c`) mount, or another network or FUSE filesystem. There
-   `flock` may be refused (setup then stops as `connection_lock_unavailable`, which is safe) or
+   recorded in the host runbooks. It is untested where Yoetz's state directory sits on NFS,
+   SMB/CIFS, a WSL DrvFS (`/mnt/c`) mount, or another network or FUSE filesystem. There `flock`
+   may be refused (setup then stops as `connection_lock_unavailable`, which is safe) or
    may hold only on the local machine, so two machines running setup against one configuration
    root at the same moment would not exclude each other; the record compare-and-swap is then the
    only guard. The default state directories (`~/Library/Application Support/yoetz` on macOS,

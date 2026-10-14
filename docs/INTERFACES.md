@@ -6510,7 +6510,9 @@ members under any path spelling; `codex_marketplace.possible_projects(home)` lis
 `RemovalPreview.possible_users` carries them (bound into the removal digest with `unknown_after`),
 status adds `codex_home_possible_projects` and `membership_unknown: true`, and the connect and
 disconnect plan disclosure adds `membership_unknown: true` and `possible_users` (bound into
-`preview_digest`; a connect excludes the connecting project). They keep the shared pieces but
+`preview_digest`; a connect excludes the connecting project), and a Codex `--remove-shared`
+preview adds `shared_removed_from` (the other live verified members), as Claude Code and Cursor
+do. They keep the shared pieces but
 never anchor: a disconnect that would leave possible users and no verified member raises
 `IntegrationReason.REMOVE_REFUSED` with `conflict: membership_unverified`, reported by the CLI as
 reason `membership_unverified` with reconnect and `--remove-shared` continuations. Cursor
