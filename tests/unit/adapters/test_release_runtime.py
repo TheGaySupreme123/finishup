@@ -508,21 +508,39 @@ def _spy_compiles(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return compiled
 
 
-def _installed_pyc(prefix: Path) -> Path:
+def _installed_pyc(
+    prefix: Path,
+    mode: str = "unchecked-hash",
+) -> Path:
     import py_compile
 
+    modes = {
+        "timestamp": py_compile.PycInvalidationMode.TIMESTAMP,
+        "checked-hash": py_compile.PycInvalidationMode.CHECKED_HASH,
+        "unchecked-hash": py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    }
     source = prefix / "lib/python3.14/site-packages/dependency/lazy.py"
     cached = source.parent / "__pycache__" / f"lazy.{_TAG}.pyc"
-    py_compile.compile(str(source), cfile=str(cached), doraise=True)
+    py_compile.compile(str(source), cfile=str(cached), doraise=True, invalidation_mode=modes[mode])
     for path in (cached, cached.parent):
         path.chmod(path.stat().st_mode & ~0o022)
     return cached
 
 
-def test_valid_installed_bytecode_is_reused_not_recompiled(
-    prefix: Path, monkeypatch: pytest.MonkeyPatch
+def _sealed_value(generation: Path) -> object:
+    import marshal
+
+    data = _pyc(generation, "lib/python3.14/site-packages/dependency/lazy.py").read_bytes()
+    namespace: dict[str, object] = {}
+    exec(marshal.loads(data[16:]), namespace)  # noqa: S102 - bytecode this test compiled
+    return namespace["VALUE"]
+
+
+@pytest.mark.parametrize("mode", ["checked-hash", "unchecked-hash"])
+def test_valid_installed_hash_bytecode_is_reused_not_recompiled(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
-    installed = _installed_pyc(prefix)
+    installed = _installed_pyc(prefix, mode)
     compiled = _spy_compiles(monkeypatch)
     target = runtimes.prepare_release_runtime(prefix)
     assert "lazy.py" not in compiled
@@ -531,24 +549,58 @@ def test_valid_installed_bytecode_is_reused_not_recompiled(
     assert reused[16:] == installed.read_bytes()[16:]
 
 
-@pytest.mark.parametrize("problem", ["stale", "foreign_writable", "wrong_magic"])
+def test_timestamp_bytecode_is_compiled_fresh(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A timestamp pyc proves only a whole-second mtime and a size, never the source bytes."""
+
+    _installed_pyc(prefix, "timestamp")
+    compiled = _spy_compiles(monkeypatch)
+    runtimes.prepare_release_runtime(prefix)
+    assert "lazy.py" in compiled
+
+
+def test_same_second_equal_size_edit_never_seals_stale_bytecode(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import importlib.util
+
+    source = prefix / "lib/python3.14/site-packages/dependency/lazy.py"
+    _installed_pyc(prefix, "timestamp")
+    stamp = source.stat().st_mtime_ns
+    new_source = "VALUE = 'NEW dependency'\n"
+    assert len(new_source) == len(source.read_text())
+    source.write_text(new_source)
+    os.utime(source, ns=(stamp, stamp))  # same second, same size: the header still matches
+    target = runtimes.prepare_release_runtime(prefix)
+    sealed = _pyc(target, "lib/python3.14/site-packages/dependency/lazy.py").read_bytes()
+    assert sealed[8:16] == importlib.util.source_hash(new_source.encode())
+    assert _sealed_value(target) == "NEW dependency"
+
+
+@pytest.mark.parametrize("problem", ["stale_hash", "foreign_writable", "wrong_magic", "flags"])
 def test_untrustworthy_installed_bytecode_is_compiled_instead(
     prefix: Path, monkeypatch: pytest.MonkeyPatch, problem: str
 ) -> None:
-    installed = _installed_pyc(prefix)
+    installed = _installed_pyc(prefix, "checked-hash")
     source = prefix / "lib/python3.14/site-packages/dependency/lazy.py"
-    if problem == "stale":
-        stamp = source.stat().st_mtime + 10
-        os.utime(source, (stamp, stamp))
+    if problem == "stale_hash":
+        source.write_text("VALUE = 'changed dependency'\n")
+        source.chmod(0o644)
     elif problem == "foreign_writable":
         installed.chmod(0o666)
     else:
         data = bytearray(installed.read_bytes())
-        data[0] ^= 0xFF
+        if problem == "wrong_magic":
+            data[0] ^= 0xFF
+        else:
+            data[4] |= 0b100
         installed.write_bytes(bytes(data))
     compiled = _spy_compiles(monkeypatch)
-    runtimes.prepare_release_runtime(prefix)
+    target = runtimes.prepare_release_runtime(prefix)
     assert "lazy.py" in compiled
+    if problem == "stale_hash":
+        assert _sealed_value(target) == "changed dependency"
 
 
 def test_generation_from_an_earlier_layout_is_never_reused(

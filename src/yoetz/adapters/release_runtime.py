@@ -34,9 +34,10 @@ _LEASE: Final = ".in-use"
 _STAGING: Final = ".creation.json"
 _KEY: Final = re.compile(r"[0-9a-f]{64}\Z")
 _PIN: Final = "yoetz-instance-pin.json"
-# Part of every generation key. A generation built by an earlier layout (no bytecode) never
-# matches, so the next start builds a complete one and prunes the old one once unused.
-_LAYOUT: Final = b"yoetz.release-runtime-layout/2:unchecked-hash-bytecode\x00"
+# Part of every generation key. A generation built by an earlier layout (no bytecode, or
+# bytecode reused from a timestamp pyc) never matches, so the next start builds a complete one
+# and prunes the old one once unused.
+_LAYOUT: Final = b"yoetz.release-runtime-layout/3:unchecked-hash-bytecode\x00"
 # Kept open for the lifetime of this process; intentionally not inherited by unrelated children.
 _process_lease: int | None = None
 _original_interpreter: str | None = None
@@ -352,10 +353,11 @@ def _compile_bytecode(prefix: Path, staging: Path, published: Path) -> None:
     immutable, so nothing can make them stale. ``__pycache__`` is fixed (never
     ``sys.pycache_prefix``) and the optimization level is 0, as the ``-I`` bootstrap loads it.
 
-    Bytecode the installation already holds (``uv tool install --compile-bytecode``, or an
-    earlier ordinary run) is reused when its header still matches the copied source and no
-    other account can write it: only the header is rewritten, which costs a hash instead of a
-    compile. Everything else is compiled with the published file name. A module this
+    Hash-based bytecode the installation already holds (checked or unchecked, PEP 552) is reused
+    when its embedded source hash matches the copied source and no other account can write it:
+    only the flags are rewritten, which costs a hash instead of a compile. Timestamp bytecode
+    (the default of ``uv tool install --compile-bytecode`` and of an ordinary run) cannot prove
+    the source bytes, so it is compiled fresh. Everything else is compiled with the published file name. A module this
     interpreter cannot compile (a file meant for another Python) still compiles at import.
     """
 
@@ -368,7 +370,7 @@ def _compile_bytecode(prefix: Path, staging: Path, published: Path) -> None:
         _compile_sources(prefix, staging, published, tag)
 
 
-def _reusable_bytecode(installed: Path, origin: Path, source: bytes) -> bytes | None:
+def _reusable_bytecode(installed: Path, source: bytes) -> bytes | None:
     """The installed pyc as an unchecked-hash pyc of ``source``, or None when not provably it."""
 
     try:
@@ -389,24 +391,15 @@ def _reusable_bytecode(installed: Path, origin: Path, source: bytes) -> bytes | 
         os.close(fd)
     if len(data) < 16 or data[:4] != importlib.util.MAGIC_NUMBER:
         return None
+    # Only a hash-based pyc (PEP 552: checked 0b11 or unchecked 0b01) names the source bytes it
+    # was compiled from. A timestamp pyc proves a whole-second mtime and a size, which an edit
+    # within the same second at equal length keeps, so it is never reused: it is compiled fresh.
     flags = int.from_bytes(data[4:8], "little")
-    source_hash = importlib.util.source_hash(source)
-    if flags & 0b1:
-        if flags & ~0b11 or data[8:16] != source_hash:
-            return None
-    elif flags != 0:
+    if flags not in {0b01, 0b11}:
         return None
-    else:
-        try:
-            source_facts = origin.stat()
-        except OSError:
-            return None
-        if (
-            int.from_bytes(data[8:12], "little") != int(source_facts.st_mtime) & 0xFFFFFFFF
-            or int.from_bytes(data[12:16], "little") != len(source) & 0xFFFFFFFF
-            or source_facts.st_size != len(source)
-        ):
-            return None
+    source_hash = importlib.util.source_hash(source)
+    if data[8:16] != source_hash:
+        return None
     return data[:4] + (0b1).to_bytes(4, "little") + source_hash + data[16:]
 
 
@@ -419,9 +412,7 @@ def _compile_sources(prefix: Path, staging: Path, published: Path, tag: str) -> 
         cache.mkdir(mode=0o700, exist_ok=True)
         name = f"{source.stem}.{tag}.pyc"
         origin = prefix / relative
-        reused = _reusable_bytecode(
-            origin.parent / "__pycache__" / name, origin, source.read_bytes()
-        )
+        reused = _reusable_bytecode(origin.parent / "__pycache__" / name, source.read_bytes())
         if reused is not None:
             fd = os.open(cache / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "wb") as stream:

@@ -183,10 +183,10 @@ re-checked on every reuse, so a later group change is refused then too.
 
 Serving processes (`service run`, `mcp serve`, every hook, `upgrade`) run from a sealed,
 read-only copy of the installation (ADR-007). That copy ships unchecked-hash bytecode for every
-module, reused from the installation's own bytecode when it is current, so a start costs what an
-ordinary run costs. Installing with `uv tool install --compile-bytecode` (the documented command)
-makes building the copy cheap; without it the first serving start after an install or update
-compiles the package once (about 8 s on an M-series Mac, longer on WSL under nested
+module, so a start costs what an ordinary run costs. Building the copy reuses the installation's
+own bytecode only when it is hash-based and matches the source (uv writes hash-based bytecode
+only when `SOURCE_DATE_EPOCH` is set); otherwise the first serving start after an install or
+update compiles the package once (about 8 s on an M-series Mac, longer on WSL under nested
 virtualization). A start that outlives the client's budget is reported as
 `service_unavailable: service_handshake_timeout` (CLI) or `safe_details.phase:
 handshake_timeout` (MCP): wait and retry; do not run `yoetz service run` or `restart` for it.

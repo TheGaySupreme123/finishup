@@ -14,8 +14,9 @@ from yoetz import __version__
 from yoetz.adapters.release_runtime import installation_prefix, release_update_lock
 
 # An explicit lower bound replaces an old exact installation pin and forbids downgrade.
-# --compile-bytecode: the release runtime reuses the installed bytecode for its sealed copy, so
-# the first serving start after an upgrade does not compile the whole package.
+# --compile-bytecode: ordinary runs of the installation load compiled bytecode. The release
+# runtime reuses only hash-based bytecode whose source hash matches; uv's default timestamp
+# bytecode is compiled afresh for the sealed copy (ADR-007).
 PACKAGE_UPGRADE_ARGV: Final = (
     "uv",
     "tool",

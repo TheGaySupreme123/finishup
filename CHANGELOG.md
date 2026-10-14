@@ -415,8 +415,9 @@ reverse-chronological released versions.
 - Hooks, the agent connection (MCP) and the service start as fast as an ordinary run again. They
   run from a sealed copy of the installation that held no compiled bytecode, so every start
   compiled the whole package (12 s against 6 s on WSL, 0.9 s against 0.5 s on macOS) and slow
-  machines missed the service handshake. The copy now ships bytecode, reused from the
-  installation's own when current; an older copy is rebuilt on the next start. The documented
+  machines missed the service handshake. The copy now ships bytecode, compiled once when the
+  copy is built (hash-based bytecode the installation already holds is reused when its source
+  hash matches; timestamp bytecode never is); an older copy is rebuilt on the next start. The documented
   install, `npx yoetz` and `yoetz upgrade --accept` add `--compile-bytecode`. A service that is
   still starting when a command gives up is reported as `service_handshake_timeout` (retry)
   instead of telling you to run it under a supervisor (ADR-007).
