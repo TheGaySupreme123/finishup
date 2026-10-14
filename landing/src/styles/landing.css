@@ -272,8 +272,10 @@ img, svg { max-width: 100%; }
 .copy.on { opacity: 1; transform: none; }
 .copy.on a, .copy.on button { pointer-events: auto; }
 .hero-word { display: block; }
-.story.animated .hero-word { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-.review-line { display: block; }
+/* The artwork draws the hero word and the benchmark figures; their text stays for screen readers */
+.story.animated .hero-word, .story.animated .bench-result { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.bench-result { margin: 0; font: 500 clamp(22px, 2.4vw, 32px)/1.2 var(--font-serif); color: var(--ink-muted); text-wrap: balance; }
+.bench-result strong { font-weight: 600; color: var(--accent-text); }
 .review-note { margin: 0; max-width: 38ch; font: 400 17px/1.5 var(--font-sans); color: var(--ink-muted); }
 .story:not(.animated) .stage { position: relative; height: auto; overflow: visible; }
 .story:not(.animated) canvas, .story:not(.animated) .spacer { display: none; }
@@ -283,7 +285,8 @@ img, svg { max-width: 100%; }
 .story:not(.animated) .hero-top, .story:not(.animated) .hero-bottom { position: static; transform: none; }
 .story:not(.animated) .hero-bottom { margin-top: 32px; }
 .story:not(.animated) .copy-right { margin: 0 auto; align-items: center; text-align: center; }
-.story:not(.animated) .dot-word { display: inline; height: auto; margin: 0; }
+/* Without the artwork, both benchmark stops read at once from the figures written out below the line */
+.story:not(.animated) .dot-word, .story:not(.animated) .reveal { display: none; }
 .copy.foot { align-items: flex-end; justify-content: center; }
 .copy.hero { position: absolute; }
 .paper { display: inline-flex; align-items: center; gap: 6px; font: 500 15px/1 var(--font-sans); color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; padding: 8px 0; }
@@ -313,6 +316,8 @@ img, svg { max-width: 100%; }
   .btn { height: 44px; padding: 0 16px; font-size: 15px; }
   .dot-word { height: 1.3em; margin-top: 0.2em; }
   .paper { font-size: 14px; }
+  .bench-result { text-align: left; }
+  .story:not(.animated) .copy-right.wide { align-items: flex-start; }
   .footer-inner { padding: 20px 16px; gap: 12px 20px; }
   .footer-links { margin-left: 0; gap: 16px; }
   .footer-meta { flex-basis: 100%; }

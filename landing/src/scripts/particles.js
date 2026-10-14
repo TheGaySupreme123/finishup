@@ -485,9 +485,11 @@ export function mountParticles(canvas, options = {}) {
         const sy = 0.6 - phase * 1.0; // already half-risen when the scene opens
         // two stops: Codex alone, then with FinishUP's AI-powered review
         const stop = phase < 0.5 ? 0 : 1;
-        // the score counts up from the first figure to the last as the sun crosses the middle
+        // the score counts up from the first figure to the last as the sun crosses the middle;
+        // with reduced motion each stop shows its own figure, with none in between
         const lo = parseFloat(scores[0]), hi = parseFloat(scores[scores.length - 1]);
-        const shown = isFinite(lo) && isFinite(hi) ? String(Math.round(lo + (hi - lo) * smooth((phase - 0.42) / 0.16))) : scores[Math.min(scores.length - 1, stop)] || "";
+        const counts = !reduced && isFinite(lo) && isFinite(hi);
+        const shown = counts ? String(Math.round(lo + (hi - lo) * smooth((phase - 0.42) / 0.16))) : scores[Math.min(scores.length - 1, stop)] || "";
         const digits = shown ? wordSet(shown + "%") : null;
         // the tier word, drawn densely in dots where the copy leaves room for it, its dots
         // sized to the word so it reads at every width
@@ -510,9 +512,11 @@ export function mountParticles(canvas, options = {}) {
             continue;
           }
           if (f >= 0.37 && digits) {
-            // the benchmark score, rising with the sun: one figure per stop
-            if (narrowLayout) fromSet(i, digits, 0.5, 0.02, Math.max(-0.75, Math.min(-0.2, sy - 0.5)), 0.1, 0, true);
-            else fromSet(i, digits, 0.6, -0.66, Math.max(-0.2, Math.min(0, sy)), 0.1, 0, true);
+            // the benchmark score, rising with the sun: one figure per stop. Its dots walk the
+            // figure evenly, like the tier word's, so it reads within the phone's dot budget.
+            const d0 = Math.floor(N * 0.37), d1 = Math.floor(N * 0.45);
+            if (narrowLayout) fromSetEven(i, d0, d1, digits, 0.5, 0.02, Math.max(-0.75, Math.min(-0.2, sy - 0.5)), 0);
+            else fromSetEven(i, d0, d1, digits, 0.6, -0.66, Math.max(-0.2, Math.min(0, sy)), 0);
             tbig[i] = 1.6;
             continue;
           }

@@ -54,6 +54,15 @@ const plan = [
 const END_HOLD = 0.6;
 const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + END_HOLD;
 
+// The sunrise is a benchmark: one model on Codex alone, then with FinishUP's AI-powered
+// review. The two scores are drawn in dots beside the sun and count up from the first to the
+// second as the reader scrolls (see particles.js); the scene also writes them out as text for
+// screen readers and the static story. The page reads the figures from here only.
+// PLACEHOLDER BENCHMARK NUMBERS: the owner replaces them by hand before launch. 60/80 are
+// stand-ins, not results; fill in the run's model, suite and scores.
+const BENCH = { model: "GPT 6.1 Sol", suite: "DeepSWE", scores: ["60", "80"] };
+// PLACEHOLDER PAPER LINK: the owner replaces it by hand before launch.
+const PAPER_URL = "[PAPER URL]";
 ---
 
 <html lang="en">
@@ -84,6 +93,7 @@ const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + 
     <meta name="twitter:image:alt" content="Agents start. FinishUP checks. Open source, local checks, free." />
     <script type="application/ld+json" set:html={JSON.stringify(structuredData)} />
     <script is:inline type="application/json" id="story-plan" set:html={JSON.stringify(plan)} />
+    <script is:inline type="application/json" id="bench-scores" set:html={JSON.stringify(BENCH.scores)} />
   </head>
   <body id="top">
     <a class="skip-link" href="#main-content">Skip to the story</a>
@@ -137,8 +147,10 @@ const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + 
           </div>
           <div class="copy side" data-copy="bench">
               <div class="copy-right wide">
-                <p class="stanza">Local checks. <span class="review-line">Optional <span class="dot-word">AI-powered</span> review.</span></p>
-                <p class="review-note">Review follows your privacy policy. Receipts say what was checked and what was not.</p>
+                {/* PLACEHOLDER BENCHMARK NUMBERS: the model, suite, scores and paper link come from BENCH and PAPER_URL above; the owner replaces them by hand before launch. */}
+                <p class="stanza">We tested {BENCH.model} on <span class="nowrap"><span class="tag"><img src="/assets/openai.svg" alt="" width="22" height="22" />Codex</span>,</span> scored on <span class="nowrap"><span class="tag wordmark">{BENCH.suite}</span><span class="bench-dot" id="bench-dot">.</span></span> <span class="nowrap reveal" id="bench-with" aria-hidden="true">with <img class="fup-mark" src="/assets/finishup-mark.png" alt="" />FinishUP</span><span class="dot-word" aria-hidden="true"></span></p>
+                <p class="bench-result"><span class="nowrap"><strong>{BENCH.scores[0]}%</strong> on Codex alone.</span> <span class="nowrap"><strong>{BENCH.scores[1]}%</strong> with FinishUP</span> <span class="nowrap">AI-powered review.</span></p>
+                <a class="paper" href={PAPER_URL} target="_blank" rel="noopener">Read the full paper <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9" /></svg></a>
               </div>
           </div>
           <div class="copy foot" data-copy="end">
@@ -215,6 +227,14 @@ const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + 
       const motionToggle = document.getElementById("motion-toggle") as HTMLButtonElement | null;
       const planEl = document.getElementById("story-plan");
       const plan: [string, number][] = planEl ? JSON.parse(planEl.textContent || "[]") : [];
+      // The benchmark figures come from BENCH in the frontmatter (PLACEHOLDER until the owner
+      // fills them in). The artwork counts them up in dots; the scene's text holds the final
+      // figures, so screen readers and the static story never meet a ticking number.
+      const scoresEl = document.getElementById("bench-scores");
+      const scores: string[] = scoresEl ? JSON.parse(scoresEl.textContent || "[]") : [];
+      const benchWith = document.getElementById("bench-with");
+      const benchDot = document.getElementById("bench-dot");
+      const tierSlot = document.querySelector<HTMLElement>('[data-copy="bench"] .dot-word');
       let paused = false;
       let pageActive = true;
       let stopStory = () => {};
@@ -237,6 +257,8 @@ const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + 
           el.style.removeProperty("transform");
           el.classList.add("on");
         }
+        benchWith?.classList.remove("on");
+        benchDot?.classList.remove("off");
         if (motionToggle) {
           motionToggle.hidden = reduced.matches || compact.matches;
           motionToggle.setAttribute("aria-pressed", String(paused));
@@ -246,7 +268,7 @@ const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + 
         }
         if (!animated || !canvas || !story) return;
 
-        const art = mountParticles(canvas, { count: narrow.matches ? 2600 : 5500, drawTier: false, plan });
+        const art = mountParticles(canvas, { count: narrow.matches ? 2600 : 5500, scores, plan });
         let raf = 0;
         let mounted = true;
         const start: Record<string, [number, number]> = {};
@@ -296,6 +318,20 @@ const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + 
             const target = active?.querySelector<HTMLElement>("a, button") ?? motionToggle;
             target?.focus({ preventScroll: true });
           }
+          // The benchmark line stays put; "with FinishUP" appears at the sunrise's second stop.
+          if (start.sun) {
+            const second = (screens - start.sun[0]) / start.sun[1] >= 0.5;
+            benchWith?.classList.toggle("on", second);
+            benchDot?.classList.toggle("off", second);
+          }
+          // The artwork draws "AI-powered" in dots into the room the benchmark line leaves for
+          // it. The slot moves with the copy's drift, fonts and images, so it is measured after
+          // this update's writes, on scroll, resize and load only: no frame loop of its own.
+          if (tierSlot) {
+            const c = canvas.getBoundingClientRect();
+            const r = tierSlot.getBoundingClientRect();
+            art.setTier(r.left + r.width / 2 - c.left, r.top + r.height / 2 - c.top, r.width, r.height);
+          }
           art.setScroll(screens);
         };
         const onScroll = () => {
@@ -303,6 +339,7 @@ const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + 
         };
         window.addEventListener("scroll", onScroll, { passive: true });
         window.addEventListener("resize", onScroll);
+        window.addEventListener("load", onScroll);
         document.fonts?.ready.then(onScroll).catch(() => {});
         update();
         stopStory = () => {
@@ -310,6 +347,7 @@ const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + 
           cancelAnimationFrame(raf);
           window.removeEventListener("scroll", onScroll);
           window.removeEventListener("resize", onScroll);
+          window.removeEventListener("load", onScroll);
           art.destroy();
         };
       }

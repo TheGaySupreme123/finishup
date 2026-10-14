@@ -163,13 +163,54 @@ test("reduced motion renders stable state changes without a continuous animation
   assert.equal(env.queue.size, 0);
 });
 
-test("optional review artwork does not invent a benchmark score when none is supplied", (t) => {
+// The page supplies the benchmark figures (BENCH in index.astro, marked PLACEHOLDER until
+// the owner fills them in); the artwork never falls back to figures of its own.
+test("the benchmark artwork draws no score unless the page supplies one", (t) => {
   const env = environment(t);
   const art = env.mount({ reducedMotion: true });
   art.setScene("sun", 0.75);
   env.intersect(true);
   env.flush(0);
   assert.deepEqual(env.texts, ["AI-powered"]);
+});
+
+test("supplied benchmark scores count up from the first stop to the second", (t) => {
+  const env = environment(t);
+  const art = env.mount({ scores: ["60", "80"] });
+  env.intersect(true);
+  for (const [phase, now] of [[0.25, 0], [0.5, 1000], [0.75, 2000]]) {
+    art.setScene("sun", phase);
+    env.flush(now);
+  }
+  // The tier word arrives with the second stop, at the middle of the count.
+  assert.deepEqual(env.texts, ["60%", "70%", "AI-powered", "80%"]);
+});
+
+test("reduced motion shows each stop's own score with no figures in between", (t) => {
+  const env = environment(t);
+  const art = env.mount({ reducedMotion: true, scores: ["60", "80"] });
+  env.intersect(true);
+  for (const [phase, now] of [[0.25, 0], [0.45, 1000], [0.5, 2000], [0.55, 3000], [0.75, 4000]]) {
+    art.setScene("sun", phase);
+    env.flush(now);
+    assert.equal(env.queue.size, 0, "each stable state renders once, with no animation loop");
+  }
+  assert.deepEqual(env.texts, ["60%", "80%", "AI-powered"]);
+});
+
+test("benchmark scores render only while the artwork is visible", (t) => {
+  const env = environment(t);
+  const art = env.mount({ scores: ["60", "80"] });
+  art.setScene("sun", 0.5);
+  assert.equal(env.queue.size, 0, "nothing is scheduled before the observer reports the canvas");
+  env.intersect(true);
+  env.flush(0);
+  assert.deepEqual(env.texts, ["70%", "AI-powered"]);
+  env.intersect(false);
+  assert.equal(env.queue.size, 0, "hiding the canvas cancels the pending frame");
+  art.setScene("sun", 0.75);
+  assert.equal(env.queue.size, 0);
+  assert.deepEqual(env.texts, ["70%", "AI-powered"]);
 });
 
 test("review artwork can leave the tier label to readable page text", (t) => {
