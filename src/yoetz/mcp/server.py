@@ -1026,7 +1026,9 @@ def _result_text(
             return canonical_encode(cast(JsonValue, dict(wire))).decode("utf-8")
         except Exception as exc:  # noqa: BLE001 - fall back to the bounded summary below
             failures.append(("cursor.canonical_json", exc))
-    rendered = render_safe_compact_summary_detailed(wire)
+    # The host selects only the re-check note's acceptance wording (#1050 follow-up): Cursor,
+    # whose Stop receives no final answer, is never told to answer with a line.
+    rendered = render_safe_compact_summary_detailed(wire, host=host_profile)
     failures.extend(rendered.failures)
     compact = rendered.text
     if wire.get("preparatory_only") is True:

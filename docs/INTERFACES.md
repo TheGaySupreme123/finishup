@@ -7325,7 +7325,10 @@ the basis could not be read):
   `None`, `codex` and `claude` name the line; `cursor` (no final message at Stop) names the
   confirmation that ends the once-asked re-read instead; `generic` (the CLI and TUI, which do not
   know the agent's host) names which hosts read the line. `prepare_closure(..., host="generic")`
-  passes it; the MCP bridge passes its host profile. `receipt_blocking_finding_count` keeps its wire name and means
+  passes it; the MCP bridge passes its host profile, and also to
+  `render_safe_compact_summary_detailed(envelope, *, host=None)`, whose status and
+  `closure_prepare` summaries read it through a render-scoped context (a direct builder call keeps
+  the line). `receipt_blocking_finding_count` keeps its wire name and means
   `finding_counts.to_do + finding_counts.unmet`.
 - `status view=findings` rows: `closure_class`, `closure_basis`, `next_actions`;
   `view=obligations` rows: `closure_class`, `closure_basis`.

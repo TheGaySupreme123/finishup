@@ -179,6 +179,11 @@ class SummaryRender:
 _FAILURE_SINK: ContextVar[list[tuple[str, BaseException]] | None] = ContextVar(
     "yoetz_summary_failure_sink", default=None
 )
+# The bridge's host profile for the render in progress (#1050 follow-up). It only decides how the
+# re-check note says a flagged acceptance re-read is answered (``recheck_note``): ``cursor`` never
+# names the ``yoetz-acceptance`` line its Stop cannot deliver, ``generic`` names which hosts read
+# it, and ``codex``/``claude`` (or a direct builder call, which leaves it unset) keep the line.
+_SUMMARY_HOST: ContextVar[str | None] = ContextVar("yoetz_summary_host", default=None)
 
 
 class _Render:
@@ -2171,7 +2176,7 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
     awaiting = awaiting_ruling_variants(readiness)
     if awaiting:
         parts.append(Part(awaiting, priority=_P_FACT_WHY))
-    announced = recheck_note(readiness)
+    announced = recheck_note(readiness, host=_SUMMARY_HOST.get())
     if announced is not None:
         parts.append(Part((announced, _RECHECK_SHORT), priority=_P_BOILERPLATE))
     counts = closure_counts_variants(
@@ -2814,17 +2819,21 @@ def _minimal_summary(envelope: object, builder: str) -> str:
         )
 
 
-def render_safe_compact_summary_detailed(envelope: object) -> SummaryRender:
+def render_safe_compact_summary_detailed(
+    envelope: object, *, host: str | None = None
+) -> SummaryRender:
     """Render the bounded projection and report every clause or builder that degraded.
 
     Never raises. A failing optional clause is omitted and named in the text; a failing required
     core is replaced by ``_minimal_summary``. Both are returned in ``failures`` so the bridge can
     record which builder and clause broke (tb4n3 RC-2: a committed operation must not become an
-    ``INTERNAL_ERROR`` because its text could not be built).
+    ``INTERNAL_ERROR`` because its text could not be built). ``host`` is the bridge's host
+    profile; it only selects the re-check note's acceptance wording (``recheck_note``).
     """
 
     failures: list[tuple[str, BaseException]] = []
     token = _FAILURE_SINK.set(failures)
+    host_token = _SUMMARY_HOST.set(host)
     builder = "summary"
     try:
         try:
@@ -2835,14 +2844,15 @@ def render_safe_compact_summary_detailed(envelope: object) -> SummaryRender:
             failures.append((builder, exc))
             text = _minimal_summary(envelope, builder)
     finally:
+        _SUMMARY_HOST.reset(host_token)
         _FAILURE_SINK.reset(token)
     return SummaryRender(text=text, failures=tuple(failures))
 
 
-def render_safe_compact_summary(envelope: object) -> str:
+def render_safe_compact_summary(envelope: object, *, host: str | None = None) -> str:
     """Render a bounded projection using only allowlisted structural result fields.
 
     Never raises; see ``render_safe_compact_summary_detailed`` for the failure report.
     """
 
-    return render_safe_compact_summary_detailed(envelope).text
+    return render_safe_compact_summary_detailed(envelope, host=host).text
