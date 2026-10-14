@@ -86,7 +86,7 @@ def test_host_config_lock_excludes_a_second_holder(tmp_path: Path) -> None:
     # The second holder must not get in while the first holds the lock.
     import fcntl
 
-    descriptor = os.open(root.parent, os.O_RDONLY)
+    descriptor = os.open(host_projects.lock_path_for(root), os.O_RDWR)
     try:
         with pytest.raises(BlockingIOError):
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -97,3 +97,46 @@ def test_host_config_lock_excludes_a_second_holder(tmp_path: Path) -> None:
     with host_config_lock(root):
         order.append("second")
     assert order == ["first-in", "first-out", "second"]
+
+
+def test_lock_needs_no_part_of_an_absent_nested_config_root(tmp_path: Path) -> None:
+    """CHECK_MULTIPROJ_R2 P2-R2-2: a first setup into a root whose parents do not exist yet."""
+
+    root = tmp_path / "new-profile" / "nested" / "config"
+    with host_config_lock(root):
+        pass
+    assert not (tmp_path / "new-profile").exists()
+    lock = host_projects.lock_path_for(root)
+    assert lock.stat().st_mode & 0o777 == 0o600
+
+
+def test_unrelated_roots_with_one_parent_do_not_share_a_lock(tmp_path: Path) -> None:
+    import fcntl
+
+    first, second = tmp_path / ".codex", tmp_path / ".cursor"
+    assert host_projects.lock_path_for(first) != host_projects.lock_path_for(second)
+    with host_config_lock(first):
+        with host_config_lock(second):
+            pass
+        descriptor = os.open(host_projects.lock_path_for(first), os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(descriptor)
+
+
+def test_a_filesystem_that_cannot_lock_is_a_specific_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import errno
+    import fcntl
+
+    def refuse(_descriptor: int, _operation: int) -> None:
+        raise OSError(errno.ENOLCK, "no locks")
+
+    monkeypatch.setattr(fcntl, "flock", refuse)
+    with pytest.raises(HostProjectsError) as caught:
+        with host_config_lock(tmp_path / "config"):
+            raise AssertionError("must not run unlocked")
+    assert caught.value.reason == "lock_unavailable"

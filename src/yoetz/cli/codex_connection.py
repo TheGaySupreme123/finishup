@@ -14,6 +14,7 @@ from yoetz.adapters.integrations.codex_marketplace import (
     apply_removal,
     connected_projects,
     inspect_activation,
+    possible_projects,
     preview_removal,
 )
 from yoetz.adapters.integrations.codex_mcp import (
@@ -432,9 +433,15 @@ def home_projects_status(codex_home: Path) -> dict[str, JsonValue]:
 
     try:
         projects = connected_projects(codex_home)
+        possible = possible_projects(codex_home)
     except IntegrationError:
         return {}
-    return {"codex_home_projects": cast(list[JsonValue], list(projects))}
+    status: dict[str, JsonValue] = {"codex_home_projects": cast(list[JsonValue], list(projects))}
+    if possible:
+        # Possible users, not verified connections: they keep the shared pieces, never anchor.
+        status["codex_home_possible_projects"] = cast(list[JsonValue], list(possible))
+        status["membership_unknown"] = True
+    return status
 
 
 def project_mcp_leftover_status(codex_home: Path, project: Path) -> dict[str, JsonValue]:

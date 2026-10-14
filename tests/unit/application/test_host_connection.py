@@ -483,3 +483,87 @@ def test_concurrent_cursor_connects_never_lose_a_member(
     assert load_connected_projects(installation.config_root).projects == tuple(
         sorted(str(root) for root in (project_a, project_b, project_c))
     )
+
+
+@pytest.mark.parametrize("host", ["cursor-ide", "cursor-cli"])
+def test_first_cursor_setup_into_an_absent_nested_config_root(tmp_path: Path, host: str) -> None:
+    """CHECK_MULTIPROJ_R2 P2-R2-2: no manual mkdir before the first connect."""
+
+    from typing import cast as typed
+
+    from yoetz.adapters.integrations.host_discovery import SetupHost
+
+    launcher = tmp_path / "yoetz"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o700)
+    scratch_home = tmp_path / "home"
+    scratch_home.mkdir(mode=0o700)
+    config = scratch_home / host / "config"
+    installation = HostInstallation(
+        typed(SetupHost, host), launcher, "2026.09.19", config, "Cursor"
+    )
+    project = tmp_path / "project"
+    project.mkdir(mode=0o700)
+
+    result = _cursor_step(installation, project, "connect", launcher, Review())
+
+    assert result["installed"] is True and result["configured"] is True
+
+
+def test_lock_failure_is_reported_before_any_change(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import errno
+    import fcntl
+
+    installation, launcher = _cursor_install(tmp_path, "cursor-cli")
+    project = tmp_path / "project"
+    project.mkdir(mode=0o700)
+
+    def refuse(_descriptor: int, _operation: int) -> None:
+        raise OSError(errno.ENOLCK, "no locks")
+
+    monkeypatch.setattr(fcntl, "flock", refuse)
+    with pytest.raises(ConnectionError, match="connection_lock_unavailable"):
+        _cursor_step(installation, project, "connect", launcher, Review())
+    assert not installation.config_root.exists()
+    assert not (project / ".cursor").exists()
+
+
+def test_status_shows_unknown_membership_before_any_record_exists(tmp_path: Path) -> None:
+    """CHECK_MULTIPROJ_R2 P3: status, not only a preview, names unknown membership."""
+
+    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+
+    installation, launcher = _cursor_install(tmp_path, "cursor-cli")
+    project_b, project_c = tmp_path / "b", tmp_path / "c"
+    project_b.mkdir(mode=0o700)
+    project_c.mkdir(mode=0o700)
+    _cursor_step(installation, project_b, "connect", launcher, Review())
+    (installation.config_root / CONNECTED_PROJECTS_FILE).unlink()
+
+    status = prepare_connection(
+        REQUEST,
+        installation,
+        project_c,
+        action="connect",
+        route="strict",
+        launcher=(str(launcher),),
+    ).status()
+
+    assert status["membership_unknown"] is True
+    assert not (installation.config_root / CONNECTED_PROJECTS_FILE).exists()
+
+
+def test_status_step_gives_the_exact_remove_shared_preview(tmp_path: Path) -> None:
+    from yoetz.cli import host_connection as cli
+
+    installation, _launcher = _cursor_install(tmp_path, "cursor-ide")
+    step = cli._membership_status_step(  # pyright: ignore[reportPrivateUsage]
+        {"membership_unknown": True}, installation, tmp_path / "p"
+    )
+    assert step is not None
+    assert "setup disconnect --host cursor-ide" in step and step.rstrip().endswith(
+        "--remove-shared"
+    )
+    assert "--accept" not in step

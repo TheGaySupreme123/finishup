@@ -292,6 +292,77 @@ def _duplicate_step(host: str, config_root: Path | None, project: Path) -> str:
     )
 
 
+def _membership_status_step(
+    status: dict[str, JsonValue], selected: HostInstallation, project: Path
+) -> str | None:
+    """Status-only explanation of unknown membership with the exact home-wide preview."""
+
+    if status.get("membership_unknown") is not True:
+        return None
+    possible = status.get("codex_home_possible_projects")
+    summary = " ".join(_shared_summary({"membership_unknown": True}))
+    if isinstance(possible, list) and possible:
+        summary += " Projects that may use them: " + ", ".join(str(item) for item in possible) + "."
+    command = continuation(
+        [
+            "setup",
+            "disconnect",
+            "--host",
+            selected.host,
+            "--host-path",
+            str(selected.executable),
+            "--host-config-root",
+            str(selected.config_root),
+            "--project",
+            str(project),
+            "--remove-shared",
+        ]
+    )
+    return (
+        f"{summary} Connecting the projects you use records them; that alone does not show no "
+        f"other project uses the shared pieces. To preview removing them for every project: {command}"
+    )
+
+
+def _codex_unverified_step(config_root: Path | None, project: Path) -> str:
+    """Continuation when only unverified projects might still use the shared pieces."""
+
+    from yoetz.adapters.integrations.codex_marketplace import possible_projects
+
+    try:
+        home = (
+            config_root.expanduser().absolute()
+            if config_root is not None
+            else host_config_root("codex")
+        )
+        possible = possible_projects(home)
+    except OSError, ValueError, IntegrationError:
+        home, possible = None, ()
+    names = ", ".join(possible) if possible else "other trusted projects"
+    target = ["--host-config-root", str(home)] if home is not None else []
+    return (
+        "Nothing was changed. Yoetz's record of the projects connected to this Codex home is "
+        "missing or incomplete, and these trusted checkouts carry Yoetz's plugin files, so they "
+        f"may still use its shared pieces: {names}. None of them is a verified connection, so "
+        "Yoetz will not move the shared marketplace to one. If you use Yoetz in one of them, "
+        "connect it again (this records it), then rerun this disconnect: "
+        + continuation(["setup", "run", "--host", "codex", *target, "--project", "<that project>"])
+        + ". If none of them uses Yoetz, preview removing the shared pieces for every project: "
+        + continuation(
+            [
+                "setup",
+                "disconnect",
+                "--host",
+                "codex",
+                *target,
+                "--project",
+                str(project),
+                "--remove-shared",
+            ]
+        )
+    )
+
+
 def _codex_duplicate_step(config_root: Path | None, project: Path) -> str:
     """Name the path that already connects this directory, and the two ways forward (#1058)."""
 
@@ -511,6 +582,15 @@ def run_host_connection(
             leftover_step = _leftover_next_step(cast(dict[str, JsonValue], report["status"]))
             if leftover_step is not None:
                 report["next_step"] = leftover_step
+            membership_step = _membership_status_step(
+                cast(dict[str, JsonValue], report["status"]), selected, project
+            )
+            if membership_step is not None:
+                report["next_step"] = (
+                    membership_step
+                    if leftover_step is None
+                    else f"{leftover_step}\n{membership_step}"
+                )
             typer.echo(
                 json.dumps(report, sort_keys=True)
                 if json_output
@@ -589,6 +669,13 @@ def run_host_connection(
                 "connect through a separate Codex home instead: create a directory owned only "
                 "by you (mode 0700) and rerun with --host-config-root pointing to it."
             )
+        if (
+            host == "codex"
+            and isinstance(error, IntegrationError)
+            and error.safe_details.get("conflict") == "membership_unverified"
+        ):
+            report["reason"] = "membership_unverified"
+            report["next_step"] = _codex_unverified_step(config_root, project)
         if reason == "project_connected_via_other_path":
             report["next_step"] = (
                 _codex_duplicate_step(config_root, project)

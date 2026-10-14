@@ -30,6 +30,7 @@ from yoetz.adapters.integrations.codex_marketplace import (
     ActivationState,
     RemovalOutcome,
     connected_projects,
+    possible_projects,
     project_registered_elsewhere,
 )
 from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
@@ -348,8 +349,29 @@ def test_malformed_record_is_refused_not_overwritten(tmp_path: Path) -> None:
     assert inspect_activation(target, codex_home=home).state is ActivationState.FOREIGN
 
 
-def test_lost_record_takes_trusted_projects_that_serve_the_manifest(tmp_path: Path) -> None:
-    """CHECK_MULTIPROJ_R1 P2-1 (Codex): a lost record is not proof this is the last project."""
+def _trust(home: Path, *rows: tuple[Path, str]) -> None:
+    with (home / "config.toml").open("a", encoding="utf-8") as handle:
+        for root, level in rows:
+            handle.write(f'\n[projects."{root}"]\ntrust_level = "{level}"\n')
+
+
+def _clone(tmp_path: Path, name: str) -> tuple[IntegrationTarget, Path]:
+    """A checkout carrying Yoetz's committed plugin files that never ran setup here."""
+
+    from yoetz.adapters.integrations.codex_marketplace import (
+        _canonical_marketplace_bytes,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    target, root = _project(tmp_path, name)
+    _install(target, codex_version=None)
+    (root / ".agents/plugins/marketplace.json").write_bytes(_canonical_marketplace_bytes())
+    return target, root
+
+
+def test_lost_record_with_only_unverified_users_refuses_and_reconnect_records_them(
+    tmp_path: Path,
+) -> None:
+    """A lost record is not proof this is the last project, nor that a checkout connected."""
 
     home = _home(tmp_path)
     target_a, root_a = _project(tmp_path, "a")
@@ -357,30 +379,60 @@ def test_lost_record_takes_trusted_projects_that_serve_the_manifest(tmp_path: Pa
     _connect(target_a, home)
     _connect(target_b, home)
     (home / CONNECTED_PROJECTS_FILE).unlink()
-    with (home / "config.toml").open("a", encoding="utf-8") as handle:
-        handle.write(
-            f'\n[projects."{root_a}"]\ntrust_level = "trusted"\n\n'
-            f'[projects."{root_b}"]\ntrust_level = "trusted"\n'
-        )
+    _trust(home, (root_a, "trusted"), (root_b, "trusted"))
+    assert possible_projects(home) == (str(root_b),)
 
-    preview = preview_removal(target_a, codex_home=home)
-    assert preview.outcome is RemovalOutcome.DETACH
-    assert preview.shared_with == (str(root_b),)
+    with pytest.raises(IntegrationError) as caught:
+        preview_removal(target_a, codex_home=home)
+    assert caught.value.reason is IntegrationReason.REMOVE_REFUSED
+    assert caught.value.safe_details.get("conflict") == "membership_unverified"
+
+    # The recovery the refusal names: connecting B again records it as a verified member.
+    _connect(target_b, home)
+    assert set(connected_projects(home)) == {str(root_a), str(root_b)}
     assert _disconnect(target_a, home) is RemovalOutcome.DETACH
+    assert _binding(home) == str(root_b)
     assert inspect_activation(target_b, codex_home=home).state is ActivationState.ACTIVE
 
 
-def test_connect_after_a_lost_record_keeps_trusted_members(tmp_path: Path) -> None:
+def test_never_connected_clone_is_not_an_anchor_and_removing_it_keeps_b(tmp_path: Path) -> None:
+    """CHECK_MULTIPROJ_R2 P2-R2-1: a trusted clone sorting first must not take the binding."""
+
     home = _home(tmp_path)
-    target_a, root_a = _project(tmp_path, "a")
-    target_b, root_b = _project(tmp_path, "b")
-    target_c, root_c = _project(tmp_path, "c")
+    target_a, root_a = _project(tmp_path, "m-a")
+    target_b, root_b = _project(tmp_path, "m-b")
     _connect(target_a, home)
+    (home / CONNECTED_PROJECTS_FILE).unlink()  # an earlier single-project release
+    _clone_target, root_f = _clone(tmp_path, "a-clone")
+    _trust(home, (root_f, "trusted"))
     _connect(target_b, home)
+    assert set(connected_projects(home)) == {str(root_a), str(root_b)}
+    assert possible_projects(home) == (str(root_f),)
+
+    preview = preview_removal(target_a, codex_home=home)
+    assert preview.outcome is RemovalOutcome.DETACH
+    assert preview.rebind_to == str(root_b)
+    assert preview.possible_users == (str(root_f),)
+    assert _disconnect(target_a, home) is RemovalOutcome.DETACH
+    assert _binding(home) == str(root_b)
+
+    import shutil
+
+    shutil.rmtree(root_f)
+    assert inspect_activation(target_b, codex_home=home).state is ActivationState.ACTIVE
+
+
+def test_untrusted_rows_and_invalid_descriptors_are_not_possible_users(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    target_a, _root_a = _project(tmp_path, "a")
+    _connect(target_a, home)
     (home / CONNECTED_PROJECTS_FILE).unlink()
-    with (home / "config.toml").open("a", encoding="utf-8") as handle:
-        handle.write(f'\n[projects."{root_b}"]\ntrust_level = "trusted"\n')
+    _target_u, root_u = _clone(tmp_path, "untrusted")
+    _target_i, root_i = _clone(tmp_path, "invalid")
+    descriptor = next((root_i / ".agents/plugins/yoetz").rglob("plugin.json"))
+    descriptor.write_text("{not json")
+    _trust(home, (root_u, "untrusted"), (root_i, "trusted"))
 
-    _connect(target_c, home)
-
-    assert connected_projects(home) == tuple(sorted(str(p) for p in (root_a, root_b, root_c)))
+    assert possible_projects(home) == ()
+    # With no verified or possible user left, the last disconnect removes the shared pieces.
+    assert _disconnect(target_a, home) is RemovalOutcome.REMOVE

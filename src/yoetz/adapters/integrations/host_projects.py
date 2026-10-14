@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, cast
 
+from yoetz.config.paths import state_dir
 from yoetz.ports.harness_mcp import MCP_SERVER_NAME
 
 __all__ = [
@@ -39,6 +40,7 @@ __all__ = [
     "duplicate_of",
     "encode_projects",
     "host_config_lock",
+    "lock_path_for",
     "live_projects",
     "load_connected_projects",
     "same_directory",
@@ -49,8 +51,11 @@ CONNECTED_PROJECTS_FILE: Final = f".{MCP_SERVER_NAME}-connected-projects.json"
 _MAX_BYTES: Final = 262_144
 _MAX_PROJECTS: Final = 256
 _MAX_PATH_CHARS: Final = 4_096
+_LOCK_DIRECTORY: Final = "host-config-locks"
 
-type HostProjectsReason = Literal["registry_invalid", "registry_stale", "write_failed"]
+type HostProjectsReason = Literal[
+    "registry_invalid", "registry_stale", "write_failed", "lock_unavailable"
+]
 
 
 class HostProjectsError(Exception):
@@ -218,24 +223,53 @@ def _sync_directory(directory: Path) -> None:
         os.close(descriptor)
 
 
+def lock_path_for(config_root: Path) -> Path:
+    """The private lock file for one host configuration root (#1058 round 3).
+
+    It lives under this Yoetz installation's own state directory, which exists before any host
+    hierarchy does, keyed by the resolved target path, so a first setup into a configuration
+    root that does not exist yet can lock, and unrelated roots never share a lock.
+    """
+
+    import hashlib
+
+    target = os.path.realpath(os.path.abspath(os.path.expanduser(config_root)))
+    digest = hashlib.sha256(target.encode("utf-8", "surrogateescape")).hexdigest()
+    return state_dir() / _LOCK_DIRECTORY / f"{digest}.lock"
+
+
 @contextmanager
 def host_config_lock(config_root: Path) -> Generator[None]:
-    """Serialize every setup apply for one host configuration root (#1058 round 2).
+    """Serialize every setup apply for one host configuration root (#1058 round 3).
 
-    The lock is an exclusive ``flock`` on the root's existing parent directory, so it needs no
-    file of its own and also covers the first connect that creates the root. It is held across
-    plan revalidation, the shared host changes, and the record update.
+    An exclusive ``flock`` on a 0600 lock file opened for writing (``lock_path_for``), held
+    across plan revalidation, the shared host changes, and the record update. A filesystem that
+    cannot lock reports ``lock_unavailable`` before anything changes; there is no unlocked
+    fallback.
     """
 
     import fcntl
 
-    parent = config_root.absolute().parent
+    from yoetz.config.paths import PathSafetyError, ensure_owner_only_dir
+
+    path = lock_path_for(config_root)
     try:
-        descriptor = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    except OSError as exc:
-        raise HostProjectsError("write_failed") from exc
+        ensure_owner_only_dir(path.parent)
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+        descriptor = os.open(path, flags, 0o600)
+    except (OSError, PathSafetyError) as exc:
+        raise HostProjectsError("lock_unavailable") from exc
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            facts = os.fstat(descriptor)
+            if not stat.S_ISREG(facts.st_mode) or (
+                hasattr(os, "geteuid") and facts.st_uid != os.geteuid()
+            ):
+                raise HostProjectsError("lock_unavailable")
+            os.fchmod(descriptor, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            raise HostProjectsError("lock_unavailable") from exc
         yield
     finally:
         os.close(descriptor)

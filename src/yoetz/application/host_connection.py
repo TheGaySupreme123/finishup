@@ -269,6 +269,7 @@ class SharedProjectsStep:
             or ((self._snapshot is None or self._snapshot.raw is None) and shared_present)
         )
         self.keeps_shared = not self.remove_shared and (bool(self.others) or self.unknown_members)
+        self._shared_present = shared_present
         self._config_root = config_root
 
     def record_change(self, action: ConnectionAction) -> str | None:
@@ -357,10 +358,13 @@ class SharedProjectsStep:
         }
 
     def _current_unknown(self) -> bool:
+        # Before any record exists, shared pieces found without one are already unknown
+        # membership (CHECK_MULTIPROJ_R2 P3); status must say so, not only a preview.
         try:
-            return load_connected_projects(self._config_root).unknown_members
+            current = load_connected_projects(self._config_root)
         except HostProjectsError:
             return False
+        return current.unknown_members or (current.raw is None and self._shared_present)
 
 
 @dataclass(frozen=True, slots=True)
@@ -746,4 +750,8 @@ def apply_connection(
                 current.apply_reviewed_steps()
             return current.status()
     except HostProjectsError as error:
-        raise ConnectionError("connection_outcome_unknown") from error
+        raise ConnectionError(
+            "connection_lock_unavailable"
+            if error.reason == "lock_unavailable"
+            else "connection_outcome_unknown"
+        ) from error
