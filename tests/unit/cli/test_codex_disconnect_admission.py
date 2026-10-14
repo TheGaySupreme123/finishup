@@ -390,3 +390,26 @@ def test_admission_change_after_preview_makes_plan_stale(
     _grant(project)
     after = _plan(installation, project)
     assert after.digest != before.digest
+
+
+def test_preview_disclosure_renders_pinned_continuations() -> None:
+    from yoetz.cli import host_connection
+
+    rendered = host_connection._rendered_disclosure(  # pyright: ignore[reportPrivateUsage]
+        {
+            "admission_other_projects": [
+                {
+                    "project_root": "/work/q",
+                    "next_arguments": ["integrate", "codex", "admission", "status"],
+                }
+            ]
+        }
+    )
+    (item,) = _items(rendered["admission_other_projects"])
+    assert "next_arguments" not in item
+    assert str(item["next_command"]).endswith("integrate codex admission status")
+    status = host_connection._rendered_status(  # pyright: ignore[reportPrivateUsage]
+        {"project_mcp_leftover": "tools_only", "next_arguments": ["integrate"]}
+    )
+    step = host_connection._leftover_next_step(status)  # pyright: ignore[reportPrivateUsage]
+    assert step is not None and "Codex cannot load its configuration here" in step

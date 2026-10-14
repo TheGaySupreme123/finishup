@@ -201,6 +201,16 @@ def _admission_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
     return tuple(lines)
 
 
+def _rendered_disclosure(disclosure: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    rendered = dict(disclosure)
+    others = rendered.get("admission_other_projects")
+    if isinstance(others, list):
+        rendered["admission_other_projects"] = [
+            _rendered_status(item) if isinstance(item, dict) else item for item in others
+        ]
+    return rendered
+
+
 def _rendered_status(status: dict[str, JsonValue]) -> dict[str, JsonValue]:
     """Render structural ``next_arguments`` through the pinned launcher continuation."""
 
@@ -353,7 +363,7 @@ def run_host_connection(
             report.update({"outcome": "preview", "next_step": connection_continuation(plan)})
             if plan.disclosure:
                 # The released plan schema is closed; preview facts beyond it ride in `status`.
-                report["status"] = dict(plan.disclosure)
+                report["status"] = _rendered_disclosure(plan.disclosure)
             code = 3 if accept or interactive else 0
         if report["outcome"] in {"completed", "unchanged"}:
             launch = launch_details(selected, project)
