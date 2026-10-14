@@ -103,7 +103,8 @@ def prepare_codex_connection(
             return await service.observe(binary)
 
         observed = anyio.run(observe)
-        listed = home_projects_status(installation.config_root).get("codex_home_projects")
+        home_status = home_projects_status(installation.config_root)
+        listed = home_status.get("codex_home_projects")
         others: list[JsonValue] = [
             item
             for item in (cast(list[JsonValue], listed) if isinstance(listed, list) else [])
@@ -111,6 +112,15 @@ def prepare_codex_connection(
         ]
         if others:
             admission.disclosure["shared_with"] = others
+        possible = home_status.get("codex_home_possible_projects")
+        admission.disclosure.update(
+            possible_users_disclosure(
+                tuple(str(item) for item in cast(list[JsonValue], possible))
+                if isinstance(possible, list)
+                else (),
+                excluding=project,
+            )
+        )
         activation = inspect_activation(
             IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(project)),
             executable_path=str(installation.executable),
@@ -249,6 +259,9 @@ def prepare_codex_connection(
             # Not every known project was read: absence from the list is not proof.
             admission.disclosure.update(enumeration)
             warnings.append("other_projects_partially_checked")
+        # Trusted checkouts that may use the shared pieces though no record names them: an
+        # ordinary disconnect keeps the pieces for them, --remove-shared removes them anyway.
+        admission.disclosure.update(possible_users_disclosure(removal.possible_users))
         if remove_shared:
             admission.disclosure["remove_shared"] = True
         body["changes"] = (
@@ -426,6 +439,29 @@ def _other_projects_needing_transport(
         else {}
     )
     return found, enumeration
+
+
+def possible_users_disclosure(
+    possible: tuple[str, ...], *, excluding: Path | None = None
+) -> dict[str, JsonValue]:
+    """Preview facts for unverified projects that may use the home's shared pieces (#1058).
+
+    They are possible users, not connections: membership is unknown while they exist. The
+    project being connected is excluded: the connect records it.
+    """
+
+    listed = [
+        item
+        for item in possible
+        if excluding is None
+        or (item != str(excluding) and not same_directory(Path(item), excluding))
+    ]
+    if not listed:
+        return {}
+    return {
+        "membership_unknown": True,
+        "possible_users": cast(list[JsonValue], listed),
+    }
 
 
 def home_projects_status(codex_home: Path) -> dict[str, JsonValue]:

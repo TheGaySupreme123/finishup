@@ -112,7 +112,7 @@ def _wire(
         return CodexMcpAdapter(fake)
 
     def plugin_preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(preview_digest=DIGEST, outcome=plugin)
+        return SimpleNamespace(preview_digest=DIGEST, outcome=plugin, possible_users=())
 
     class Skill:
         async def preview_skill(self, *_args: object) -> SimpleNamespace:
@@ -635,7 +635,10 @@ def test_detaching_disconnect_keeps_the_shared_mcp_registration(
 
     def detach_preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
         return SimpleNamespace(
-            preview_digest=DIGEST, outcome=RemovalOutcome.DETACH, shared_with=(other,)
+            preview_digest=DIGEST,
+            outcome=RemovalOutcome.DETACH,
+            shared_with=(other,),
+            possible_users=(),
         )
 
     monkeypatch.setattr(codex_connection, "preview_removal", detach_preview)
@@ -662,6 +665,36 @@ def test_detaching_disconnect_keeps_the_shared_mcp_registration(
     assert cleanup == ["skill"]
 
 
+def test_disconnect_preview_names_projects_that_may_use_the_shared_pieces(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1058: possible users (never verified connections) are disclosed and bound to the plan."""
+
+    home, project, installation = _layout(tmp_path)
+    _grant(project)
+    fake, cleanup = FakeCodex(home, project), list[str]()
+    _wire(monkeypatch, fake, cleanup)
+    other, maybe = str(tmp_path / "other"), str(tmp_path / "maybe")
+
+    def detach_preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            preview_digest=DIGEST,
+            outcome=RemovalOutcome.DETACH,
+            shared_with=(other,),
+            possible_users=(maybe,),
+        )
+
+    monkeypatch.setattr(codex_connection, "preview_removal", detach_preview)
+    monkeypatch.setattr(codex_connection, "apply_removal", detach_preview)
+
+    plan = _plan(installation, project)
+
+    assert plan.disclosure["possible_users"] == [maybe]
+    assert plan.disclosure["membership_unknown"] is True
+    summary = connection_summary(plan)
+    assert any(maybe in line and "not verified" in line for line in summary)
+
+
 def test_an_alias_of_the_same_project_does_not_hold_the_registration(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -679,3 +712,17 @@ def test_an_alias_of_the_same_project_does_not_hold_the_registration(
 
     assert "remove_mcp_registration" in _items(plan.body["changes"])
     assert "admission_other_projects" not in plan.disclosure
+
+
+def test_connecting_project_is_not_its_own_possible_user(tmp_path: Path) -> None:
+    """Found natively (Codex 0.144.6): reconnecting B listed B as a project that may use Yoetz."""
+
+    connecting, other = tmp_path / "b", tmp_path / "c"
+    connecting.mkdir(mode=0o700)
+    other.mkdir(mode=0o700)
+    assert codex_connection.possible_users_disclosure(
+        (str(connecting), str(other)), excluding=connecting
+    ) == {"membership_unknown": True, "possible_users": [str(other)]}
+    assert (
+        codex_connection.possible_users_disclosure((str(connecting),), excluding=connecting) == {}
+    )

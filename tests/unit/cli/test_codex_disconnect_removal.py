@@ -42,7 +42,9 @@ def test_disconnect_keeps_removal_outcome(
         return CodexMcpAdapter(runner)
 
     def plugin_preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
-        return SimpleNamespace(preview_digest=digest, outcome=RemovalOutcome.ALREADY_ABSENT)
+        return SimpleNamespace(
+            preview_digest=digest, outcome=RemovalOutcome.ALREADY_ABSENT, possible_users=()
+        )
 
     class Skill:
         async def preview_skill(self, *_args: object) -> SimpleNamespace:

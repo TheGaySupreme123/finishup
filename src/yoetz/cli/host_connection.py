@@ -190,6 +190,12 @@ def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
             "that record was lost), so other projects may still use them: an ordinary "
             "disconnect keeps them. Only --remove-shared removes them for every project."
         )
+    possible = body.get("possible_users")
+    if isinstance(possible, list) and possible:
+        lines.append(
+            "Projects that may use them (trusted checkouts with Yoetz's plugin files, not "
+            "verified connections): " + ", ".join(str(item) for item in possible)
+        )
     others = body.get("shared_with")
     if isinstance(others, list) and others:
         names = ", ".join(str(item) for item in others)
