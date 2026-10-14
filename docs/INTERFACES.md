@@ -617,6 +617,21 @@ complete, schema-valid fallback request bodies for the six operations and all ei
 `publish_work` admits (`ORDINARY_MCP_PUBLISH_EVENT_FAMILIES`: the nine ordinary families, seven
 delegation and work lifecycle families and two coordination families). It does not weaken catalog
 admission or add an MCP resource template.
+
+MCP `tools/list` uses `ToolDescriptor.advertised_input_schema`, a compact authoring projection
+bounded to 4,800 bytes per tool (compact ASCII JSON), on both routes and every host profile.
+Codex 0.162.1 rewrites inputs above its 5,000-byte threshold; staying below it preserves the
+intended inline shapes and enums. The projection keeps request fields, required lists, event
+envelopes, ordinary family names and common plan/action/result payload field types and enums,
+while moving examples and event-payload discrimination to
+`read_guidance` at `yoetz://guidance/request-templates.md`. Canonical decimal strings retain their
+syntax and documented int64 bound without repeating the full range regex. It is deliberately
+permissive for payload variants and some conditional rules, never an admission schema.
+`ToolDescriptor.input_schema` retains the full authoring graph and examples for repair hints;
+`catalog_input_schema` and the request models retain strict server validation. Output schemas,
+including Cursor's tuple compatibility projection, are unchanged. CLI, hooks, TUI and receipt
+validation do not use the compact advertisement.
+
 Internal-only value error: `ProtocolValueError(reason_code: str)` — bounded reason codes, never
 free text from input. CLI exit classes (0/2/10/11/20/30/40/70/130) map from codes in
 `cli/exits.py` only.

@@ -36,6 +36,14 @@ evidence is recorded in #767.
 
 ## Conditional agent guidance
 
+Every advertised MCP input schema is capped at 4,800 bytes, below Codex 0.162.1's 5,000-byte
+schema compaction threshold. Direct-tool mode receives inline request fields, required lists and
+enums without that size-triggered rewrite. Event payload variants and complete examples are in
+`read_guidance` at `yoetz://guidance/request-templates.md`; read the matching template before
+authoring a payload. Server validation and output schemas remain unchanged. This shared
+advertisement also serves code mode, Claude Code and Cursor; a capture of the model request
+proves schema delivery only, not a completed workflow or platform certification.
+
 The skill keeps its activation boundary, core workflow, and safety floor in the entrypoint.
 Before `start` read the core, `agent-instructions.md`: it is the operating card and is enough for
 ordinary work. Workflow, publication policy, and coverage and receipts are read only when a result,

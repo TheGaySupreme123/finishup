@@ -782,9 +782,10 @@ def test_advertised_outputs_accept_subscription_runtime_provenance(
 
 
 def test_respond_agent_surface_names_every_admitted_disposition() -> None:
-    """The advertised respond text is the only place an MCP caller learns the per-disposition
-    field rules: ``_mcp_presentation_schema`` drops respond-request's ``allOf`` before advertising
-    it. A disposition added to the enum without a rule here is an undiscoverable wire value."""
+    """Full authoring descriptions retain disposition rules for server-side repair hints.
+
+    The compact advertisement points callers to guidance instead of repeating these rules.
+    """
 
     descriptor = descriptor_for("respond")
     schema = cast(dict[str, Any], dict(descriptor.input_schema))
@@ -803,7 +804,7 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     assert "allOf" not in schema
     rules = cast(str, disposition["description"]).lower()
     for value in admitted:
-        assert value in rules, f"{value} has no advertised field rule"
+        assert value in rules, f"{value} has no authoring field rule"
     assert "requires reason" in rules
     # The tool description is the first text a caller reads, and it is digest-pinned.
     assert "provenance dispute" in descriptor.description
@@ -813,7 +814,7 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     assert text.index("repair it and check first") < text.index("respond self_verified")
     assert text.index("respond self_verified") < text.index("acknowledged_not_done only if")
     assert "never a yoetz-blocker" in text
-    # Issue #996: the link target is advertised with its rule, and the text says what it does.
+    # Issue #996: retain the link target's repair rule and describe what it does in tool text.
     target = cast(
         dict[str, Any], cast(dict[str, Any], schema["properties"])["duplicate_of_finding_id"]
     )
@@ -893,7 +894,7 @@ def test_mcp_can_amend_review_input_without_replacing_the_session(
 def test_advertised_input_schemas_honor_presentation_keyword_budgets() -> None:
     for descriptor in TOOL_DESCRIPTORS["policy"]:
         schema_name = f"{descriptor.name.replace('_', '-')}-request"
-        metrics = presentation_schema_metrics(descriptor.input_schema)
+        metrics = presentation_schema_metrics(descriptor.advertised_input_schema)
         budget = PRESENTATION_INPUT_SCHEMA_BUDGETS[schema_name]
         assert metrics["oneof_nodes"] <= budget["max_oneof_nodes"]
         assert metrics["oneof_branches"] <= budget["max_oneof_branches"]
@@ -902,7 +903,7 @@ def test_advertised_input_schemas_honor_presentation_keyword_budgets() -> None:
         assert metrics["defs_count"] <= budget["max_defs_count"]
         assert metrics["defs_nest_depth"] <= budget["max_defs_nest_depth"]
         assert metrics["encoded_bytes"] <= budget["max_encoded_bytes"]
-        encoded = repr(dict(descriptor.input_schema))
+        encoded = repr(dict(descriptor.advertised_input_schema))
         assert "common/client-info" not in encoded
         assert "common/actor-assertion" not in encoded
         assert "common/frontier" not in encoded
@@ -1019,8 +1020,9 @@ def test_presentation_examples_admit_under_catalog_models() -> None:
 def test_publish_work_examples_validate_against_advertised_input_schema() -> None:
     """Worked examples must validate against the contract MCP clients actually receive."""
 
-    schema = descriptor_for("publish_work").input_schema
-    examples = cast(list[JsonValue], schema["examples"])
+    descriptor = descriptor_for("publish_work")
+    schema = descriptor.advertised_input_schema
+    examples = cast(list[JsonValue], descriptor.input_schema["examples"])
     validator = cast(Any, Draft202012Validator(cast(Any, schema)))
 
     for index, example in enumerate(examples):
@@ -1030,7 +1032,7 @@ def test_publish_work_examples_validate_against_advertised_input_schema() -> Non
 
 def test_presentation_input_schema_is_projection_of_catalog_shape() -> None:
     for descriptor in TOOL_DESCRIPTORS["policy"]:
-        presented = descriptor.input_schema
+        presented = descriptor.advertised_input_schema
         catalog = descriptor.catalog_input_schema
         assert presented["type"] == catalog["type"]
         assert presented["additionalProperties"] == catalog["additionalProperties"]
@@ -1044,7 +1046,7 @@ def test_presentation_input_schema_is_projection_of_catalog_shape() -> None:
         assert isinstance(catalog_properties, dict)
         assert set(presented_required) == set(catalog_required)
         assert set(presented_properties) == set(catalog_properties)
-        # tools/list may attach examples; catalog admission schemas do not require them.
+        # Worked examples live in the full authoring schema, outside compact tools/list.
         assert "examples" not in catalog
 
 
