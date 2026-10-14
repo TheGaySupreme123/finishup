@@ -335,7 +335,7 @@ it came from, within the existing per-item, count and total caps; #907 owns lift
 
 The capture is unavailable, and says so, for linked Git worktrees and a submodule checkout
 opened as the root (in both, `.git` is a file pointing elsewhere, which the ADR-011 open fence
-refuses as `unsafe_root`), group- or world-writable roots, repositories whose effective config
+refuses as `unsafe_root`), roots another account can write (ADR-007 2026-10-14 amendment), repositories whose effective config
 defines a filter or an include (for example a repository-local Git LFS or git-crypt setup),
 partial clones, a system Git older than 2.25 (`git_version_unsupported`), an object store reached
 through a link or borrowed through

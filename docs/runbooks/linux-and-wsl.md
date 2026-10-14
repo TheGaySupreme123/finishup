@@ -137,6 +137,63 @@ exception_local_control_transport_error; runtime_directory_unsafe; at …)`. A s
 live one is not a failure: on-demand start connects to the holder. The bridge stops waiting as
 soon as its spawned service exits with a record, instead of spending its 30-second start budget.
 
+## Umask 0002 and user-private groups
+
+Ubuntu, Debian, Fedora and RHEL create normal accounts with a user-private group
+(`USERGROUPS_ENAB yes`) and umask 0002 through `pam_umask`; WSL's Ubuntu inherits the same
+defaults. Every file such an account creates, including `uv tool install`'s environment and uv's
+managed interpreter under `~/.local/share/uv/python`, is group-writable by a group of one.
+Yoetz treats that group write as owner-only (ADR-007, 2026-10-14 amendment): the group must be
+the owner's primary group, named like the owner, with no other member and no other account using
+it as its primary group, as read from `/etc/passwd`, `/etc/group` and (when readable)
+`/etc/gshadow`. That is only trusted when `/etc/nsswitch.conf` serves `passwd` and `group` from
+`files`/`systemd` alone (the Ubuntu, Debian and Fedora defaults) with no userdb records beyond
+dynamic users. Every `passwd`, `group` and `initgroups` line counts, including a duplicate or a
+line written without the colon (`initgroups files sss`); a malformed one (for example an unknown
+`[ACTION]` word) makes the check refuse. On machines joined to a directory service (`sss`, `ldap`, `nis`, `winbind`),
+membership cannot be proved complete, so group write is treated as shared: install with
+`umask 022`, or run the printed `chmod -R go-w`. World write, and group write through any other group, are
+refused everywhere Yoetz checks who can write (installed runtime, launcher, host configuration
+roots, workspace and Git capture).
+
+A refused runtime stops `yoetz service run`, `yoetz mcp serve`, `yoetz upgrade` and every hook
+with `release_runtime_group_writable` or `release_runtime_world_writable` (exit 20). Terminal
+commands print the exact repair for that installation, for example
+`chmod -R go-w /home/alice/.local/share/uv/tools/yoetz
+/home/alice/.local/share/uv/python/cpython-3.14.6-linux-x86_64-gnu`; hooks print the token
+without paths and point at `yoetz service run`. A service started on demand records the token as
+its startup failure (`stage: import; …; release_runtime_group_writable`), and CLI
+`service_unavailable` results, `yoetz service status` and `yoetz setup status` print the same
+refusal; `yoetz setup run` refuses to connect Codex, Claude Code or Cursor to that runtime
+(`reason` is the token, `next_step` the repair) while its status view and disconnect still work.
+`yoetz upgrade --accept`, `npx yoetz` and `scripts/provision_test_instance.py` install under umask
+022; the provisioner also clears group/other write on the runtime it creates.
+
+Evidence (2026-10-14, Boat Ubuntu 24.04, fresh normal account, `umask` 0002 from `pam_umask`):
+`uv tool install` produced a 775/664 environment and a 775 managed interpreter; `service run`,
+`mcp serve` (initialize, tools/list), Codex, Claude Code and Cursor hooks (exit 0), `state capture`
+on a 775 repository, and `setup run` previews for Codex, Claude Code (user-owned executable) and
+Cursor Agent CLI all succeeded. The previous release refused every one of them. Moving the
+runtime to a group shared with a second account produced the token on each surface. Not covered: a
+root-owned Claude Code executable, which the separate executable-ownership rule refuses as
+`target_unsafe` regardless of umask. The interpreter a retained generation links to is
+re-checked on every reuse, so a later group change is refused then too.
+
+## Retained-runtime bytecode and slow starts
+
+Serving processes (`service run`, `mcp serve`, every hook, `upgrade`) run from a sealed,
+read-only copy of the installation (ADR-007). That copy ships unchecked-hash bytecode for every
+module, so a start costs what an ordinary run costs. Building the copy reuses the installation's
+own bytecode only when it is hash-based and matches the source. `npx yoetz` and
+`yoetz upgrade --accept` install that way (they set `SOURCE_DATE_EPOCH` for the uv install and
+the build backends it runs for any sdist dependency, nothing else); after a plain
+`uv tool install --compile-bytecode`, which writes timestamp bytecode, the first serving start
+compiles the package once (roughly 2-3 times as long on an M-series Mac, longer on WSL under
+nested virtualization). To get the faster first start from a manual install, run it as
+`SOURCE_DATE_EPOCH=315532800 uv tool install --compile-bytecode …`. A start that outlives the client's budget is reported as
+`service_unavailable: service_handshake_timeout` (CLI) or `safe_details.phase:
+handshake_timeout` (MCP): wait and retry; do not run `yoetz service run` or `restart` for it.
+
 ## Approved-check sandbox
 
 Network-denied approved checks run only under an enforcing sandbox: Seatbelt (`sandbox-exec`,

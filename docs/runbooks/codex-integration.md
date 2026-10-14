@@ -1537,6 +1537,7 @@ egress.
 | Symptom | Action |
 |---|---|
 | Target untrusted/unsafe | Correct the explicit root/permissions; there is no force option. |
+| MCP, service or hooks stop with `release_runtime_group_writable` / `release_runtime_world_writable` | A runtime another account can write (ADR-007, 2026-10-14) stops `yoetz mcp serve` with `release_runtime_group_writable` or `release_runtime_world_writable` and the exact `chmod -R go-w` repair on stderr (Codex shows it as the MCP server's startup error). Its hooks exit 20 with no stdout, so they make no allow or block decision (exit 2 is the only blocking code); Codex continues the turn; their stderr names the token without local paths and points at `yoetz service run`, which prints the repair. Group write through the user's own private group (the Ubuntu/Fedora umask 0002 default) is accepted. |
 | Resource invalid | Reinstall from a verified package artifact. |
 | Preview stale | Run `status`, then a fresh preview. |
 | Modified/partial content | Preserve and review manually; use `replace_modified` deliberately if desired. |
@@ -2437,8 +2438,8 @@ redacted first (`check_time_change_redacted`), every part still passes the never
 named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and similar, a name heuristic)
 are listed by name only, and a change larger than the packet reports `check_time_change_truncated`.
 The whole capture has 20 seconds. It is `check_time_change_unavailable` for a linked Git worktree or
-a submodule checkout opened as the repository (its `.git` is a file), a group- or world-writable
-repository root, a repository whose effective Git config defines a filter or an include (for example
+a submodule checkout opened as the repository (its `.git` is a file), a repository root another
+account can write (group write through the owner's own private group is fine, ADR-007), a repository whose effective Git config defines a filter or an include (for example
 a repository-local Git LFS or git-crypt setup), a partial clone, a system Git older than 2.25, a repository
 whose object store is reached through a link or borrowed from another repository (`.git/commondir`
 or alternates), a repository whose Git settings point its working tree elsewhere (`core.worktree`),

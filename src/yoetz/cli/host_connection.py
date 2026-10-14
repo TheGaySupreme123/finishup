@@ -252,6 +252,13 @@ def run_host_connection(
     try:
         selected = select_installation(host, executable, config_root)
         report["host"] = selected.host
+        if action == "connect" and not status_only:
+            from yoetz.cli.runtime_refusal import installed_runtime_refusal_text
+
+            if installed_runtime_refusal_text() is not None:
+                # Every host would launch this runtime and every launch would be refused; the
+                # except branch below names the token and repair. Disconnect stays available.
+                raise ConnectionError("release_runtime_refused")
         request = request_value or new_id(IdKind.REQUEST)
 
         def prepare() -> ConnectionPlan:
@@ -329,6 +336,14 @@ def run_host_connection(
                 "For legacy Codex setup use --codex-home. If the conflict is in the "
                 "project's marketplace, inspect that file first; a new home cannot repair it."
             )
+        from yoetz.cli.runtime_refusal import installed_runtime_refusal_text
+
+        refusal = installed_runtime_refusal_text()
+        if refusal is not None:
+            # The launcher or runtime this host would run is writable by another account: a
+            # host-specific symptom (launcher_unproven, target_unsafe) hides the one repair.
+            report["reason"], text = refusal
+            report["next_step"] = text.split(": ", 1)[1].rstrip("\n")
         if isinstance(error, ConnectionError) and error.status is not None:
             report["status"] = error.status
             next_command = error.status.get("next_command")

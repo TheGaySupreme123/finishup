@@ -145,3 +145,25 @@ async def test_semantic_restart_stops_at_a_startup_failure_and_names_it(
     assert calls == ["spawn"]
     # The full-screen window owns the terminal and passes report_startup_failure=False.
     assert capsys.readouterr().err.splitlines() == ([_EXPECTED] if report else [])
+
+
+@pytest.mark.anyio
+async def test_setup_names_a_foreign_writable_runtime_when_the_service_cannot_start(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import yoetz.cli.runtime_refusal as refusal
+
+    monkeypatch.setattr(
+        client_module,
+        "connect_service_on_demand",
+        _failing_on_demand(ControlError("service_unavailable", retryable=True), []),
+    )
+    monkeypatch.setattr(
+        refusal,
+        "installed_runtime_refusal_text",
+        lambda: ("release_runtime_world_writable", "release_runtime_world_writable: repair\n"),
+    )
+    capsys.readouterr()
+    service = await setup._service_reachability(start_if_absent=True)  # pyright: ignore[reportPrivateUsage]
+    assert service == {"reachable": False, "state": None, "vault_mode": None}
+    assert capsys.readouterr().err.splitlines() == ["release_runtime_world_writable: repair"]

@@ -9463,7 +9463,7 @@ Before and after each call the root pathname and its `.git` must still `lstat` t
 inode recorded from the validated descriptor (`unsafe_root` otherwise).
 `_refuse_unsafe_object_store` requires `.git/objects`, `objects/info` and `objects/pack` to be real
 directories of the service user and each fan-out directory a real directory, and every
-pack-directory entry a regular file of the service user, not group- or world-writable (any link
+pack-directory entry a regular file of the service user that no other account can write (ADR-007, 2026-10-14: group write through the owner's private group is owner-only; any link
 count; a link or a foreign-owned or writable entry is `unsafe_root`, more than 4096 entries
 `unsupported_repository`); `objects/info/alternates` and `objects/info/http-alternates` are
 `unsafe_root`, as the ADR-011 open fence already makes static alternates, and `.git/commondir` is

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from yoetz.adapters.integrations.launcher import valid_launcher
+from yoetz.config.foreign_write import writable_by_others
 from yoetz.protocol.canonical import (
     JsonValue,
     canonical_digest,
@@ -87,7 +88,7 @@ def _identity(info: os.stat_result) -> tuple[int, int]:
 
 
 def _owned(info: os.stat_result) -> None:
-    if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+    if info.st_uid != os.geteuid() or writable_by_others(info):
         raise _fail("target_unsafe")
 
 

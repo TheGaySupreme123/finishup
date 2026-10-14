@@ -45,7 +45,15 @@ What happens, in order:
 2. `uv build --no-sources` produces the wheel into `<base>/<tag>/dist/`; its SHA-256 becomes the
    instance's `package_digest`.
 3. `uv venv` plus `uv pip install <wheel>` creates `<base>/<tag>/runtime/`, a runtime holding
-   only that wheel.
+   only that wheel, installed with `--compile-bytecode` and `SOURCE_DATE_EPOCH` in the install
+   child's environment, so uv writes checked-hash bytecode the retained runtime reuses (the epoch
+   also reaches any build backend uv runs for an sdist dependency in that install, nothing else). Every uv
+   command runs under umask 022 and the script then clears group and other write on the runtime
+   it created (uv may hard-link files from a cache written under a looser umask), so an operator with Ubuntu's umask 0002 gets a runtime Yoetz accepts. Because
+   such files are hard links, clearing their group write also changes the matching files in
+   uv's cache (for example 0664 to 0644); that only tightens the operator's own cache. A
+   previously downloaded uv-managed interpreter that a shared group can write is not changed;
+   the instance's service then names `release_runtime_group_writable` and its repair.
 4. The snapshot's own launcher runs `yoetz instance create --root <base>/<tag>/state --lifecycle
    ... --source-ref <sha> --package-digest <sha256> --bind-runtime`, which creates the root
    (owner-only), seals `state/instance-identity.json`, and writes `yoetz-instance-pin.json` into

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -489,3 +490,34 @@ def test_hash_untracked_file_limit_reports_bound_observed_and_limit(tmp_path: Pa
     assert excinfo.value.detail == SubjectStateLimitDetail(
         SubjectStateBound.UNTRACKED_FILE_COUNT, 2, 1
     )
+
+
+@pytest.mark.parametrize("private", [True, False], ids=["user-private-group", "shared-group"])
+def test_umask_0002_repository_is_captured_only_for_a_user_private_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, private: bool
+) -> None:
+    """A repository made under Ubuntu's default umask is g+w throughout (#n5 umask)."""
+
+    from yoetz.config import foreign_write
+
+    monkeypatch.setattr(foreign_write, "owner_private_group", _private_group_is(private))
+    previous = os.umask(0o002)
+    try:
+        repository = _repository(tmp_path)
+        repository.chmod(0o775)
+        (repository / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    finally:
+        os.umask(previous)
+    if not private:
+        with pytest.raises(ValueError, match="unsafe_root"):
+            open_local_workspace(repository)
+        return
+    result = GitSubjectStateAdapter().capture(_command(repository))
+    assert result.status is SubjectStateStatus.CAPTURED
+
+
+def _private_group_is(value: bool) -> Callable[[int, int], bool]:
+    def answer(_uid: int, _gid: int) -> bool:
+        return value
+
+    return answer
