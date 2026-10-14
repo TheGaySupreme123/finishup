@@ -25,6 +25,7 @@ from yoetz.domain.coordination import (
 from yoetz.domain.findings import (
     FINDING_KIND_TRAITS,
     MAX_RECORDED_VERDICTS,
+    RESPONSE_V1_1_DISPOSITIONS,
     CheckVerdict,
     Finding,
     FindingKind,
@@ -40,7 +41,7 @@ from yoetz.domain.findings import (
     semantic_provenance_from_json,
     semantic_provenance_to_json,
 )
-from yoetz.domain.receipts import ReceiptConclusion
+from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP, ReceiptConclusion
 from yoetz.domain.values import (
     ActionId,
     Actor,
@@ -103,9 +104,11 @@ from yoetz.protocol.errors import (
     PublicErrorCode,
     PublicOperationError,
 )
+from yoetz.protocol.ids import validate_opaque_item_id
 from yoetz.protocol.models import (
     MAX_MISSING_FOR_ASSESSMENT,
     MAX_MISSING_TARGET_REFS,
+    MAX_REVIEW_FOLLOW_UP_ROUNDS,
     MAX_TASK_STATEMENT_BYTES,
     MISSING_FOR_ASSESSMENT_KINDS,
     MISSING_ITEM_AVAILABILITIES,
@@ -119,6 +122,19 @@ from yoetz.protocol.models import (
     SemanticReason,
     SemanticStatus,
     validate_semantic_provenance_binding,
+)
+from yoetz.protocol.policy_packs import (
+    COORDINATION_POLICY_ID,
+    POLICY_PACK_GENERATIONS,
+    RESEARCH_EVIDENCE_POLICY_ID,
+    WORK_INTEGRITY_POLICY_ID,
+    is_recorded_policy_identity,
+)
+from yoetz.protocol.recovery import correction_for_invariant
+from yoetz.protocol.redacted_values import (
+    SemanticRedactedValue,
+    semantic_redacted_values_from_wire,
+    validate_semantic_redacted_values,
 )
 
 __all__ = [
@@ -186,6 +202,8 @@ __all__ = [
     "EvidenceDigestSubject",
     "EvidenceRecordedPayload",
     "FindingRecordedPayload",
+    "FINDING_EVENT_SCHEMA_VERSION",
+    "FINDING_SNIPPET_EVENT_SCHEMA_VERSION",
     "IntegrationKind",
     "LedgerChain",
     "LedgerRecord",
@@ -215,11 +233,14 @@ __all__ = [
     "RedactionState",
     "RequestedItem",
     "RequestedItemKind",
+    "RequestedItemRole",
     "ResponseRecordedPayload",
     "ResultOutcome",
     "ResultRecordedPayload",
     "RuntimeProfile",
     "RESPONSE_EVENT_SCHEMA_VERSION",
+    "OBLIGATION_BASE_SCHEMA_VERSION",
+    "OBLIGATION_SCHEMA_VERSION",
     "SESSION_EVENT_SCHEMA_VERSION",
     "TASK_STATEMENT_EVENT_SCHEMAS",
     "TASK_STATEMENT_PLAN_SCHEMA_VERSION",
@@ -243,6 +264,8 @@ __all__ = [
     "encode_payload",
     "media_type_for",
     "normalize_payload_json",
+    "obligation_schema_admits",
+    "obligation_schema_version",
 ]
 
 OBSERVATION_COORDINATOR_ACTOR_ID: Final = "yoetz:observation-coordinator"
@@ -256,18 +279,34 @@ EVIDENCE_SCHEMA_VERSIONS: Final = (
     EVIDENCE_SCHEMA_VERSION,
 )
 CLAIM_SCHEMA_VERSION: Final = "1.1.0"
+# ``obligation_published`` 1.0.0 is released and frozen. 1.1.0 (issue #1002) admits the
+# ``directory`` requested-item kind, the optional per-item ``role`` (``input``/``output``, on ``file``
+# and ``directory`` items only) and the ``acknowledged_not_done`` status with its required reason.
+# 1.0.0 refuses those; 1.1.0 is a superset and also admits a payload without them (tb4n2 R3,
+# issue #1023: agents copied the 1.1.0 template onto plain obligations and 24/28 attempts were
+# refused). ``obligation_schema_admits`` is that single rule and ``obligation_schema_version`` the
+# single writer choice (1.1.0 iff one of those is present), so every Yoetz-drafted obligation
+# without them keeps its exact 1.0.0 bytes and old ledgers replay unchanged.
+OBLIGATION_SCHEMA_VERSION: Final = "1.1.0"
+OBLIGATION_BASE_SCHEMA_VERSION: Final = "1.0.0"
 # 1.3.0 (unreleased on the 0.3 line) also carries the optional per-finding reviewer rulings of
 # issue #905; a check without rulings keeps its earlier 1.3.0 bytes.
 CHECK_EVENT_SCHEMA_VERSION: Final = "1.3.0"
+# 1.4.0 adds the verifying-reviewer summary and per-requirement judgements. Older check records
+# remain byte-identical and decode with these fields absent.
+REVIEW_CHECK_EVENT_SCHEMA_VERSION: Final = "1.4.0"
 SEMANTIC_EVENT_SCHEMA_VERSION: Final = "1.2.0"
 SEMANTIC_EVENT_SCHEMA_VERSIONS: Final = ("1.1.0", SEMANTIC_EVENT_SCHEMA_VERSION)
 # 1.3.0 (unreleased on the 0.3 line) also admits the optional review-dialogue fields of issue #905
 # (the persisted challenge fields and the ``relates_to`` link) on AI-powered findings; a finding
 # without them keeps its earlier 1.3.0 bytes.
 FINDING_EVENT_SCHEMA_VERSION: Final = "1.3.0"
+FINDING_SNIPPET_EVENT_SCHEMA_VERSION: Final = "1.4.0"
 # ``response_recorded`` 1.0.0 is released and frozen. 1.1.0 exists only to admit the terminal
-# ``acknowledged_not_done`` disposition (issue #905); every other disposition keeps 1.0.0 bytes,
-# so the version is a pure function of the payload and old ledgers replay unchanged.
+# ``acknowledged_not_done`` (issue #905), ``self_verified`` (issue #984) and ``duplicate_of``
+# (issue #996, with its ``duplicate_of_finding_id``) dispositions; every other disposition keeps
+# 1.0.0 bytes, so the version is a pure function of the payload and old
+# ledgers replay unchanged.
 RESPONSE_EVENT_SCHEMA_VERSION: Final = "1.1.0"
 COORDINATION_EVENT_SCHEMA_VERSION: Final = "1.0.0"
 SESSION_EVENT_SCHEMA_VERSION: Final = "1.1.0"
@@ -375,11 +414,23 @@ class RequestedItemKind(str, Enum):  # noqa: UP042 - exact wire enum base
     COMMAND = "command"
     CHANGE = "change"
     SOURCE = "source"
+    # obligation_published 1.1.0 only (issue #1002): a directory the request names.
+    DIRECTORY = "directory"
+
+
+class RequestedItemRole(str, Enum):  # noqa: UP042 - exact wire enum base
+    """Whether a requested file or directory is read by the task or delivered by it (#1002)."""
+
+    INPUT = "input"
+    OUTPUT = "output"
 
 
 class ObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
     OPEN = "open"
     RESOLVED = "resolved"
+    # ``obligation_published`` 1.1.0 only (issue #997, ADR-032 slice C): the agent will not do
+    # this obligation and says why. Not open, not resolved; disclosed as not done.
+    ACKNOWLEDGED_NOT_DONE = "acknowledged_not_done"
 
 
 class NoObligationsReason(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -599,6 +650,14 @@ def _included_ref(value: object) -> str:
     return constructor(value)
 
 
+def _valid_opaque_item_id(value: object) -> bool:
+    try:
+        validate_opaque_item_id(value)
+    except ProtocolValueError:
+        return False
+    return True
+
+
 def _evidence_result_ref(value: object) -> EvidenceId | ResultId:
     if type(value) is not str:
         raise ProtocolValueError("invalid_event_value_type")
@@ -725,10 +784,28 @@ def _lineage_enum_tuple[T: Enum](
 class RequestedItem:
     item_kind: RequestedItemKind
     value: str
+    # obligation_published 1.1.0 only. ``None`` keeps the 1.0.0 meaning: a ``file`` item may be an
+    # input or an output.
+    role: RequestedItemRole | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "item_kind", _exact_enum(self.item_kind, RequestedItemKind))
         object.__setattr__(self, "value", _bounded_text(self.value, 1_024))
+        if self.role is not None:
+            object.__setattr__(self, "role", _exact_enum(self.role, RequestedItemRole))
+
+        if self.role is not None and self.item_kind not in {
+            RequestedItemKind.FILE,
+            RequestedItemKind.DIRECTORY,
+        }:
+            # A role says whether a path is read or delivered; no other kind names a path.
+            raise ProtocolValueError("invalid_event_value_type")
+
+    @property
+    def requires_obligation_v1_1(self) -> bool:
+        """Whether only ``obligation_published`` 1.1.0 can carry this item."""
+
+        return self.role is not None or self.item_kind is RequestedItemKind.DIRECTORY
 
 
 @dataclass(frozen=True, slots=True)
@@ -767,12 +844,10 @@ class PolicyVersion:
 
     def __post_init__(self) -> None:
         policy_id_value = _bounded_text(self.policy_id, 128, minimum=1)
-        if policy_id_value not in {"coordination", "research-evidence", "work-integrity"}:
-            raise ProtocolValueError("invalid_event_value_type")
-        if type(self.policy_version) is not str or self.policy_version != "0.1.0":
+        # Earlier pack versions stay decodable: a recorded check keeps the identity it ran.
+        if not is_recorded_policy_identity(policy_id_value, self.policy_version):
             raise ProtocolValueError("invalid_event_value_type")
         object.__setattr__(self, "policy_id", policy_id_value)
-        object.__setattr__(self, "policy_version", "0.1.0")
 
 
 @dataclass(frozen=True, slots=True)
@@ -861,6 +936,8 @@ def _locator_key_kind(schema: EventSchema) -> str:
         return "none"
     additive = (
         schema == EventSchema("claim_recorded", CLAIM_SCHEMA_VERSION)
+        # Role- and directory-bearing obligations project as the same obligation (issue #1002).
+        or schema == EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION)
         # A plan carrying a revised task statement projects as the same plan (issue #908).
         or schema
         in {
@@ -873,11 +950,14 @@ def _locator_key_kind(schema: EventSchema) -> str:
             and (
                 schema.version in SEMANTIC_EVENT_SCHEMA_VERSIONS
                 or (
-                    schema.name == "check_recorded" and schema.version == CHECK_EVENT_SCHEMA_VERSION
+                    schema.name == "check_recorded"
+                    and schema.version
+                    in {CHECK_EVENT_SCHEMA_VERSION, REVIEW_CHECK_EVENT_SCHEMA_VERSION}
                 )
                 or (
                     schema.name == "finding_recorded"
-                    and schema.version == FINDING_EVENT_SCHEMA_VERSION
+                    and schema.version
+                    in {FINDING_EVENT_SCHEMA_VERSION, FINDING_SNIPPET_EVENT_SCHEMA_VERSION}
                 )
             )
         )
@@ -1075,6 +1155,9 @@ class ChildFindingSnapshot:
     resolved: bool
     resolution_event_id: EventId | None = None
     actionable: bool | None = None
+    # Issue #984 (ADR-034): the child agent self-verified this repair and Yoetz could not prove
+    # it. Recorded only when true, so every other snapshot keeps its bytes.
+    self_verified: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "finding_id", finding_id(self.finding_id))
@@ -1097,6 +1180,10 @@ class ChildFindingSnapshot:
         if type(actionable) is not bool or actionable is not expected_actionable:
             raise ProtocolValueError("finding_actionable_mismatch")
         object.__setattr__(self, "actionable", actionable)
+        if type(self.self_verified) is not bool:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.self_verified and (self.resolved or not actionable):
+            raise ProtocolValueError("finding_resolution_mismatch")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1563,9 +1650,15 @@ class ObligationResolutionMismatch(ValueError):
     differing_fields: tuple[str, ...]
     invariant: str
     event_id: EventId | None = None
+    # The ledger status of the obligation the draft tried to republish (``open`` or
+    # ``resolved``), a closed token. It lets ``open_to_resolved_only`` say whether the
+    # obligation is already resolved, which every tb4n1 occurrence was.
+    prior_status: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.differing_fields) is not tuple:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.prior_status is not None and self.prior_status not in {"open", "resolved"}:
             raise ProtocolValueError("invalid_event_value_type")
         ordered = tuple(sorted(self.differing_fields, key=str.encode))
         if len(ordered) != len(set(ordered)):
@@ -1636,6 +1729,15 @@ class ClaimRevisionMismatch(ValueError):
     field: str
     invariant: str
     event_id: EventId | None = None
+    # Structural result ids a completion claim still owes in ``limitation_refs``. They are ledger
+    # identifiers, never caller content, and are carried only for ``limitation_refs_complete`` so
+    # the rejection names exactly what to add (hook-observed runs the author never published were
+    # otherwise invisible to it).
+    missing_refs: tuple[ResultId, ...] = ()
+    # Structural result ids the draft listed in ``limitation_refs`` that are not admissible there
+    # (unknown, successful, or outside the claim's obligation scope). Carried only for
+    # ``limitation_refs_must_be_relevant_non_success_results`` so the rejection names what to drop.
+    offending_refs: tuple[ResultId, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.field) is not str or self.field not in _CLAIM_REVISION_FIELDS:
@@ -1644,6 +1746,27 @@ class ClaimRevisionMismatch(ValueError):
             raise ProtocolValueError("invalid_event_value_type")
         if self.event_id is not None:
             object.__setattr__(self, "event_id", event_id(self.event_id))
+        if type(self.missing_refs) is not tuple:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.missing_refs and self.invariant != "limitation_refs_complete":
+            raise ProtocolValueError("invalid_event_value_type")
+        object.__setattr__(
+            self,
+            "missing_refs",
+            tuple(sorted({result_id(value) for value in self.missing_refs}, key=str.encode)),
+        )
+        if type(self.offending_refs) is not tuple:
+            raise ProtocolValueError("invalid_event_value_type")
+        if (
+            self.offending_refs
+            and self.invariant != "limitation_refs_must_be_relevant_non_success_results"
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        object.__setattr__(
+            self,
+            "offending_refs",
+            tuple(sorted({result_id(value) for value in self.offending_refs}, key=str.encode)),
+        )
         ValueError.__init__(self, "claim_revision_mismatch")
 
     @property
@@ -1687,24 +1810,79 @@ def public_error_for_claim_revision_mismatch(
     # ``invariant`` rides as a typed detail (ADR-030). It was previously legible only inside the
     # message below, which the MCP text projector does not copy, so that projector had to recover
     # it by matching this whole sentence with a regex.
-    details: dict[str, str] = {
+    details: dict[str, str | int] = {
         "invariant": mismatch.invariant,
         "reason_code": mismatch.reason_code,
     }
     if type(event_index) is int and 0 <= event_index < _MAX_EVENTS_PER_BATCH_FOR_POINTER:
         details["field"] = f"/event_drafts/{event_index}/payload/{mismatch.field}"
+    if mismatch.invariant == "limitation_refs_complete" and mismatch.missing_refs:
+        details["count"] = len(mismatch.missing_refs)
+        return PublicOperationError(
+            PublicErrorCode.EVENT_INVALID,
+            _limitation_refs_complete_message(mismatch.missing_refs),
+            False,
+            safe_details=details,
+        )
+    if mismatch.offending_refs:
+        details["count"] = len(mismatch.offending_refs)
+        named = mismatch.offending_refs[:_MAX_NAMED_MISSING_LIMITATIONS]
+        remainder = len(mismatch.offending_refs) - len(named)
+        more = f" and {remainder} more" if remainder > 0 else ""
+        return PublicOperationError(
+            PublicErrorCode.EVENT_INVALID,
+            (
+                "The event batch is invalid. claim_recorded/1.1.0 requires invariant "
+                "limitation_refs_must_be_relevant_non_success_results: limitation_refs may name "
+                "only failed, partial, or unknown results in this claim's obligation scope. Not "
+                f"admissible here: {', '.join(named)}{more} (each is unknown, successful, or "
+                "outside the claim's obligation_refs scope). Remove them from limitation_refs, "
+                "keep successful results in supporting_refs, and retry with a new request_id. "
+                "Read status view results before retrying."
+            ),
+            False,
+            safe_details=details,
+        )
+    # One invariant-specific correction first, from the same registry the CLI renders, then the
+    # shared revision rules (tb4n1: the rule recital alone did not say which one was broken).
+    correction = correction_for_invariant(mismatch.invariant)
+    specific = f": {correction}" if correction is not None else ""
     return PublicOperationError(
         PublicErrorCode.EVENT_INVALID,
         (
-            "The event batch is invalid. claim_recorded/1.1.0 correction requires invariant "
-            f"{mismatch.invariant} at {mismatch.field}. Use supersedes_claim_refs only for exact "
-            "prior effective claim ids with overlapping obligation scope and a fresh, materially "
-            "changed claim. Keep partial or failed result ids in limitation_refs rather than "
-            "supporting_refs, and do not combine replacement with disputes_refs. Read status views "
-            "candidate_findings, history, and results before retrying."
+            "The event batch is invalid. claim_recorded/1.1.0 requires invariant "
+            f"{mismatch.invariant} at {mismatch.field}{specific}. Use supersedes_claim_refs only "
+            "for exact prior effective claim ids with overlapping obligation scope and a fresh, "
+            "materially changed claim. Keep partial or failed result ids in limitation_refs "
+            "rather than supporting_refs, and do not combine replacement with disputes_refs. Read "
+            "status views candidate_findings, history, and results before retrying."
         ),
         False,
         safe_details=details,
+    )
+
+
+# Bounded so the public message stays far below its 4096-byte ceiling: 32 result ids are 1,344
+# bytes. A larger set is named in order across retries, each naming the next 32.
+_MAX_NAMED_MISSING_LIMITATIONS: Final = 32
+
+
+def _limitation_refs_complete_message(missing: tuple[ResultId, ...]) -> str:
+    """Name the exact live non-success results a completion claim still has to disclose."""
+
+    named = missing[:_MAX_NAMED_MISSING_LIMITATIONS]
+    remainder = len(missing) - len(named)
+    more = f" and {remainder} more that the next attempt will name" if remainder > 0 else ""
+    return (
+        "The event batch is invalid. A claim_recorded/1.1.0 completion claim requires invariant "
+        "limitation_refs_complete: limitation_refs must name every failed, partial, or unknown "
+        "result that is still live in its "
+        "obligation scope, including command runs Yoetz observed through host hooks that you never "
+        f"published. Missing {len(missing)}: {', '.join(named)}{more}. Add these ids to "
+        "limitation_refs (unique, ascending, beside any already listed; never in supporting_refs), "
+        "and retry with a new request_id. A hook-observed "
+        "failure stops being required only after a later observed run of the same command passes "
+        "before the claim."
     )
 
 
@@ -1722,14 +1900,36 @@ def public_error_for_obligation_resolution_mismatch(
     if type(mismatch) is not ObligationResolutionMismatch:
         raise TypeError("obligation_resolution_mismatch_wrong_type")
     fields = ", ".join(mismatch.differing_fields) if mismatch.differing_fields else "status"
-    message = (
-        "The event batch is invalid. Obligation resolution requires invariant "
-        f"{mismatch.invariant}; mismatched fields: {fields}. Repeat every meaning field "
-        "from the open obligation byte-for-byte; only status and resolution_evidence_refs "
-        "may change. See yoetz://guidance/publication-policy.md section obligation-resolution "
-        "and the publish_work examples entry for obligation_published resolution. "
-        "Correct the event payload before retrying."
+    guidance = (
+        "See yoetz://guidance/publication-policy.md section obligation-resolution and the "
+        "publish_work examples entry for obligation_published resolution."
     )
+    if mismatch.invariant == "open_to_resolved_only" and mismatch.prior_status == "resolved":
+        # tb4n1: all eight occurrences republished an obligation that was already resolved.
+        message = (
+            "The event batch is invalid. Obligation resolution requires invariant "
+            "open_to_resolved_only: this obligation is already resolved in the ledger, and a "
+            "resolution is recorded once. Remove this obligation_published draft from the batch "
+            "and retry the rest with a new request_id; status view obligations lists which "
+            "obligations are still open. If the resolved work no longer holds, republish it "
+            "with status open, or acknowledged_not_done with a reason on "
+            f"obligation_published/1.1.0, repeating every meaning field. {guidance}"
+        )
+    elif mismatch.invariant == "open_to_resolved_only":
+        message = (
+            "The event batch is invalid. Obligation resolution requires invariant "
+            "open_to_resolved_only: an open obligation can be republished only with status "
+            "resolved and resolution_evidence_refs, repeating every meaning field byte-for-byte. "
+            f"Set status to resolved and retry with a new request_id. {guidance}"
+        )
+    else:
+        message = (
+            "The event batch is invalid. Obligation resolution requires invariant "
+            f"{mismatch.invariant}; mismatched fields: {fields}. Repeat every meaning field "
+            "from the open obligation byte-for-byte (status view obligations shows the recorded "
+            "values); only status and resolution_evidence_refs may change. "
+            f"{guidance} Correct the event payload before retrying."
+        )
     details: dict[str, str] = {"reason_code": "obligation_resolution_mismatch"}
     if type(event_index) is int and 0 <= event_index < _MAX_EVENTS_PER_BATCH_FOR_POINTER:
         details["field"] = f"/event_drafts/{event_index}/payload"
@@ -1782,6 +1982,21 @@ class ObligationPublishedPayload:
     requested_items: tuple[RequestedItem, ...] = ()
     source_refs: tuple[EventId, ...] = ()
     resolution_evidence_refs: tuple[EvidenceId | ResultId, ...] = ()
+    # obligation_published 1.1.0 only: present iff ``status`` is ``acknowledged_not_done``.
+    acknowledged_not_done_reason: str | None = None
+
+    @property
+    def requires_obligation_v1_1(self) -> bool:
+        """Whether only ``obligation_published`` 1.1.0 can carry this payload (issue #1002).
+
+        True iff a ``directory`` item, an item ``role`` or ``acknowledged_not_done`` is present.
+        Use ``obligation_schema_admits`` / ``obligation_schema_version`` rather than comparing
+        versions against this directly, so the rule lives in one place (issue #1023).
+        """
+
+        return self.status is ObligationStatus.ACKNOWLEDGED_NOT_DONE or any(
+            item.requires_obligation_v1_1 for item in self.requested_items
+        )
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
@@ -1815,8 +2030,43 @@ class ObligationPublishedPayload:
             field="resolution_evidence_refs",
         )
         object.__setattr__(self, "resolution_evidence_refs", resolution_refs)
-        if status is ObligationStatus.OPEN and resolution_refs:
+        if status is not ObligationStatus.RESOLVED and resolution_refs:
             raise ProtocolValueError("obligation_resolution_invalid")
+        reason = self.acknowledged_not_done_reason
+        if (status is ObligationStatus.ACKNOWLEDGED_NOT_DONE) != (reason is not None):
+            raise ProtocolValueError("obligation_resolution_invalid")
+        if reason is not None:
+            reason = _bounded_text(reason, MAX_REASON_BYTES, minimum=1)
+            # 1..4096 UTF-8 bytes, not characters, and never blank.
+            if len(reason.encode("utf-8")) > MAX_REASON_BYTES or not reason.strip():
+                raise ProtocolValueError("obligation_resolution_invalid")
+            object.__setattr__(self, "acknowledged_not_done_reason", reason)
+
+
+def obligation_schema_admits(payload: ObligationPublishedPayload, version: str) -> bool:
+    """The one ``obligation_published`` version rule (tb4n2 R3, issue #1023).
+
+    1.1.0 admits every payload; 1.0.0 admits a payload without a ``directory`` item, an item
+    ``role`` or ``acknowledged_not_done``. Any other version admits nothing. The ingest validator,
+    closure preparation and every corrective hint read this rule.
+    """
+
+    if version == OBLIGATION_SCHEMA_VERSION:
+        return True
+    return version == OBLIGATION_BASE_SCHEMA_VERSION and not payload.requires_obligation_v1_1
+
+
+def obligation_schema_version(payload: ObligationPublishedPayload) -> str:
+    """The version Yoetz drafts for *payload*: 1.1.0 iff it needs a 1.1.0 feature, else 1.0.0.
+
+    Choosing the lowest admitting version keeps a plain obligation's released 1.0.0 bytes.
+    """
+
+    return (
+        OBLIGATION_SCHEMA_VERSION
+        if payload.requires_obligation_v1_1
+        else OBLIGATION_BASE_SCHEMA_VERSION
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -2221,11 +2471,21 @@ class ResponseRecordedPayload:
     waiver_scope: WaiverScope | None = None
     waiver_expiry: Timestamp | None = None
     evidence_refs: tuple[EvidenceId | ResultId, ...] = ()
+    # Issue #996: the earlier finding a ``duplicate_of`` response links to; set only for it.
+    duplicate_of_finding_id: FindingId | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "finding_id", finding_id(self.finding_id))
         object.__setattr__(self, "finding_frontier", _frontier(self.finding_frontier))
         disposition = _exact_enum(self.disposition, ResponseDisposition)
+        if self.duplicate_of_finding_id is not None:
+            object.__setattr__(
+                self, "duplicate_of_finding_id", finding_id(self.duplicate_of_finding_id)
+            )
+        if (disposition is ResponseDisposition.DUPLICATE_OF) != (
+            self.duplicate_of_finding_id is not None
+        ) or self.duplicate_of_finding_id == self.finding_id:
+            raise ProtocolValueError("response_fields_invalid")
         object.__setattr__(self, "disposition", disposition)
         if self.reason is not None:
             object.__setattr__(
@@ -2250,10 +2510,15 @@ class ResponseRecordedPayload:
             ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
             ResponseDisposition.PROVENANCE_DISPUTED,
             ResponseDisposition.REJECTED,
+            ResponseDisposition.REOPENED,
+            ResponseDisposition.SELF_VERIFIED,
             ResponseDisposition.WAIVED,
         }:
             if self.reason is None:
                 raise ProtocolValueError("response_fields_invalid")
+        # Issue #984: a self-verification names the agent's own recorded evidence.
+        if disposition is ResponseDisposition.SELF_VERIFIED and not self.evidence_refs:
+            raise ProtocolValueError("response_fields_invalid")
         if disposition is ResponseDisposition.WAIVED:
             if self.waiver_scope is None:
                 raise ProtocolValueError("response_fields_invalid")
@@ -2291,19 +2556,20 @@ class RedactionRecordedPayload:
         )
 
 
-_RESEARCH_POLICY: Final = PolicyVersion("research-evidence", "0.1.0")
-_WORK_POLICY: Final = PolicyVersion("work-integrity", "0.1.0")
-_COORDINATION_POLICY: Final = PolicyVersion("coordination", "0.1.0")
+_POLICY_SELECTION_ORDER: Final = (
+    COORDINATION_POLICY_ID,
+    RESEARCH_EVIDENCE_POLICY_ID,
+    WORK_INTEGRITY_POLICY_ID,
+)
+# A check records a non-empty, ordered selection from one generation of the built-in packs.
 _VALID_POLICY_SELECTIONS: Final = frozenset(
-    {
-        (_RESEARCH_POLICY,),
-        (_WORK_POLICY,),
-        (_RESEARCH_POLICY, _WORK_POLICY),
-        (_COORDINATION_POLICY,),
-        (_COORDINATION_POLICY, _RESEARCH_POLICY),
-        (_COORDINATION_POLICY, _WORK_POLICY),
-        (_COORDINATION_POLICY, _RESEARCH_POLICY, _WORK_POLICY),
-    }
+    tuple(
+        PolicyVersion(policy_id, generation[policy_id])
+        for index, policy_id in enumerate(_POLICY_SELECTION_ORDER)
+        if mask & (1 << index)
+    )
+    for generation in POLICY_PACK_GENERATIONS
+    for mask in range(1, 1 << len(_POLICY_SELECTION_ORDER))
 )
 
 
@@ -2602,6 +2868,260 @@ def check_change_files_from_json(value: object) -> CheckChangeShownFiles:
     )
 
 
+# ADR-045: what one check read of a declared output file, and what the check concluded from it
+# and from the earlier checks of the same path. Closed tokens, counts and ids only; the path is a
+# keyed commitment, never text. The one exception (tb4n4, issue #1044, ADR-035 amendment) is
+# ``undeclared_references``: the root-relative paths of files the change created that a source
+# deliverable names and no requested item declares, so the receipt and the Stop gate can name the
+# file the agent must embed, rebuild or declare.
+DELIVERABLE_CHANGES: Final = ("emptied", "truncated", "removed", "unchanged")
+DELIVERABLE_PROOFS: Final = ("task_base", "earlier_check")
+DELIVERABLE_BASES: Final = ("delivered", "verified", "present")
+MAX_DELIVERABLE_STATES: Final = 64
+MAX_UNDECLARED_REFERENCES: Final = 8
+MAX_UNDECLARED_REFERENCE_CHARS: Final = 256
+
+
+def undeclared_reference_path_valid(value: object) -> bool:
+    """Whether *value* may be recorded as an undeclared reference (tb4n4, #1044).
+
+    A plain root-relative path of 1-256 characters: valid UTF-8, no control character, no leading
+    ``/`` and no empty, ``.`` or ``..`` segment. Anything else is counted but never named.
+    """
+
+    if type(value) is not str or not 1 <= len(value) <= MAX_UNDECLARED_REFERENCE_CHARS:
+        return False
+    if value.startswith("/") or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        return False
+    if any(part in {"", ".", ".."} for part in value.split("/")):
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def _undeclared_references(value: object) -> tuple[str, ...]:
+    raw = _tuple(value, 0, MAX_UNDECLARED_REFERENCES)
+    if any(not undeclared_reference_path_valid(item) for item in raw):
+        raise ProtocolValueError("invalid_event_value_type")
+    paths = cast(tuple[str, ...], raw)
+    keys = tuple(path.encode("utf-8") for path in paths)
+    if keys != tuple(sorted(set(keys))):
+        raise ProtocolValueError("duplicate_set_member")
+    return paths
+
+
+@dataclass(frozen=True, slots=True)
+class DeliverableState:
+    """One declared output file as a check read it (ADR-045, ``check_recorded`` 1.4.0).
+
+    ``path_key`` is a keyed commitment to the root-relative path (``None`` when the installation
+    key was not available, which only costs history, never correctness): the key is the path, not
+    the obligation, so republishing an obligation or declaring a second one on the same path does
+    not start a new history. ``size_bytes`` and ``lines`` are what the check read (``None`` when
+    unknown); ``base_lines`` the line count of the tracked file at the task base. ``basis`` says
+    why this state counts as a delivery: ``delivered`` (an obligation declaring the path was
+    resolved or claimed complete at this check), ``verified`` (a passing verification run was
+    observed while the file had content) or ``present`` (neither). ``change`` is the check's
+    conclusion against the history (``emptied``, ``truncated``, ``removed``, ``unchanged``), with
+    ``proof`` saying how earlier content is known and ``prior_*`` the last state that held
+    content: its size, line count, check event and subject frontier. ``accepted_by`` is the
+    ``yoetz-assumption`` decision that names this path, which stops the fact from firing while the
+    state itself stays on the record.
+    """
+
+    obligation_id: ObligationId
+    item_index: int
+    path_key: str | None = None
+    size_bytes: int | None = None
+    lines: int | None = None
+    base_lines: int | None = None
+    basis: str = "present"
+    change: str | None = None
+    proof: str | None = None
+    prior_size_bytes: int | None = None
+    prior_lines: int | None = None
+    prior_event_id: EventId | None = None
+    prior_frontier: int | None = None
+    accepted_by: EventId | None = None
+    # The file is a type the review packet never carries (binary by Git's NUL sniff, or an
+    # unlisted file with a binary suffix) and a review ran: the deliverable was not reviewed.
+    unreviewable: bool = False
+    # tb4n4 (#1044): the files the change created that this source deliverable names and no item
+    # declares (``deliverable_references_undeclared_file``), root-relative and sorted, at most
+    # ``MAX_UNDECLARED_REFERENCES``; ``undeclared_reference_count`` is present only when more
+    # were found than are named here (a longer list, or a path that cannot be named).
+    undeclared_references: tuple[str, ...] = ()
+    undeclared_reference_count: int | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
+        object.__setattr__(self, "item_index", _bounded_integer(self.item_index, 0, 63))
+        if type(self.unreviewable) is not bool:
+            raise ProtocolValueError("invalid_event_value_type")
+        object.__setattr__(
+            self, "undeclared_references", _undeclared_references(self.undeclared_references)
+        )
+        if self.undeclared_reference_count is not None:
+            count = _bounded_integer(self.undeclared_reference_count, 1, _MAX_SAFE_INTEGER)
+            if count <= len(self.undeclared_references):
+                # Present only when it says more than the named list does.
+                raise ProtocolValueError("invalid_event_value_type")
+            object.__setattr__(self, "undeclared_reference_count", count)
+        if self.path_key is not None:
+            validate_commitment(self.path_key)
+        for name in ("size_bytes", "lines", "base_lines", "prior_size_bytes", "prior_lines"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, _bounded_integer(value, 0, _MAX_SAFE_INTEGER))
+        if self.prior_frontier is not None:
+            object.__setattr__(
+                self, "prior_frontier", _bounded_integer(self.prior_frontier, 0, _MAX_SAFE_INTEGER)
+            )
+        for name in ("prior_event_id", "accepted_by"):
+            value = getattr(self, name)
+            if value is not None:
+                object.__setattr__(self, name, event_id(value))
+        if type(self.basis) is not str or self.basis not in DELIVERABLE_BASES:
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.change is not None and (
+            type(self.change) is not str or self.change not in DELIVERABLE_CHANGES
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.proof is not None and (
+            type(self.proof) is not str or self.proof not in DELIVERABLE_PROOFS
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if self.change in {"emptied", "truncated"} and self.proof is None:
+            # The fact fires only with proof of earlier content; a record cannot say otherwise.
+            raise ProtocolValueError("invalid_event_value_type")
+        if (self.prior_event_id is None) != (self.prior_frontier is None):
+            raise ProtocolValueError("invalid_event_value_type")
+
+    def as_wire(self) -> dict[str, JsonValue]:
+        wire: dict[str, JsonValue] = {
+            "basis": self.basis,
+            "item_index": self.item_index,
+            "obligation_id": self.obligation_id,
+        }
+        if self.unreviewable:
+            wire["unreviewable"] = True
+        if self.undeclared_references:
+            wire["undeclared_references"] = self.undeclared_references
+        for name in (
+            "undeclared_reference_count",
+            "path_key",
+            "size_bytes",
+            "lines",
+            "base_lines",
+            "change",
+            "proof",
+            "prior_size_bytes",
+            "prior_lines",
+            "prior_event_id",
+            "prior_frontier",
+            "accepted_by",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                wire[name] = value
+        return wire
+
+    @classmethod
+    def from_wire(cls, value: object) -> DeliverableState:
+        source = _closed_object(
+            value,
+            required=frozenset({"basis", "item_index", "obligation_id"}),
+            optional=frozenset(
+                {
+                    "path_key",
+                    "size_bytes",
+                    "lines",
+                    "base_lines",
+                    "change",
+                    "proof",
+                    "prior_size_bytes",
+                    "prior_lines",
+                    "prior_event_id",
+                    "prior_frontier",
+                    "accepted_by",
+                    "unreviewable",
+                    "undeclared_references",
+                    "undeclared_reference_count",
+                }
+            ),
+        )
+
+        def integer(name: str) -> int | None:
+            value = source.get(name)
+            if value is None:
+                return None
+            if type(value) is not int:
+                raise ProtocolValueError("invalid_event_value_type")
+            return value
+
+        def text(name: str) -> str | None:
+            value = source.get(name)
+            if value is None:
+                return None
+            if type(value) is not str:
+                raise ProtocolValueError("invalid_event_value_type")
+            return value
+
+        item_index = _field(source, "item_index")
+        basis = _field(source, "basis")
+        obligation = _field(source, "obligation_id")
+        unreviewable = source.get("unreviewable", False)
+        if (
+            type(item_index) is not int
+            or type(basis) is not str
+            or type(obligation) is not str
+            or type(unreviewable) is not bool
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        prior_event = text("prior_event_id")
+        accepted = text("accepted_by")
+        references = cast(object, source.get("undeclared_references", ()))
+        if not isinstance(references, (list, tuple)):
+            raise ProtocolValueError("invalid_event_value_type")
+        return cls(
+            obligation_id=obligation_id(obligation),
+            item_index=item_index,
+            path_key=text("path_key"),
+            size_bytes=integer("size_bytes"),
+            lines=integer("lines"),
+            base_lines=integer("base_lines"),
+            basis=basis,
+            change=text("change"),
+            proof=text("proof"),
+            prior_size_bytes=integer("prior_size_bytes"),
+            prior_lines=integer("prior_lines"),
+            prior_event_id=None if prior_event is None else event_id(prior_event),
+            prior_frontier=integer("prior_frontier"),
+            accepted_by=None if accepted is None else event_id(accepted),
+            unreviewable=unreviewable,
+            undeclared_references=cast(
+                tuple[str, ...], tuple(cast(list[object] | tuple[object, ...], references))
+            ),
+            undeclared_reference_count=integer("undeclared_reference_count"),
+        )
+
+
+def validate_deliverable_states(value: object) -> tuple[DeliverableState, ...]:
+    """The bounded, ordered, duplicate-free deliverable states of one check."""
+
+    raw = _tuple(value, 0, MAX_DELIVERABLE_STATES)
+    if any(type(item) is not DeliverableState for item in raw):
+        raise ProtocolValueError("invalid_event_value_type")
+    states = cast(tuple[DeliverableState, ...], raw)
+    keys = tuple((str(item.obligation_id).encode(), item.item_index) for item in states)
+    if keys != tuple(sorted(set(keys))):
+        raise ProtocolValueError("duplicate_set_member")
+    return states
+
+
 @dataclass(frozen=True, slots=True)
 class CheckRecordedPayload:
     mode: CheckMode
@@ -2619,6 +3139,10 @@ class CheckRecordedPayload:
     projection_version: str
     semantic_provenance: SemanticProvenance | None = None
     semantic_conclusion: str | None = None
+    # Part 2 reviewer output. Prose and cited refs are bounded by the provider/check fence before
+    # publication; JsonObject keeps the event module independent from the provider adapter.
+    review_summary: str | None = None
+    verified: tuple[JsonObject, ...] = ()
     # Admitted reviewer rulings on earlier AI-powered findings, ASCII-ascending by finding id.
     prior_finding_verdicts: tuple[PriorFindingVerdictRecord, ...] = ()
     # What an ``insufficient_packet`` review named as missing, classified by Yoetz (issue #907).
@@ -2631,6 +3155,27 @@ class CheckRecordedPayload:
     # completed review whose coverage records the reduced scope; resolution tests a finding's
     # relevant material against it.
     semantic_included_refs: tuple[str, ...] | None = None
+    # Opaque item identities omitted by the low-confidence never-send heuristic. A companion
+    # coverage gap is required whenever this field is present: ``semantic_review_item_withheld``
+    # (review-scoped, issue #982) on current checks, or ``content_redacted`` on checks recorded
+    # before that change, which stay valid on replay.
+    semantic_withheld_item_ids: tuple[str, ...] = ()
+    # Metadata-only input coverage for the exact check packet (issue #951).
+    review_input_manifest: JsonObject | None = None
+    # Frozen-frontier structural totals; absent only on legacy check events.
+    totals: JsonObject | None = None
+    # PL2-1 (issue #982, 1.4.0 only): per case item, its catalogued ref and the 1-based lines whose
+    # credential-like values the external reviewer's copy did not carry. Never values.
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
+    # Issue #986 (owner decision "record route; don't block", 1.4.0 only): whether the check's
+    # route required AI-powered review. Writers record only ``False`` (the route did not require
+    # it); a route that required review omits it, so those checks and every older check keep
+    # their bytes. Absent or ``True`` keeps ``semantic_review_not_requested`` blocking.
+    semantic_route_required: bool | None = None
+    # ADR-045 (tb4n3 RC-5, 1.4.0 only): how each declared output file read at this check stood and
+    # what the check concluded from it and from the earlier checks of the same path. Empty when
+    # the check read no declared output file, so those checks keep their bytes.
+    deliverable_states: tuple[DeliverableState, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mode", _exact_enum(self.mode, CheckMode))
@@ -2701,6 +3246,17 @@ class CheckRecordedPayload:
             or status is not SemanticStatus.SUCCEEDED
         ):
             raise ProtocolValueError("invalid_event_value_type")
+        if self.review_summary is not None:
+            object.__setattr__(
+                self,
+                "review_summary",
+                _bounded_text(self.review_summary, MAX_TEXT_BYTES, minimum=1),
+            )
+        if type(self.verified) is not tuple or len(self.verified) > 64:
+            raise ProtocolValueError("invalid_event_value_type")
+        if any(type(item) is not JsonObject for item in self.verified):
+            raise ProtocolValueError("invalid_event_value_type")
+        object.__setattr__(self, "verified", tuple(freeze_json(item) for item in self.verified))
         missing = _tuple(self.missing_for_assessment, 0, MAX_MISSING_FOR_ASSESSMENT)
         if any(type(item) is not MissingForAssessmentItem for item in missing):
             raise ProtocolValueError("invalid_event_value_type")
@@ -2739,10 +3295,52 @@ class CheckRecordedPayload:
                     field="semantic_included_refs",
                 ),
             )
+        if (
+            type(self.semantic_withheld_item_ids) is not tuple
+            or len(self.semantic_withheld_item_ids) > 64
+            or any(
+                not _valid_opaque_item_id(item_id) for item_id in self.semantic_withheld_item_ids
+            )
+            or self.semantic_withheld_item_ids
+            != tuple(sorted(set(self.semantic_withheld_item_ids), key=str.encode))
+            or (
+                self.semantic_withheld_item_ids
+                and "content_redacted" not in self.coverage.known_gaps
+                and SEMANTIC_REVIEW_ITEM_WITHHELD_GAP not in self.coverage.known_gaps
+            )
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        try:
+            validate_semantic_redacted_values(self.semantic_redacted_values)
+        except ValueError as exc:
+            raise ProtocolValueError("invalid_event_value_type") from exc
+        if any(
+            item.disposition == "item_withheld"
+            and item.item_id not in self.semantic_withheld_item_ids
+            for item in self.semantic_redacted_values
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if (
+            self.review_input_manifest is not None
+            and type(self.review_input_manifest) is not JsonObject
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        if (
+            self.semantic_route_required is not None
+            and type(self.semantic_route_required) is not bool
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        object.__setattr__(
+            self, "deliverable_states", validate_deliverable_states(self.deliverable_states)
+        )
         if type(self.engine_version) is not str or self.engine_version != "0.1.0":
             raise ProtocolValueError("invalid_event_value_type")
         if type(self.projection_version) is not str or self.projection_version != "yoetz/0.1.0":
             raise ProtocolValueError("invalid_event_value_type")
+        if self.totals is not None:
+            from yoetz.domain.check_totals import validate_check_totals
+
+            object.__setattr__(self, "totals", validate_check_totals(self.totals))
         verdicts = self.prior_finding_verdicts
         if (
             type(verdicts) is not tuple
@@ -2827,6 +3425,7 @@ PAYLOAD_TYPES: Final[Mapping[EventSchema, type[EventPayload]]] = MappingProxyTyp
         EventSchema("plan_published", SCHEMA_VERSION): PlanPublishedPayload,
         EventSchema("plan_published", TASK_STATEMENT_PLAN_SCHEMA_VERSION): PlanPublishedPayload,
         EventSchema("obligation_published", SCHEMA_VERSION): ObligationPublishedPayload,
+        EventSchema("obligation_published", OBLIGATION_SCHEMA_VERSION): ObligationPublishedPayload,
         EventSchema("assignment_recorded", SCHEMA_VERSION): AssignmentRecordedPayload,
         EventSchema("decision_recorded", SCHEMA_VERSION): DecisionRecordedPayload,
         EventSchema("action_recorded", SCHEMA_VERSION): ActionRecordedPayload,
@@ -2841,6 +3440,7 @@ PAYLOAD_TYPES: Final[Mapping[EventSchema, type[EventPayload]]] = MappingProxyTyp
         EventSchema("plan_revised", TASK_STATEMENT_PLAN_SCHEMA_VERSION): PlanRevisedPayload,
         EventSchema("finding_recorded", SCHEMA_VERSION): Finding,
         EventSchema("finding_recorded", FINDING_EVENT_SCHEMA_VERSION): Finding,
+        EventSchema("finding_recorded", FINDING_SNIPPET_EVENT_SCHEMA_VERSION): Finding,
         **{
             EventSchema("finding_recorded", version): Finding
             for version in SEMANTIC_EVENT_SCHEMA_VERSIONS
@@ -2850,6 +3450,7 @@ PAYLOAD_TYPES: Final[Mapping[EventSchema, type[EventPayload]]] = MappingProxyTyp
         EventSchema("redaction_recorded", SCHEMA_VERSION): RedactionRecordedPayload,
         EventSchema("check_recorded", SCHEMA_VERSION): CheckRecordedPayload,
         EventSchema("check_recorded", CHECK_EVENT_SCHEMA_VERSION): CheckRecordedPayload,
+        EventSchema("check_recorded", REVIEW_CHECK_EVENT_SCHEMA_VERSION): CheckRecordedPayload,
         **{
             EventSchema("check_recorded", version): CheckRecordedPayload
             for version in SEMANTIC_EVENT_SCHEMA_VERSIONS
@@ -2976,6 +3577,145 @@ def _missing_items_from_json(value: JsonValue | None) -> tuple[MissingForAssessm
     return tuple(items)
 
 
+_REVIEW_INPUT_SECTION_NAMES: Final = frozenset(
+    {
+        "specification",
+        "current_diff",
+        "caller_evidence",
+        "latest_verification",
+        "prior_finding_context",
+    }
+)
+_REVIEW_INPUT_SECTION_STATUSES: Final = frozenset(
+    {"complete", "partial", "title_only", "missing", "withheld", "not_selected"}
+)
+_REVIEW_INPUT_OMISSION_REASONS: Final = frozenset(
+    {
+        "capture_unavailable",
+        "content_unselected",
+        "not_recorded",
+        "not_selected",
+        "redacted_never_send",
+        "task_statement_not_authorized",
+        "task_statement_not_supplied",
+        "task_statement_unavailable",
+        "truncated_payload",
+        "withheld_by_policy",
+    }
+)
+
+
+def _review_input_manifest_from_json(value: JsonValue | None) -> JsonObject | None:
+    """Validate and freeze the metadata-only per-check input manifest."""
+
+    if value is None:
+        return None
+    source = _closed_object(
+        value,
+        required=frozenset(
+            {
+                "schema",
+                "specification",
+                "current_diff",
+                "caller_evidence",
+                "latest_verification",
+                "prior_finding_context",
+                "phase",
+                "missing_inputs",
+                "selected_item_count",
+                "selected_excerpt_bytes",
+                "omitted_item_count",
+            }
+        ),
+        optional=frozenset({"review_phase", "omitted_item_total", "follow_up_round"}),
+    )
+    if _field(source, "schema") != "yoetz.review-input-manifest/1":
+        raise ProtocolValueError("invalid_event_value_type")
+    if "review_phase" in source and source["review_phase"] not in {"routine", "final"}:
+        raise ProtocolValueError("invalid_event_value_type")
+    if "follow_up_round" in source:
+        # Issue #1047: the in-check follow-up round the recorded packet was.
+        follow_up_round = source["follow_up_round"]
+        if (
+            type(follow_up_round) is not int
+            or not 1 <= follow_up_round <= MAX_REVIEW_FOLLOW_UP_ROUNDS
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+    if _field(source, "phase") not in {"composed", "provider_bound"}:
+        raise ProtocolValueError("invalid_event_value_type")
+    for key in _REVIEW_INPUT_SECTION_NAMES:
+        section = _closed_object(
+            _field(source, key),
+            required=frozenset(
+                {
+                    "status",
+                    "source_refs",
+                    "item_ids",
+                    "omitted_refs",
+                    "omission_reasons",
+                    "revision",
+                    "content_digest",
+                    "content_bytes",
+                }
+            ),
+        )
+        status = _field(section, "status")
+        if status not in _REVIEW_INPUT_SECTION_STATUSES:
+            raise ProtocolValueError("invalid_event_value_type")
+        for field_name, maximum in (
+            ("source_refs", 16),
+            ("item_ids", 128),
+            ("omitted_refs", 16),
+            ("omission_reasons", 8),
+        ):
+            values = _array(_field(section, field_name))
+            if len(values) > maximum or any(type(item) is not str for item in values):
+                raise ProtocolValueError("invalid_event_value_type")
+        if any(
+            cast(str, item) not in _REVIEW_INPUT_OMISSION_REASONS
+            for item in _array(_field(section, "omission_reasons"))
+        ):
+            raise ProtocolValueError("invalid_event_value_type")
+        revision = _field(section, "revision")
+        if revision is not None and (type(revision) is not int or revision < 0):
+            raise ProtocolValueError("invalid_event_value_type")
+        digest = _field(section, "content_digest")
+        if digest is not None:
+            validate_sha256_digest(cast(str, digest))
+        content_bytes = _field(section, "content_bytes")
+        if type(content_bytes) is not int or not 0 <= content_bytes <= 524288:
+            raise ProtocolValueError("invalid_event_value_type")
+    for field_name in ("selected_item_count", "selected_excerpt_bytes", "omitted_item_count"):
+        value_int = _field(source, field_name)
+        if type(value_int) is not int or value_int < 0:
+            raise ProtocolValueError("invalid_event_value_type")
+    if "omitted_item_total" in source:
+        # Issue #976: the true omission total beside the capped listed count.
+        total = source["omitted_item_total"]
+        if type(total) is not int or not cast(int, _field(source, "omitted_item_count")) <= total:
+            raise ProtocolValueError("invalid_event_value_type")
+    missing = _array(_field(source, "missing_inputs"))
+    if len(missing) > 8:
+        raise ProtocolValueError("invalid_event_value_type")
+    for raw in missing:
+        item = _closed_object(
+            raw,
+            required=frozenset({"kind", "target_refs", "supplied_refs", "status"}),
+        )
+        if _field(item, "kind") not in MISSING_FOR_ASSESSMENT_KINDS:
+            raise ProtocolValueError("invalid_event_value_type")
+        if _field(item, "status") not in {"pending", "supplied", "unavailable", "repeated"}:
+            raise ProtocolValueError("invalid_event_value_type")
+        for ref_field in ("target_refs", "supplied_refs"):
+            refs = _array(_field(item, ref_field))
+            if len(refs) > MAX_MISSING_TARGET_REFS or any(type(ref) is not str for ref in refs):
+                raise ProtocolValueError("invalid_event_value_type")
+    frozen = freeze_json(value)
+    if type(frozen) is not JsonObject:
+        raise ProtocolValueError("invalid_event_value_type")
+    return frozen
+
+
 def _decode_subject_state(value: object) -> SubjectStateRef:
     source = _closed_object(
         value,
@@ -3043,10 +3783,13 @@ def _decode_requested_item(value: object) -> RequestedItem:
     source = _closed_object(
         value,
         required=frozenset({"item_kind", "value"}),
+        optional=frozenset({"role"}),
     )
+    role = _optional(source, "role")
     return RequestedItem(
         item_kind=_enum_from_json(_field(source, "item_kind"), RequestedItemKind),
         value=cast(str, _field(source, "value")),
+        role=None if role is None else _enum_from_json(role, RequestedItemRole),
     )
 
 
@@ -3135,9 +3878,13 @@ def _decode_child_finding(value: object) -> ChildFindingSnapshot:
     source = _closed_object(
         value,
         required=frozenset({"finding_id", "kind", "origin", "priority", "resolved"}),
-        optional=frozenset({"resolution_event_id", "actionable"}),
+        optional=frozenset({"resolution_event_id", "actionable", "self_verified"}),
     )
     actionable = _nullable(source, "actionable")
+    # Emitted only when true (issue #984); an explicit false is not a recorded spelling.
+    self_verified = _field(source, "self_verified") if "self_verified" in source else False
+    if "self_verified" in source and self_verified is not True:
+        raise ProtocolValueError("invalid_event_value_type")
     return ChildFindingSnapshot(
         finding_id=finding_id(_field(source, "finding_id")),
         kind=_enum_from_json(_field(source, "kind"), FindingKind),
@@ -3150,6 +3897,7 @@ def _decode_child_finding(value: object) -> ChildFindingSnapshot:
             else event_id(_field(source, "resolution_event_id"))
         ),
         actionable=(None if actionable is None else cast(bool, actionable)),
+        self_verified=cast(bool, self_verified),
     )
 
 
@@ -3437,6 +4185,7 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
                     "requested_items",
                     "source_refs",
                     "resolution_evidence_refs",
+                    "acknowledged_not_done_reason",
                 }
             ),
         ),
@@ -3486,7 +4235,15 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
         ),
         "response_recorded": (
             frozenset({"finding_id", "finding_frontier", "disposition"}),
-            frozenset({"reason", "waiver_scope", "waiver_expiry", "evidence_refs"}),
+            frozenset(
+                {
+                    "reason",
+                    "waiver_scope",
+                    "waiver_expiry",
+                    "evidence_refs",
+                    "duplicate_of_finding_id",
+                }
+            ),
         ),
         "redaction_recorded": (
             frozenset(
@@ -3523,10 +4280,18 @@ _PAYLOAD_SHAPES: Final[Mapping[str, tuple[frozenset[str], frozenset[str]]]] = Ma
                 {
                     "semantic_provenance",
                     "semantic_conclusion",
+                    "review_summary",
+                    "verified",
                     "prior_finding_verdicts",
                     "missing_for_assessment",
                     "check_change_files",
                     "semantic_included_refs",
+                    "semantic_withheld_item_ids",
+                    "semantic_redacted_values",
+                    "semantic_route_required",
+                    "deliverable_states",
+                    "review_input_manifest",
+                    "totals",
                 }
             ),
         ),
@@ -3758,11 +4523,11 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
     if schema.name == "obligation_published":
         status = _enum_from_json(_field(source, "status"), ObligationStatus)
         resolution_refs = _optional(source, "resolution_evidence_refs")
-        if status is ObligationStatus.OPEN and "resolution_evidence_refs" in source:
+        if status is not ObligationStatus.RESOLVED and "resolution_evidence_refs" in source:
             raise ProtocolValueError("obligation_resolution_invalid")
         requested = _optional(source, "requested_items")
         source_refs = _optional(source, "source_refs")
-        return ObligationPublishedPayload(
+        published_obligation = ObligationPublishedPayload(
             obligation_id=obligation_id(_field(source, "obligation_id")),
             description=cast(str, _field(source, "description")),
             evidence_expectation=cast(str, _field(source, "evidence_expectation")),
@@ -3784,7 +4549,12 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                     tuple(_array(resolution_refs)),
                 )
             ),
+            acknowledged_not_done_reason=cast(
+                str | None, _optional(source, "acknowledged_not_done_reason")
+            ),
         )
+        _validate_event_schema_payload(schema, published_obligation)
+        return published_obligation
     if schema.name == "assignment_recorded":
         obligations = tuple(_array(_field(source, "obligation_ids")))
         write_policy_value = _optional(source, "write_policy")
@@ -3954,6 +4724,7 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         evidence = _optional(source, "evidence_refs")
         waiver_scope_value = _optional(source, "waiver_scope")
         waiver_expiry_value = _optional(source, "waiver_expiry")
+        duplicate_of_value = _optional(source, "duplicate_of_finding_id")
         return ResponseRecordedPayload(
             finding_id=finding_id(_field(source, "finding_id")),
             finding_frontier=frontier_from_json(_field(source, "finding_frontier")),
@@ -3971,6 +4742,9 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 ()
                 if evidence is None
                 else cast(tuple[EvidenceId | ResultId, ...], tuple(_array(evidence)))
+            ),
+            duplicate_of_finding_id=(
+                None if duplicate_of_value is None else finding_id(duplicate_of_value)
             ),
         )
     if schema.name == "redaction_recorded":
@@ -3990,6 +4764,7 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
         )
     if schema.name == "check_recorded":
         provenance_value = _optional(source, "semantic_provenance")
+        verified_value = _optional(source, "verified")
         check = CheckRecordedPayload(
             mode=_enum_from_json(_field(source, "mode"), CheckMode),
             policies=tuple(
@@ -4013,6 +4788,12 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
             engine_version=cast(str, _field(source, "engine_version")),
             projection_version=cast(str, _field(source, "projection_version")),
             semantic_conclusion=cast(str | None, _optional(source, "semantic_conclusion")),
+            review_summary=cast(str | None, _optional(source, "review_summary")),
+            verified=(
+                ()
+                if verified_value is None
+                else tuple(cast(JsonObject, freeze_json(item)) for item in _array(verified_value))
+            ),
             prior_finding_verdicts=_decode_prior_verdicts(
                 _optional(source, "prior_finding_verdicts")
             ),
@@ -4024,6 +4805,30 @@ def decode_payload(schema: EventSchema, payload: JsonValue) -> EventPayload:
                 None
                 if (included := _optional(source, "semantic_included_refs")) is None
                 else cast(tuple[str, ...], tuple(_array(included)))
+            ),
+            semantic_withheld_item_ids=cast(
+                tuple[str, ...],
+                tuple(_array(_optional(source, "semantic_withheld_item_ids")))
+                if _optional(source, "semantic_withheld_item_ids") is not None
+                else (),
+            ),
+            semantic_redacted_values=(
+                ()
+                if (redacted := _optional(source, "semantic_redacted_values")) is None
+                else semantic_redacted_values_from_wire(_array(redacted))
+            ),
+            review_input_manifest=_review_input_manifest_from_json(
+                _optional(source, "review_input_manifest")
+            ),
+            semantic_route_required=cast(bool | None, _optional(source, "semantic_route_required")),
+            deliverable_states=tuple(
+                DeliverableState.from_wire(item)
+                for item in _array(_optional(source, "deliverable_states") or ())
+            ),
+            totals=(
+                None
+                if _optional(source, "totals") is None
+                else cast(JsonObject, freeze_json(_field(source, "totals")))
             ),
             semantic_provenance=(
                 None
@@ -4076,6 +4881,8 @@ def _encode_child_finding(value: ChildFindingSnapshot) -> JsonObject:
         "resolved": value.resolved,
     }
     _optional_value(result, "resolution_event_id", value.resolution_event_id)
+    if value.self_verified:
+        result["self_verified"] = True
     return _json_object(result)
 
 
@@ -4312,11 +5119,18 @@ def encode_payload(payload: EventPayload) -> JsonValue:
         if value.requested_items:
             result["requested_items"] = tuple(
                 {"item_kind": item.item_kind.value, "value": item.value}
+                if item.role is None
+                else {
+                    "item_kind": item.item_kind.value,
+                    "value": item.value,
+                    "role": item.role.value,
+                }
                 for item in value.requested_items
             )
         _optional_tuple(result, "source_refs", cast(tuple[object, ...], value.source_refs))
         if value.status is ObligationStatus.RESOLVED:
             result["resolution_evidence_refs"] = value.resolution_evidence_refs
+        _optional_value(result, "acknowledged_not_done_reason", value.acknowledged_not_done_reason)
         return _json_object(result)
     if payload_type is AssignmentRecordedPayload:
         value = cast(AssignmentRecordedPayload, payload)
@@ -4471,6 +5285,7 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             None if value.waiver_expiry is None else value.waiver_expiry.wire,
         )
         _optional_tuple(result, "evidence_refs", cast(tuple[object, ...], value.evidence_refs))
+        _optional_value(result, "duplicate_of_finding_id", value.duplicate_of_finding_id)
         return _json_object(result)
     if payload_type is RedactionRecordedPayload:
         value = cast(RedactionRecordedPayload, payload)
@@ -4514,6 +5329,8 @@ def encode_payload(payload: EventPayload) -> JsonValue:
             else semantic_provenance_to_json(value.semantic_provenance),
         )
         _optional_value(result, "semantic_conclusion", value.semantic_conclusion)
+        _optional_value(result, "review_summary", value.review_summary)
+        _optional_tuple(result, "verified", cast(tuple[object, ...], value.verified))
         _optional_tuple(
             result,
             "prior_finding_verdicts",
@@ -4543,6 +5360,22 @@ def encode_payload(payload: EventPayload) -> JsonValue:
         if value.check_change_files is not None:
             result["check_change_files"] = check_change_files_to_json(value.check_change_files)
         _optional_value(result, "semantic_included_refs", value.semantic_included_refs)
+        _optional_tuple(
+            result,
+            "semantic_withheld_item_ids",
+            cast(tuple[object, ...], value.semantic_withheld_item_ids),
+        )
+        _optional_tuple(
+            result,
+            "semantic_redacted_values",
+            tuple(item.as_wire() for item in value.semantic_redacted_values),
+        )
+        _optional_value(result, "review_input_manifest", value.review_input_manifest)
+        _optional_value(result, "semantic_route_required", value.semantic_route_required)
+        _optional_tuple(
+            result, "deliverable_states", tuple(item.as_wire() for item in value.deliverable_states)
+        )
+        _optional_value(result, "totals", value.totals)
         return _json_object(result)
     if payload_type is ReceiptRecordedPayload:
         value = cast(ReceiptRecordedPayload, payload)
@@ -4613,15 +5446,56 @@ def _validate_event_schema_payload(
         if statement is None and schema in _TASK_STATEMENT_REQUIRED_SCHEMAS:
             raise ProtocolValueError("invalid_event_schema")
     if type(payload) is CheckRecordedPayload:
-        if (payload.semantic_conclusion is not None) != (
-            schema.version == CHECK_EVENT_SCHEMA_VERSION
-        ):
+        has_review_output = (
+            payload.review_summary is not None
+            or bool(payload.verified)
+            or payload.totals is not None
+            or bool(payload.semantic_redacted_values)
+            or payload.semantic_route_required is not None
+            or bool(payload.deliverable_states)
+        )
+        if has_review_output:
+            if schema.version != REVIEW_CHECK_EVENT_SCHEMA_VERSION:
+                raise ProtocolValueError("invalid_event_schema")
+        elif payload.semantic_conclusion is not None:
+            if schema.version != CHECK_EVENT_SCHEMA_VERSION:
+                raise ProtocolValueError("invalid_event_schema")
+        elif schema.version in {CHECK_EVENT_SCHEMA_VERSION, REVIEW_CHECK_EVENT_SCHEMA_VERSION}:
+            # Plain checks written by older builds legally use the released 1.0.0 shape or the
+            # semantic 1.1.0/1.2.0 additions, so every one of those stays replayable after an
+            # upgrade. The writer mints 1.2.0 for a new plain check; 1.3.0 and 1.4.0 are reserved
+            # for the semantic-conclusion and review-output payloads they introduced.
             raise ProtocolValueError("invalid_event_schema")
     if type(payload) is Finding and schema.name == "finding_recorded":
-        if finding_has_dialogue_fields(payload) and schema.version != FINDING_EVENT_SCHEMA_VERSION:
+        has_snippet = payload.challenge is not None and payload.challenge.snippet is not None
+        has_new_kind = payload.kind in {
+            FindingKind.CODE_DEFECT,
+            FindingKind.TASK_REQUIREMENT_UNMET,
+            FindingKind.AGENT_CRITERION_UNMET,
+        }
+        if has_snippet or has_new_kind:
+            if schema.version != FINDING_SNIPPET_EVENT_SCHEMA_VERSION:
+                raise ProtocolValueError("invalid_event_schema")
+        elif finding_has_dialogue_fields(payload):
+            if schema.version != FINDING_EVENT_SCHEMA_VERSION:
+                raise ProtocolValueError("invalid_event_schema")
+        elif schema.version not in {
+            SCHEMA_VERSION,
+            *SEMANTIC_EVENT_SCHEMA_VERSIONS,
+            FINDING_EVENT_SCHEMA_VERSION,
+        }:
+            # Ordinary findings written by older ledgers legally use the released 1.0.0 shape,
+            # semantic 1.1/1.2 additions, or the current dialogue-capable 1.3.0 shape. Keep all
+            # of those readable; 1.4.0 is reserved for snippets and the new semantic kinds.
             raise ProtocolValueError("invalid_event_schema")
+    if type(payload) is ObligationPublishedPayload and not obligation_schema_admits(
+        payload, schema.version
+    ):
+        # The released 1.0.0 never carries a 1.1.0-only feature (issue #1002); 1.1.0 is a
+        # superset that also admits a plain obligation (issue #1023).
+        raise ProtocolValueError("invalid_event_schema")
     if type(payload) is ResponseRecordedPayload:
-        if (payload.disposition is ResponseDisposition.ACKNOWLEDGED_NOT_DONE) != (
+        if (payload.disposition in RESPONSE_V1_1_DISPOSITIONS) != (
             schema.version == RESPONSE_EVENT_SCHEMA_VERSION
         ):
             raise ProtocolValueError("invalid_event_schema")
@@ -4947,18 +5821,31 @@ class AcceptedEvent:
                     or self.publication_channel is not PublicationChannel.CODEX_JSONL_IMPORT
                 ):
                     raise ProtocolValueError("evidence_digest_provenance_invalid")
-                if binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED and (
-                    self.author.actor_type is not ActorType.HARNESS
-                    or self.author.assurance is not AuthorshipAssurance.HARNESS_OBSERVED
-                    or self.publication_channel is not PublicationChannel.HOOK_OBSERVED
-                    or evidence.strength is not EvidenceImmutability.IMMUTABLE_SNAPSHOT
-                    or binding.content_availability is not EvidenceContentAvailability.CAPTURED
-                    or self.coverage.artifact_observation
-                    is not ArtifactObservation.CONTENT_CAPTURED
-                    or self.coverage.evidence_immutability
-                    is not EvidenceImmutability.IMMUTABLE_SNAPSHOT
-                ):
-                    raise ProtocolValueError("evidence_digest_provenance_invalid")
+                if binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED:
+                    observed_by_service = (
+                        self.author.actor_type is ActorType.HARNESS
+                        and self.author.assurance is AuthorshipAssurance.HARNESS_OBSERVED
+                        and self.publication_channel is PublicationChannel.HOOK_OBSERVED
+                    )
+                    captured_bytes = (
+                        evidence.strength is EvidenceImmutability.IMMUTABLE_SNAPSHOT
+                        and binding.content_availability is EvidenceContentAvailability.CAPTURED
+                        and self.coverage.artifact_observation
+                        is ArtifactObservation.CONTENT_CAPTURED
+                        and self.coverage.evidence_immutability
+                        is EvidenceImmutability.IMMUTABLE_SNAPSHOT
+                    )
+                    # An image a host tool returned: the hook hashed the decoded bytes and kept
+                    # no pixels, so the row is a digest of artifact bytes with nothing captured
+                    # (#1013). It can never pose as captured content.
+                    observed_digest_only = (
+                        evidence.strength is EvidenceImmutability.CONTENT_DIGEST
+                        and binding.content_availability is EvidenceContentAvailability.DIGEST_ONLY
+                        and binding.subject is EvidenceDigestSubject.ARTIFACT_BYTES
+                        and evidence.captured_object_id is None
+                    )
+                    if not observed_by_service or not (captured_bytes or observed_digest_only):
+                        raise ProtocolValueError("evidence_digest_provenance_invalid")
         if compute_entry_digest(accepted_record_digest_preimage(self)) != self.entry_digest:
             raise ProtocolValueError("entry_digest_mismatch")
 

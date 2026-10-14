@@ -12,12 +12,16 @@ post-event supplies a closed success fact.
 
 from __future__ import annotations
 
+import re
 import shlex
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Final, Literal, cast
 
+from yoetz.domain.command_segments import command_structure, strip_wrappers
+from yoetz.domain.observation import normalize_observed_command
 from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
 from yoetz.protocol.canonical import strict_json_parse
 from yoetz.protocol.errors import ProtocolValueError
@@ -60,6 +64,17 @@ ObservationReasonToken = Literal[
     "unknown_tool",
     "unknown_operation",
     "untrusted_action",
+]
+
+RunnerClass = Literal[
+    "exploration",
+    "test",
+    "build",
+    "lint",
+    "typecheck",
+    "vcs",
+    "other",
+    "compound",
 ]
 
 ROUTINE_READ_TOOLS: Final = frozenset(
@@ -107,6 +122,8 @@ _FAILURE_STATUSES: Final = {
     "timeout": "failure",
 }
 _PARTIAL_STATUSES: Final = frozenset({"partial", "partially_completed"})
+_SHELL_WRAPPERS: Final = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+_SHELL_COMMAND_FLAG_RE: Final = re.compile(r"^-[a-z]*c[a-z]*$", re.ASCII)
 
 # ``rg --pre`` and related forms invoke an arbitrary preprocessor.  Git's
 # ext-diff/textconv/output paths likewise cross the read-only boundary.
@@ -492,6 +509,459 @@ def _routine_shell_facts(payload: Mapping[str, CanonicalJsonValue]) -> _RoutineF
     return _RoutineFacts(True, "routine_shell")
 
 
+# Flags that make a verifier report on itself instead of verifying anything.
+_INFORMATION_FLAGS: Final = frozenset({"--help", "-h", "--version", "-V"})
+_VERIFYING_CLASSES: Final = frozenset({"test", "lint", "typecheck", "build"})
+
+
+def _runner_class_for_argv(argv: list[str]) -> RunnerClass | None:
+    """``_classify_argv`` with information-only invocations demoted (Codex review round 3).
+
+    ``python -m unittest --help`` or ``ruff --version`` verifies nothing, so it never counts as a
+    verification run.
+    """
+
+    runner = _classify_argv(argv)
+    if runner in _VERIFYING_CLASSES and any(
+        argument in _INFORMATION_FLAGS for argument in argv[1:]
+    ):
+        return "other"
+    return runner
+
+
+# A directory that holds installed tools: a program run from there is that tool, not the agent's
+# own script (``/usr/bin/g++``, ``.venv/bin/pytest``, ``/tmp/venv/bin/python``).
+_TOOL_DIRECTORY_RE: Final = re.compile(r"(?:^|/)s?bin/[^/]+$", re.ASCII)
+
+
+def _classify_argv(argv: list[str]) -> RunnerClass | None:
+    if not argv:
+        return None
+    # Wrappers (``timeout 600``, ``nice``, ``env FOO=1``, ``nohup``, ``stdbuf``) and leading
+    # assignments do not change what runs (ADR-045): classify what they wrap. A package-manager
+    # launcher (``uv run``) is not one of them: it is classified below, and a wrapped read is not
+    # proven read-only (tb4n3 RC-6).
+    argv = strip_wrappers(argv, launchers=False)
+    if not argv:
+        return None
+    if ("/" in argv[0] or "\\" in argv[0]) and _TOOL_DIRECTORY_RE.search(argv[0]) is None:
+        # A program the agent wrote or placed itself (``./run_tests.sh``, ``/app/solve``): a test
+        # script by its own name, otherwise unclassified.
+        return "test" if _test_script(argv[0]) else "other"
+    command = argv[0].rsplit("/", 1)[-1].casefold()
+    if command in _SHELL_WRAPPERS and len(argv) >= 3 and _SHELL_COMMAND_FLAG_RE.fullmatch(argv[1]):
+        return command_runner_class({"command": argv[2]})
+    wrapped = _run_wrapper_target(command, argv)
+    if wrapped is not None:
+        # ``uv run python build_model.py`` is the wrapped command, classified on its own; the
+        # wrapper's name never makes a script a build or a test (ADR-042).
+        inner = _runner_class_for_argv(wrapped)
+        # A package-manager wrapper syncs, and with ``--upgrade`` rewrites, the lock file and the
+        # environment before it runs the command, so a wrapped read is not proven read-only
+        # (tb4n3 RC-6: the later-material rule ignores exploration).
+        return "other" if inner == "exploration" else inner
+    if command == "rg" and any(
+        argument.partition("=")[0].casefold() in _RG_PRE_OPTIONS
+        or argument.casefold().startswith("--pre")
+        for argument in argv[1:]
+    ):
+        return "other"
+    if command == "find" and any(
+        argument.casefold()
+        in {
+            "-exec",
+            "-execdir",
+            "-delete",
+            "-write",
+            "-fprint",
+            "-fprint0",
+            "-fls",
+            "-fprintf",
+            "-ok",
+            "-okdir",
+        }
+        for argument in argv[1:]
+    ):
+        return "other"
+    if command in {"cat", "cut", "find", "grep", "head", "less", "ls", "pwd", "rg", "tail", "wc"}:
+        return "exploration"
+    if command in {"pytest", "py.test"} and _non_executing_test_run(argv[1:]):
+        return "other"
+    module = _python_module(command, argv)
+    if module is not None:
+        if module == "pytest" and _non_executing_test_run(argv):
+            # ``python -m pytest --version`` or ``--collect-only`` runs no test.
+            return "other"
+        # ``python -m pytest`` is a test run exactly like ``pytest`` (tb4n2 interleaved S: every
+        # ``python -m pytest`` counted as ``other``, so a passing post-edit run never cleared
+        # ``edited_after_last_verification``). Only a closed set of verification modules is named;
+        # any other module stays ``other``.
+        return _PYTHON_VERIFICATION_MODULES.get(module, "other")
+    lowered = {argument.casefold() for argument in argv[1:]}
+    joined = " ".join(argv).casefold()
+    if command in {"git", "hg", "svn"}:
+        return "vcs"
+    if command in _BUILD_TOOLS:
+        # A compiler or hardware-toolchain run builds the work (ADR-045): ``g++ ... -o t``,
+        # ``iverilog``, ``yosys``. ``--lint-only`` style flags make it a lint run.
+        return "lint" if "--lint-only" in lowered else "build"
+    if command == "vvp":
+        return "test"
+    script = _script_operand(command, argv)
+    if script is not None and _test_script(script):
+        return "test"
+    if command in {
+        "pytest",
+        "jest",
+        "mocha",
+        "nox",
+        "tox",
+        "vitest",
+        "ava",
+        "cargo",
+        "go",
+        "make",
+        "npm",
+        "pnpm",
+        "yarn",
+        "uv",
+    }:
+        if command in {"cargo", "go", "make", "npm", "pnpm", "yarn", "uv"}:
+            if "test" in lowered or _TEST_WORD_RE.search(joined) is not None or "pytest" in joined:
+                return "test"
+            if "build" in lowered or "build" in joined:
+                return "build"
+            if "lint" in lowered or "lint" in joined:
+                return "lint"
+            if "typecheck" in joined or "type-check" in joined or "tsc" in joined:
+                return "typecheck"
+            # A bare ``make`` or ``make synth`` / ``make timing`` runs the project's build.
+            return "build" if command == "make" else "other"
+        return "test"
+    if command in {"ruff", "eslint", "flake8", "black", "prettier"} or " lint" in joined:
+        return "lint"
+    if command in {"mypy", "pyright", "tsc", "typecheck", "type-check"} or any(
+        marker in joined for marker in (" typecheck", " type-check", "mypy", "pyright", "tsc")
+    ):
+        return "typecheck"
+    if command in _INTERPRETERS or _PYTHON_NAME_RE.fullmatch(command) is not None:
+        if "build" in lowered:
+            # ``python setup.py build``: an explicit build subcommand, not a file name.
+            return "build"
+        # A script an interpreter runs is the agent's own program, never a build because its
+        # file name contains "build" (tb4n2 interleaved S: ``python build_model.py`` was the
+        # only "verification" run of the task, so the edited-after-verification fact stuck).
+        return "other"
+    if "build" in joined:
+        return "build"
+    return "other"
+
+
+_PYTHON_NAME_RE: Final = re.compile(r"^python(?:[0-9]+(?:\.[0-9]+)?)?$", re.ASCII)
+# ``test`` as a word of the command line (``npm run test:unit``, ``make run-tests``), not inside
+# another word (``make latest``).
+_TEST_WORD_RE: Final = re.compile(r"(?<![a-z0-9])tests?(?![a-z0-9])", re.ASCII)
+_INTERPRETERS: Final = frozenset({"node", "deno", "bun", "ruby", "perl", "php", "rscript", "sage"})
+# Compilers and hardware toolchains whose invocation builds the work (ADR-045).
+_BUILD_TOOLS: Final = frozenset(
+    {
+        "g++",
+        "gcc",
+        "cc",
+        "c++",
+        "clang",
+        "clang++",
+        "rustc",
+        "javac",
+        "nvcc",
+        "ghc",
+        "iverilog",
+        "verilator",
+        "yosys",
+        "nextpnr-ice40",
+        "nextpnr-ecp5",
+        "nextpnr-himbaeck",
+        "ghdl",
+    }
+)
+_SCRIPT_RUNNERS: Final = frozenset({"sh", "bash", "zsh", "dash", "ksh"}) | _INTERPRETERS
+# A script the agent runs to check its work: ``run_tests.sh``, ``test_solver.py``, ``tests/x.py``,
+# ``verify.sh``. The match is on the script's own name or directory, never on arguments.
+_TEST_SCRIPT_NAME_RE: Final = re.compile(
+    r"^(?:tests?|run[-_]?tests?|check|verify|validate|evaluate|selftest)(?:[-_.][a-z0-9_.-]*)?$"
+    r"|^(?:test[-_][a-z0-9_.-]+|[a-z0-9_.-]+[-_]tests?)\.[a-z0-9]+$",
+    re.IGNORECASE | re.ASCII,
+)
+
+
+def _script_operand(command: str, argv: list[str]) -> str | None:
+    """The script path an interpreter or shell runs, or ``None`` (``bash run.sh``, ``node t.js``)."""
+
+    if command not in _SCRIPT_RUNNERS and _PYTHON_NAME_RE.fullmatch(command) is None:
+        return None
+    for argument in argv[1:]:
+        if argument.startswith("-"):
+            if argument in {"-c", "-e", "-m"}:
+                return None
+            continue
+        return argument
+    return None
+
+
+def _test_script(path: str) -> bool:
+    parts = [part for part in path.replace("\\", "/").split("/") if part not in {"", ".", ".."}]
+    if not parts:
+        return False
+    return _TEST_SCRIPT_NAME_RE.fullmatch(parts[-1]) is not None or any(
+        part.casefold() in {"tests", "test"} for part in parts[:-1]
+    )
+
+
+# Python options that take a separate operand before ``-m`` (``python -X dev -m pytest``).
+_PYTHON_OPTIONS_WITH_OPERAND: Final = frozenset({"-X", "-W", "-Q"})
+_PYTHON_VERIFICATION_MODULES: Final[Mapping[str, RunnerClass]] = MappingProxyType(
+    {
+        "pytest": "test",
+        "unittest": "test",
+        "nose2": "test",
+        "tox": "test",
+        "nox": "test",
+        "doctest": "test",
+        "mypy": "typecheck",
+        "pyright": "typecheck",
+        "ruff": "lint",
+        "flake8": "lint",
+        "pylint": "lint",
+        "pyflakes": "lint",
+        "pycodestyle": "lint",
+        "build": "build",
+        "compileall": "build",
+    }
+)
+
+
+# Options that make pytest report on itself or collect without running a test.
+_PYTEST_NON_EXECUTING: Final = frozenset(
+    {
+        "--version",
+        "-V",
+        "-h",
+        "--help",
+        "--collect-only",
+        "--collectonly",
+        "--co",
+        "--fixtures",
+        "--funcargs",
+        "--fixtures-per-test",
+        "--markers",
+        "--setup-only",
+        "--setup-plan",
+    }
+)
+# Project runners whose ``run`` subcommand executes the command that follows.
+_RUN_WRAPPERS: Final = frozenset({"uv", "poetry", "pipenv", "pdm", "hatch", "rye"})
+_RUN_SCRIPT_OPTIONS: Final = frozenset({"--script", "-s", "--gui-script"})
+# ``uv run`` options that take a separate value (``uv run --with numpy python x.py``).
+_RUN_OPTIONS_WITH_VALUE: Final = frozenset(
+    {
+        "--with",
+        "-w",
+        "--with-editable",
+        "--with-requirements",
+        "--python",
+        "-p",
+        "--project",
+        "--directory",
+        "--env-file",
+        "--extra",
+        "--group",
+        "--only-group",
+        "--no-group",
+        "--package",
+        "--index",
+        "--index-url",
+        "--default-index",
+        "--extra-index-url",
+        "--find-links",
+        "-f",
+        "--index-strategy",
+        "--config-setting",
+        "-C",
+        "--resolution",
+        "--prerelease",
+        "--exclude-newer",
+        "--link-mode",
+        "--cache-dir",
+        "--color",
+        "--config-file",
+        "-e",
+        "--env",
+    }
+)
+
+
+def _non_executing_test_run(arguments: list[str]) -> bool:
+    return any(argument in _PYTEST_NON_EXECUTING for argument in arguments)
+
+
+def _run_wrapper_target(command: str, argv: list[str]) -> list[str] | None:
+    """The command a ``uv run``/``poetry run`` style wrapper executes, or ``None``."""
+
+    if command not in _RUN_WRAPPERS:
+        return None
+    # Global options may precede ``run`` (``uv -q run ...``, ``uv --directory x run ...``).
+    index = 1
+    while index < len(argv) and argv[index].startswith("-"):
+        index += 2 if argv[index] in _RUN_OPTIONS_WITH_VALUE else 1
+    if index >= len(argv) or argv[index] != "run":
+        return None
+    index += 1
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--":
+            index += 1
+            break
+        if not argument.startswith("-"):
+            break
+        if argument in _RUN_SCRIPT_OPTIONS:
+            # ``uv run --script build_model.py`` runs the agent's own script.
+            return ["script"]
+        index += 2 if argument in _RUN_OPTIONS_WITH_VALUE else 1
+    return argv[index:] or None
+
+
+def _python_module(command: str, argv: list[str]) -> str | None:
+    """The ``-m`` module a Python interpreter runs, or ``None`` when *argv* runs no module."""
+
+    if _PYTHON_NAME_RE.fullmatch(command) is None:
+        return None
+    index = 1
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "-m":
+            return argv[index + 1].split(".", 1)[0] if index + 1 < len(argv) else None
+        if argument.startswith("-m") and len(argument) > 2:
+            return argument[2:].split(".", 1)[0]
+        if argument in _PYTHON_OPTIONS_WITH_OPERAND:
+            index += 2
+            continue
+        if not argument.startswith("-") or argument in {"-c", "-"}:
+            return None
+        index += 1
+    return None
+
+
+def _raw_command(payload: Mapping[str, CanonicalJsonValue]) -> str | None:
+    nested = payload.get("tool_input")
+    source: Mapping[str, CanonicalJsonValue] = nested if isinstance(nested, Mapping) else payload
+    raw = source.get("cmd")
+    if type(raw) is not str or not raw:
+        raw = source.get("command")
+    if type(raw) is not str or not raw or len(raw) > _MAX_COMMAND_CHARS:
+        return None
+    return raw
+
+
+def command_runner_class(payload: Mapping[str, CanonicalJsonValue]) -> RunnerClass | None:
+    """Classify only closed command shapes; never inspect command output text.
+
+    The class is a bounded internal hint used to keep known read/exploration failures out of
+    completion accounting. Unknown commands remain ``other`` so they retain their ordinary
+    failure duty. Shell composition is explicitly ``compound`` because an outer exit status does
+    not establish each nested command's outcome (#968).
+    """
+
+    raw = _raw_command(payload)
+    if raw is None:
+        tool = _classification_token(payload.get("tool_name"))
+        if tool is None:
+            return None
+        lowered = tool.casefold()
+        # A native read tool has a closed meaning even without a command string. A shell tool
+        # named ``rg``/``find`` does not: without argv we cannot validate its flags or operands,
+        # so keep it ordinary rather than granting exploration treatment.
+        if lowered in ROUTINE_READ_TOOLS:
+            return "exploration"
+        if lowered in _TEST_TOOL_HINTS or any(
+            token in lowered for token in ("test", "pytest", "vitest")
+        ):
+            return "test"
+        if lowered in _VERIFICATION_TOOL_HINTS or any(
+            token in lowered for token in ("lint", "typecheck", "verify", "check")
+        ):
+            return "typecheck" if "type" in lowered else "lint"
+        return "other"
+    try:
+        argv = shlex.split(raw, posix=True)
+    except ValueError:
+        return "compound"
+    if not argv:
+        return None
+    if _is_shell_compound(raw):
+        return _compound_runner_class(raw)
+    return _runner_class_for_argv(argv)
+
+
+_SHELL_COMPOSITION_MARKERS: Final = ("\n", "\r", ";", "&", "|", ">", "<", "`", "$(")
+# Strongest first: a compound that runs several verifiers is classed by the first of these.
+_VERIFYING_PRIORITY: Final = ("test", "build", "lint", "typecheck")
+
+
+def _is_shell_compound(raw: str) -> bool:
+    return any(marker in raw for marker in _SHELL_COMPOSITION_MARKERS)
+
+
+def _compound_runner_class(raw: str) -> RunnerClass:
+    """The class of a shell composition: its strongest verification, else ``compound`` (ADR-045).
+
+    ``cd /app && pytest -q 2>&1 | tail -5`` runs a test: classing it ``compound`` (which
+    ``edited_after_last_verification`` ignores) left that fact dormant in about 70% of real runs.
+    Each simple command is classified on its canonical argv (wrappers dropped); a command that
+    redirects into a file is not exploration (``cat > f`` writes). A composition with no
+    verifying command stays ``compound``: an outer exit status does not establish each nested
+    command's outcome (#968), and that gap is raised separately by
+    ``compound_verification_gap_required``.
+    """
+
+    normalized = normalize_observed_command(raw)
+    structure = None if normalized is None else command_structure(normalized)
+    if structure is None or not structure.commands:
+        return "compound"
+    classes: set[RunnerClass] = set()
+    for command in structure.commands:
+        words = list(command.words)
+        runner = _runner_class_for_argv(words) if words else None
+        if runner == "exploration" and command.writes:
+            runner = "other"
+        if runner is not None:
+            classes.add(runner)
+    for verifying in _VERIFYING_PRIORITY:
+        if verifying in classes:
+            return cast(RunnerClass, verifying)
+    return "compound"
+
+
+def compound_verification_gap_required(payload: Mapping[str, CanonicalJsonValue]) -> bool:
+    """Return whether a compound shell can mask a nested command failure.
+
+    The outer exit code remains authoritative for the shell process. A plain ``&&`` chain with a
+    zero exit proves each command in that chain returned zero, so it needs no extra gap. ``;``,
+    ``||``, pipelines, background jobs, command substitution, and malformed shell text can hide a
+    nested result; those shapes receive the bounded ``compound_outcome_unavailable`` coverage gap.
+    Output text is never inspected.
+    """
+
+    raw = _raw_command(payload)
+    if raw is None or not _is_shell_compound(raw):
+        return False
+    try:
+        shlex.split(raw, posix=True)
+    except ValueError:
+        return True
+    without_and = raw.replace("&&", "")
+    return any(marker in without_and for marker in ("\n", "\r", ";", "|", "&", "`", "$("))
+
+
 def _routine_facts(payload: Mapping[str, CanonicalJsonValue]) -> _RoutineFacts:
     tool = _classification_token(payload.get("tool_name"))
     if tool is None:
@@ -641,7 +1111,10 @@ __all__ = [
     "READ_ONLY_COMMANDS",
     "ROUTINE_READ_TOOLS",
     "SHELL_TOOLS",
+    "RunnerClass",
     "classify_observation",
+    "compound_verification_gap_required",
+    "command_runner_class",
     "envelope_outcome_state",
     "is_edit_tool_name",
     "is_routine_read_candidate",

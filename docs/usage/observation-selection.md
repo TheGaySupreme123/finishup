@@ -250,14 +250,22 @@ reason, and the handoff's age. The service commits that account before releasing
 reservation; a failed or cancelled account leaves the handoff available for retry. A handoff whose
 record is still waiting keeps counting toward the unchanged pending-age limit.
 
-A single hook event is also bounded. Yoetz fully reads a host body of at most 256 KiB. An edit to
-a large enough file can exceed that, because a host sends the whole new file content inside the
-event. Codex and Claude Code record that event as a `payload_too_large` coverage gap and do not
-keep a partial record. Cursor can keep the edit's identity when the complete event fits in 1 MiB:
-the session, tool, call, and, for a completed edit with a short path, a path commitment, with the file content
-left out. That row is `payload_content_omitted`. A Cursor event over 1 MiB, or one that is not a
-complete valid document, is the same unparsed `payload_too_large` gap. Either way the rest of the
-session keeps ingesting, and a receipt cannot report the omitted or dropped bytes as captured work.
+A single hook event is also bounded. Yoetz fully reads a host body of at most 1 MiB; very large
+content inside it is kept only up to the capture budget and marked truncated. Images, audio, and
+video inside a tool result are never kept: Yoetz replaces their bytes with a short placeholder,
+so viewing a screenshot records the call, its outcome, and its text, but not the picture.
+For each image (up to eight per call) Yoetz instead records a fingerprint: its SHA-256, size in
+bytes, image type, and pixel width and height. That record appears as evidence on the call's
+result, so you or the agent can point to it as proof the image was inspected. The picture itself
+never leaves your machine and is never sent for AI-powered review. An
+event can still exceed 1 MiB without its images, for example a very large file write or command
+output. On every host, Yoetz then keeps the event's identity when the complete event fits in
+8 MiB: the session, tool, call, outcome, and, for a completed edit with a short path, a path
+commitment, with the content left out. That row is `payload_content_omitted`. Yoetz's own tools
+are the exception: their content is never captured anyway, so their row is complete and carries
+no gap. An event over 8 MiB, or one that is not a complete valid document, is an unparsed
+`payload_too_large` gap. Either way the rest of the session keeps ingesting, and a receipt cannot
+report the omitted or dropped bytes as captured work.
 
 Summary coverage, current pressure, capture availability, delivery, and selection for a particular
 check are separate facts. A summary or an empty queue cannot support a claim of full per-call

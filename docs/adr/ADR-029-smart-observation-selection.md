@@ -76,6 +76,12 @@ Pairing identities remain available for ten minutes so longer tool calls can sti
 Expiry or a fenced session end records `pending_attempt_expired` before retiring that pairing
 state. A later post retains its actual outcome as an unpaired observation with explicit coverage
 limits. These wall-clock deadlines survive restart; a retry cannot extend the original deadline.
+A host call whose host never sends a post is pre-only (issue #1041): a Codex shell
+`apply_patch <<EOF`, which Codex intercepts after firing only its `PreToolUse`. Its pairing state
+is closed, without the gap, by an observed file change of the same session (a rollout
+`FileChange` item): the attempt whose call id it names; an item naming another call the session's
+hooks reported is that call's change and closes none; an item naming no reported call closes the
+session's oldest pre-only attempt. One no observed change closes expires as above.
 
 Accepted outbox rows are immutable pending delivery. Automatic degradation affects future
 optional work; it does not rewrite accepted individual rows as summaries or move protected rows
@@ -190,6 +196,46 @@ history have no provable task attribution and remain visible locally; they are n
 to every task or assigned to a later mapping. A recovered/empty queue is not evidence that earlier
 losses were absent. Lane acknowledgement adds only private, bounded retry state; an older writer
 forgetting it can cause a replay but cannot duplicate the stable ledger marker.
+
+**Amendment (tb4n1 B3): bounded inheritance and a recorded cause.** One refused startup input
+used to mark every later observation of its lane (source, native session, generation and route)
+with `observation_input_loss`, so a single refusal made a whole task's evidence unprovable. The
+lane marker above is unchanged: the task still learns once that its lane lost input. What later
+evidence inherits is now bounded to what the lost input could affect. Each loss lane keeps a
+private, content-free detail beside its range: up to 16 pairing commitments (the same
+source/session/generation-scoped digests used for pre/post pairing) of the host calls whose inputs
+were lost. A later input inherits the gap only when its own call, or the call that spawned it,
+matches one of them: the post of a lost pre, any later input of a call whose post was lost, or
+a child of a lost call. An input with no host call identity (a prompt, a session boundary) has no
+partner and marks no later input. A lane that loses more than 16 paired calls, a range recorded
+before this detail existed, or a range advanced by an older writer (which drops the detail; the
+detail's count must equal the range count to be trusted) keeps the previous route-wide
+inheritance. Only commitments and closed codes are stored; raw call ids never enter the detail.
+
+The detail also records the closed refusal cause: `queue_count`, `queue_bytes`,
+`session_queue_count`, `session_queue_bytes`, `protected_reserve`, `session_fair_share`,
+`pressure_count`, `pressure_bytes`, `pressure_capture_backlog`, `capture_scope_unknown`,
+`state_bytes`, `flush_failed`, or `unknown` for a range recorded before causes existed. The wire
+loss-range shape in observe status is unchanged. The cause is surfaced through the hook notice
+(`...; see observe status; cause=<cause>`) and the closed `admission_loss_<cause>` hook-diagnostic
+reason in `hook_diagnostics.reasons`, recorded at the same once-a-minute cadence as
+`outbox_overflow`. The lane's causes also travel with its pending loss report, so the
+service-authored lane marker evidence (task `status view=evidence`) ends its fixed description
+with `Refusal cause: <codes>.`, and a receipt whose coverage carries `observation_input_loss` adds
+`Recorded refusal cause: <codes>.`, read only from `hook_observed` marker evidence and only as
+closed tokens. The marker's lane and operation identities are unchanged. Bounding the loss's
+proof effect on findings (the lane marker still folds `observation_input_loss` into every later
+check) is follow-up #1014.
+
+The tb4n1 startup refusals had a concrete source. A capture reservation is created unconfirmed and
+confirmed only after its staging ticket commits outside the store lock. Admission pressure treated
+any unconfirmed reservation as unknown capture scope, drove the capture dimension to its hard
+limit, and refused every native input in that window (one run recorded a refusal 28 ms after a
+1.4 s reservation hold). Under a proven inventory, admission pressure now charges an unconfirmed
+reservation at its reserved byte bound instead. Reservation and recovery keep their stricter view:
+a new reservation still waits for the confirmation, the unconfirmed reservation remains recovery
+demand, and an unproven inventory still refuses admission (now recorded as
+`capture_scope_unknown`).
 
 Detailed and larger capacity default to a current-session override. Workspace persistence is an
 explicit owner choice. A preview precedes non-default authority and describes scope, expiry,
@@ -516,3 +562,115 @@ without an accounting bucket.
   receipt coverage needs a control-schema revision and is not part of this amendment. The advice
   policy version is unchanged so existing advice finding identities do not churn; the historical
   advisory finding already in older ledgers is #911's.
+
+## Amendment — separate standing coverage from recoverable observation health (2026-10-04, #974)
+
+The maintainer acknowledged this follow-up under tracker #961. The durable observation record and
+the operator status surface must retain coverage limits, but a standing limit must not manufacture
+agent work. The local fallback store and SQLite store therefore use one shared material-gap set;
+`unpaired_event`, `truncated_payload`, `content_capture_unavailable`, `pending_attempt_expired`,
+and `content_unselected` remain visible coverage records while a source is mapped, fresh, and
+draining. A recent, progressing outbox drain is healthy even when one row is still pending; a
+missing or stale drain, a freshness timeout, an unmapped source, a material acquisition gap, or an
+unsupported event can still keep lifecycle status degraded or stale.
+
+Only the named recoverable causes `source_lag`, `cursor_stale`, `service_unavailable`, and
+`vault_locked` produce the agent-facing `observation_gap_or_stale` / `refresh_observation` advice.
+Unsupported formats and events remain disclosed to operators and in coverage, but an agent refresh
+cannot repair them. A lifecycle label by itself, an empty observation path, a standing gap, or a
+pending outbox row never creates that advice.
+
+The one-time orphan notice remains available to local operator inspection after restart, but is no
+longer copied into Codex, Claude Code, or Cursor hook context. Codex `PreToolUse` observation is
+synchronous so its pairing identity is committed before the matching `PostToolUse`; the other
+pure-ingress hooks retain their asynchronous behavior. This is a timing and presentation change,
+not a new capture grant or a claim that every native call is observable.
+
+## Amendment — optional bounded wait for the caller's hook observations before a check (2026-10-07, #1012)
+
+The maintainer approved this protocol change on #1012 (TB4 run tb4n1 follow-up P3-1). In tb4n1, 39
+of 40 Stop-gate texts said hook observations were still draining, checks carried
+`check_current_as_of_earlier_frontier`, and agents polled `status` (790 calls in the 30 blocker
+attempts) hoping the record would catch up. The Stop drain (#994) settles a task's rows at Stop;
+a mid-session `check` still froze whatever the ledger held.
+
+### Decision
+
+- `check` accepts an optional boolean `await_observations` (check-request 1.1.0, unreleased,
+  additive in place; MCP `check` and `yoetz check --await-observations`). Omitted or `false`
+  keeps today's behaviour and bytes.
+- When `true`, the service, before it takes either dispatch gate and before the case freezes,
+  snapshots the local hook outbox rows that belong to the check's task: rows of every host session
+  whose lifecycle mapping names the check's Yoetz session, across all workspaces with pending
+  delivery work. This is the same task rule the Stop gate uses (`observation_task_pending`),
+  minus the Stop hook's own unmapped host session, which the service cannot name. The service
+  wakes its observation sweeper and polls that real local state until none of the snapshot rows is
+  still pending, re-waking the sweeper about once a second. Rows that arrive after the snapshot
+  are not waited for.
+- The wait is bounded by about 3 s and by a tenth of the request's deadline, whichever is
+  smaller. It runs inside a detached semantic check's own operation, so an MCP call's bridge
+  deadline (#886) still covers it.
+- The check result carries the closed `observations_awaited` member (check-result 1.4.0,
+  unreleased, additive in place) only when the request set the flag:
+  `{"state": "complete" | "bounded_timeout" | "unavailable", "pending_count": "<decimal>"}`.
+  `pending_count` is how many snapshot rows were still pending when the wait ended; `complete`
+  and `unavailable` (the local outbox could not be read) carry `"0"`. The CLI human rendering
+  and the MCP check summary show one short line.
+- The wait never fails, refuses, or reorders a check. A `bounded_timeout` means the check used the
+  record as it stood; the existing freshness gaps still say so.
+- The flag is outside the operation identity: the check request digest and the detached-check
+  identity drop it, so a same-request recovery may set or omit it, and requests without it keep
+  their digest. `observations_awaited` is not recorded in the ledger or in `check_recorded`; it
+  describes only the call that asked for it, and a replayed request runs and reports its own wait.
+
+### Surfaces
+
+MCP `check` (all three hosts: Codex, Claude Code and Cursor reach the same tool) and the CLI.
+The terminal interface does not set the flag: its checks are operator-initiated and not tied to
+an agent host session's outbox; it still renders the line if a result carries it. Receipts do not
+carry the member.
+
+## Amendment — image tool results as local digest-only evidence (2026-10-07, #1013)
+
+Owner decision (P3-2): "just ack the image, don't send it".
+
+### Problem
+
+tb4n1 lost image tool results (`view_image`, screenshots read back, MCP image blocks) at the old
+hook ingress cap, and an agent that inspected its rendered deliverable then had no Yoetz-held
+record that it had looked. The review packet cannot carry images, so the agent had nothing to cite.
+
+### Decision
+
+- Every host's observation ingress (Codex `read_hook_ingress`, Claude Code through the same reader,
+  Cursor `read_cursor_hook_ingress`), at any body size up to the skim cap, finds image strings
+  before it drops media bytes: a decodable base64 string inside an image block (MCP and Claude
+  `image`, Responses `input_image`, an object declaring an `image/` media type) or an image
+  `data:` URL anywhere. For at most 8 images per event it records the SHA-256 and byte count of
+  the decoded bytes, a media type sniffed from the bytes (`image/png`, `image/jpeg`, `image/gif`,
+  `image/webp`, else `image/unknown`), and the pixel width and height read from the header only
+  (PNG `IHDR`, JPEG `SOFn` with a bounded segment walk, GIF, WebP `VP8`/`VP8L`/`VP8X`). An
+  unreadable or zero-size header is `image/unknown` with no dimensions. A string that does not
+  decode is not attested. The host's own media label never decides the type.
+- These facts travel as the closed structural `observed_images` member of a `PostToolUse`
+  envelope (control-request 2.9.0, unreleased, additive in place): 1-8 objects with exactly
+  `content_digest`, `byte_count`, `media_type`, and optionally both `width` and `height`. The
+  name is reserved; a host value under it is always discarded at ingress.
+- The service materializes one `evidence_recorded` 1.2.0 per image beside the call's result:
+  `evidence_kind: artifact`, `strength: content_digest`, the image digest, `digest_binding`
+  `{subject: artifact_bytes, content_availability: digest_only, byte_count, provenance:
+  observation_captured}`, a stable id from the envelope's source identity and the image index, and
+  the fixed description `Observed image tool result <media_type> <w>x<h> (<n> bytes); pixels were
+  not captured or sent`. The call's `result_recorded.evidence_refs` lists it (an unpaired post
+  parents it to its standalone evidence instead). The accepted-event validator admits
+  `observation_captured` in exactly this digest-only shape (strength `content_digest`,
+  `digest_only`, subject `artifact_bytes`, no captured object, coordinator author on
+  `hook_observed`) beside the captured-bytes shape; anything else is refused.
+- No pixel is stored as captured content, persisted locally, or sent to any reviewer. The agent may
+  cite the evidence id when it states it inspected the output; reviewers see it as present and
+  not sent.
+
+### Unchanged
+
+Content selection, consent, and the content budget are unchanged; the image bytes themselves stay
+replaced by the media placeholder in any captured tool output.

@@ -20,6 +20,7 @@ __all__ = [
     "CHECK_POLICY_FORMAT",
     "CHECK_POLICY_PATH",
     "ObservationCheckPolicy",
+    "ObservationCheckPolicyAbsent",
     "load_observation_check_policy",
     "parse_observation_check_policy",
     "raw_policy_digest",
@@ -47,6 +48,20 @@ class ObservationCheckPolicy:
         ids = [item.approval_id for item in self.checks]
         if ids != sorted(set(ids), key=str.encode):
             raise ProtocolValueError("invalid_approved_check_policy")
+
+
+class ObservationCheckPolicyAbsent(ProtocolValueError):
+    """The workspace has no `.yoetz/checks.toml`: the optional feature is not configured.
+
+    Approved workspace checks are an opt-in owner feature, so absence is the ordinary state, not a
+    policy fault. It subclasses the invalid-policy failure so every caller that only needs "no
+    usable policy" keeps failing closed, while callers that report state can tell the two apart.
+    """
+
+    __slots__ = ()
+
+    def __init__(self) -> None:
+        super().__init__("invalid_approved_check_policy")
 
 
 def raw_policy_digest(raw: bytes) -> str:
@@ -117,8 +132,13 @@ def load_observation_check_policy(workspace: Path) -> tuple[ObservationCheckPoli
     root_fd = policy_dir_fd = policy_fd = -1
     try:
         root_fd = os.open(root, directory_flags | nofollow)
-        policy_dir_fd = os.open(".yoetz", directory_flags | nofollow, dir_fd=root_fd)
-        policy_fd = os.open("checks.toml", file_flags | nofollow, dir_fd=policy_dir_fd)
+        try:
+            policy_dir_fd = os.open(".yoetz", directory_flags | nofollow, dir_fd=root_fd)
+            policy_fd = os.open("checks.toml", file_flags | nofollow, dir_fd=policy_dir_fd)
+        except FileNotFoundError as exc:
+            # Only a genuinely missing entry is "absent"; a symlink, wrong type, or unreadable
+            # file still fails as an invalid policy below.
+            raise ObservationCheckPolicyAbsent() from exc
         facts = os.fstat(policy_fd)
         if not stat.S_ISREG(facts.st_mode) or not 0 < facts.st_size <= _MAX_POLICY_BYTES:
             raise ProtocolValueError("invalid_approved_check_policy")

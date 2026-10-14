@@ -8,6 +8,7 @@ import pytest
 from yoetz.domain.privacy import (
     MAX_EGRESS_CASE_BYTES,
     MAX_RECEIPT_FINAL_BYTES,
+    MAX_WITHHELD_ITEM_IDS,
     AuthorizationScope,
     AuthorizationScopeKind,
     ConsentSource,
@@ -22,6 +23,7 @@ from yoetz.domain.privacy import (
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
+    ReceiptSecretScanStage,
     ReceiptTransformations,
     RequestCommitment,
 )
@@ -139,6 +141,9 @@ def test_network_receipt_has_complete_frozen_schema_shape() -> None:
         "dispatch_id",
         "dispatch_started_at",
         "request_commitment",
+        "withheld_item_ids",
+        "withheld_item_reason",
+        "origin_operation",
     }
 
 
@@ -215,3 +220,52 @@ def test_counts_scan_and_destination_cross_field_invariants_fail_closed() -> Non
             _network_receipt(),
             destination=NonLlmDestination(EgressChannel.UPDATE_CHECKS, "updates", "1"),
         )
+
+
+def test_secret_scan_stage_distinguishes_real_scan_from_not_run() -> None:
+    candidate = ReceiptSecretScan("1.0.0", _DIGEST, 1, False, ReceiptSecretScanStage.CANDIDATE)
+    rendered = ReceiptSecretScan("1.0.0", _DIGEST, 0, True, ReceiptSecretScanStage.RENDERED_BODY)
+    not_run = ReceiptSecretScan(
+        "1.0.0",
+        _DIGEST,
+        0,
+        False,
+        ReceiptSecretScanStage.NOT_RUN,
+        PrivacyReason.NEVER_SEND_DETECTED,
+    )
+    assert candidate.match_count == 1 and not candidate.passed
+    assert rendered.match_count == 0 and rendered.passed
+    assert not_run.not_run_reason is PrivacyReason.NEVER_SEND_DETECTED
+    with pytest.raises(ValueError, match="invalid_privacy_value"):
+        ReceiptSecretScan("1.0.0", _DIGEST, 0, True, ReceiptSecretScanStage.NOT_RUN)
+
+
+def test_receipts_reject_an_oversized_opaque_omission_set() -> None:
+    too_many = tuple(f"item-{index:03d}" for index in range(MAX_WITHHELD_ITEM_IDS + 1))
+
+    with pytest.raises(ValueError, match="invalid_privacy_value"):
+        replace(
+            _network_receipt(),
+            schema_version="1.1.0",
+            withheld_item_ids=too_many,
+        )
+    with pytest.raises(ValueError, match="invalid_privacy_value"):
+        replace(
+            _local_receipt(),
+            schema_version="1.1.0",
+            withheld_item_ids=too_many,
+        )
+
+
+@pytest.mark.parametrize(
+    ("match_count", "passed"),
+    [(0, False), (0, True), (2, False)],
+    ids=["legacy_blocked_zero", "legacy_clean_zero", "legacy_matches"],
+)
+def test_legacy_stage_less_scan_keeps_historical_unknown_state(
+    match_count: int, passed: bool
+) -> None:
+    scan = ReceiptSecretScan(
+        "1.0.0", _DIGEST, match_count, passed, ReceiptSecretScanStage.LEGACY_UNKNOWN
+    )
+    assert scan.stage is ReceiptSecretScanStage.LEGACY_UNKNOWN

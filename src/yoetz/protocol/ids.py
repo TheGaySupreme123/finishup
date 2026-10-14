@@ -14,6 +14,7 @@ from yoetz.protocol.errors import ProtocolValueError
 
 __all__ = [
     "ACTOR_ID_PATTERN",
+    "OPAQUE_ITEM_ID_PATTERN",
     "ID_TOTAL_LENGTH",
     "PREFIX_BY_KIND",
     "IdKind",
@@ -21,6 +22,7 @@ __all__ = [
     "new_id",
     "safe_request_id_from",
     "validate_actor_id",
+    "validate_opaque_item_id",
     "validate_id",
 ]
 
@@ -59,6 +61,7 @@ class IdKind(str, Enum):  # noqa: UP042 - v0.1 requires a str-valued Enum
 
 ID_TOTAL_LENGTH: Final = 40
 ACTOR_ID_PATTERN: Final = r"^[A-Za-z0-9._:-]{1,128}$"
+OPAQUE_ITEM_ID_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
 
 PREFIX_BY_KIND: Final[Mapping[IdKind, str]] = MappingProxyType(
     {
@@ -99,6 +102,7 @@ _UUID_PATTERN: Final[re.Pattern[str]] = re.compile(
     re.ASCII,
 )
 _ACTOR_PATTERN: Final[re.Pattern[str]] = re.compile(ACTOR_ID_PATTERN, re.ASCII)
+_OPAQUE_ITEM_PATTERN: Final[re.Pattern[str]] = re.compile(OPAQUE_ITEM_ID_PATTERN, re.ASCII)
 
 
 def _validate_kind(kind: object) -> IdKind:
@@ -161,6 +165,14 @@ def validate_id(kind: IdKind, value: object) -> str:
     if uuid_text[19] not in {"8", "9", "a", "b"}:
         raise ProtocolValueError("id_uuid_wrong_variant")
     return candidate
+
+
+def validate_opaque_item_id(value: object) -> str:
+    """Validate an opaque case-item identity used in privacy omission projections."""
+
+    if type(value) is not str or _OPAQUE_ITEM_PATTERN.fullmatch(value) is None:
+        raise ProtocolValueError("opaque_item_id_invalid")
+    return value
 
 
 def is_valid_id(kind: IdKind, value: object) -> bool:

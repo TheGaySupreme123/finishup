@@ -1,7 +1,8 @@
-"""Six-operation MCP/Codex capability evidence.
+"""Six-operation plus support-tool MCP/Codex capability evidence.
 
-Local cells drive all six names through the real MCP stdio transport (``yoetz mcp serve`` via the
-pinned SDK client). They prove dispatch and descriptor behavior only — not service conduit or Codex
+Local cells drive the six workflow names through the real MCP stdio transport (``yoetz mcp serve``
+via the pinned SDK client), and verify the complete advertised inventory including read-only
+support tools. They prove dispatch and descriptor behavior only — not service conduit or Codex
 model activation.
 
 Driving the same slice through interactive/exec Codex requires ``YOETZ_LIVE_CODEX=1`` and a Gate
@@ -38,7 +39,7 @@ from yoetz.protocol.errors import PublicErrorCode
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _VERSION = "0.139.0"
 _WORKFLOW_TOOLS = ("start", "publish_work", "check", "respond", "status", "receipt")
-_EXPECTED = (*_WORKFLOW_TOOLS, "read_guidance")
+_EXPECTED = (*_WORKFLOW_TOOLS, "read_guidance", "closure_prepare")
 _DEGRADED_CODES = frozenset(
     {
         PublicErrorCode.INVALID_REQUEST.value,
@@ -177,7 +178,7 @@ def anyio_backend() -> str:
 
 
 @pytest.mark.anyio
-async def test_installed_server_advertises_exactly_six_frozen_tools(tmp_path: Path) -> None:
+async def test_installed_server_advertises_the_frozen_mcp_inventory(tmp_path: Path) -> None:
     """List tools through the real MCP stdio server; compare against frozen descriptors."""
 
     evidence_root = capability_evidence_output_root(tmp_path)

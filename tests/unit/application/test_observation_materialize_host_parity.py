@@ -140,9 +140,16 @@ _CURSOR_POSTS: tuple[tuple[str, dict[str, Any], str | None], ...] = (
 # review; #917 must not move either value. Re-pinned when #909 (keyed command
 # identity, tool-named action description) was merged beneath #910: the values
 # are what the #909 materializer alone produces, so #917 and #910 move neither.
+# Re-pinned again for the bounded command runner class (#961/#968): the host
+# ingress now records ``runner_class`` in the structural payload, which moves the
+# derived event/evidence ids, and post-only action descriptions gain the closed
+# ``(runner <class>)`` suffix. No other draft byte changed.
+# Re-pinned for tb4n3 RC-5 (#1028, ADR-045): a two-argument command such as ``pytest -q`` now
+# carries ``command_composition`` and its canonical flag commitment in the structural payload, so
+# the derived evidence ids of the unpaired results move. The action and result payloads do not.
 _PINNED = {
-    "claude": "sha256:4bda962077d545af277ec21d45f9b69619b0ff0b617d03fe2bf39a9e06778aec",
-    "cursor": "sha256:13a9100845883a76f7a29ce233efa91fd79c9fe7bc694d5b16e01852efabb654",
+    "claude": "sha256:9ca41d959b716cee3ab2b8776632137f1b87196ec161c06429b659090b4978be",
+    "cursor": "sha256:5d800c50f0c6f4d6793fa1602e397050ed6616b28748e68b68d9c9e17c3b1dd6",
 }
 
 

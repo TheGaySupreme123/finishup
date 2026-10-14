@@ -65,6 +65,10 @@ _WORKSPACE = "hmac-sha256:" + "11" * 32
 _SECRET = b"AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 _AZURE = b"AZURE_CLIENT_SECRET=abc123secretvalue0001"
 _TOKEN = b"GITHUB_TOKEN=notakeybutlongenoughvalue"
+# A high-confidence credential shape. The three assignments above are heuristic-only: capture keeps
+# them in the encrypted store and egress redacts them (issue #982).
+_HIGH_VALUE = b"sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"
+_HIGH_SECRET = b"OPENAI_API_KEY=" + _HIGH_VALUE
 
 
 class _ReadySandbox:
@@ -1120,7 +1124,7 @@ async def test_observation_capture_secret_scans_before_digest_binding(tmp_path: 
         "text/plain",
         0,
         1,
-        b"prefix " + _SECRET,
+        b"prefix " + _HIGH_SECRET + b"\n" + _SECRET,
     )
 
     manifests, replay, redacted, unavailable = await coordinator._capture_content(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
@@ -1135,15 +1139,54 @@ async def test_observation_capture_secret_scans_before_digest_binding(tmp_path: 
     assert replay == ()
     assert len(manifests) == 1
     captured_envelope = objects.payloads[0]
-    assert _SECRET not in captured_envelope
+    assert _HIGH_VALUE not in captured_envelope
     captured_inner = base64.b64decode(json.loads(captured_envelope)["content_b64"])
-    assert _SECRET not in captured_inner
+    assert _HIGH_VALUE not in captured_inner
+    # The heuristic-only assignment stays as captured in the encrypted object (issue #982).
+    assert _SECRET in captured_inner
     assert manifests[0].redacted is True
     assert manifests[0].content_digest == ("sha256:" + hashlib.sha256(captured_inner).hexdigest())
 
 
+@pytest.mark.anyio
+async def test_observation_capture_keeps_heuristic_only_content_unredacted(tmp_path: Path) -> None:
+    """Issue #982: a heuristic-only match neither changes bytes nor marks the chunk redacted."""
+
+    db = apsw.Connection(":memory:")
+    initialize_bundle(db, {"task_id": "task_obs", "owner_generation": "1"})
+    store = SqliteObservationStore(db)
+    objects = _CapturingObjects()
+    coordinator = _coordinator(tmp_path, objects)
+    runtime = SimpleNamespace(task_id=_TASK, objects=objects)
+    content = b'        self.bot_token = "<|tool_call_start|>"\n' + _TOKEN + b"\n"
+    chunk = ObservationContentChunk(
+        ObservationContentKind.TOOL_OUTPUT,
+        "call-303",
+        _COMMITMENT,
+        "text/plain",
+        0,
+        1,
+        content,
+    )
+
+    manifests, _replay, redacted, unavailable = await coordinator._capture_content(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        runtime,  # type: ignore[arg-type]
+        store,
+        workspace=_WORKSPACE,
+        envelope=_observation_envelope(),
+        chunks=(chunk,),
+    )
+    assert redacted is False
+    assert unavailable is False
+    assert len(manifests) == 1
+    assert manifests[0].redacted is False
+    parsed = json.loads(objects.payloads[0])
+    assert parsed["redacted"] is False
+    assert base64.b64decode(parsed["content_b64"]) == content
+
+
 def test_changed_file_prefix_canary_persists_only_redaction_metadata() -> None:
-    secret_file = _artifact("src/env.py", b"export " + _SECRET + b"\nprint(1)\n")
+    secret_file = _artifact("src/env.py", b"export " + _HIGH_SECRET + b"\nprint(1)\n")
     clean_file = _artifact("src/ok.py", b"print('hello-advice')\n")
     encoded, unavailable, redacted, truncated = build_inspection_excerpt_manifest(
         (secret_file, clean_file)
@@ -1161,8 +1204,8 @@ def test_changed_file_prefix_canary_persists_only_redaction_metadata() -> None:
     assert artifacts[1]["redacted"] is False
     recovered = base64.b64decode(artifacts[1]["excerpt_b64"])
     assert b"hello-advice" in recovered
-    assert _SECRET not in encoded
-    assert b"wJalrXUtnFEMI" not in encoded
+    assert _HIGH_SECRET not in encoded
+    assert _HIGH_VALUE not in encoded
 
 
 def test_changed_file_canary_withholds_excerpt_object() -> None:
@@ -1195,20 +1238,20 @@ def test_changed_file_scanner_failure_stores_no_excerpt(monkeypatch: pytest.Monk
     assert truncated is False
 
 
-def test_azure_and_token_prefixes_are_classified_before_encoding() -> None:
+def test_azure_and_token_prefixes_are_kept_in_the_encrypted_excerpt() -> None:
+    """Issue #982: heuristic-only assignments are local evidence; egress redacts them."""
+
     encoded, unavailable, redacted, truncated = build_inspection_excerpt_manifest(
         (_artifact("a.env", _AZURE + b"\n"), _artifact("b.env", _TOKEN + b"\n"))
     )
     assert unavailable is False
-    assert redacted is True
+    assert redacted is False
     assert truncated is False
     assert encoded is not None
-    assert _AZURE not in encoded
-    assert _TOKEN not in encoded
     parsed = json.loads(encoded)
-    for item in parsed["artifacts"]:
-        assert item["redacted"] is True
-        assert "excerpt_b64" not in item
+    excerpts = [base64.b64decode(item["excerpt_b64"]) for item in parsed["artifacts"]]
+    assert all(item["redacted"] is False for item in parsed["artifacts"])
+    assert excerpts == [_AZURE + b"\n", _TOKEN + b"\n"]
 
 
 @pytest.mark.anyio
@@ -1217,8 +1260,7 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
 ) -> None:
     handle = open_inspect_workspace(tmp_path)
     captured: list[bytes] = []
-    assignment = "AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
-    argv = ("/bin/echo", assignment)
+    argv = ("/bin/echo", _HIGH_SECRET.decode("ascii"), _SECRET.decode("ascii"))
     approval = ApprovedCheckApproval(
         approval_id="pytest-unit",
         argv=argv,
@@ -1239,8 +1281,10 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
         )
     )
     assert captured
-    assert b"wJalrXUtnFEMI" not in captured[0]
+    assert _HIGH_VALUE not in captured[0]
     assert b"[REDACTED]" in captured[0]
+    # Heuristic-only output stays in the encrypted object; egress redacts it (issue #982).
+    assert b"wJalrXUtnFEMI" in captured[0]
 
     db = apsw.Connection(":memory:")
     initialize_bundle(db, {"task_id": "task_obs", "owner_generation": "1"})
@@ -1252,16 +1296,18 @@ async def test_approved_check_persistence_path_redacts_compound_secrets(
         store,
         _WORKSPACE,
         _job(),
-        captured[0] + b"\n" + _AZURE,
+        # The runner's own replacement is not reported through the output sink, so the
+        # coordinator's persisted ``redacted`` flag reflects only the bytes it replaces itself.
+        captured[0] + b"\n" + _AZURE + b"\n" + _HIGH_SECRET,
     )
     assert object_id is not None
     assert objects.payloads
     payload = objects.payloads[0]
-    assert b"wJalrXUtnFEMI" not in payload
-    assert b"abc123secretvalue0001" not in payload
+    assert _HIGH_VALUE not in payload
     parsed = json.loads(payload)
     decoded = base64.b64decode(parsed["content_b64"])
     assert b"[REDACTED]" in decoded
+    assert b"abc123secretvalue0001" in decoded
     assert parsed["redacted"] is True
     rows = db.execute(
         "SELECT redacted,content_kind,content_digest,content_bytes "

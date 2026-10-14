@@ -7,7 +7,11 @@ from pathlib import Path
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
+from yoetz.adapters.sqlite.migrations import (
+    BUNDLE_MIGRATIONS,
+    current_schema_version,
+    run_migrations,
+)
 
 
 def _schema_seven(path: Path) -> apsw.Connection:
@@ -89,8 +93,11 @@ def test_schema_seven_upgrade_keeps_old_rows_weak_and_accepts_exact_bindings(
         "0013",
         "0014",
         "0015",
+        "0016",
     )
-    assert db.execute("PRAGMA user_version").fetchone() == (15,)
+    assert db.execute("PRAGMA user_version").fetchone() == (
+        current_schema_version(BUNDLE_MIGRATIONS),
+    )
     assert db.execute(
         "SELECT content_digest,content_bytes FROM observation_content_manifests"
     ).fetchone() == (None, None)

@@ -294,6 +294,73 @@ def test_codex_failed_read_is_not_summarized_as_a_routine_success() -> None:
     assert succeeded.structural_payload["exit_status"] == 0
 
 
+def test_masking_compound_shell_preserves_outer_zero_and_records_nested_gap() -> None:
+    """A masking shell keeps its outer result while exposing the nested-status limitation (#968)."""
+
+    envelope = map_hook_payload_to_envelope(
+        "PostToolUse",
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "call-compound",
+            "tool_input": {"command": "pnpm vitest test/a.ts; tsc --noEmit"},
+            "tool_response": "Chunk ID: c\nWall time: 0.1 seconds\n"
+            "Process exited with code 0\nOriginal token count: 1\nOutput:\n",
+        },
+        session_commitment="hmac-sha256:" + ("1a" * 32),
+        event_ordinal=1,
+        key_material=_KEY,
+    )
+    # ADR-045: a composition is classed by its strongest verification (the test run), while the
+    # nested-status limitation stays raised for any masking shape.
+    assert envelope.structural_payload["runner_class"] == "test"
+    assert envelope.structural_payload["exit_status"] == 0
+    assert envelope.structural_payload["success"] is True
+    assert "compound_outcome_unavailable" in envelope.gap_codes
+    result = _result(materialize_observation_envelope(envelope, task_id=_TASK))
+    assert result.outcome is ResultOutcome.SUCCESS
+    assert result.exit_status == 0
+
+
+def test_and_compound_shell_zero_proves_each_chain_member() -> None:
+    envelope = map_hook_payload_to_envelope(
+        "PostToolUse",
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "call-compound-and",
+            "tool_input": {"command": "pnpm vitest test/a.ts && tsc --noEmit"},
+            "tool_response": "Chunk ID: c\nProcess exited with code 0\nOutput:\n",
+        },
+        session_commitment="hmac-sha256:" + ("1b" * 32),
+        event_ordinal=1,
+        key_material=_KEY,
+    )
+    assert (
+        envelope.structural_payload["runner_class"] == "test"
+    )  # ADR-045: classed by its strongest verification
+    assert envelope.structural_payload["exit_status"] == 0
+    assert "compound_outcome_unavailable" not in envelope.gap_codes
+
+
+def test_runner_class_is_derived_instead_of_copied_from_host_payload() -> None:
+    envelope = map_hook_payload_to_envelope(
+        "PostToolUse",
+        {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_use_id": "call-runner-class",
+            "runner_class": "exploration",
+            "tool_input": {"command": "pytest tests/unit"},
+            "tool_response": "Process exited with code 1",
+        },
+        session_commitment="hmac-sha256:" + ("1c" * 32),
+        event_ordinal=1,
+        key_material=_KEY,
+    )
+    assert envelope.structural_payload["runner_class"] == "test"
+
+
 def _rollout_envelopes(tmp_path: Path, session: str) -> tuple[ObservationEnvelope, ...]:
     case = _case(_CODEX)
     lines = cast(list[dict[str, Any]], case["input"]["rollout"]["lines"])

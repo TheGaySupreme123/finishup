@@ -126,7 +126,9 @@ def test_every_served_resource_carries_its_registry_facts(responses: list[dict[s
         # Size must be the real byte length; a wrong one misleads context-window budgeting.
         assert entry["size"] == resource.size
         assert entry["annotations"]["audience"] == list(resource.annotations.audience)
-        assert entry["annotations"]["priority"] == resource.annotations.priority
+        # e260b250: a fractional priority is not served (Codex rmcp cannot decode a buffered
+        # float). The registry values stay locked by the MCP contract matrix conformance test.
+        assert "priority" not in entry["annotations"]
 
 
 def test_resource_uris_are_parseable_absolute_uris(responses: list[dict[str, Any]]) -> None:

@@ -38,10 +38,19 @@ remains limited to its named cells; configuration success never claims session a
 ## Conditional agent guidance
 
 The skill keeps its activation boundary, core workflow, and safety floor in the entrypoint.
-Read workflow guidance before `start`, publication policy before `publish_work`, and coverage
-and receipts before `check`. Setup/consent, vault/credential operations, transcript import, and
+Before `start` read the core, `agent-instructions.md`: it is the operating card and is enough for
+ordinary work. Workflow, publication policy, and coverage and receipts are read only when a result,
+error or continuation names them, or when unsure; no status read or dry run is required before a
+write, and `check` with `mode: inspect` gives the picture in one read (ADR-047). Setup/consent, vault/credential operations, transcript import, and
 recommendation decisions route to the corresponding sections of request templates only when
 needed. Already-read guidance need not be fetched again while present in context.
+
+When Cursor may clip a large guidance document, use the `read_guidance/1.1.0` page route with a
+bounded UTF-8 `page_size`. Cursor's `structuredContent` delivery is not relied on for this host:
+validate each marked `content` page with `GuidancePageAssembler`, carry the revision/digest
+continuation, and require the complete page set and final digest before treating guidance as
+loaded. The URI-only request remains unchanged; native fresh/resumed/compacted Cursor
+acceptance for the page route remains a pending dogfood lane.
 
 Use `semantic_if_configured` only when AI-powered review is known to be optional; omit `mode` when
 relying on the configured default. Select `semantic_required` for an explicit user requirement,
@@ -589,11 +598,12 @@ workspace-relative `path`, so the newest applied write of each path is reserved 
 diff and older writes are marked `superseded_by`. Edits that reach Yoetz only through
 `afterFileEdit` are not captured in this profile, so their paths get no reserved slot; agent
 evidence and generic `postToolUse` output compete by recency. Verification output is reserved
-per command only when the agent records the action, result and output; generic captured output
-has no command identity until #910. The named-missing-item check result, gaps and guidance are
-the same as on Codex and Claude Code. Gap owner: #883 (check-time diff) and #910.
+per command when its output can be linked to a recorded action and keyed command identity.
+Unpaired or unidentified generic output stays explicitly unverified. The named-missing-item
+check result, gaps and guidance are the same as on Codex and Claude Code; the check-time diff
+provides the current repository view when its capture is available.
 
-The ordinary `postToolUse` path emits queued advice through the documented
+The ordinary `postToolUse` path emits queued work advice through the documented
 [`additional_context` output](https://cursor.com/docs/hooks#posttooluse), including when a
 command's exit is unknown or nonzero. Advice is marked delivered only after successful stdout
 emission. `postToolUseFailure` has no consumable output, so its advice remains pending for a later
@@ -606,9 +616,10 @@ output behavior, and automatic Stop follow-up messages remain disabled. Hook suc
 substitutes for an explicit command/test exit fact.
 
 **Failure supersession (#909).** On the ordinary profile a later `Shell` run of the same command
-(only the latest run is judged; a `postToolUse` with `exitCode: 0` clears it), or a later edit tool
-call that reported success (an outcome-less edit does not), retires an earlier failed run before a
-completion claim; the receipt names it once as history. `Shell` failures also reach
+(only the latest limiting run is judged; a `postToolUse` with `exitCode: 0` clears an earlier
+failure) can supersede an earlier failed run before a completion claim. A later failure or partial
+rerun leaves the latest run live, and an unknown outcome or edit never retires the failed
+verification. The receipt keeps unresolved runs disclosed as limitations. `Shell` failures also reach
 `failed_command_unresolved` advice. The hook computes an installation-keyed `command_commitment`
 from `tool_input.command` on `preToolUse`, `postToolUse`, and `postToolUseFailure`, then discards
 the text. Decision: supported on the ordinary profile. **Gap:** a shell `postToolUse` without
@@ -740,16 +751,19 @@ form, so the lever, if the measurements call for one, is a minimal-import fast p
 async split. That is decided from the aggregate of a Cursor dogfood run in both profiles on macOS,
 Linux and WSL 2; those measurements are not recorded yet, and the gap is owned by issue #915.
 
-### Oversized hook payloads (issue #667)
+### Oversized hook payloads (issue #667, tb4n1 B5)
 
-A Cursor hook body over the 256 KiB trusted parse cap (`MAX_HOOK_STDIN_BYTES`) is not admitted as
-a full event. An ordinary write to a large file reaches this bound: Cursor's native tool input
-carries the whole file content, and the dogfood writes that opened this issue were roughly
-389,000 bytes each. The hook stays fail-open and Cursor continues.
+A Cursor hook body over the 1 MiB trusted parse cap (`MAX_HOOK_STDIN_BYTES`, shared by every host;
+256 KiB until tb4n1 B5) is not admitted as a full event. An ordinary write to a large file can
+reach this bound: Cursor's native tool input carries the whole file content (the dogfood writes
+that opened issue #667 were roughly 389,000 bytes each, which now fit). The hook stays fail-open
+and Cursor continues.
 
-When that body is a complete document at or under the 1 MiB skim cap (`MAX_HOOK_SKIM_BYTES`),
-Yoetz parses it with the same NUL, UTF-8, duplicate-key, and JSON checks as a normal event, then
-keeps a closed identity view. The structural row records the session, tool name, and tool-call id
+When that body is a complete document at or under the 8 MiB skim cap (`MAX_HOOK_SKIM_BYTES`),
+Yoetz parses it with the same NUL, UTF-8, duplicate-key, and JSON checks as a normal event. Image,
+audio, and video bytes (an MCP `image` block, a `data:` URL) are first replaced with a fixed
+placeholder; if the body then fits the trusted cap it is admitted whole and records no gap.
+Otherwise Yoetz keeps a closed identity view. The structural row records the session, tool name, and tool-call id
 when those values are bounded tokens. A path commitment is kept only for `afterFileEdit` and for a
 `postToolUse` edit tool that did not fail or get denied; a read, a pending `preToolUse`, or a
 failed edit commits no changed path. Whether an `error` value was set is kept as a bit, never its
@@ -757,19 +771,38 @@ text, and an unkeepable `workspace_roots` is refused as it is at full size. File
 prompts, and command text are omitted. The row's content references stay empty,
 including when native content capture is authorized. Coverage on that row is
 `payload_content_omitted`, and hook diagnostics record `cursor_payload_content_omitted`. A receipt
-can name the edit and must not treat the omitted bytes as captured.
+can name the edit and must not treat the omitted bytes as captured. A Yoetz MCP tool in a scoped
+spelling (`yoetz:<tool>`, `plugin-yoetz-yoetz:<tool>`, `closure_prepare` included) records
+neither: its content is never captured, so the identity row is complete. Cursor's ordinary
+`postToolUse` spells MCP calls as the generic `MCP:<tool>`, which names no server, so such a call
+cannot be attributed to Yoetz and keeps the gap.
 
 A body over the skim cap is refused before any parse. A complete oversized body that fails
 validation is also refused, and it records `cursor_payload_invalid` as well as the size gap. Both
 of those outcomes record `cursor_payload_too_large` and the workspace `payload_too_large` gap, and
 they mint no structural row. A parsed oversized body that finds no session or no resolvable
 workspace records the same gap. The ordinary profile's `afterMCPExecution` skip is deliberate at
-every size and records no gap. The pure `read_cursor_hook_payload` replay still refuses at 256 KiB,
-so a captured oversized body cannot be reparsed as a trusted full event.
+every size and records no gap. The pure `read_cursor_hook_payload` replay still refuses above the
+trusted cap, so a captured oversized body cannot be reparsed as a trusted full event.
 
-The caps are fixed; raising them is not an operator control. Codex and Claude Code do not skim:
-an oversized body on those hosts stays the no-row `payload_too_large` gap. The refusal or the
-omission costs exactly that one event; the next ordinary event still ingests.
+The caps are fixed; raising them is not an operator control. Codex and Claude Code apply the same
+skim since tb4n1 B5. The refusal or the omission costs exactly that one event; the next ordinary
+event still ingests.
+
+Matcher decision (tb4n1 B5): Cursor's generated hooks carry no per-tool matcher, and its ordinary
+`postToolUse` names MCP tools only as `MCP:<tool>`, so no matcher could exclude Yoetz's own tools
+without also excluding another server's tool of the same name. Excluding them would also leave
+their `preToolUse` unpaired. The size problem is fixed in the reader instead.
+
+Observed images (P3-2, issue #1013): Cursor image results arrive as MCP `image` blocks in `tool_output`. Before the bytes are
+dropped, the hook records up to 8 images per call as digest-only facts: SHA-256 and byte count of
+the decoded image, a media type sniffed from its bytes (PNG, JPEG, GIF, WebP, else
+`image/unknown`), and pixel width and height read from the header only. The service records one
+`evidence_recorded` row per image (`artifact`, `content_digest`, `digest_only`), listed in the
+call's result `evidence_refs`, with the description `Observed image tool result <type> <w>x<h>
+(<n> bytes); pixels were not captured or sent`. No pixel is captured, stored, or sent; the agent
+can cite the evidence id as its own inspection of the output. This holds at every body size up to
+the 8 MiB skim cap.
 
 ### Smart observation selection (issue #687)
 
@@ -828,7 +861,10 @@ store path with no Cursor-specific behavior. Lowering, revoking, expiring, or en
 selection can leave more accepted rows than the new target holds. Those rows still drain, and the
 store keeps finite room, tied only to them, for refused-input loss, delivery attempts, and session
 ends. A refused hook reports `hook_observe_degraded: outbox_overflow; loss accounted` only after
-the loss is durable. If a `sessionEnd` hook cannot persist its local end, it stays fail-open within
+the loss is durable. The notice ends with `cause=<cause>`, the closed admission
+dimension that refused, and the same cause is recorded as the `admission_loss_<cause>` reason in
+`hook_diagnostics.reasons` (ADR-029, tb4n1 B3). Only later inputs of the lost host call, or calls it
+spawned, carry `observation_input_loss`; the shared store path applies this to every host. If a `sessionEnd` hook cannot persist its local end, it stays fail-open within
 its three-second budget. It prints `hook_observe_degraded: session_end_unrecorded` and records
 that reason in `hook_diagnostics.reasons`. Cloud agents do not run `sessionEnd`, so for them the
 override ends by revoke or expiry.
@@ -963,8 +999,13 @@ contract and the alias is a defensive bound. Local rendering and integration tes
 live host session binding.
 
 Advice uses Cursor's native output contract rather than the Codex/Claude Code envelope.
-`sessionStart` may emit `additional_context`. `stop` does not emit `followup_message` because Cursor
-would auto-submit it as a new user message. `afterFileEdit`, `afterMCPExecution`, and `sessionEnd`
+`sessionStart` may emit `additional_context`. `stop` does not emit `followup_message` for ordinary
+advice because Cursor would auto-submit it as a new user message. **Stop-time closure gate (host
+decision: supported).** The one exception is the closure gate: when a mapped session stops while
+closure still requires agent action, `stop` emits `followup_message` naming what remains, so Cursor
+continues the agent. A `stop` with `loop_count > 0` follows an earlier follow-up and is treated
+like `stop_hook_active`: only an announced re-check not yet asked, or a withdrawn deliverable not yet voiced, may follow, and Yoetz's cap of two gate
+continuations per turn stays under Cursor's own default `loop_limit` of 5 automatic follow-ups. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`, read on the route the session's MCP server named on its last successful `status` or `check`, remembered across service restarts); it fires when `agent_actionable` holds open obligations, an unconfirmed blocker, an unrepaired receipt-blocking finding (agent work only), a finding the agent rejected that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`), a planned verification that was not observed, failed, or ran before the latest edit, an edit to the work after the last verification run (`edited_after_last_verification`; temporary scratch and Yoetz-owned writes such as a saved receipt never count, ADR-042), a git-ignored requested output, or a declared deliverable deleted or renamed away (`declared_output_removed`, ADR-035), or a declared deliverable that held content and is now empty or truncated (`declared_output_emptied`, ADR-041 and ADR-045: keyed on the file, not the obligation, so acknowledging or republishing the obligation does not clear it; the gate text says why from the file's recorded history and names the one exit, a `yoetz-assumption` decision that names the file; a standing `declared_output_content_moved` disclosure adds an informational note to gate text that fires anyway, never a token), or a delivered source file that loads a file the agent created and no requested item declares (`deliverable_references_undeclared_file`, #1044, ADR-035 amendment: the text names each such file, quoted and bounded, from `closure_readiness.undeclared_references` and tells the agent to embed it, rebuild it at run time or declare it as a delivered output; disclosing the dependency does not clear it, and no path is remembered), at most once per ledger frontier and session (owner-only `observation/closure-gate.json`). Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). Verification items (planned verification and edits after the last verification run) are dropped only while this task's own hook rows are still draining after the Stop drain, and the text says so only then. The text pushes repair first: a receipt-blocking finding the agent repaired but Yoetz cannot prove (a Yoetz limit) is self-verified and answered with `respond` `self_verified`; `acknowledged_not_done` is the last resort; a Yoetz limit is never a `yoetz-blocker`, and the blocker sentence appears only while obligations are open. An open obligation named by a `yoetz-blocker:<kind>` decision is not listed as work, but each new `<obligation id>:<kind>` is re-asked once: the re-check names the obligation and claimed kind from the `blocker` entries of `closure_readiness.rechecks`, says recoverable data, a failing test, an infeasible-looking result or a Yoetz limit is not a blocker (finish the obligation and disclose the limit), and only there tells the agent how to confirm a genuine one: publish the same line again in a later decision (the blocker offer never says so, and a confirmed row is never re-asked). Because blockers are usually published after the first gate, the re-check also runs on a Stop the host already continued: there it reads status, continues the agent only for a re-check key status announced that the gate has not asked, or a withdrawn deliverable not yet voiced (never for ordinary items), at most once per Stop and at most two gate continuations per turn (owner-only `observation/closure-gate-turns.json`, reset at every Stop the host did not continue; an unreadable counter counts as the cap), and lets the agent stop on any error, a short budget, or a memory write failure. Asked keys are remembered per session (owner-only `observation/closure-gate-blockers.json`, at most 64). Ordinary advice is never delivered at Stop; it waits for the next tool event or session start. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_active_stop_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_acceptance_rechecked`, `closure_gate_turn_end_after_continue` (an already-continued Stop that emitted nothing: the normal end of a continued turn, renamed from `closure_gate_loop_guard`), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `yoetz observe status`. The text also says an inherent verification limit or a best-effort choice is disclosed with a `yoetz-assumption:` or `yoetz-verification-limit:` decision line, never blocked, and names an obligation-level `acknowledged_not_done` as the last resort (#995, #997). Re-checks are not riders on other tokens (tb4n3 RC-8, #1031). Status announces them in `closure_readiness.rechecks` (acceptance, acknowledgement, blocker, premise, each with a content key; the same list `status`, `closure_prepare`, the CLI and the TUI show, and the status directive names it: "At Stop you will be asked once to re-read: ..."), and the gate asks exactly the announced ones, each once per session and key (`accept:<h8 of the resolved obligation ids>@<invite frontier>`, `ack:<obligation id>`, `<obligation id>:<kind>` for a blocker, `premise:<acknowledged count>`, all in the blocker-key file; closed items `acceptance_recheck`, `acknowledgement_recheck`, `blocker_recheck`, `premise_recheck`). A readiness without the list (a service older than the gate) announces none, so the gate asks none. The acceptance re-read (A-12) asks the agent to read each resolved obligation's acceptance_criteria against its final output and to republish an unmet one as `acknowledged_not_done`, or, when the criteria can only be checked outside this environment, to keep it resolved and record `yoetz-verification-limit:<obligation id>`. It costs one extra Stop turn at most once per resolved set; it is never offered beside open obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared dependency (it stays unasked and is asked at a later Stop), and an acknowledgement published after it is not challenged by the acknowledgement re-check. Where it rides alone it ends by saying that a pure confirmation needs no new record, check or receipt (#1050). Final message (#1050, ADR-033 amendment): Cursor's `stop` payload carries no final message (status and `loop_count` only), so the re-read is asked for every resolved set as before; Codex and Claude Code ask only what the agent's final message left unaddressed. Reading the text would need the `afterAgentResponse` hook, which this integration does not register; that follow-up is tracked on issue #1050. Host decision: not supported here; the rest of the gate is the same code path. The premise ask stays on Stops the host has not already continued; the acknowledgement and acceptance re-checks may continue an already-continued Stop within the same caps. A finding the agent rejected with a reason that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`) sends the agent to `check` with `final_review: true` and never offers acknowledgement; `receipt_findings_unresolved` counts agent-work findings only, and `self_verified` is offered only while `finding_counts.self_verify_eligible` is positive. A deliverable that held content and is now empty or gone (`declared_output_emptied`, `declared_output_removed`) is voiced once per key (`emptied:<h8 of the declaring obligation items>`) even on an already-continued Stop, with the rule and obligation ids and never a path (every Stop after the first gate is an already-continued Stop in a single-turn run). The premise and acknowledgement texts say that if the agent cannot finish the work it keeps the working deliverable: acknowledgement never requires withdrawing or emptying it. Host decision: supported, same code path (the gate, its texts, its re-check list and its memory are shared by the Codex, Claude Code and Cursor Stop handlers; the only difference is how an already-continued Stop is detected, `loop_count > 0`). See ADR-033 and issues #977, #984, #985, #1031. `afterFileEdit`, `afterMCPExecution`, and `sessionEnd`
 have no advice output channel and emit `{}`. Only a successfully written, nonempty `sessionStart`
 object commits advice delivery; output-less events do not acquire the delivery lease. No hook
 delivers a frontier-motion notice (issue #915), including the ordinary-profile `postToolUse`: every
@@ -976,6 +1017,8 @@ verification is disabled do not put `connect_provider` or another provider-repai
 endpoint is bound, network egress is permitted, and an LLM inference channel is enabled, and the
 provider is still structurally unusable, including when no factory id is available. `stop` still
 emits `{}` and leaves that delivery pending.
+
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Cursor: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
 
 Workspace binding does not trust plugin-hook CWD. It selects a single `workspace_roots` entry first,
 then `CURSOR_PROJECT_DIR`, then the explicit `--workspace` value. A multiroot workspace selects the
@@ -1351,17 +1394,32 @@ These shared regressions are synthetic contract evidence, not live-host certific
 transcript showing this host citing its own or filtered evidence IDs without an unfiltered walk,
 and dogfood CI across macOS, Linux and WSL 2, are not yet recorded; that gap is owned by #914.
 
+### Mechanical closure preparation (#953)
+
+The current Cursor MCP surface advertises the read-only `closure_prepare/1.0.0` support tool.
+Discover its declaration before use and pass the returned session and writer identities with an
+explicit selection. It inventories one pinned status frontier or prepares one explicit draft; it
+never appends, judges work, or claims completion. The complete response frame is bounded: an
+draft phases echo only the rows the selection names, and an oversized inventory returns
+`LIMIT_EXCEEDED` (`closure_result_too_large`) without partial data. When the declaration is absent,
+use `yoetz closure-prepare --session-id <returned-session> --writer-id <returned-writer>` with
+`--output <file>` outside the repository. This shared route is supported through the local bridge
+on macOS, Linux, and WSL 2; native Windows has no supported Yoetz MCP route. MCP discovery,
+activation, and native host dogfood remain separate evidence.
+
 ### Observation limitation findings and closure rechecks (issue #911)
 
-Cursor's paired ordinary profile can yield `unpaired_event`, lag, or drain gaps and deliver the
-advisory through `postToolUse` `additionalContext`; the post-only structural profile already
-resolves historical `unpaired_event`. Decision for this host: supported, same rule as every host.
+Cursor's paired ordinary profile can yield `unpaired_event`, lag, or drain gaps. The post-only
+structural profile already resolves historical `unpaired_event`. Decision for this host: supported,
+same rule as every host.
 The rule is service-side and host-neutral: an observation-authored, non-actionable finding (the
 "Observation coverage is incomplete or stale" advisory, including rows written by earlier builds)
 never counts in `unanswered_finding_count` or `findings_unanswered`, and acknowledging it once is
 optional and never supersedes a recorded check. It stays in `status view=findings` and on the
-receipt as a disclosed limitation and does not become resolvable. The hook `refresh_observation`
-clause asks the agent to wait only while `yoetz observe status` reports lag or a drain backlog. The
+receipt as a disclosed limitation and does not become resolvable. `refresh_observation` remains
+available in operator status and structured advice for recoverable source lag, stale cursors, drain
+backlogs, service unavailability, and locked vaults, but it never enters Cursor `postToolUse`
+`additional_context`. Hook context carries work advice only. The
 shared guidance and this host's skill give the closure order: answer unanswered findings before the
 final check (the current status frontier is a valid `finding_frontier`), answer only the findings
 that check returns that are still unanswered, then `receipt`, then `work_closed`; no recheck follows
@@ -1385,13 +1443,67 @@ once, a code the running build does not know stays agent-actionable as `unclassi
 and nothing is removed from `known_gaps` or the receipt. `semantic_review_not_requested` is
 standing on a local-only or optional route and on the strict MCP route (which never dispatches
 AI-powered review), and agent-actionable only when the verification policy requires AI-powered
-review, the serving route can dispatch it, and none has succeeded since the last material change. At
+review, the serving route can dispatch it, and none has succeeded since the last material change.
+A check on a route that did not require AI-powered review records `semantic_route_required:
+false`; there the code no longer bounds the receipt conclusion (issue #986, same on every host). A check that asked for `deterministic_only` on such a route records no
+`semantic_review_not_requested` at all, so no receipt, status or readiness view lists it (issue
+#1041, same on every host).
+The strict local-only MCP route is such a route even when the verification policy is `required`,
+unless the check asked for `semantic_required` (issue #1021, ADR-040, same on every host).
+At
 `closure_readiness.state: ready_with_limitations` the agent requests the receipt without another
 check; the receipt conclusion is unchanged (a local-only check stays `insufficient_coverage`).
 
 X-HOST evidence: the derivation is covered by service-side contract tests over a Codex-shaped
 ledger replay; a dogfood transcript on this host across macOS, Linux and WSL 2 has not been
 recorded yet. That gap is owned by issue #913.
+
+### What follows the last check on Cursor (tb4n3 RC-6, #1029)
+
+The ordinary profile spells every MCP call `MCP:<tool>` and names no server, so Yoetz's own
+calls are recognised by the closed Yoetz basenames (`start`, `publish_work`, `check`, `respond`,
+`status`, `receipt`, `read_guidance`, `closure_prepare`). A foreign MCP tool with exactly one of
+those names is treated alike; that loses only a later-material disclosure, never a supersession,
+and is the cost of the missing server field (a paired `afterMCPExecution` owner would remove it;
+follow-up owner: the Cursor ordinary-profile issue). The server-scoped spellings `yoetz:<tool>`
+and `plugin-yoetz-yoetz:<tool>` are exact. `Write` is an edit that supersedes a check;
+`StrReplace`, `Delete` and any other tool the materializer records as an `other` action, and the
+structural profile's `afterFileEdit` / `afterMCPExecution` post-only results (no tool identity),
+are `other`: they keep the `check_current_as_of_earlier_frontier` disclosure and never supersede. A
+record that names no tool (the structural profile's post-only result of every call, including each
+check's own) is `other` too, so on that profile every receipt carries and is bounded by the
+disclosure; status keeps it a standing limitation and never asks for a recheck, because every check
+would regenerate it.
+That is a known Cursor capability gap, shared with `edited_after_last_verification`.
+
+
+### Inspection check on Cursor (#1048)
+
+`check` with `"mode": "inspect"` is a read inside Yoetz: it records nothing, mints no finding, runs
+no review and needs no Yoetz disclosure decision, so a lost answer is answered by asking again with
+a fresh `request_id`. One call returns what is left to close (the `status` readiness split, then
+every unresolved obligation and finding with what it lacks and whose move it is), the
+hook-observed actions since the last check, and whether each obligation's resolution evidence links
+to its declared deliverables or requested commands (`evidence_off_declared_items` when it does
+not). Use it instead of a series of `status` reads; no status read or `dry_run` is required before
+`publish_work`. The startup read is the operating card (`agent-instructions.md`); the larger pages
+are read on demand. ADR-047. The mode needs no Cursor-specific step.
+
+Host approval is per tool, not per mode. An inspection is a call of `check`, so Cursor admits it
+exactly as it admits `check` ([Auto-review and host admission](#auto-review-and-host-admission)):
+with admission (`yoetz:check` in `mcpAllowlist`, `Mcp(yoetz:check)` or
+`Mcp(plugin-yoetz-yoetz:check)` in `.cursor/cli.json`) it is allowlisted like any `check`;
+without admission (always so on the strict route) the classifier may allow, redirect or ask, as it
+may for every non-allowlisted call, `status` included, and required startup mode may add native
+approval prompts. Cursor publishes no hook for that decision, so a held inspection is visible only
+in Cursor's approval control. Decision: supported behind the `check` gate. A held inspection leaves
+nothing pending in Yoetz and no review to protect, so the agent reads `status` instead and
+continues; the review-hold rules do not apply to it (guidance `review.md`).
+
+Capability gap, same owner as the previous section's (the Cursor ordinary-profile issue): on the
+ordinary profile `StrReplace`, `Delete` and other unclassified tools are listed as `other`
+actions, and the structural profile's post-only results carry no tool identity, so those runs are
+not listed at all; `action_count` counts only what the record holds.
 
 ### Bounded workflow recovery examples (#613)
 
@@ -1500,6 +1612,11 @@ with the host's ordinary fail-open output, does not retain that input, and recor
 under `store_lock_events` in `yoetz observe status`); holds of one second or more are recorded
 as `store_lock_long_hold`. Neither is reported as `observe` or `workspace_unconsented`.
 
+This host shares the observe pass: an unexpected exception is recorded as
+`observe_<exception class>` (`observe_exception_unavailable` for an unlisted class) and a drain
+preflight names its stage (`drain_connect_timeout`, `drain_connect_failed`,
+`native_content_stage_failed`), as described in INTERFACES (tb4n2 N-3).
+
 For shared-store measurements and the remaining native-host coverage boundary, see
 [the performance runbook](observation-selection-performance.md).
 
@@ -1582,6 +1699,29 @@ check output in this host shows the directive. Hook advisories never carry that 
 SessionStart's vault-locked advisory appends its own `vault_unlock_required` token after the
 host-specific prefix (issue #739). No Cursor-specific recovery wording is configured.
 
+**Bounded text (ADR-043, issue #1025).** The Cursor route receives the exact canonical JSON copy of
+the result as text, which is not subject to the 4,096-byte summary bound and cannot fail to render;
+if the copy ever could not be encoded, the bounded summary (with `summary_render_failed:...` named)
+is returned instead. `closure_prepare` draft phases echo only the selected inventory rows on this
+route as on the others, which keeps the canonical JSON copy inside the MCP frame at a long-run
+frontier. Hook `additional_context` and `followup_message` over Yoetz's own 2,000-character cap end
+with a cut marker (the cap is Yoetz's, not a documented Cursor limit).
+
+## Post-compaction recap (issue #1027, ADR-044)
+
+Decision for Cursor: **not supported here.** The certified profile (cursor-ide-3.17.8) registers
+`sessionStart` once per conversation and documents no post-compaction event or context channel.
+`sessionStart` is fire-and-forget (the agent loop does not wait for the hook), so even a start that
+fired would not be guaranteed to land before the agent's next action. The agent re-grounds with
+`status` and its held ids as before.
+
+The shared observe pass is source-driven: if Cursor's `sessionStart` reports `source: compact` (the
+wrapper maps it to `cursor_session_compact`) it composes exactly the recap Claude Code gets, within the
+same bounds, and a hook-level test covers that path. There is no live Cursor evidence for it.
+Follow-up: re-read Cursor's hooks reference for a post-compaction event with an injection channel
+(a `preCompact`/`postCompact` hook with `additional_context`); if one exists, add it to
+`CURSOR_ORDINARY_HOOK_EVENTS` and certify it before claiming support.
+
 ## Cold service attachment and recovery (issue #670)
 
 Cursor sessionStart returns the shared result through Cursor's `additional_context` contract,
@@ -1638,7 +1778,9 @@ path and replacement fields (`path`/`file_path`/`target_file`, `contents`/`conte
 `postToolUseFailure` marks the edit `failed`. Shell heredoc edits (`cat > path <<EOF`, `tee path
 <<EOF`, `git apply <<EOF`) are also captured from the `postToolUse` `Shell` event as changed-file or
 workspace-diff content, marked `edit_source: shell`; edits made by `sed -i`, scripts or `git apply
-<file>` are not captured, but the check-time change below still shows their result.
+<file>` are not captured, but the check-time change below still shows their result. Separately, the
+hook gives a `Shell` command that visibly writes the workspace `write_scope: workspace`, so the
+stale-verification rule counts it as an edit, as for `Bash` and `exec_command` (ADR-045).
 
 `afterFileEdit` is deliberately not subscribed by the ordinary profile. Cursor's hook reference
 names `Write` as the file-editing tool on the generic `preToolUse`/`postToolUse` pair (and uses the
@@ -1683,8 +1825,15 @@ task's repository once, when the check runs, and puts the result ahead of every 
 review packet. It covers committed and uncommitted changes to tracked files since the commit
 recorded when the task started, plus untracked files Git does not ignore (`.gitignore`,
 `.git/info/exclude`, a repository `core.excludesFile` and your global Git ignore file). Because the
-base is a commit, uncommitted or untracked work that was already there when the task started is
-included too. A header lists every changed file with its line counts and says which files were not
+base is a commit, uncommitted work that was already there when the task started is included too;
+untracked files that were already there and are unchanged since are left out and only counted in the
+header, because `start` records their names and a metadata digest with the base (#1045). A nested Git
+repository has its own change read under its directory, from the HEAD `start` recorded for it when
+there is one; its untracked files are left out or shown like the outer ones when `start` listed them
+whole, and are otherwise named but never read. Up to four read-only task input files the task
+statement names travel as separate repository excerpts (ADR-031, #1045 amendment). This is the same
+on every host: it reads the repository, not a host capture. A header lists every changed
+file with its line counts and says which files were not
 shown. Script edits (`sed -i`, Python rewrites, `git apply <file>`), commits and hooks that never
 fired are therefore reviewed even though no capture exists for them.
 
@@ -1774,8 +1923,10 @@ rendering is unchanged.
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the
 common 60-second host MCP tool limit; `start`, `publish_work` and `status` keep 30 seconds and
-`check` keeps 300 seconds. Set `YOETZ_MCP_DEADLINE_MS_<TOOL>` (one tool) or
-`YOETZ_MCP_DEADLINE_MS` (every tool except `check`) in the MCP server environment to change them;
+`check` keeps 300 seconds (a `check` with `mode: inspect` is a read and takes the `status`
+deadline). Set `YOETZ_MCP_DEADLINE_MS_<TOOL>` (one tool) or
+`YOETZ_MCP_DEADLINE_MS` (every tool except `check`; an inspection follows the `status` variables) in
+the MCP server environment to change them;
 values are milliseconds, clamped to 1,000-900,000. Keep them below the host's own tool timeout.
 A timeout may follow a committed write. For `publish_work`, `respond` and `receipt` the bridge
 checks `status view=operation` once and, when the write already completed, returns its stored
@@ -1785,6 +1936,19 @@ and `writer_id` (`safe_details.state` is the probed state), or replay the unchan
 under that same request ID. Never mint a replacement write ID to recover an unknown outcome.
 A lost first `start` still uses exact same-body replay because session/writer IDs may be absent.
 This behavior is identical on macOS, Linux and Windows via WSL 2. CLI callers may set `--deadline-ms`.
+
+## Possible-credential filter opt-out (issue #982)
+
+Decision for Cursor: supported, service-side, identical on every host. `credential_heuristic` is a
+field of the current repository's privacy grant that the service applies only to external
+AI-reviewer egress; agent-context projection and the local model keep the filter. Cursor needs no
+host-specific step and gets no write path: `yoetz privacy credential-heuristic disable` is a
+widening that applies only after the trusted-terminal decision (walking the grant-creation
+ceremony when the repository has no grant), `enable` is an immediate per-repository tightening,
+and `--machine-default` moves only the default for new grants. MCP `status` carries
+`credential_heuristic` (`repository`, `machine_default`) before any check; MCP tools and hooks can
+only see the setting (status, the `semantic_review_credential_heuristic_disabled` check gap, the
+external receipt's `secret_scan.credential_heuristic`). No Cursor capability gap.
 
 ## Privacy receipts listing (issue #921)
 
@@ -1857,3 +2021,58 @@ metadata evidence without `unpaired_event`. The opt-in ordinary profile
 (`cursor-ordinary-observation-v1`) is on the conservative paired contract, so a paired pre and post
 share one action and an orphan scope yields one informational notice rather than a recurring
 advisory. Cursor has no code-mode cell, so the stream wrapper rule does not apply.
+
+### Limitation requests, `reopened` and one dialogue per concern on Cursor (tb4n3 RC-1 and RC-7, #1024, #1030)
+
+Host decision: supported, no host-specific code. The change lives in the shared kernel, `respond`
+and review paths (ADR-034 and ADR-040 amendments of 2026-10-11), so Cursor behaves exactly as the
+other hosts. The stop hook and the MCP `respond` tool take the shared path; a Cursor session sees the same `respond` description and the same `closure_after`. What a Cursor agent can rely on:
+
+- A reviewer finding that asks the agent to `state_unresolved_limitation` is a to-disclose item, not
+  repair work. `kernel/limitation.limitation_standing` reads it; `finding_blocks_receipt` is false
+  for it. The agent's answer decides what it means (owner decision 2026-10-12, ADR-040 and ADR-046
+  amendments): one reasoned `respond` `acknowledged` (or `self_verified`) or a
+  `yoetz-verification-limit:<obligation id>` decision says the requirement may be met but cannot be
+  verified here, and settles it as a disclosed verification limit with no recorded resolution
+  attempt required (never clean, at best `insufficient_coverage`); `acknowledged_not_done` says the
+  requirement is NOT met and keeps `unresolved_findings_remain` like any unmet requirement. When an
+  unanswered request is the only agent work left, the check's next step is `disclose_limitations`.
+  The Stop hook and readiness read the same closure class on every host.
+- `acknowledged_not_done` is no longer a one-way door: `respond` with `reopened` and a reason takes
+  it back, and a qualifying `check` that tested the work after the answer resolves it (also for
+  `self_verified`).
+- One concern stays one finding: a re-raise over a settled item (or an open item of the same kind
+  over the same concern) is recorded on that item and listed in the check's review summary instead of
+  minting a new id; the agent's own earlier rebuttal stands after a later acknowledgement.
+- Never empty or withdraw a working deliverable over a finding or an "empty file if unsolved" clause.
+
+Verification: `tests/integration/application/test_tb4n3_limits_dialogue_shapes.py` drives the real
+check, respond, status and receipt operations with a compliant reviewer; a live Cursor transcript on
+macOS, Linux and WSL 2 is not recorded for this change.
+
+### Call-schema traps on Cursor (tb4n4, #1049)
+
+Host decision: supported, no host-specific code. Every change lives in the shared protocol request
+models, the MCP bridge's `read_guidance` dispatch and error hints, the status text and the kernel's
+`command_attempts` rule, so Cursor takes the same path as the other hosts. What a Cursor agent can rely on:
+
+- `decision_recorded` carries no id of its own; a `decision_id` in its payload is accepted and
+  ignored (never recorded, and a retry with or without it replays the same request).
+- A `status` `limit` sent as a JSON integer from 1 to 100 is read as its decimal string.
+- A `read_guidance` anchor that names exactly one catalogued topic of its document (the heading's
+  slug, an explicit anchor beside it, or words only that anchor contains) reads that topic; the
+  result's `uri` is the catalogued one. An ambiguous or unknown anchor is still refused with the
+  document's anchors.
+- A resolution without `resolution_evidence_refs` (omitted, empty or the wrong id kind) is refused
+  with the sentence that says what the list holds; the recipe sentence rides the bounded status summary, which Cursor does not render (its text channel is the canonical JSON body), so a Cursor agent reads the same recipe in `request-templates.md#publish-work-plan-plus-obligation` and in that refusal.
+- A run linked to a requested command with a `command` action (the PL6-3 link) is a disclosed
+  equivalence: it reads `command_attempt_uncorroborated`, never `command_attempt_mismatch`, and a
+  `self_verified` refusal on a remaining `command_attempt_mismatch` names that link as the exit.
+- A `result_recorded` payload's `evidence_refs` still names evidence ids only; the refusal for a
+  `res_` id names where a result id goes.
+
+Verification: `tests/unit/mcp/test_tb4n4_call_traps.py`, `tests/unit/kernel/test_tb4n4_command_link.py`
+and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the recorded shapes
+through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
+the tb4n4 exports themselves were not replayed, and a live Cursor transcript on macOS, Linux and
+WSL 2 is not recorded for this change.

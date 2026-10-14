@@ -189,7 +189,12 @@ def test_claude_red_green_rerun_is_clean_and_red_latest_is_one_finding(tmp_path:
     actions = list(_results(clean).values())
     assert actions[0].command == actions[1].command
     assert actions[0].command is not None and actions[0].command.startswith("omitted:hmac-sha256:")
-    assert actions[0].description == "Observed command via Claude Code hook (tool Bash)"
+    assert (
+        # The hook appends the effective user it ran as (ADR-033 runtime facts), which depends
+        # on the test process, not on the host.
+        actions[0].description.removesuffix(" (user root)").removesuffix(" (user non_root)")
+        == "Observed command via Claude Code hook (tool Bash) (runner test)"
+    )
     clean.claim(versioned=True)
     assert omissions(clean) == ()
     assert "1 was later passed by the same command" in receipt_limitations(clean)
@@ -201,14 +206,15 @@ def test_claude_red_green_rerun_is_clean_and_red_latest_is_one_finding(tmp_path:
     assert omitted_results(red_latest) == (red_result,)
 
 
-def test_claude_failure_then_observed_edit_is_history(tmp_path: Path) -> None:
+def test_claude_failure_then_observed_edit_stays_outstanding(tmp_path: Path) -> None:
     emit, build = _host(tmp_path, "claude")
     _claude_bash(emit, "toolu-red", f"npm test -- {_CANARY}", failed=True)
     _claude_edit(emit, "toolu-edit")
     ledger = build()
-    ledger.claim(versioned=True)
+    failed_result = next(iter(_results(ledger)))
+    ledger.claim(versioned=True, limitations=(failed_result,))
     assert omissions(ledger) == ()
-    assert "1 preceded a later observed workspace edit" in receipt_limitations(ledger)
+    assert "hook-observed failing" in receipt_limitations(ledger)
 
 
 def test_cursor_red_green_rerun_is_clean_and_different_command_is_not(tmp_path: Path) -> None:
@@ -264,7 +270,10 @@ def test_codex_red_green_rerun_is_clean_and_red_latest_is_one_finding(tmp_path: 
     red, green = results.values()
     assert red.command == green.command
     assert red.command is not None and red.command.startswith("omitted:hmac-sha256:")
-    assert red.description == "Observed command via Codex hook (tool Bash)"
+    assert (
+        red.description.removesuffix(" (user root)").removesuffix(" (user non_root)")
+        == "Observed command via Codex hook (tool Bash) (runner test)"
+    )
     clean.claim(versioned=True)
     assert omissions(clean) == ()
     assert "1 was later passed by the same command" in receipt_limitations(clean)
@@ -354,8 +363,8 @@ def _codex_patch(emit: _Emit, call: str, tool_response: str) -> None:
     )
 
 
-def test_codex_patch_retires_a_failure_only_with_a_stated_success(tmp_path: Path) -> None:
-    """#909 x #910: an ``apply_patch`` whose result states no exit is not a completed edit."""
+def test_codex_patch_never_retires_a_failure_without_a_covering_rerun(tmp_path: Path) -> None:
+    """#909 x #910: an edit result does not prove that a failed check was rerun."""
 
     emit, build = _host(tmp_path, "codex")
     _codex_exec(emit, "call-red", f"npm run test-type -- {_CANARY}", exit_code=2)
@@ -373,7 +382,7 @@ def test_codex_patch_retires_a_failure_only_with_a_stated_success(tmp_path: Path
         "M src/a.py\n",
     )
     applied = build()
-    applied.claim()
-    # A patch that states ``Exit code: 0`` retires the failure: it is no longer named.
+    applied.claim(versioned=True, limitations=(red,))
+    # A patch that states ``Exit code: 0`` still needs an explicit acknowledgement or rerun.
     assert red not in omitted_results(applied)
-    assert "1 preceded a later observed workspace edit" in receipt_limitations(applied)
+    assert "hook-observed failing" in receipt_limitations(applied)

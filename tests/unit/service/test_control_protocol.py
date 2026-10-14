@@ -16,6 +16,7 @@ from yoetz.ports.control import (
     ControlCallRequest,
     ControlCancelRequest,
     ControlClientKind,
+    ControlError,
     ControlMethod,
     ControlResult,
     ProjectionRenderMode,
@@ -321,6 +322,33 @@ def test_wire_frames_convert_to_exact_typed_request_and_result() -> None:
     parsed_result = parse_control_result(decode_control_frame(encode_control_frame(result)))
     assert parsed_result == result
     assert type(parsed_result.body) is ServiceStatus
+
+
+def test_status_projection_phase_survives_the_control_wire() -> None:
+    result = ControlResult(
+        protocol_version="1.0",
+        rpc_id=_rpc_id(8),
+        service_instance_id=_SERVICE_ID,
+        service_generation="1",
+        method=ControlMethod.STATUS,
+        outcome="error",
+        body=ControlError(
+            "read_projection_failed",
+            retryable=True,
+            correlation_id="err_00000000-0000-4000-8000-000000000009",
+            phase="projection",
+        ),
+    )
+
+    parsed = parse_control_result(decode_control_frame(encode_control_frame(result)))
+
+    assert isinstance(parsed.body, ControlError)
+    assert parsed.body.reason == "read_projection_failed"
+    assert parsed.body.retryable is True
+    assert parsed.body.phase == "projection"
+    original_error = result.body
+    assert isinstance(original_error, ControlError)
+    assert parsed.body.correlation_id == original_error.correlation_id
 
 
 def test_workflow_start_request_round_trips_through_frozen_json_object() -> None:

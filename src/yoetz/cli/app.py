@@ -48,6 +48,7 @@ from yoetz.cli.render import (
     render_human_awaiting_human,
     render_human_check,
     render_human_error,
+    render_human_inspection,
     render_human_receipt,
     render_human_status,
     render_local_recovery_lines,
@@ -65,6 +66,7 @@ from yoetz.protocol.ids import IdKind, new_id
 from yoetz.protocol.models import (
     MAX_TASK_STATEMENT_BYTES,
     CheckAwaitingHumanModel,
+    CheckInspectionModel,
     CheckRequest,
     CheckResult,
     CheckSuccessModel,
@@ -701,12 +703,17 @@ def _lifecycle_failure(error: LifecycleError) -> int:
 
 
 def _control_failure(
-    error: ControlError, *, json_output: bool = False, operation: str | None = None
+    error: ControlError,
+    *,
+    json_output: bool = False,
+    operation: str | None = None,
+    check_mode: object = None,
 ) -> int:
     return _shared_control_failure(
         error,
         json_output=json_output,
         operation=operation,
+        check_mode=check_mode,
         stderr_writer=_stderr,
         stdout_writer=_stdout_json,
     )
@@ -745,8 +752,11 @@ def _read_task_statement_file(path: str) -> str:
     else:
         with Path(path).open("rb") as stream:
             raw = stream.read(MAX_TASK_STATEMENT_BYTES + 1)
-    if not raw or len(raw) > MAX_TASK_STATEMENT_BYTES:
+    if not raw:
         raise ProtocolValueError("invalid_event_value_type")
+    if len(raw) > MAX_TASK_STATEMENT_BYTES:
+        # Too long, not mistyped: name the bound (tb4n3 A13).
+        raise ProtocolValueError("event_text_out_of_bounds")
     return raw.decode("utf-8", errors="strict")
 
 
@@ -779,16 +789,29 @@ async def _call_workflow(
     deadline_ms: int | None,
     *,
     task_statement_file: str | None = None,
+    await_observations: bool = False,
 ) -> int:
+    # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read.
+    check_mode: object = None
     try:
-        request = cast(
-            WorkflowRequest,
-            (
-                _start_request_model(input_path, inline, task_statement_file)
-                if method == "start"
-                else _request_model(request_type, input_path, inline)
-            ),
-        )
+        if method == "start":
+            request = cast(
+                WorkflowRequest, _start_request_model(input_path, inline, task_statement_file)
+            )
+        elif await_observations:
+            # ``yoetz check --await-observations`` sets the optional request field (issue #1012);
+            # a request that already carries it keeps its own value.
+            parsed = _bounded_input(input_path, inline)
+            if not isinstance(parsed, Mapping):
+                raise ProtocolValueError("unsupported_json_type")
+            request = cast(
+                WorkflowRequest,
+                request_type.model_validate({"await_observations": True, **parsed}),
+            )
+        else:
+            request = cast(WorkflowRequest, _request_model(request_type, input_path, inline))
+        if type(request) is CheckRequest:
+            check_mode = request.mode
         client = await build_service_client()
         try:
             call = getattr(client, method)
@@ -811,6 +834,8 @@ async def _call_workflow(
             typer.echo(render_human_check(branch))
         elif isinstance(branch, CheckAwaitingHumanModel):
             typer.echo(render_human_awaiting_human(branch))
+        elif isinstance(branch, CheckInspectionModel):
+            typer.echo(render_human_inspection(branch))
         elif isinstance(branch, StatusSuccessModel):
             typer.echo(render_human_status(branch))
         elif isinstance(branch, ReceiptSuccessModel):
@@ -823,7 +848,7 @@ async def _call_workflow(
     except OSError, ProtocolValueError, ValidationError, ValueError:
         return _usage_failure()
     except ControlError as error:
-        return _control_failure(error, operation=method)
+        return _control_failure(error, operation=method, check_mode=check_mode)
 
 
 def _finish(code: int) -> None:
@@ -1522,7 +1547,40 @@ def start_command(
 
 
 app.command("publish-work")(_workflow_command("publish_work", PublishWorkRequest))
-app.command("check")(_workflow_command("check", CheckRequest))
+
+
+@app.command("check")
+def check_command(
+    input_path: _INPUT = None,
+    request: _INLINE = None,
+    json_output: _JSON = False,
+    deadline_ms: _DEADLINE = None,
+    await_observations: Annotated[
+        bool,
+        typer.Option(
+            "--await-observations",
+            help=(
+                "Before checking, wait up to about 3 seconds for this task's hook observations "
+                "that are still being delivered; the result reports whether they all arrived."
+            ),
+        ),
+    ] = False,
+) -> None:
+    _finish(
+        run_async(
+            lambda: _call_workflow(
+                "check",
+                CheckRequest,
+                input_path,
+                request,
+                json_output,
+                deadline_ms,
+                await_observations=await_observations,
+            )
+        )
+    )
+
+
 app.command("respond")(_workflow_command("respond", RespondRequest))
 app.command("status")(_workflow_command("status", StatusRequest))
 app.command("receipt")(_workflow_command("receipt", ReceiptRequest))
@@ -1685,6 +1743,7 @@ async def _call_support(
             for line in (
                 _effective_task_statement_line(plain),
                 _effective_excerpt_limits_line(plain),
+                _effective_credential_heuristic_line(plain),
             ):
                 if line is not None:
                     typer.echo(line)
@@ -1693,6 +1752,37 @@ async def _call_support(
         return _usage_failure()
     except ControlError as error:
         return _control_failure(error)
+
+
+def _effective_credential_heuristic_line(value: JsonValue) -> str | None:
+    """Say plainly when the owner turned the possible-credential filter off (issue #982).
+
+    ``None`` for the default and for any document that is not the expected shape.
+    """
+
+    try:
+        policy = cast(Mapping[str, JsonValue], cast(Mapping[str, JsonValue], value)["policy"])
+    except KeyError, TypeError:
+        return None
+    if policy.get("credential_heuristic") != "disabled":
+        return None
+    scope = policy.get("effective_scope")
+    kind = cast(Mapping[str, JsonValue], scope).get("kind") if isinstance(scope, Mapping) else None
+    if kind == "machine":
+        # The default ``privacy show`` reads the installation row: it is the default a new
+        # repository grant starts from, not what any granted repository applies (owner decision).
+        return (
+            "Possible-credential filter, installation default: off. New repository grants start "
+            "with the external reviewer's filter off; a repository with a grant follows its own "
+            "grant ('yoetz status' shows it). Restore the default with "
+            "'yoetz privacy credential-heuristic enable --machine-default'."
+        )
+    return (
+        "Possible-credential filter for this repository: off. Values that only look like "
+        "passwords or tokens may be sent to the external AI reviewer as written; local outputs "
+        "keep the filter, and known credential shapes, private keys and URL passwords are still "
+        "withheld. Turn it back on with 'yoetz privacy credential-heuristic enable'."
+    )
 
 
 def _effective_task_statement_line(value: JsonValue) -> str | None:
@@ -1718,7 +1808,9 @@ def _effective_task_statement_line(value: JsonValue) -> str | None:
             section_selected="task_statement" in sections,
             channel_sends_task_description=llm["enabled"] is True
             and "task_description" in categories,
-            predates_section=policy["schema_version"] in {"1.0.0", "1.1.0"}
+            # A named recipe without the section is the preset approved before it existed. Read
+            # from the selection itself: the wire version also moves for other fields (#982).
+            predates_section="task_statement" not in sections
             and policy["review_context_profile"] in {"goal_aware", "assisted", "expanded"},
         )
     except KeyError, StopIteration, TypeError:
@@ -1803,6 +1895,100 @@ def privacy_setup() -> None:
     """Review privacy choices and apply them through the trusted local ceremony."""
 
     _finish(run_async(_run_privacy_setup_command))
+
+
+async def _run_credential_heuristic_command(
+    action: str, json_output: bool, machine_default: bool = False
+) -> int:
+    from yoetz.cli.privacy_setup import run_credential_heuristic_change
+    from yoetz.cli.provider_status import MachineScopeError
+    from yoetz.cli.unlock import HumanCeremonyCliError
+    from yoetz.domain.privacy import CredentialHeuristic
+
+    setting = CredentialHeuristic.DISABLED if action == "disable" else CredentialHeuristic.ENFORCED
+    try:
+        report = await run_credential_heuristic_change(setting, machine_default=machine_default)
+    except ControlError as error:
+        return _control_failure(error, json_output=json_output)
+    except MachineScopeError as error:
+        _stderr(f"machine_scope_unavailable: {error.reason}: {error.remediation}")
+        return 2
+    except (HumanCeremonyCliError, OSError, ValueError) as error:
+        reason = getattr(error, "reason", None)
+        typer.echo(
+            f"privacy_credential_heuristic_failed: "
+            f"{reason if type(reason) is str else 'privacy_credential_heuristic_failed'}",
+            err=True,
+        )
+        return 20
+    if report.outcome == "failed":
+        typer.echo(f"privacy_credential_heuristic_failed: {report.reason or 'invalid'}", err=True)
+        return 20
+    if report.reason == "repository_privacy_grant_missing" and not json_output:
+        typer.echo(
+            "This repository has no privacy grant, so nothing reaches the external reviewer "
+            "here and there is no repository setting to turn back on. A new grant starts from "
+            "the installation default; to turn that default back on, run "
+            "'yoetz privacy credential-heuristic enable --machine-default'.",
+            err=True,
+        )
+    _human_or_json(
+        {
+            "credential_heuristic": setting.value,
+            "scope": "machine_default" if machine_default else "repository",
+            "outcome": report.outcome,
+            **({"proposal_id": report.proposal_id} if report.proposal_id is not None else {}),
+            **({"reason": report.reason} if report.reason is not None else {}),
+        },
+        json_output=json_output,
+    )
+    return 0 if report.outcome in {"configured", "unchanged"} else 20
+
+
+privacy_credential_heuristic_app = typer.Typer(
+    help=(
+        "Turn the possible-credential filter for the external AI reviewer off or back on for "
+        "this repository (owner opt-out). Local outputs always keep it; known credential shapes, "
+        "private keys and URL passwords are always withheld."
+    ),
+    no_args_is_help=True,
+)
+privacy_app.add_typer(privacy_credential_heuristic_app, name="credential-heuristic")
+_MACHINE_DEFAULT = Annotated[
+    bool,
+    typer.Option(
+        "--machine-default",
+        help="Change the installation-wide default that repositories without a grant inherit.",
+    ),
+]
+
+
+@privacy_credential_heuristic_app.command("disable")
+def privacy_credential_heuristic_disable(
+    machine_default: _MACHINE_DEFAULT = False, json_output: _JSON = False
+) -> None:
+    """Stop withholding, from the external reviewer, values that only look like credentials.
+
+    Applies to this repository's privacy grant (or, without one, the grant you create now) only
+    after the trusted local approval on this terminal.
+    """
+
+    _finish(
+        run_async(
+            lambda: _run_credential_heuristic_command("disable", json_output, machine_default)
+        )
+    )
+
+
+@privacy_credential_heuristic_app.command("enable")
+def privacy_credential_heuristic_enable(
+    machine_default: _MACHINE_DEFAULT = False, json_output: _JSON = False
+) -> None:
+    """Withhold values that look like credentials again for this repository (applies now)."""
+
+    _finish(
+        run_async(lambda: _run_credential_heuristic_command("enable", json_output, machine_default))
+    )
 
 
 async def _service_call(method: str, json_output: bool) -> int:
@@ -1896,8 +2082,27 @@ def service_restart(json_output: _JSON = False) -> None:
 
 
 @service_app.command("run")
-def service_run() -> None:
+def service_run(
+    startup_correlation_id: Annotated[
+        str | None,
+        typer.Option(
+            "--startup-correlation-id",
+            hidden=True,
+            help="Internal: the err_… id the spawning process looks a startup failure up under.",
+        ),
+    ] = None,
+) -> None:
     """Run the persistent service in the foreground."""
+
+    if startup_correlation_id is not None:
+        from yoetz.protocol.ids import IdKind, validate_id
+
+        try:
+            validate_id(IdKind.CORRELATION, startup_correlation_id)
+        except TypeError, ValueError:
+            _finish(_usage_failure())
+    # Import-light: it must record a failure to import the daemon itself (#1040).
+    from yoetz.service.startup_failure import ServiceStartupError, record_startup_failure
 
     try:
         from yoetz.service.daemon import main as daemon_main
@@ -1907,26 +2112,54 @@ def service_run() -> None:
         # so recognize only that exact absent module here rather than turning
         # an arbitrary broken import into an operator-facing dependency claim.
         if error.name != "cryptography.hazmat.primitives.kdf.argon2":
-            raise
+            failure = record_startup_failure(
+                error, stage="import", correlation_id=startup_correlation_id
+            )
+            _stderr(failure.line())
+            raise typer.Exit(exit_code_for(PublicErrorCode.INTERNAL_ERROR)) from None
+        record_startup_failure(
+            error,
+            stage="import",
+            correlation_id=startup_correlation_id,
+            reason_code="passphrase_kdf_unavailable",
+        )
         _stderr(
             "passphrase_kdf_unavailable: reinstall this Yoetz package before starting "
             "a passphrase vault"
         )
         raise typer.Exit(exit_code_for(PublicErrorCode.SERVICE_UNAVAILABLE)) from None
+    except Exception as error:
+        # A module that cannot load here (a native extension built for a newer C library) is
+        # named by stage and exception class, never a bare internal_error.
+        failure = record_startup_failure(
+            error, stage="import", correlation_id=startup_correlation_id
+        )
+        _stderr(failure.line())
+        raise typer.Exit(exit_code_for(PublicErrorCode.INTERNAL_ERROR)) from None
 
     # Free at this point: the daemon import above already composed the lifecycle module.
     from yoetz.config.installation import InstanceIdentityError
+    from yoetz.config.models import ConfigError
     from yoetz.config.paths import PathSafetyError
     from yoetz.service.lifecycle import LifecycleError
 
     try:
-        daemon_main()
+        daemon_main(startup_correlation_id=startup_correlation_id)
+    except ServiceStartupError as error:
+        # Already recorded under the printed correlation id with its stage, exception class and
+        # yoetz origin; the harness that captures this stream gets the reason, not a bare token.
+        _stderr(error.failure.line())
+        _finish(exit_code_for(PublicErrorCode.INTERNAL_ERROR))
     except LifecycleError as error:
         _finish(_lifecycle_failure(error))
     except (InstanceIdentityError, PathSafetyError) as error:
         # An instance whose identity, pin, root, or lifetime cannot be trusted is refused before
         # the singleton is taken (issue #604); name the condition, never a traceback.
         _finish(_instance_failure(error))
+    except ConfigError as error:
+        # The same refusal every other command gives a configuration it cannot load.
+        _stderr(f"invalid_request: {error.reason_code}")
+        _finish(2)
 
 
 @service_app.command("isolation")

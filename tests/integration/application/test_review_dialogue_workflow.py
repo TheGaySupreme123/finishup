@@ -22,6 +22,7 @@ from builders.projection_workflow import (
     project_case,
     request_base,
 )
+from builders.review_manifests import provider_bound_manifest
 from builders.start_application import protocol_id, start_request
 from yoetz.application.check import FinalSemanticEvaluation, check_internal_json
 from yoetz.application.semantic_case import build_semantic_case, semantic_case_packet_view
@@ -154,6 +155,7 @@ class _Reviewer:
             case_prior_finding_refs=view.prior_finding_refs,
             case_citable_refs=view.citable_refs,
             case_content_gaps=self.content_gaps.get(len(self.cases) - 1, ()),
+            provider_input_manifest=provider_bound_manifest(),
         )
 
 
@@ -221,7 +223,22 @@ async def _session(
                         },
                         "artifact_refs": [],
                         "evidence_refs": [],
-                    }
+                    },
+                    # Issue #1046: no AI-powered review runs before the first material edit, so
+                    # the dialogue starts once the work has begun.
+                    {
+                        "event_id": protocol_id("evt_", seed + 6),
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-09-28T12:00:00.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "action_id": protocol_id("act_", seed + 7),
+                            "action_kind": "edit",
+                            "description": "Changed the stencil kernel.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
                 ],
             }
         )
@@ -418,7 +435,7 @@ async def test_a_cited_fixed_ruling_closes_a_repaired_finding_under_an_insuffici
     live = _live_projection(session.app)
     resolved_by = live.findings[raised.finding_id].resolved_by_check_event_id
     if cite_repair:
-        assert check_rows[-1].schema == EventSchema("check_recorded", "1.3.0")
+        assert check_rows[-1].schema == EventSchema("check_recorded", "1.4.0")
         assert [item.verdict for item in recorded.prior_finding_verdicts] == ["fixed"]
         assert resolved_by == check_rows[-1].event_id
         explanation = finding_resolution_explanation(live, raised.finding_id, _records(session.app))
@@ -735,7 +752,13 @@ async def test_an_assessable_withdrawn_ruling_on_a_rejection_reads_rejection_acc
     assert row.todo_state == "rejection_accepted"
     assert (checklist.counts.rejection_accepted, checklist.counts.verified_resolved) == (1, 0)
     wire = check_internal_json(second)
-    assert "verified 0, not done 0, rejection accepted 1" in summary_for_check(wire)
+    # The bounded MCP text leads with the task continuation (#963); it agrees with the finding-only
+    # checklist, and the to-do counts ride along only while the summary has room for them.
+    summary = summary_for_check(wire)
+    assert cast(Mapping[str, JsonValue], wire["finding_checklist"])["next"] == "request_receipt"
+    assert "overall next: request_receipt" in summary
+    if "to-do:" in summary:
+        assert "verified 0, not done 0, rejection accepted 1" in summary
     # CLI text of the same checklist wire (the rest of the check is not under test here).
     checked = CheckSuccessModel.model_construct(
         verdict="no_issue_detected",
@@ -954,3 +977,611 @@ async def test_a_checklist_read_failure_never_strands_the_committed_check(
     assert checked.outcome == "committed"
     assert checked.finding_checklist is None
     assert _semantic(checked).finding_id in _live_projection(session.app).findings
+
+
+def _re_raise_first_finding(frozen: FrozenCase) -> SemanticJudgment:
+    """The reviewer answers the agent's rebuttal by re-raising and naming the finding (#980)."""
+
+    projection = frozen.case.projection
+    finding = next(
+        key
+        for key, row in projection.findings.items()
+        if row.payload is not None and row.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    )
+    obligation = next(iter(projection.obligations))
+    challenge = replace(
+        _challenge(str(obligation), summary="The verification is still not attempted"),
+        restates=str(finding),
+    )
+    return SemanticJudgment("challenges_returned", (challenge,))
+
+
+def _no_discrepancy(_frozen: FrozenCase) -> SemanticJudgment:
+    return SemanticJudgment("no_material_discrepancy", ())
+
+
+async def test_every_rebuttal_and_the_reviewers_answer_reach_the_next_review() -> None:
+    """TB4 tb4n1 D5/D7b: a re-raise of a rebutted finding stays one item, and the next packet
+    shows the agent's rebuttal and how the dialogue ended.
+
+    Issue #1020 (ADR-040): the re-raise cites only the obligation, recorded before the agent's
+    reasoned rejection, so it is the standing disagreement ``disputed_after_rebuttal``: final, no
+    review round, no further answer accepted, and carried to the next packet as a nameable,
+    non-rulable settled row with the agent's rebuttal."""
+
+    from yoetz.application.semantic_case import SETTLED_FINDING_ITEM_PREFIX
+
+    seed = 3300
+    reviewer = _Reviewer([_challenge_obligation, _re_raise_first_finding, _no_discrepancy])
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    rebutted = await session.app.respond(
+        RespondRequest.model_validate(
+            _respond_wire(session, at, at, raised, seed + 20, "rejected", "Already attempted.")
+        )
+    )
+    second = await _check(session, frontier_json(rebutted.result_frontier), seed + 30)
+    # No new finding: the re-raise was recorded on the rebutted item.
+    assert not [
+        finding
+        for finding in second.findings
+        if finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+        and finding.finding_id != raised.finding_id
+    ]
+    live = _live_projection(session.app)
+    semantic_ids = [
+        key
+        for key, row in live.findings.items()
+        if row.payload is not None and row.payload.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
+    ]
+    assert semantic_ids == [raised.finding_id]
+    record = live.findings[raised.finding_id]
+    assert (record.review_rounds, record.rebuttal_count) == (0, 1)
+    assert record.last_reviewer_verdict == "disputed_after_rebuttal"
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+
+    after = frontier_json(second.result_frontier)
+    with pytest.raises(PublicOperationError) as terminal:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _respond_wire(session, after, at, raised, seed + 40, "rejected", "Still attempted.")
+            )
+        )
+    assert terminal.value.safe_details is not None
+    assert terminal.value.safe_details["reason_code"] == "finding_terminal"
+    await _check(session, after, seed + 50)
+    structural = next(
+        item
+        for item in reviewer.cases[2].items
+        if item.item_id == f"{SETTLED_FINDING_ITEM_PREFIX}{raised.finding_id}"
+    )
+    row = cast(Mapping[str, JsonValue], strict_json_parse(structural.content))
+    assert row["disposition"] == "rejected"
+    assert row["rulable"] is False
+    assert not any(
+        item.item_id == f"prior-finding-{raised.finding_id}" for item in reviewer.cases[2].items
+    )
+    assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
+        _live_projection(session.app)
+    )
+
+
+# Issue #984 (ADR-034): a repair only a Yoetz limit keeps unproven is answered ``self_verified``.
+# The agent says how it verified it and cites its own recorded evidence; the item is final,
+# never re-reviewed, not agent work, and never lets the receipt read clean.
+
+
+async def _artifact_evidence(
+    session: _Session, frontier: JsonValue, seed: int
+) -> tuple[str, JsonValue]:
+    """A digest-only artifact evidence row, the shape an image or binary deliverable gets."""
+
+    evidence_id = protocol_id("evd_", seed)
+    published = await session.app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed + 1)),
+                "session_id": session.session_id,
+                "writer_id": session.writer_id,
+                "expected_frontier": frontier,
+                "event_drafts": [
+                    {
+                        "event_id": protocol_id("evt_", seed + 2),
+                        "schema": {"name": "evidence_recorded", "version": "1.1.0"},
+                        "occurred_at": "2026-09-28T12:06:00.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "evidence_id": evidence_id,
+                            "evidence_kind": "artifact",
+                            "strength": "content_digest",
+                            "content_digest": "sha256:" + "5" * 64,
+                            "observed_at": "2026-09-28T12:06:00.000Z",
+                            "description": "The rendered chart the agent inspected itself.",
+                            "digest_binding": {
+                                "subject": "artifact_bytes",
+                                "content_availability": "digest_only",
+                                "byte_count": 4096,
+                                "provenance": "caller_asserted",
+                            },
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    }
+                ],
+            }
+        )
+    )
+    return evidence_id, frontier_json(published.result_frontier)
+
+
+def _self_verified_wire(
+    session: _Session,
+    frontier: JsonValue,
+    finding_frontier: JsonValue,
+    finding: Finding,
+    seed: int,
+    reason: str,
+    evidence: tuple[str, ...],
+) -> dict[str, JsonValue]:
+    wire = _respond_wire(
+        session, frontier, finding_frontier, finding, seed, "self_verified", reason
+    )
+    if evidence:
+        wire["evidence_refs"] = list(evidence)
+    return wire
+
+
+def _refusal(error: pytest.ExceptionInfo[PublicOperationError]) -> str:
+    assert error.value.code is PublicErrorCode.INVALID_REQUEST
+    assert error.value.safe_details is not None
+    return cast(str, error.value.safe_details["reason_code"])
+
+
+async def test_self_verified_closes_a_repair_only_a_yoetz_limit_keeps_unproven() -> None:
+    """tb4n1: the recheck's packet budget cut excerpts, so Yoetz could not prove the repair."""
+
+    seed = 3400
+    reviewer = _Reviewer(
+        [_challenge_obligation, _rule_first_finding_on_a_complete_packet(None), _no_challenges],
+        content_gaps={1: ("content_unselected",)},
+    )
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    result_id, repaired = await _repair(session, at, seed + 20)
+    evidence_id, evidenced = await _artifact_evidence(session, repaired, seed + 30)
+    reason = "Re-ran the stencil suite on llvmlite 0.46.0 myself; 42 passed (result and image)."
+
+    # Repaired but not rechecked: repair, then check first.
+    with pytest.raises(PublicOperationError) as early:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _self_verified_wire(
+                    session, evidenced, at, raised, seed + 35, reason, (result_id, evidence_id)
+                )
+            )
+        )
+    assert _refusal(early) == "finding_not_rechecked"
+
+    second = await _check(session, evidenced, seed + 40)
+    assert "content_unselected" in second.coverage.known_gaps
+    after = frontier_json(second.result_frontier)
+    live = _live_projection(session.app)
+    assert live.findings[raised.finding_id].resolved_by_check_event_id is None
+
+    # No evidence is refused by the request contract; a blank reason by respond, typed.
+    with pytest.raises(ValueError):
+        RespondRequest.model_validate(
+            _self_verified_wire(session, after, at, raised, seed + 50, reason, ())
+        )
+    with pytest.raises(PublicOperationError) as blank:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _self_verified_wire(session, after, at, raised, seed + 51, "  ", (result_id,))
+            )
+        )
+    assert _refusal(blank) == "response_fields_invalid"
+
+    # Any recorded evidence id counts, including a digest-only artifact row.
+    wire = _self_verified_wire(
+        session, after, at, raised, seed + 52, reason, (evidence_id, result_id)
+    )
+    recorded = await session.app.respond(RespondRequest.model_validate(wire))
+    assert recorded.response.disposition == "self_verified"
+    assert recorded.response.reason == reason
+    assert {item.reference_id for item in recorded.response.evidence} == {evidence_id, result_id}
+    response_rows = [row for row in _records(session.app) if row.schema.name == "response_recorded"]
+    assert [row.schema for row in response_rows] == [EventSchema("response_recorded", "1.1.0")]
+
+    live = _live_projection(session.app)
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.SELF_VERIFIED
+    assert live.findings[raised.finding_id].resolved_by_check_event_id is None
+    explanation = finding_resolution_explanation(live, raised.finding_id, _records(session.app))
+    assert explanation.startswith("Self-verified by the agent")
+
+    # Final: another answer records nothing.
+    responded = frontier_json(recorded.result_frontier)
+    with pytest.raises(PublicOperationError) as terminal:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _respond_wire(
+                    session, responded, at, raised, seed + 53, "acknowledged_not_done", "No."
+                )
+            )
+        )
+    assert _refusal(terminal) == "finding_terminal"
+
+    # Not re-reviewed, not agent work, disclosed.
+    third = await _check(session, responded, seed + 60)
+    assert f"prior-finding-{raised.finding_id}" not in {
+        item.item_id for item in reviewer.cases[2].items
+    }
+    final = frontier_json(third.result_frontier)
+    status = await session.app.status(
+        StatusRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed + 70)),
+                "session_id": session.session_id,
+                "writer_id": session.writer_id,
+                "view": "findings",
+                "limit": "100",
+                "filter": {"include_resolved": True},
+            }
+        )
+    )
+    assert isinstance(status.page, StatusFindingsPageModel)
+    row = next(item for item in status.page.items if item.finding_id == raised.finding_id)
+    assert (row.todo_state, row.disposition, row.resolved) == (
+        "self_verified",
+        "self_verified",
+        False,
+    )
+    readiness = status.closure_readiness
+    assert readiness.standing_limitations is not None
+    assert "finding_self_verified" in readiness.standing_limitations
+    assert readiness.agent_actionable is not None
+    assert readiness.receipt_blocking_finding_count == "0"
+    assert "receipt_findings_unresolved" not in readiness.agent_actionable
+    assert "receipt_findings_unresolved" not in readiness.blocking_conditions
+
+    json_receipt = await _receipt(session, final, seed + 80, "json")
+    # At best insufficient_coverage: Yoetz never reads the agent's own verification as clean.
+    assert json_receipt.conclusion == "insufficient_coverage"
+    document = cast(Mapping[str, JsonValue], json_receipt.document)
+    assert document["self_verified_finding_ids"] == [raised.finding_id]
+    for fmt in ("markdown", "text"):
+        rendered = await _receipt(session, final, seed + 81 + len(fmt), fmt)
+        text = cast(str, rendered.human_text)
+        assert "Self-verified by the agent; Yoetz could not prove the repair" in text
+        assert raised.finding_id in text
+    assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
+        _live_projection(session.app)
+    )
+
+
+async def _failing_run(session: _Session, frontier: JsonValue, seed: int) -> tuple[str, JsonValue]:
+    """Publish a run that did not succeed: the material that can show a problem remains."""
+
+    action_id = protocol_id("act_", seed)
+    result_id = protocol_id("res_", seed + 1)
+    action_event = protocol_id("evt_", seed + 2)
+    published = await session.app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **request_base(protocol_id("req_", seed + 3)),
+                "session_id": session.session_id,
+                "writer_id": session.writer_id,
+                "expected_frontier": frontier,
+                "event_drafts": [
+                    {
+                        "event_id": action_event,
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-09-28T12:20:00.000Z",
+                        "causal_parents": [],
+                        "payload": {
+                            "action_id": action_id,
+                            "action_kind": "other",
+                            "description": "Re-ran the stencil tests after the repair.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                    {
+                        "event_id": protocol_id("evt_", seed + 4),
+                        "schema": {"name": "result_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-09-28T12:20:01.000Z",
+                        "causal_parents": [action_event],
+                        "payload": {
+                            "result_id": result_id,
+                            "action_id": action_id,
+                            "outcome": "failure",
+                            "summary": "Two stencil cases fail on llvmlite 0.46.0.",
+                        },
+                        "artifact_refs": [],
+                        "evidence_refs": [],
+                    },
+                ],
+            }
+        )
+    )
+    return result_id, frontier_json(published.result_frontier)
+
+
+def _challenge_obligation_citing_the_newest_failure(frozen: FrozenCase) -> SemanticJudgment:
+    projection = frozen.case.projection
+    obligation = next(iter(projection.obligations))
+    failure = max(
+        (
+            (key, row)
+            for key, row in projection.results.items()
+            if row.payload is not None and row.payload.outcome.value == "failure"
+        ),
+        key=lambda pair: pair[1].source_frontier,
+    )[0]
+    return SemanticJudgment("challenges_returned", (_challenge(str(obligation), str(failure)),))
+
+
+async def test_a_reviewer_restating_a_self_verified_issue_with_newer_material_mints_a_new_finding() -> (
+    None
+):
+    """A later positive sighting is never hidden under ``self_verified`` (adversarial review).
+
+    ``self_verified`` is final only because Yoetz could not see the repair. A reviewer that raises
+    the same issue again with concern-relevant material newer than the agent's answer (here a run
+    that failed after it) is a new sighting: it is minted as a new open finding the agent must
+    answer. tb4n3 RC-7 changed the other half: a repeat citing nothing newer is recorded on the
+    settled item instead (``test_a_self_verified_answer_folds_a_repeat_without_newer_material``).
+    """
+
+    seed = 4400
+    reviewer = _Reviewer(
+        [
+            _challenge_obligation,
+            _rule_first_finding_on_a_complete_packet(None),
+            _challenge_obligation_citing_the_newest_failure,
+        ],
+        content_gaps={1: ("content_unselected",)},
+    )
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    result_id, repaired = await _repair(session, at, seed + 20)
+    evidence_id, evidenced = await _artifact_evidence(session, repaired, seed + 30)
+    second = await _check(session, evidenced, seed + 40)
+    after = frontier_json(second.result_frontier)
+    recorded = await session.app.respond(
+        RespondRequest.model_validate(
+            _self_verified_wire(
+                session,
+                after,
+                at,
+                raised,
+                seed + 52,
+                "Re-ran the suite myself; output recorded.",
+                (evidence_id, result_id),
+            )
+        )
+    )
+    _failure, failed = await _failing_run(
+        session, frontier_json(recorded.result_frontier), seed + 55
+    )
+    third = await _check(session, failed, seed + 60)
+    successor = _semantic(third)
+    assert successor.finding_id != raised.finding_id
+    assert "semantic_restatements_suppressed" not in third.coverage.known_gaps
+    live = _live_projection(session.app)
+    # The successor cites more than the original (the failing run), so it is a different issue:
+    # the check that raised it no longer returns the original, and a qualifying check that tested
+    # the work after the self_verified answer proves the original absent (the reverse edge).
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.VERIFIED_RESOLVED
+    assert finding_todo_state(live, successor.finding_id) is FindingTodoState.OPEN
+    assert receipt_blocking_finding_count(live) == 1
+    assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(live)
+
+
+async def test_self_verified_is_refused_while_a_complete_review_still_sees_the_issue() -> None:
+    """A reviewer with no packet limit ruled it still present: that is not a Yoetz limit."""
+
+    seed = 3500
+    reviewer = _Reviewer([_challenge_obligation, _still_present_first_finding])
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    result_id, repaired = await _repair(session, at, seed + 20)
+    second = await _check(session, repaired, seed + 40)
+    count = len(_records(session.app))
+    with pytest.raises(PublicOperationError) as refused:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _self_verified_wire(
+                    session,
+                    frontier_json(second.result_frontier),
+                    at,
+                    raised,
+                    seed + 50,
+                    "I checked it myself.",
+                    (result_id,),
+                )
+            )
+        )
+    assert _refusal(refused) == "finding_not_proof_limited"
+    assert "acknowledged_not_done only if you truly will not" in refused.value.message
+    assert len(_records(session.app)) == count
+    live = _live_projection(session.app)
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.OPEN
+
+
+async def test_formal_crypto_repeat_over_a_reasoned_rebuttal_is_a_standing_disagreement() -> None:
+    """Issue #1020 (ADR-040, TB4 tb4n2 formal-crypto S): the reviewer repeats a finding the agent
+    rejected with a reason, citing nothing newer. Yoetz records ``disputed_after_rebuttal``: final,
+    not agent work, never a review round, and named on every surface; the receipt discloses it
+    and cannot read clean."""
+
+    from yoetz.cli.render import render_human_check, render_human_status
+    from yoetz.mcp.summaries import summary_for_status
+    from yoetz.protocol.models import (
+        CheckFindingChecklistModel,
+        CheckSuccessModel,
+        CoverageModel,
+        StatusResultModel,
+        StatusSuccessModel,
+    )
+
+    seed = 4100
+    reviewer = _Reviewer(
+        [_challenge_obligation, _still_present_first_finding, _still_present_first_finding]
+    )
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    rejected = await session.app.respond(
+        RespondRequest.model_validate(
+            _respond_wire(
+                session,
+                at,
+                at,
+                raised,
+                seed + 20,
+                "rejected",
+                "Fixed benchmark parameters bound the input domain; the general case holds there.",
+            )
+        )
+    )
+    second = await _check(session, frontier_json(rejected.result_frontier), seed + 30)
+
+    live = _live_projection(session.app)
+    check_row = [row for row in _records(session.app) if row.schema.name == "check_recorded"][-1]
+    recorded = cast(CheckRecordedPayload, check_row.payload)
+    assert [item.verdict for item in recorded.prior_finding_verdicts] == ["disputed_after_rebuttal"]
+    record = live.findings[raised.finding_id]
+    assert record.disputed_after_rebuttal_by_check_event_id == check_row.event_id
+    assert record.review_rounds == 0
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+    assert "Disputed after rebuttal" in finding_resolution_explanation(
+        live, raised.finding_id, _records(session.app)
+    )
+    assert receipt_blocking_finding_count(live) == 0
+
+    checklist = second.finding_checklist
+    assert checklist is not None
+    row = next(item for item in checklist.items if item.finding_id == raised.finding_id)
+    assert row.todo_state == "disputed_after_rebuttal"
+    assert checklist.counts.disputed_after_rebuttal == 1
+    assert checklist.next == "request_receipt"
+    wire = check_internal_json(second)
+    checked = CheckSuccessModel.model_construct(
+        verdict="no_issue_detected",
+        semantic_status="succeeded",
+        semantic_reason="semantic_completed",
+        semantic_provenance=None,
+        findings=(),
+        suppressed_count="0",
+        finding_checklist=CheckFindingChecklistModel.model_validate(wire["finding_checklist"]),
+        children=None,
+        advisory_notes=(),
+        coverage=CoverageModel.model_construct(known_gaps=()),
+    )
+    human_check = render_human_check(checked)
+    assert f"[d] F-1 {raised.finding_id} disputed_after_rebuttal" in human_check
+    assert "disputed after rebuttal 1" in human_check
+
+    # A further repeat changes nothing: still final, still no round.
+    third = await _check(session, frontier_json(second.result_frontier), seed + 40)
+    live = _live_projection(session.app)
+    assert live.findings[raised.finding_id].review_rounds == 0
+    assert finding_todo_state(live, raised.finding_id) is FindingTodoState.DISPUTED_AFTER_REBUTTAL
+
+    status_body: dict[str, JsonValue] = {
+        **request_base(protocol_id("req_", seed + 60)),
+        "session_id": session.session_id,
+        "writer_id": session.writer_id,
+        "view": "findings",
+        "limit": "100",
+    }
+    status = await session.app.status(StatusRequest.model_validate(status_body))
+    assert isinstance(status.page, StatusFindingsPageModel)
+    status_row = next(item for item in status.page.items if item.finding_id == raised.finding_id)
+    assert status_row.todo_state == "disputed_after_rebuttal"
+    assert status_row.resolved is False
+    projected = await project_case(
+        session.app,
+        ProjectionCase("status/findings-terminal", ControlMethod.STATUS, status_body, status),
+        seed + 65,
+    )
+    success = StatusResultModel.model_validate(projected).root
+    assert isinstance(success, StatusSuccessModel)
+    assert f"[d] F-1 {raised.finding_id} disputed_after_rebuttal" in render_human_status(success)
+    assert "disputed after rebuttal 1" in summary_for_status(projected)
+
+    after = frontier_json(third.result_frontier)
+    with pytest.raises(PublicOperationError) as terminal:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _respond_wire(
+                    session, after, at, raised, seed + 70, "acknowledged_not_done", "Giving up."
+                )
+            )
+        )
+    assert terminal.value.safe_details is not None
+    assert terminal.value.safe_details["reason_code"] == "finding_terminal"
+
+    json_receipt = await _receipt(session, after, seed + 80, "json")
+    document = cast(Mapping[str, JsonValue], json_receipt.document)
+    assert document["disputed_after_rebuttal_finding_ids"] == [raised.finding_id]
+    assert document["conclusion"] != "no_unresolved_deterministic_findings"
+    for fmt in ("markdown", "text"):
+        rendered = await _receipt(session, after, seed + 81 + len(fmt), fmt)
+        human = cast(str, rendered.human_text)
+        assert "Disputed after rebuttal" in human
+        assert raised.finding_id in human
+    assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
+        _live_projection(session.app)
+    )
+
+
+async def test_a_self_verified_refusal_names_the_recorded_blocking_reasons() -> None:
+    """tb4n2 R5 (issue #1023): the refusal says what disqualified it and the way out.
+
+    The refusal carries the recorded resolution-reason tokens in ``safe_details`` and names them,
+    a next step and the ``yoetz-verification-limit:`` exit in its message, so the agent need not
+    retry ``self_verified`` blind.
+    """
+
+    seed = 3600
+    reviewer = _Reviewer([_challenge_obligation, _still_present_first_finding])
+    session, frontier = await _session(reviewer, seed)
+    first = await _check(session, frontier, seed + 10)
+    raised = _semantic(first)
+    at = frontier_json(first.result_frontier)
+    result_id, repaired = await _repair(session, at, seed + 20)
+    second = await _check(session, repaired, seed + 40)
+    with pytest.raises(PublicOperationError) as refused:
+        await session.app.respond(
+            RespondRequest.model_validate(
+                _self_verified_wire(
+                    session,
+                    frontier_json(second.result_frontier),
+                    at,
+                    raised,
+                    seed + 50,
+                    "I checked it myself.",
+                    (result_id,),
+                )
+            )
+        )
+    assert _refusal(refused) == "finding_not_proof_limited"
+    details = refused.value.safe_details
+    blocking = cast(tuple[str, ...], details["blocking_reasons"])
+    assert blocking
+    assert "reviewer_verdict_still_present" in blocking
+    message = refused.value.message
+    assert all(token in message for token in blocking)
+    assert "yoetz-verification-limit:" in message
+    assert "the check still sees the issue" in message
+    assert "I checked it myself." not in message

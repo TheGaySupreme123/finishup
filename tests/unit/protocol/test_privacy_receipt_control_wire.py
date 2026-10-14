@@ -31,6 +31,7 @@ from yoetz.application.privacy_control import build_privacy_support_handlers
 from yoetz.domain.privacy import (
     _PURPOSE,  # pyright: ignore[reportPrivateUsage]
     MAX_RECEIPT_FINAL_BYTES,
+    ReceiptSecretScanStage,
 )
 from yoetz.domain.values import JsonObject, freeze_json
 from yoetz.ports.control import ControlError, ControlMethod, ControlResult
@@ -49,6 +50,7 @@ from yoetz.service.client import (
     PrivacyReceiptFound,
     _receipt_get_from_wire,  # pyright: ignore[reportPrivateUsage]
     _receipt_page_from_wire,  # pyright: ignore[reportPrivateUsage]
+    _receipt_view_from_wire,  # pyright: ignore[reportPrivateUsage]
 )
 from yoetz.service.control_protocol import (
     decode_control_frame,
@@ -310,6 +312,39 @@ def _plain(view: PrivacyReceiptView) -> dict[str, Any]:
     )
 
 
+def test_released_v1_receipt_view_omits_additive_scan_and_withheld_fields() -> None:
+    wire = _plain(network_receipt_view())
+    receipt = cast(dict[str, Any], wire["receipt"])
+    scan = cast(dict[str, Any], receipt["secret_scan"])
+
+    assert "stage" not in scan
+    assert "not_run_reason" not in scan
+    assert "withheld_item_ids" not in receipt
+    assert "withheld_item_reason" not in receipt
+    validate_schema_instance("egress-receipt", "1.0.0", receipt)
+
+
+@pytest.mark.parametrize(
+    ("match_count", "passed"),
+    [(0, True), (0, False), (2, False)],
+    ids=["legacy_clean", "legacy_blocked_zero", "legacy_matches"],
+)
+def test_stage_less_receipts_preserve_legacy_scan_uncertainty(
+    match_count: int, passed: bool
+) -> None:
+    wire = _plain(network_receipt_view())
+    receipt = cast(dict[str, Any], wire["receipt"])
+    scan = cast(dict[str, Any], receipt["secret_scan"])
+    scan.pop("stage", None)
+    scan["match_count"] = str(match_count)
+    scan["passed"] = passed
+
+    decoded = _receipt_view_from_wire(cast(JsonObject, freeze_json(cast(Any, wire))))
+    assert decoded.receipt.secret_scan.stage is ReceiptSecretScanStage.LEGACY_UNKNOWN
+    assert decoded.receipt.secret_scan.match_count == match_count
+    assert decoded.receipt.secret_scan.passed is passed
+
+
 def _at_final_bytes(view: PrivacyReceiptView, final_bytes: int) -> PrivacyReceiptView:
     receipt = view.receipt
     counts = replace(receipt.counts, final_bytes=final_bytes)
@@ -352,8 +387,21 @@ async def test_a_receipt_at_the_final_bytes_maximum_round_trips(view: PrivacyRec
 
     found = _receipt_get_from_wire(fetched)
     assert isinstance(found, PrivacyReceiptFound)
-    assert found.receipt == maximal
-    assert _receipt_page_from_wire(listed).receipts == (maximal,)
+    # The released v1.0 shape has no stage field. Its reader therefore preserves the historical
+    # uncertainty marker rather than manufacturing PREPARED_CASE on the way back.
+    expected_scan = replace(
+        maximal.receipt.secret_scan, stage=ReceiptSecretScanStage.LEGACY_UNKNOWN
+    )
+    if isinstance(maximal, NetworkEgressReceiptView):
+        expected: PrivacyReceiptView = NetworkEgressReceiptView(
+            "network_egress", replace(maximal.receipt, secret_scan=expected_scan)
+        )
+    else:
+        expected = LocalDisclosureReceiptView(
+            "local_disclosure", replace(maximal.receipt, secret_scan=expected_scan)
+        )
+    assert found.receipt == expected
+    assert _receipt_page_from_wire(listed).receipts == (expected,)
 
 
 async def test_a_partial_page_passes_the_envelope_with_its_count_and_ids() -> None:

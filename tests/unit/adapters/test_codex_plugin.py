@@ -70,6 +70,14 @@ def _resources() -> _Resources:
             b"# Request templates\n",
         ),
         "references/workflow.md": ("guidance/workflow.md", b"# Workflow\n"),
+        "references/startup.md": ("guidance/startup.md", b"# Startup\n"),
+        "references/recovery.md": ("guidance/recovery.md", b"# Recovery\n"),
+        "references/publication.md": ("guidance/publication.md", b"# Publication\n"),
+        "references/review.md": ("guidance/review.md", b"# Review\n"),
+        "references/receipt.md": ("guidance/receipt.md", b"# Receipt\n"),
+        "references/delegation.md": ("guidance/delegation.md", b"# Delegation\n"),
+        "references/consent.md": ("guidance/consent.md", b"# Consent\n"),
+        "references/page-delivery.md": ("guidance/page-delivery.md", b"# Page delivery\n"),
     }
     managed_members: list[JsonValue] = [
         {
@@ -225,7 +233,6 @@ def test_observe_hook_execution_modes_use_async_only_on_capable_hosts() -> None:
         )
     )
     pure_ingress = (
-        "PreToolUse",
         "PermissionRequest",
         "PreCompact",
         "PostCompact",
@@ -240,13 +247,13 @@ def test_observe_hook_execution_modes_use_async_only_on_capable_hosts() -> None:
     assert set(pure_ingress) == (
         SUPPORTED_HOOK_EVENTS
         - ADVICE_SAFE_EVENTS
-        - {"UserPromptSubmit", "SessionEnd", "PermissionDecision"}
+        - {"PreToolUse", "UserPromptSubmit", "SessionEnd", "PermissionDecision"}
     )
     for event in pure_ingress:
         handler = _observe_handler(parsed, event)
         assert handler.get("async") is True, f"{event} observe must not block the session"
         assert handler["timeout"] == 10, f"{event} needs an explicit modest timeout"
-    for event in ("SessionStart", "PostToolUse", "Stop"):
+    for event in ("SessionStart", "PreToolUse", "PostToolUse", "Stop"):
         handler = _observe_handler(parsed, event)
         assert "async" not in handler, f"{event} returns advice or a Stop decision; async drops it"
         assert handler["timeout"] == 10, f"{event} declared timeout must be meetable"

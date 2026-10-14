@@ -304,9 +304,9 @@ def _check_requests(draw: st.DrawFn) -> tuple[dict[str, JsonValue], str | None]:
             draw(
                 st.sampled_from(
                     (
-                        ["work-integrity/0.1.0"],
-                        ["research-evidence/0.1.0"],
-                        ["research-evidence/0.1.0", "work-integrity/0.1.0"],
+                        ["work-integrity/0.3.0"],
+                        ["research-evidence/0.2.0"],
+                        ["research-evidence/0.2.0", "work-integrity/0.3.0"],
                     )
                 )
             ),

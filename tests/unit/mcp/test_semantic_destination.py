@@ -290,6 +290,37 @@ def test_read_from_environment_renders_unknown_for_invalid_and_external_for_vali
     assert str(tmp_path) not in disclosure.sentence
 
 
+def test_a_disclosure_that_cannot_render_within_its_bound_reads_unknown_not_a_bridge_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tb4n3 A10: rendering sat outside the guard, so a sentence over its bound (a wording change
+    plus a long declared host) would have kept the bridge from starting instead of reading unknown."""
+
+    valid = tmp_path / "valid.toml"
+    valid.write_text(
+        'schema_version = "1"\nprofile = "local-openai"\n[provider]\n'
+        'provider_id = "fireworks"\nendpoint_profile_id = "fireworks-responses"\n'
+        'endpoint_profile_version = "1.0.0"\nmodel = "accounts/fireworks/models/m"\n'
+        'capability_profile = "fireworks-responses/1.0.0"\n',
+        encoding="utf-8",
+    )
+    real = disclose_semantic_destination
+    calls: list[object] = []
+
+    def refuse_a_real_config(config: object) -> SemanticDestinationDisclosure:
+        calls.append(config)
+        if config is not None:
+            raise ValueError("semantic_destination_sentence_too_long")
+        return real(None)
+
+    monkeypatch.setattr(
+        "yoetz.mcp.semantic_destination.disclose_semantic_destination", refuse_a_real_config
+    )
+    disclosure = read_semantic_destination_disclosure({"YOETZ_CONFIG": str(valid)})
+    assert disclosure.kind == "unknown"
+    assert len(calls) == 2 and calls[-1] is None
+
+
 def test_hostile_identifiers_never_reach_the_text() -> None:
     hostile_provider = "x/../../etc/passwd"
     disclosure = disclose_semantic_destination(

@@ -15,6 +15,7 @@ __all__ = [
     "PROTOCOL_REASON_CODES",
     "REASON_CODE_CONTINUATIONS",
     "SAFE_DETAIL_KEYS",
+    "SERVICE_STARTUP_PHASES",
     "ProtocolValueError",
     "PublicErrorCode",
     "PublicOperationError",
@@ -50,7 +51,9 @@ class PublicErrorCode(str, Enum):  # noqa: UP042 - the wire contract requires th
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
-type SafeDetailValue = str | int
+# A tuple value is a bounded list of closed tokens (``blocking_reasons``, issue #1023); the
+# public-error schema already admits an array of primitives as a detail value.
+type SafeDetailValue = str | int | tuple[str, ...]
 
 
 _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
@@ -64,6 +67,11 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "attach_handle_reused",
     "attach_handle_revoked",
     "attach_result_invalid",
+    "bridge_error_mapping_failed",
+    "bridge_invoke_failed",
+    "bridge_request_validation_failed",
+    "bridge_result_validate_failed",
+    "bridge_result_wire_failed",
     "byte_order_mark_forbidden",
     "catalog_busy",
     "catalog_maintenance_busy",
@@ -71,6 +79,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "check_admission_contended",
     "check_admission_import_pending",
     "check_admission_in_progress",
+    "check_pipeline_failed",
     "child_check_frontier_ahead_of_child",
     "child_check_frontier_missing",
     "child_check_frontier_without_check",
@@ -82,6 +91,27 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "child_gap_frontier_mismatch",
     "claim_revision_invalid",
     "claim_revision_mismatch",
+    "closure_attempt_selection_required",
+    "closure_claim_decision_required",
+    "closure_command_revision_required",
+    "closure_draft_invalid",
+    "closure_evidence_unavailable",
+    "closure_inventory_limit",
+    "closure_item_omitted",
+    "closure_item_unknown",
+    "closure_obligation_content_unavailable",
+    "closure_obligation_not_open",
+    "closure_obligation_unknown",
+    "closure_pagination_invalid",
+    "closure_prepare_failed",
+    "closure_resolution_decision_required",
+    "closure_response_decision_required",
+    "closure_result_too_large",
+    "closure_result_unavailable",
+    "closure_snapshot_unavailable",
+    "closure_source_unknown",
+    "closure_status_unavailable",
+    "closure_unattempted_items",
     "commitment_only_object_kind",
     "coordination_admission_required",
     "coordination_consent_required",
@@ -111,8 +141,15 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "cursor_project_mcp_invalid",
     "cursor_project_mcp_preview_required",
     "dependency_changed",
+    "duplicate_has_duplicates",
+    "duplicate_link_broken",
     "duplicate_object_key",
     "duplicate_set_member",
+    "duplicate_target_different_issue",
+    "duplicate_target_is_duplicate",
+    "duplicate_target_not_earlier",
+    "duplicate_target_same_finding",
+    "duplicate_target_unknown",
     "empty_check_types",
     "empty_publication_channels",
     "empty_subject_state",
@@ -131,6 +168,8 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "expected_frontier_required",
     "finding_actionable_mismatch",
     "finding_json_shape_invalid",
+    "finding_not_proof_limited",
+    "finding_not_rechecked",
     "finding_priority_mismatch",
     "finding_resolution_mismatch",
     "finding_terminal",
@@ -150,6 +189,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "id_wrong_type",
     "implicit_project_requires_opt_out",
     "import_publication_authority_required",
+    "import_publication_failed",
     "import_report_invalid",
     "input_not_bytes",
     "integer_out_of_safe_range",
@@ -165,6 +205,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "invalid_continuation_kind",
     "invalid_continuation_pending_id",
     "invalid_continuation_repository_setup",
+    "invalid_continuation_review_input",
     "invalid_cost_fields",
     "invalid_coverage_value",
     "invalid_digest",
@@ -258,6 +299,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "lineage_work_terminal",
     "lineage_work_transition",
     "lone_surrogate",
+    "maintenance_state_unverified",
     "malformed_json",
     "method_forbidden",
     "missing_payload_field",
@@ -272,6 +314,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "obligation_resolution_invalid",
     "obligation_resolution_mismatch",
     "observation_selection_session_limit",
+    "opaque_item_id_invalid",
     "operation_recovery_unavailable",
     "ownership_contended",
     "payload_redaction_mismatch",
@@ -299,12 +342,14 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "receipt_gap_not_in_coverage",
     "receipt_json_projection_blocked",
     "receipt_json_shape_invalid",
+    "receipt_semantic_withheld_items_not_canonical",
     "redaction_target_required",
     "ref_mirror_mismatch",
     "repository_identity_mismatch",
     "repository_identity_required",
     "request_identity_conflict",
     "request_timeout",
+    "requested_command_placeholder",
     "resolution_attempt_required",
     "response_fields_invalid",
     "response_projection_failed",
@@ -332,10 +377,12 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "schema_version_mismatch",
     "selector_conflict",
     "semantic_provenance_json_shape_invalid",
+    "semantic_redacted_values_invalid",
     "service_draining",
     "service_generation_changed",
     "service_incompatible",
     "service_stamp_required",
+    "service_start_failed",
     "service_unavailable",
     "session_lineage_fields_incomplete",
     "session_superseded",
@@ -344,6 +391,7 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
     "start_catalog_retry_ready",
     "start_lease_pending",
     "start_runtime_rebind_retry_ready",
+    "start_state_inconsistent",
     "stored_result_shape_invalid",
     "timestamp_not_utc",
     "timestamp_out_of_range",
@@ -358,7 +406,14 @@ _PROTOCOL_REASON_CODE_VALUES: tuple[str, ...] = (
 )
 
 _REASON_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
-assert len(_PROTOCOL_REASON_CODE_VALUES) == 301
+
+# The local service's startup stages (#1040): ``phase`` on a ``service_start_failed`` error names
+# where a spawned service failed. ``yoetz.service.startup_failure`` owns the stage order and fails
+# at import if its stages and this set disagree; this module is a dependency root.
+SERVICE_STARTUP_PHASES: frozenset[str] = frozenset(
+    {"import", "configuration", "composition", "activation", "serving"}
+)
+assert len(_PROTOCOL_REASON_CODE_VALUES) == 346
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
 assert all(_REASON_CODE_PATTERN.fullmatch(value) for value in _PROTOCOL_REASON_CODE_VALUES)
@@ -371,6 +426,7 @@ SAFE_DETAIL_KEYS: tuple[str, ...] = (
     "availability",
     "availability_inherited",
     "availability_request_id",
+    "blocking_reasons",
     "component",
     "continuation",
     "count",
@@ -496,6 +552,7 @@ ADMITTED_CONTINUATION_TOKENS: frozenset[str] = frozenset(
         # attached by reason-code map.
         "semantic_capacity_exceeded",
         "semantic_coordinator_review",
+        "semantic_privacy_blocked",
         "semantic_credential_rejected",
         "semantic_no_judgment",
         "semantic_rate_limited",
@@ -533,6 +590,19 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "privacy_audit_unreadable": "privacy_audit_review",
         # Issue #885: record one concrete attempt, then answer the finding under a new identity.
         "resolution_attempt_required": "input_correction_new_identity",
+        # Issue #984: repair and check first, or answer the finding with another disposition,
+        # under a new request identity.
+        "finding_not_proof_limited": "input_correction_new_identity",
+        # Issue #996: name an earlier, readable, unlinked finding, or answer the finding another
+        # way, under a new request identity.
+        "duplicate_has_duplicates": "input_correction_new_identity",
+        "duplicate_link_broken": "input_correction_new_identity",
+        "duplicate_target_different_issue": "input_correction_new_identity",
+        "duplicate_target_is_duplicate": "input_correction_new_identity",
+        "duplicate_target_not_earlier": "input_correction_new_identity",
+        "duplicate_target_same_finding": "input_correction_new_identity",
+        "duplicate_target_unknown": "input_correction_new_identity",
+        "finding_not_rechecked": "input_correction_new_identity",
         "schema_digest_mismatch": "resource_integrity_repair",
         "session_superseded": "session_rebind_required",
         "unsorted_set_field": "sorted_set_required",
@@ -587,6 +657,7 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "invalid_continuation_kind": "lineage_integrity_review",
         "invalid_continuation_pending_id": "lineage_integrity_review",
         "invalid_continuation_repository_setup": "lineage_integrity_review",
+        "invalid_continuation_review_input": "lineage_integrity_review",
         "invalid_external_runtime_authority": "coordination_authority_review",
         "invalid_receipt_child_finding": "lineage_integrity_review",
         "invalid_receipt_child_outcome": "lineage_integrity_review",
@@ -641,6 +712,7 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "lineage_work_transition": "lineage_state_refresh",
         "noncanonical_json": "lineage_integrity_review",
         "observation_selection_session_limit": "lineage_state_refresh",
+        "opaque_item_id_invalid": "lineage_integrity_review",
         "project_dissolved": "lineage_terminal_review",
         "project_member_already_unbound": "lineage_state_refresh",
         "project_member_not_found": "lineage_state_refresh",
@@ -649,8 +721,10 @@ REASON_CODE_CONTINUATIONS: Mapping[str, str] = MappingProxyType(
         "receipt_child_manifest_mismatch": "lineage_integrity_review",
         "receipt_children_not_canonical": "sorted_set_required",
         "receipt_children_schema_version": "lineage_integrity_review",
+        "receipt_semantic_withheld_items_not_canonical": "lineage_integrity_review",
         "runtime_opening_authority": "coordination_authority_review",
         "selector_conflict": "lineage_state_refresh",
+        "semantic_redacted_values_invalid": "lineage_integrity_review",
         "service_stamp_required": "lineage_service_review",
         "session_lineage_fields_incomplete": "lineage_integrity_review",
         "stored_result_shape_invalid": "lineage_integrity_review",
@@ -689,6 +763,10 @@ _QUARANTINE_CODES = frozenset(
 )
 _MAX_SAFE_INTEGER = 9_007_199_254_740_991
 _LOWER_SNAKE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
+# A recorded resolution-reason token: a closed reason or ``coverage:<closed gap code>``. Never
+# prose; anything else drops the whole detail.
+_BLOCKING_REASON_PATTERN = re.compile(r"^(?:coverage:)?[a-z][a-z0-9_]{0,95}$", re.ASCII)
+_MAX_BLOCKING_REASONS = 32
 _VERSION_PATTERN = re.compile(r"^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$", re.ASCII)
 _SCHEMA_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$", re.ASCII)
 _CORRELATION_ID_PATTERN = re.compile(
@@ -769,6 +847,16 @@ def _valid_json_pointer(value: object) -> bool:
 
 
 def _normalize_detail(key: str, value: object) -> SafeDetailValue | None:
+    if key == "blocking_reasons":
+        if type(value) not in {tuple, list}:
+            return None
+        items = tuple(cast(tuple[object, ...] | list[object], value))
+        if not 1 <= len(items) <= _MAX_BLOCKING_REASONS or any(
+            type(item) is not str or _BLOCKING_REASON_PATTERN.fullmatch(item) is None
+            for item in items
+        ):
+            return None
+        return cast(tuple[str, ...], items)
     if key in _INTEGER_DETAIL_KEYS:
         if type(value) is int and 0 <= value <= _MAX_SAFE_INTEGER:
             return value
@@ -788,6 +876,16 @@ def _normalize_detail(key: str, value: object) -> SafeDetailValue | None:
         return None
     if key == "quarantine_code":
         if type(value) is str and value in _QUARANTINE_CODES:
+            return value
+        return None
+    if key == "phase" and type(value) is str:
+        # Stage names are structural tokens owned by the service boundary. Accepting the
+        # normalized token here lets an internal control failure carry an explicit handler,
+        # projection, or unknown stage without exposing exception text. The service startup
+        # stages (``yoetz.service.startup_failure``) name where a spawned service failed (#1040).
+        if value in {"replay", "model", "digest", "projection", "handler", "unknown"}:
+            return value
+        if value in SERVICE_STARTUP_PHASES:
             return value
         return None
     if key in _ENUM_DETAIL_KEYS:
@@ -979,5 +1077,8 @@ class PublicOperationError(Exception):
             "correlation_id": self.correlation_id,
         }
         if self.safe_details:
-            result["safe_details"] = dict(self.safe_details)
+            result["safe_details"] = {
+                key: list(value) if type(value) is tuple else value
+                for key, value in self.safe_details.items()
+            }
         return result

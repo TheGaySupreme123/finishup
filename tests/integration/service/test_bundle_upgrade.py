@@ -236,7 +236,7 @@ def _coordinator(
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("source_version", [12, 13, 14])
+@pytest.mark.parametrize("source_version", [12, 13, 14, 15])
 async def test_supported_upgrade_is_backup_first_idempotent_and_fenced(
     source_version: int,
     tmp_path: Path,
@@ -286,6 +286,39 @@ async def test_supported_upgrade_is_backup_first_idempotent_and_fenced(
     assert second.already_current == (_TASK_ID,)
     assert len(effects.backups) == 1
     assert holder_calls == [(_TASK_ID,)]
+
+
+@pytest.mark.anyio
+async def test_unknown_and_future_bundle_versions_still_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(connection_module, "verify_private_local_bundle", _allow_isolated_path)
+    catalog = _catalog(tmp_path / "unknown.sqlite3")
+
+    unknown = tmp_path / "unknown.sqlite3"
+    _build_bundle(unknown, version=11)
+    with pytest.raises(BundleUpgradeError) as unknown_error:
+        await _coordinator(catalog, clock=_Clock(), effects=_Effects()).run_before_ready(
+            (_target(unknown),)
+        )
+    assert unknown_error.value.reason is BundleUpgradeReason.MIGRATION_UNSUPPORTED
+    assert not unknown_error.value.retryable
+
+    future = tmp_path / "future.sqlite3"
+    _build_bundle(future, version=BUNDLE_UPGRADE_TARGET_VERSION)
+    database = _open_writer(future)
+    try:
+        database.execute("PRAGMA user_version = 17")
+        database.execute("UPDATE bundle_meta SET value='17' WHERE key='storage_schema_version'")
+    finally:
+        database.close(force=True)
+    with pytest.raises(BundleUpgradeError) as future_error:
+        await _coordinator(catalog, clock=_Clock(), effects=_Effects()).run_before_ready(
+            (_target(future),)
+        )
+    assert future_error.value.reason is BundleUpgradeReason.SCHEMA_NEWER_THAN_BINARY
+    assert not future_error.value.retryable
 
 
 @pytest.mark.anyio

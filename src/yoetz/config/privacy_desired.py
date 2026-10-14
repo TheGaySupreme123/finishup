@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from yoetz.config.models import ConfigError
-from yoetz.domain.privacy import PrivacyPolicy
+from yoetz.domain.privacy import CredentialHeuristic, PrivacyPolicy
 from yoetz.domain.values import format_rfc3339_millis
 from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
@@ -38,7 +38,12 @@ def _to_json(value: object) -> object:
     if type(value) is datetime:
         return format_rfc3339_millis(value)
     if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _to_json(getattr(value, field.name)) for field in fields(value)}
+        return {
+            field.name: _to_json(getattr(value, field.name))
+            for field in fields(value)
+            # ``credential_heuristic`` is written only when the owner turned it off (#982).
+            if getattr(value, field.name) is not CredentialHeuristic.ENFORCED
+        }
     if type(value) is tuple:
         return [_to_json(member) for member in cast(tuple[object, ...], value)]
     raise TypeError("privacy_desired_value_invalid")

@@ -274,7 +274,7 @@ async def main():
             async with ClientSession(read, write) as client:
                 await client.initialize()
                 tools = await client.list_tools()
-                assert len(tools.tools) == 7
+                assert len(tools.tools) == 8
                 result = await client.call_tool("read_guidance", {"uri":"yoetz://guidance/workflow.md"})
                 assert not result.isError
                 assert any("workflow" in getattr(item, "text", "") for item in result.content)
@@ -362,10 +362,10 @@ def test_packaged_absolute_launcher_with_real_codex() -> None:
         route = cast(dict[str, object], status["route"])
         assert route["ownership_state"] == "external"
         assert route["registered_profile"] == "policy"
-        assert run("probe") == {"tools": 7, "guidance": "success"}
+        assert run("probe") == {"tools": 8, "guidance": "success"}
 
         # Codex itself starts the registered wheel, with no parent isolation variable. Its
-        # inventory must expose the real seven-tool server, not the synthetic compatibility stub.
+        # Inventory must expose the real MCP server, not the synthetic compatibility stub.
         capture = root / "inventory.json"
         captured = subprocess.run(
             [
@@ -387,7 +387,7 @@ def test_packaged_absolute_launcher_with_real_codex() -> None:
         assert captured.returncode == 0, captured.stderr.decode(errors="replace")
         entries = json.loads(capture.read_bytes())["inventory"]["result"]["data"]
         assert len(entries) == 1
-        assert len(entries[0]["tools"]) == 7
+        assert len(entries[0]["tools"]) == 8
         assert entries[0]["serverInfo"]["name"] == "yoetz"
         assert run("strict")["action"] == "reregister"
         assert run("status")["profile"] == "strict"

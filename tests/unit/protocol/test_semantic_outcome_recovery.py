@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from yoetz.cli.render import render_human_check
 from yoetz.domain.findings import SemanticFailureClass
-from yoetz.mcp.summaries import summary_for_check
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check
 from yoetz.protocol.models import (
     CheckSuccessModel,
     CoverageModel,
     SemanticReason,
     SemanticStatus,
+    SemanticWithheldItemModel,
 )
 from yoetz.protocol.recovery import (
     RECOVERY_DIRECTIVES,
@@ -71,6 +72,20 @@ def test_closed_reason_tokens_cover_issue_examples() -> None:
         )
         == "semantic_capacity_exceeded"
     )
+
+
+def test_privacy_blocked_required_review_gets_safe_recovery() -> None:
+    for status, reason in (
+        (SemanticStatus.BLOCKED_FORBIDDEN_DATA, SemanticReason.NEVER_SEND_DETECTED),
+        (SemanticStatus.CLASSIFICATION_UNCERTAIN, SemanticReason.CLASSIFICATION_UNCERTAIN),
+    ):
+        token = continuation_for_semantic_outcome(status=status, reason=reason)
+        assert token == "semantic_privacy_blocked"
+        directive = directive_for(token)
+        assert directive is not None
+        assert "NEW request_id" in directive.directive
+        assert "resend" in directive.directive
+        assert "local-only" in directive.directive
 
 
 def test_terminal_outcome_reasons_are_not_misread_as_a_transport_diagnosis() -> None:
@@ -149,6 +164,7 @@ def test_directives_never_copy_caller_or_provider_text() -> None:
         "semantic_transport_retry",
         "semantic_no_judgment",
         "semantic_coordinator_review",
+        "semantic_privacy_blocked",
     ):
         entry = RECOVERY_DIRECTIVES[token]
         blob = f"{entry.directive} {entry.nudge or ''}"
@@ -198,7 +214,7 @@ def test_check_renderers_project_registry_text_without_raw_output() -> None:
     text = summary_for_check(envelope)
     assert "Continuation: semantic_response_truncated." in text
     assert _PROVIDER_CANARY not in text
-    assert len(text.encode("ascii")) <= 512
+    assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
     result = CheckSuccessModel.model_construct(
         verdict="incomplete_check",
@@ -215,6 +231,74 @@ def test_check_renderers_project_registry_text_without_raw_output() -> None:
     assert "Continuation: semantic_transport_retry" in rendered
     assert directive_for("semantic_transport_retry") is not None
     assert _CANARY not in rendered
+
+
+def test_human_check_names_opaque_heuristic_withheld_items_without_content() -> None:
+    result = CheckSuccessModel.model_construct(
+        verdict="incomplete_check",
+        semantic_status="succeeded",
+        semantic_reason="completed",
+        semantic_provenance=None,
+        findings=(),
+        suppressed_count="0",
+        coverage=CoverageModel.model_construct(known_gaps=("content_redacted",)),
+        children=None,
+        advisory_notes=(),
+        semantic_withheld_items=(
+            SemanticWithheldItemModel(
+                item_id="excerpt-heuristic",
+                reason="never_send_heuristic",
+            ),
+        ),
+    )
+    rendered = render_human_check(result)
+    assert "Withheld review items" in rendered
+    assert "excerpt-heuristic: never_send_heuristic" in rendered
+    assert "auth_token" not in rendered
+
+
+def test_human_check_names_redacted_value_lines_and_the_fixed_agent_line() -> None:
+    """PL2-1 (issue #982): refs and line numbers, the fixed agent line once, never a value."""
+
+    from yoetz.domain.receipts import SEMANTIC_REDACTED_VALUES_AGENT_LINE
+    from yoetz.protocol.models import SemanticRedactedValueModel
+
+    result = CheckSuccessModel.model_construct(
+        verdict="action_required",
+        semantic_status="succeeded",
+        semantic_reason="completed",
+        semantic_provenance=None,
+        findings=(),
+        suppressed_count="0",
+        coverage=CoverageModel.model_construct(known_gaps=("semantic_review_value_redacted",)),
+        children=None,
+        advisory_notes=(),
+        semantic_redacted_values=(
+            SemanticRedactedValueModel(
+                item_id="excerpt-a",
+                disposition="value_replaced",
+                lines=(3, 7),
+                source_ref="evd_10000000-0000-4000-8000-000000000021",
+            ),
+        ),
+    )
+    rendered = render_human_check(result)
+    assert (
+        "- evd_10000000-0000-4000-8000-000000000021 (item excerpt-a): value replaced, lines 3, 7 of the captured item"
+    ) in rendered
+    assert rendered.count(SEMANTIC_REDACTED_VALUES_AGENT_LINE) == 1
+    plain = CheckSuccessModel.model_construct(
+        verdict="no_issue_detected",
+        semantic_status="succeeded",
+        semantic_reason="completed",
+        semantic_provenance=None,
+        findings=(),
+        suppressed_count="0",
+        coverage=CoverageModel.model_construct(known_gaps=()),
+        children=None,
+        advisory_notes=(),
+    )
+    assert SEMANTIC_REDACTED_VALUES_AGENT_LINE not in render_human_check(plain)
 
 
 def test_human_check_and_status_state_why_the_check_time_change_was_unavailable() -> None:
@@ -270,3 +354,21 @@ def test_human_check_and_status_state_why_the_check_time_change_was_unavailable(
     assert "The check-time change was unavailable: the repository failed a safety check" in (
         rendered_status
     )
+
+
+def test_receipt_and_status_render_redacted_values_from_wire_and_skip_malformed() -> None:
+    from yoetz.cli.render import (
+        _semantic_redacted_value_lines,  # pyright: ignore[reportPrivateUsage]
+    )
+    from yoetz.domain.receipts import SEMANTIC_REDACTED_VALUES_AGENT_LINE
+
+    lines = _semantic_redacted_value_lines(
+        (
+            {"disposition": "item_withheld", "item_id": "excerpt-b", "lines": [2]},
+            {"disposition": "value_replaced", "item_id": "x", "lines": [1], "value": "s3cr3t"},
+        )
+    )
+    assert lines[1] == "- excerpt-b: item withheld, line 2 of the captured item"
+    assert lines.count(SEMANTIC_REDACTED_VALUES_AGENT_LINE) == 1
+    assert "s3cr3t" not in "\n".join(lines)
+    assert _semantic_redacted_value_lines(()) == []

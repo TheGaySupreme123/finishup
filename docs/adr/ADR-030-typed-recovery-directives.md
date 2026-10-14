@@ -174,7 +174,8 @@ is not reopened without them:
   remedies into it would admit fifty-two local-only tokens to the wire vocabulary for reasons that
   never cross it — the opposite of the narrow-wire decision above.
 - Directives are bounded at 232 ASCII bytes so identity, reason, directive, and pointer fit the
-  512-byte text channel. Five shipped remedies already exceed that bound, and the longest is 344
+  text channel together (512 bytes when this was decided, 4,096 since ADR-043; the directive bound
+  is unchanged). Five shipped remedies already exceed that bound, and the longest is 344
   bytes.
 - Several remedy sentences are asserted byte-for-byte by CLI tests that lock what an operator sees.
 
@@ -226,10 +227,20 @@ admits. Adding a reason code without deciding what an agent should do fails the 
 
 ### Budget priority
 
-The MCP text channel is bounded at 512 ASCII bytes and raises rather than truncating. Projection
-order is: error identity, then reason and location, then continuation directive, then carried
-commands, then guidance pointer, then nudge. Parts are dropped from the bottom. Error identity is
-never sacrificed to fit advice.
+The MCP text channel is bounded at 4,096 ASCII bytes (it was 512 until tb4n3; see ADR-043) and a
+text builder never raises: it composes its parts with `yoetz.domain.bounded_text`, reserving the
+required core first and granting the optional clauses room by priority. Projection order is: error
+identity, then reason and location, then continuation directive, then the typed remedy and carried
+commands, then guidance pointer, then nudge. Parts shrink to a shorter variant and then drop from
+the bottom (the directive shrinks to its bare continuation token before it is dropped). Error
+identity is never sacrificed to fit advice.
+
+A committed operation never becomes an error because its text could not be built (ADR-043): a
+failing clause is omitted and named (`summary_render_failed:<builder>.<clause>`), a failing core is
+replaced by the verdict or state token, the frontier and "read status view=compact", and the
+failure is recorded as a service diagnostic. An `INTERNAL_ERROR` always carries a typed
+`reason_code`; the stages added for it are exempt from a continuation directive and carry a fixed
+remedy sentence (`REASON_REMEDIES`) that renders on the text channel beside the reason.
 
 ## Consequences
 
@@ -238,7 +249,7 @@ never sacrificed to fit advice.
   instance and path refusal line, the observe verbs, and the resource-integrity branch of
   `version`. A remedy visible on one of seven surfaces is the defect issue #741 reported.
   Hooks, the TUI blocked report, and receipt human text now use the same lookup. Hook intake keeps
-  its host-specific prefix and appends only a continuation token (512-byte cue), resolved from the
+  its host-specific prefix and appends only a continuation token (512-byte hook cue), resolved from the
   hook's own exact reason, never from a check's provider outcome; a hook context that stands for
   several reasons, or whose reason only shares a spelling with a CLI-local reason, appends none. The
   TUI appends the full directive lines. Receipt human text adds a Recovery section from recorded

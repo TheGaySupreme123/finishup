@@ -166,6 +166,9 @@ def _check(repo_root: Path) -> bool:
     return (
         _run(repo_root, "generate_project_policy_fixture.py", "--check")
         and _run(repo_root, "generate_check_conclusion_fixture.py", "--check")
+        and _run(repo_root, "generate_check_totals_fixture.py", "--check")
+        and _run(repo_root, "generate_check_observations_awaited_fixture.py", "--check")
+        and _run(repo_root, "generate_check_inspection_fixture.py", "--check")
         and _run(repo_root, "generate_review_dialogue_fixture.py", "--check")
         and _run(repo_root, "generate_task_statement_fixture.py", "--check")
         and _run(repo_root, "generate_schemas.py", "--check")
@@ -185,12 +188,29 @@ def _write_pass(repo_root: Path) -> bool:
     steps = (
         ("generate_project_policy_fixture.py", "--write"),
         ("generate_check_conclusion_fixture.py", "--write"),
+        ("generate_check_totals_fixture.py", "--write"),
+        ("generate_check_observations_awaited_fixture.py", "--write"),
+        ("generate_check_inspection_fixture.py", "--write"),
         ("generate_review_dialogue_fixture.py", "--write"),
         ("generate_task_statement_fixture.py", "--write"),
         (
             "generate_schemas.py",
             "--write",
             "--include-builder-owned",
+            "--only",
+            "events/check-recorded-1.4.0.schema.json",
+            "--only",
+            "events/finding-recorded-1.4.0.schema.json",
+            "--only",
+            "findings/finding-1.4.0.schema.json",
+            "--only",
+            "findings/provider-judgment-1.2.0.schema.json",
+            "--only",
+            "operations/check-result-1.4.0.schema.json",
+            "--only",
+            "operations/read-guidance-request-1.1.0.schema.json",
+            "--only",
+            "operations/read-guidance-result-1.1.0.schema.json",
             "--only",
             "service/control-request-2.6.1.schema.json",
             "--only",
@@ -199,6 +219,8 @@ def _write_pass(repo_root: Path) -> bool:
             "privacy/privacy-policy-1.0.0.schema.json",
             "--only",
             "privacy/privacy-policy-1.1.0.schema.json",
+            "--only",
+            "privacy/egress-receipt-1.1.0.schema.json",
             "--only",
             "operations/status-result-1.1.0.schema.json",
             "--only",

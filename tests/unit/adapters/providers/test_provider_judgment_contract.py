@@ -12,6 +12,10 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import TypeAdapter, ValidationError
 
+from yoetz.adapters.providers.local_model import (
+    LocalModelEndpointProfile,
+    normalize_local_response,
+)
 from yoetz.adapters.providers.openai_chat_completions import (
     ChatCompletionsProfile,
 )
@@ -24,7 +28,9 @@ from yoetz.adapters.providers.openai_responses import (
     JUDGMENT_JSON_SCHEMA,
     MISSING_ITEM_FIELD_GLOSSARY,
     MISSING_ITEM_KIND_GLOSSARY,
+    STRICT_JUDGMENT_JSON_SCHEMA,
     VERDICT_FIELD_GLOSSARY,
+    VERIFIED_FIELD_GLOSSARY,
     JudgmentValidationError,
     OpenAIProfile,
     build_judgment_json_schema,
@@ -58,6 +64,7 @@ _NOW = datetime(2026, 7, 28, tzinfo=UTC)
 _DIGEST = "sha256:" + "c" * 64
 _REPO = Path(__file__).resolve().parents[4]
 _FROZEN_SCHEMA = _REPO / "schemas" / "findings" / "provider-judgment-1.1.0.schema.json"
+_ACTIVE_SCHEMA = _REPO / "schemas" / "findings" / "provider-judgment-1.2.0.schema.json"
 _RELEASED_1_0_SCHEMA = _REPO / "schemas" / "findings" / "provider-judgment-1.0.0.schema.json"
 
 _REF_A = "clm_20000000-0000-4000-8000-000000000001"
@@ -80,6 +87,7 @@ def _challenge(
         "message_to_main_agent": "Main agent: provide evidence for the claim.",
         "requested_next_step": "provide_evidence",
         "uncertainty": "The missing material may exist outside the case.",
+        "snippet": "The claim lacks a recorded basis.",
     }
 
 
@@ -102,6 +110,8 @@ def _judgment(
 ) -> dict[str, JsonValue]:
     body: dict[str, JsonValue] = {
         "conclusion": conclusion,
+        "review_summary": "The supplied packet was reviewed.",
+        "verified": [],
         "reviewer_challenges": cast(list[JsonValue], [] if challenges is None else challenges),
         "prior_finding_verdicts": [],
     }
@@ -152,6 +162,25 @@ def _chat_profile() -> ChatCompletionsProfile:
     )
 
 
+def _local_profile() -> LocalModelEndpointProfile:
+    return LocalModelEndpointProfile(
+        profile_id="local-test",
+        profile_version="1.0.0",
+        endpoint_profile_id="local-test-endpoint",
+        endpoint_profile_version="1.0.0",
+        model="local-test-model",
+        protocol_version="1.0.0",
+        judgment_schema_version="1.2.0",
+        timeout_seconds=30,
+        expected_service_identity="local-test-service",
+        expected_owner_uid=0,
+        expected_peer_uid=0,
+        expected_socket_mode=0o600,
+        release_resource_digest=_DIGEST,
+        capability_evidence_digest=_DIGEST,
+    )
+
+
 class _ResponsesResponse:
     def __init__(
         self,
@@ -190,12 +219,12 @@ def test_generated_schema_matches_owning_model_and_frozen_artifact() -> None:
     assert rebuilt == JUDGMENT_JSON_SCHEMA
     assert canonical_digest(rebuilt) == canonical_digest(JUDGMENT_JSON_SCHEMA)
 
-    frozen = strict_json_parse(_FROZEN_SCHEMA.read_bytes())
-    assert type(frozen) is dict
-    frozen_doc = cast(dict[str, Any], frozen)
-    # Frozen catalog adds $id/$schema/root title; after dropping catalog chrome and nested titles,
-    # the constrained-output body matches the runtime request schema byte-for-byte.
-    assert frozen_doc["$id"].endswith("provider-judgment-1.1.0.schema.json")
+    active = strict_json_parse(_ACTIVE_SCHEMA.read_bytes())
+    assert type(active) is dict
+    frozen_doc = cast(dict[str, Any], active)
+    # The active catalog adds $id/$schema/root title; after dropping catalog chrome and nested
+    # titles, the constrained-output body matches the runtime request schema byte-for-byte.
+    assert frozen_doc["$id"].endswith("provider-judgment-1.2.0.schema.json")
 
     def _strip_titles(node: object) -> object:
         # The catalog artifact keeps title/description chrome for human readers; the request
@@ -252,7 +281,14 @@ def test_request_schema_root_is_an_object_never_a_union() -> None:
                 assert source.get("additionalProperties") is False, path
                 properties = cast(dict[str, Any], source.get("properties", {}))
                 required = cast(list[str], source.get("required", []))
-                assert set(properties) == set(required), path
+                # Conditional snippet requirements are expressed with allOf on the active
+                # verified-item contract; the base property is intentionally optional.
+                optional: set[str] = {"snippet"} if path.endswith("ProviderVerifiedItem") else set()
+                # ``restates`` (issue #980) is an optional link; strict output still sends it as
+                # a required nullable field (``strict_output_schema``).
+                if path.endswith("ProviderChallenge"):
+                    optional.add("restates")
+                assert set(properties) - optional == set(required), path
             for key, value in source.items():
                 if key in {"properties", "$defs"}:
                     for name, child in cast(dict[str, Any], value).items():
@@ -264,6 +300,79 @@ def test_request_schema_root_is_an_object_never_a_union() -> None:
                 _walk(item, f"{path}[{index}]")
 
     _walk(JUDGMENT_JSON_SCHEMA, "$")
+
+
+def test_strict_wire_schema_uses_only_the_strict_structured_output_subset() -> None:
+    """Every provider request sends a schema that ``strict: true`` structured output admits.
+
+    Regression guard: provider-judgment 1.2.0 expressed the verified-row snippet rule with
+    ``allOf``/``if``/``then``/``not`` and Pydantic ``default`` values. gpt-6-luna rejected that
+    request schema with a 400 before generation, which the Codex runtime surfaced only as an
+    opaque failed turn, so every semantic review failed. The wire form must carry none of the
+    rejected keywords and list every property of every object as required.
+    """
+
+    rejected = {"allOf", "default", "if", "not", "then", "uniqueItems"}
+
+    def _walk(node: object, path: str) -> None:
+        if type(node) is dict:
+            source = cast(dict[str, Any], node)
+            assert not rejected & set(source), path
+            if source.get("type") == "object":
+                assert source.get("additionalProperties") is False, path
+                properties = cast(dict[str, Any], source.get("properties", {}))
+                assert set(properties) == set(cast(list[str], source.get("required", []))), path
+            for key, value in source.items():
+                if key in {"properties", "$defs"}:
+                    for name, child in cast(dict[str, Any], value).items():
+                        _walk(child, f"{path}.{key}.{name}")
+                else:
+                    _walk(value, f"{path}.{key}")
+        elif type(node) is list:
+            for index, item in enumerate(cast(list[Any], node)):
+                _walk(item, f"{path}[{index}]")
+
+    _walk(STRICT_JUDGMENT_JSON_SCHEMA, "$")
+    verified = cast(dict[str, Any], STRICT_JUDGMENT_JSON_SCHEMA["$defs"])["ProviderVerifiedItem"]
+    assert verified["properties"]["snippet"]["type"] == ["string", "null"]
+    # The owning contract keeps the conditional rule; only the wire form drops it.
+    assert "allOf" in cast(dict[str, Any], JUDGMENT_JSON_SCHEMA["$defs"])["ProviderVerifiedItem"]
+
+
+def test_strict_wire_output_with_null_snippet_decodes_under_the_contract() -> None:
+    ref = "evt_00000000-0000-4000-8000-000000000001"
+    body: dict[str, Any] = {
+        "judgment": {
+            "conclusion": "no_material_discrepancy",
+            "review_summary": "Checked both rows.",
+            "prior_finding_verdicts": [],
+            "reviewer_challenges": [],
+            "verified": [
+                {
+                    "requirement_or_claim": "Supported row",
+                    "verdict": "supported",
+                    "cited_refs": [ref],
+                    "snippet": "quoted",
+                },
+                {
+                    "requirement_or_claim": "Unassessable row",
+                    "verdict": "not_assessable",
+                    "cited_refs": [ref],
+                    "snippet": None,
+                },
+            ],
+        }
+    }
+    cast(Any, Draft202012Validator(STRICT_JUDGMENT_JSON_SCHEMA)).validate(body)
+    judgment = normalize_judgment(cast(JsonValue, body), require_part2=True)
+    assert judgment.conclusion == "no_material_discrepancy"
+
+    missing_quote = json.loads(json.dumps(body))
+    missing_quote["judgment"]["verified"][0]["snippet"] = None
+    # Strict output allows this shape; the row is dropped and counted, never the whole review.
+    degraded = normalize_judgment(cast(JsonValue, missing_quote), require_part2=True)
+    assert degraded.verified_dropped == 1
+    assert [item.verdict for item in degraded.verified] == ["not_assessable"]
 
 
 def test_request_schema_carries_no_docstring_commentary() -> None:
@@ -290,6 +399,7 @@ def test_request_schema_carries_no_docstring_commentary() -> None:
 
     curated = (
         set(CHALLENGE_FIELD_GLOSSARY.values())
+        | set(VERIFIED_FIELD_GLOSSARY.values())
         | set(VERDICT_FIELD_GLOSSARY.values())
         | set(MISSING_ITEM_FIELD_GLOSSARY.values())
     )
@@ -572,6 +682,29 @@ def test_conforming_challenge_response_succeeds_on_first_parse() -> None:
     ) or result.judgment.challenges[0].cited_refs == tuple(sorted((_REF_A, _REF_B)))
 
 
+def test_local_normalizer_requires_the_active_part2_fields() -> None:
+    profile = _local_profile()
+    legacy: dict[str, JsonValue] = {
+        "conclusion": "no_material_discrepancy",
+        "reviewer_challenges": [],
+        "prior_finding_verdicts": [],
+    }
+    rejected = normalize_local_response(
+        json.dumps(legacy, separators=(",", ":")).encode(),
+        profile,
+        policy_digest=_DIGEST,
+        latency_ms=4,
+    )
+    assert type(rejected) is SemanticResultInvalid
+    accepted = normalize_local_response(
+        json.dumps(_judgment(), separators=(",", ":")).encode(),
+        profile,
+        policy_digest=_DIGEST,
+        latency_ms=4,
+    )
+    assert type(accepted) is SemanticResultSuccess
+
+
 @pytest.mark.parametrize(
     ("parsed", "stage"),
     [
@@ -787,12 +920,13 @@ def test_a_malformed_or_surplus_ruling_is_dropped_and_counted_not_fatal() -> Non
                 **_judgment(),
                 "prior_finding_verdicts": [
                     _ruling(verdict="unassessable", finding_id=_finding(number))
-                    for number in range(1, 10)
+                    for number in range(1, 18)
                 ],
             },
         )
     )
-    assert len(surplus.prior_finding_verdicts) == 8
+    # Sixteen rulings, one per carried earlier finding (issue #976).
+    assert len(surplus.prior_finding_verdicts) == 16
     assert surplus.prior_finding_verdicts_dropped == 1
 
 
@@ -874,3 +1008,47 @@ def test_a_present_non_array_rulings_value_is_counted_not_read_as_the_1_0_0_shap
     assert len(judgment.challenges) == 1
     assert judgment.prior_finding_verdicts == ()
     assert judgment.prior_finding_verdicts_dropped == 1
+
+
+def test_verified_rows_inconsistent_with_their_verdict_cost_only_themselves() -> None:
+    """Strict output cannot couple snippet to verdict; a mismatched row must not reject the review.
+
+    A not_assessable row keeps its judgement without the quote; a supported/not_supported row
+    without a quote is dropped and counted so the check can disclose it.
+    """
+
+    ref = "evt_00000000-0000-4000-8000-000000000001"
+    body: dict[str, Any] = {
+        "judgment": {
+            "conclusion": "no_material_discrepancy",
+            "review_summary": "Checked three rows.",
+            "prior_finding_verdicts": [],
+            "reviewer_challenges": [],
+            "verified": [
+                {
+                    "requirement_or_claim": "Quoted support",
+                    "verdict": "supported",
+                    "cited_refs": [ref],
+                    "snippet": "quoted",
+                },
+                {
+                    "requirement_or_claim": "Support without a quote",
+                    "verdict": "supported",
+                    "cited_refs": [ref],
+                    "snippet": None,
+                },
+                {
+                    "requirement_or_claim": "Unassessable with a stray quote",
+                    "verdict": "not_assessable",
+                    "cited_refs": [ref],
+                    "snippet": "stray",
+                },
+            ],
+        }
+    }
+    judgment = normalize_judgment(cast(JsonValue, body), require_part2=True)
+    assert judgment.verified_dropped == 1
+    assert [(item.requirement_or_claim, item.snippet) for item in judgment.verified] == [
+        ("Quoted support", "quoted"),
+        ("Unassessable with a stray quote", None),
+    ]

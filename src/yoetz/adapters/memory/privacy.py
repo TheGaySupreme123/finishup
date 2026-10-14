@@ -28,6 +28,7 @@ from yoetz.domain.privacy import (
     PrivacyAuditSubject,
     PrivacyPolicy,
     ProviderBinding,
+    ReceiptSecretScanStage,
 )
 from yoetz.domain.values import validate_sha256_digest
 from yoetz.ports.clock import ClockPort
@@ -288,6 +289,17 @@ class MemoryPrivacyPolicyStore:
             None if exact is None else exact.generation,
             None if exact is None else exact.policy.policy_digest,
             None if exact is None else exact.policy,
+            machine_policy,
+            (
+                tuple(self._state.legacy_route_entitlements.values())
+                if migration_state == "legacy_route_available"
+                else (
+                    (self._state.migration_frontier_policy,)
+                    if migration_state == "first_repository_available"
+                    and self._state.migration_frontier_policy is not None
+                    else ()
+                )
+            ),
         )
 
     async def carry_forward_repository_authority(
@@ -536,6 +548,17 @@ class MemoryPrivacyPolicyStore:
 
 
 def _receipt_view(receipt: LocalDisclosureReceipt | EgressReceipt) -> PrivacyReceiptView:
+    if receipt.schema_version == "1.0.0":
+        # SQLite's released 1.0 bytes do not carry the additive scan-stage fields. Match that
+        # reader contract in memory instead of returning a misleading PREPARED_CASE default.
+        receipt = replace(
+            receipt,
+            secret_scan=replace(
+                receipt.secret_scan,
+                stage=ReceiptSecretScanStage.LEGACY_UNKNOWN,
+                not_run_reason=None,
+            ),
+        )
     if isinstance(receipt, LocalDisclosureReceipt):
         return LocalDisclosureReceiptView("local_disclosure", receipt)
     return NetworkEgressReceiptView("network_egress", receipt)
@@ -668,9 +691,25 @@ class MemoryPrivacyAudit:
             "schema": "yoetz.disclosure-proposal/1",
             "scope": _json(request.scope),
             "source_item_digests": list(request.minimized.source_item_digests),
+            "included_item_ids": list(request.minimized.included_item_ids),
             "transformation_summary": [
                 list(item) for item in request.minimized.transformation_summary
             ],
+            "withheld_item_ids": list(request.minimized.withheld_item_ids),
+            "scanner_registry_version": request.minimized.scanner_registry_version,
+            "scanner_profile_digest": request.minimized.scanner_profile_digest,
+            "route_identity_digest": route,
+            # PL2-1: written only when present, so older proposals keep their exact bytes.
+            **(
+                {
+                    "redacted_values": [
+                        cast(JsonValue, entry.as_wire())
+                        for entry in request.minimized.redacted_values
+                    ]
+                }
+                if request.minimized.redacted_values
+                else {}
+            ),
         }
         body = canonical_encode(value)
         commitment = _mac(self._key, _PROPOSAL_DOMAIN, body)
@@ -704,6 +743,12 @@ class MemoryPrivacyAudit:
             request.max_tokens,
             request.expires_at,
             commitment,
+            request.minimized.withheld_item_ids,
+            request.minimized.scanner_registry_version,
+            request.minimized.scanner_profile_digest,
+            request.minimized.included_item_ids,
+            route,
+            request.minimized.redacted_values,
         )
         lookup = _mac(self._key, _LOOKUP_DOMAIN, canonical_encode(_json(proposal)))
         reservation = PrivacyAuditReservation(
@@ -832,6 +877,14 @@ class MemoryPrivacyAudit:
         async with self._lock:
             row = self._state.audit.get(proposal_id)
             if row is None or type(row.subject) is not DisclosureProposal:
+                return None
+            # Resume is valid only for the route that authenticated the proposal.  A stale or
+            # legacy subject is unreadable; the coordinator must not reinterpret it under a new
+            # active route.
+            if (
+                row.subject.route_identity_digest is None
+                or self._state.routes.get(row.subject.task_id) != row.subject.route_identity_digest
+            ):
                 return None
             return row.subject
 

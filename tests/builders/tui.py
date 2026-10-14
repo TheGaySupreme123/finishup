@@ -195,7 +195,7 @@ def work_detail() -> WorkDetail:
         ),
         claims=("Rate limiting rejects the 11th request in a minute",),
         evidence_count=3,
-        checks=("work-integrity/0.1.0",),
+        checks=("work-integrity/0.3.0",),
         coverage=("no AI-powered review",),
         findings=("P2 unsupported_claim (deterministic): no evidence links the claim",),
         limitations=("semantic_review_unavailable",),

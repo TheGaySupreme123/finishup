@@ -31,6 +31,7 @@ from yoetz.domain.privacy import (
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
+    ReceiptSecretScanStage,
     ReceiptTransformations,
     RequestCommitment,
 )
@@ -135,7 +136,9 @@ def _local_view(receipt_id: str = _RECEIPT, finished_at: datetime = _NOW) -> Pri
             (),
             ReceiptCounts(3, 2, 1, 2, 1, 40, 20, 5, None),
             ReceiptTransformations(1, 0, 1),
-            ReceiptSecretScan("scanner-v1", _DIGEST, 0, True),
+            ReceiptSecretScan(
+                "scanner-v1", _DIGEST, 0, True, ReceiptSecretScanStage.LEGACY_UNKNOWN
+            ),
             None,
             1,
         ),
@@ -164,7 +167,9 @@ def _network_view() -> PrivacyReceiptView:
             (),
             ReceiptCounts(4, 4, 0, 4, 0, 900, 900, None, 1200),
             ReceiptTransformations(0, 0, 0),
-            ReceiptSecretScan("scanner-v1", _DIGEST, 0, True),
+            ReceiptSecretScan(
+                "scanner-v1", _DIGEST, 0, True, ReceiptSecretScanStage.LEGACY_UNKNOWN
+            ),
             None,
             1,
             authorization_id=_AUTHORIZATION,
@@ -471,7 +476,9 @@ def test_a_blocked_receipt_carries_its_reason() -> None:
             (DataCategory.BOUNDED_STRUCTURAL_METADATA,),
             ReceiptCounts(1, 0, 1, 0, 1, 1, 0),
             ReceiptTransformations(0, 0, 1),
-            ReceiptSecretScan("scanner-v1", _DIGEST, 0, True),
+            ReceiptSecretScan(
+                "scanner-v1", _DIGEST, 0, True, ReceiptSecretScanStage.LEGACY_UNKNOWN
+            ),
             PrivacyReason.POLICY_DENIED,
             1,
         ),

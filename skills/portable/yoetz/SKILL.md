@@ -5,119 +5,24 @@ description: Use for material multi-step, resumable, delegated, or verification-
 
 # Yoetz cooperative workflow
 
-Use Yoetz for material multi-step, resumable, delegated, or verification-heavy work.
+The first workflow operation is `start`. This includes `read_guidance` and commands. Read
+`yoetz://guidance/agent-instructions.md` before it; page and verify empty or clipped guidance. If
+start fails, follow same-request recovery first; ask the user for intro and guidance; do not work
+without a task. Read-only skips.
 
-A new session's first workflow operation is `start` (create or attach), after guidance reads,
-tool/schema discovery, and necessary bootstrap clarification. This includes `read_guidance`
-and commands needed to read installed references or discover tool schemas. Call `start`
-before substantive research, commands, edits, or delegation. If it fails, follow exact
-typed continuations and same-request recovery first, including a named one-time repair.
-If startup remains blocked without an applicable recovery path, ask the user for intro and
-guidance; do not invent a substitute workflow. Continuing without a ledger task is permitted
-only by the bounded optional-service fallback in
-[startup failure precedence](references/coverage-and-receipts.md#startup-failure-precedence).
-It is a local work ledger and checker whose local checks run on your machine, with AI-powered
-review optional: it records only what participants publish and does not observe the workspace,
-enforce a process, authenticate authorship, or prove correctness.
-
-Before the first `start`, read [workflow.md](references/workflow.md). Before the first `check`,
-read [coverage-and-receipts.md](references/coverage-and-receipts.md). Before publishing work, read
-[publication-policy.md](references/publication-policy.md). If request schema metadata is missing
-or a request is rejected, use [request-templates.md](references/request-templates.md). The
-non-negotiable safety floor is [agent-instructions.md](references/agent-instructions.md). Before
-setup/settings, credential/vault operations, import, or recommendation decisions, read the Setup
-and consent / Recommendations sections in [request templates](references/request-templates.md).
-These procedures are conditional; installation grants no authority to perform them.
-
-For Yoetz operations, current served guidance and typed results take precedence over remembered
-product behavior. Preserve higher-priority instructions, current user intent, and authorization
-boundaries. If memory says a
-capability is unavailable, verify it through the current documented read before accepting that
-limit. Do not delete or rewrite host memory during installation.
-
-The normal sequence is:
-
-1. Start or attach once with stable workspace and external references.
-2. Publish a bounded plan and explicit obligations before substantive work.
-3. Read status before publishing replacement evidence or a completion claim: cite the evidence IDs
-   you published (`status view=evidence` with `filter.author=mine`) and find native captures with
-   `filter.strength=immutable_snapshot`; preserve the cursor-bound filter and original `limit` and
-   reuse only IDs a structural link ties to the claim. An omitted description is a privacy setting,
-   not missing evidence. A feedback obligation is in effective scope only after a supported plan
-   revision or exact next-version restatement includes it.
-4. Publish material transitions, evidence, and the completion claim without transcripts, secrets,
-   broad source, or hidden reasoning.
-5. Answer each unanswered finding before the final check; the current status frontier is a valid
-   `finding_frontier`, and observation-authored non-actionable findings need no answer. Select
-   `semantic_required` for an explicit user, policy, or acceptance requirement; omit `mode` when
-   relying on the configured default; use `semantic_if_configured` only when review is known
-   optional; and reserve `deterministic_only` for explicit local/structural work or a deliberate
-   no-egress choice. Track required review through `mode` and the receipt, never as a plan
-   obligation: the check is the review.
-6. Respond only to findings the check returned that are still unanswered, then read
-   `status view=findings` with `filter.include_resolved: true` and actual `resolved` state. “Not
-   returned” is not “resolved.” Those responses and `work_closed` need no recheck; if a repair, a
-   response to another older finding, or other material record follows the check, recheck before the
-   receipt.
-7. Request a receipt, then publish `work_closed` when the work is complete, and report
-   `unanswered_finding_count`, `receipt_blocking_finding_count`, the checked frontier, AI-powered
-   review status/reason, and coverage limits. Stop repeating an unchanged check when proof still
-   cannot qualify; disclose the blocker. At `closure_readiness.state: ready_with_limitations`
-   nothing further is to do: request the receipt without another check; its `standing_limitations`
-   are disclosed, never tasks.
-
-A portable plugin is a carrier only. Its presence, validation, installation, discovery, or host
-activation grants no privacy authority, provider authority, observation consent, AI-powered review
-coverage, or completion proof. MCP ownership is mode-specific and exclusive:
-
-- `external_registration` omits `mcp.json`; the existing host registration remains the sole owner.
-- `plugin_managed` includes the selected `mcp.json` route; this plugin is the sole owner, so do not
-  keep a duplicate native, project, user, or global registration.
-
-Use the active host's declared tools, regardless of the directory where it discovered this skill.
-Host recovery follows that integration's reported continuation; installed plugin bytes are not
-live MCP runtime. Read the Recovery section of
-[coverage-and-receipts.md](references/coverage-and-receipts.md) when a route or binding fails.
-A host auto-review hold is not a Yoetz result; preserve the exact proposed
-request and do not switch to local-only while required approval is pending. A hold does not establish
-the Yoetz grant state. State existing repository authorization only after a current first-hand
-read confirms it; configured routing alone is not consent, and host approval remains separate.
+After start, that core is the operating card; other pages only when a result names them:
+`yoetz://guidance/workflow.md#start-and-resume` for resume/recovery/delegation/capacity and
+`yoetz://guidance/request-templates.md` for setup. Carrier has no authority.
 
 Capacity and cost changes need a disclosed choice: never choose a larger or uncapped local
-observation capacity for an ordinary task. When the user asks, run `yoetz observe
-selection-preview`, relay its scope, current and requested values, local-hardware consequences,
-remaining limits, and lower/pause/resume path, and apply only after the user accepts that preview.
-A no-cap request returns `capacity_no_cap_unsupported`; relay it with the largest supported
-alternative. See "Change local retention capacity" in [workflow.md](references/workflow.md).
+observation capacity for an ordinary task. On request run `yoetz observe selection-preview`, relay
+the lower/pause/resume path, and apply only after the user accepts that preview. A no-cap request
+returns `capacity_no_cap_unsupported`; See "Change local retention capacity" in [workflow.md](references/workflow.md).
 
-Same-task recovery comes before a new task. On an ambiguous write, use `status view=operation` with
-`filter.operation_request_id` set to the exact write request ID. Replay the exact original body with
-the same request ID once only when the page is `absent`, or after an exact typed continuation and
-required approval complete. Use a stored `complete` outcome; retain/report `pending` without a
-continuation, `quarantined`, or unknown state. Never create a sibling to escape an unknown or
-pending write. After all prior writes have known terminal outcomes, a healthy
-authorized binding, and a user-declared remaining or repaired verification scope, one explicit
-`start mode=create` sibling with the same canonical `workspace_ref` and a different stable
-`external_ref` is allowed. It gets a fresh plan, evidence, checks, and native mapping, and inherits
-no predecessor receipt, findings, obligations, evidence IDs, or mapping. The complete decision table
-and prohibitions are in [coverage-and-receipts.md](references/coverage-and-receipts.md).
-
-The operation view needs both `session_id` and `writer_id`. If a `start` response is lost before
-those ids exist, replay the exact original `start` body once with the same `request_id`; do not
-invent ids or fabricate a status query. The same rule applies to a typed pending `start` result
-without returned route ids.
-
-For cooperative delegation, read the multi-agent section of `yoetz://guidance/workflow.md`. A
-native subagent learns its role only from its assignment, so give each child its one selector, a
-distinct actor id, and its own closure duties (plan, evidence and completion claim, `check`,
-`respond`, `receipt`, then `work_closed`). Tell a helper given neither a handle nor a parent
-session to make no Yoetz call.
-
-Delegation after an outage: if `start` (or any call) returned `safe_details.availability:
-terminal_unavailable`, that state belongs to the host binding, and later calls under a new
-`request_id` inherit the same `correlation_id` without a new diagnostic. Carry it into every
-delegated assignment as a bounded `yoetz_availability` block (state, host binding, parent
-`correlation_id` and `request_id`, proof limit). Delegates that inherit it make no Yoetz call and
-publish nothing; only the coordinator runs the one named repair and replays the original
-`request_id`. Never run `yoetz service stop`, `service run`, or `service restart` from
-`INTERNAL_ERROR` or from a message that did not name that exact command.
+For closure, publish evidence before `check`, answer findings, and request `receipt` last.
+`check` after the plan and each milestone; on a finding, change work or record what it names,
+not just recheck. At `ready_with_limitations`, nothing further is to do: request the receipt without another check;
+`standing_limitations` are disclosed, never tasks. A `respond` does not clear a finding.
+Yoetz limit: verify, respond `self_verified`; never `yoetz-blocker`.
+On a limitation request, if the requirement may be met but cannot be verified here, respond `acknowledged` with the reason; `acknowledged_not_done` only when you know it is not met.
+Never empty or withdraw a working deliverable over a finding or an "empty if unsolved" clause.

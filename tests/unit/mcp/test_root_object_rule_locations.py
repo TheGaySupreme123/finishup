@@ -272,13 +272,28 @@ def test_unconditional_payload_required_is_not_reported_as_conditional() -> None
         {"action_kind": "edit", "description": "bounded action description"}
     )
     assert all(item.get("reason") != "conditional_field_required" for item in locations)
-    assert locations == ({"field": "/event_drafts/0/payload", "reason": "invalid_type_or_value"},)
+    # The selected family rides along for the hint builder only; it never reaches the wire.
+    assert locations == (
+        {
+            "field": "/event_drafts/0/payload",
+            "reason": "invalid_type_or_value",
+            "family": "action_recorded",
+            "family_version": "1.0.0",
+            # Schema-listed required names the draft lacks, also hint-only (tb4n1).
+            "missing_fields": "action_id",
+        },
+    )
 
+    # The selected family's own contract names the missing key; the envelope recital, which the
+    # well-formed draft already satisfies, is no longer the answer (benchmark full3).
     hint = authoring_hint(_PUBLISH_SCHEMA, locations)
-    assert "each event_drafts entry requires" in hint
-    assert "payload" in hint
+    assert (
+        "the action_recorded 1.0.0 payload is missing action_id; it requires action_id, "
+        "action_kind, and description"
+    ) in hint
     message = invalid_request_message("publish_work", locations)
-    assert "each event_drafts entry requires" in message
+    assert "payload is missing action_id; it requires action_id" in message
+    assert "each event_drafts entry requires" not in message
 
 
 def test_selected_payload_all_of_property_const_names_its_required_peer() -> None:

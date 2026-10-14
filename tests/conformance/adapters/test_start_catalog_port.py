@@ -819,9 +819,20 @@ async def test_repository_binding_is_atomic_and_mismatch_precedes_operation_rese
             session_id=created.session_id,
             repository_privacy_commitment=commitment_b,
         )
+        missing = await _command(
+            catalog,
+            operation_id=_id(IdKind.REQUEST, 709),
+            mode=StartMode.ATTACH,
+            session_id=created.session_id,
+        )
+        with pytest.raises(PublicOperationError) as missing_failure:
+            await catalog.reserve_or_resume(missing)
+        assert missing_failure.value.code is PublicErrorCode.SESSION_CONFLICT
+        assert missing_failure.value.safe_details == {"reason_code": "repository_identity_required"}
         with pytest.raises(PublicOperationError) as failure:
             await catalog.reserve_or_resume(mismatch)
         assert failure.value.code is PublicErrorCode.SESSION_CONFLICT
+        assert failure.value.safe_details == {"reason_code": "repository_identity_mismatch"}
         if isinstance(catalog, MemoryStartCatalogAdapter):
             after_operations = len(memory_state.operations)
         else:
@@ -832,6 +843,17 @@ async def test_repository_binding_is_atomic_and_mismatch_precedes_operation_rese
             after_operations = int(row[0])
         assert after_operations == before_operations
         assert before_operations == after_operations == 1
+
+        corrected = await catalog.reserve_or_resume(
+            await _command(
+                catalog,
+                operation_id=_id(IdKind.REQUEST, 708),
+                mode=StartMode.ATTACH,
+                session_id=created.session_id,
+                repository_privacy_commitment=commitment_a,
+            )
+        )
+        assert corrected.task_id == created.task_id
 
 
 @pytest.mark.anyio

@@ -348,6 +348,7 @@ def test_wrong_kind_fails_before_randomness_or_value_inspection(
 def test_no_identifier_parse_surface() -> None:
     assert tuple(ids_module.__all__) == (
         "ACTOR_ID_PATTERN",
+        "OPAQUE_ITEM_ID_PATTERN",
         "ID_TOTAL_LENGTH",
         "PREFIX_BY_KIND",
         "IdKind",
@@ -355,6 +356,7 @@ def test_no_identifier_parse_surface() -> None:
         "new_id",
         "safe_request_id_from",
         "validate_actor_id",
+        "validate_opaque_item_id",
         "validate_id",
     )
     for forbidden in (

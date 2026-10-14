@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
@@ -24,11 +24,13 @@ from yoetz.protocol.canonical import (
 from yoetz.protocol.coverage import PublicationChannel
 from yoetz.protocol.ids import IdKind, validate_id
 from yoetz.protocol.models import MAX_REVIEW_EXCERPTS, DataCategory
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 
 __all__ = [
     "MAX_EGRESS_CASE_BYTES",
     "MAX_EGRESS_ITEM_BYTES",
     "MAX_RECEIPT_FINAL_BYTES",
+    "MAX_WITHHELD_ITEM_IDS",
     "MAX_PRIVACY_CHANGES",
     "MAX_PRIVACY_CHANGE_LABELS",
     "MAX_PRIVACY_LABEL_BYTES",
@@ -53,6 +55,8 @@ __all__ = [
     "ClassifiedContext",
     "ClassifiedContextItem",
     "ConsentSource",
+    "CredentialHeuristic",
+    "external_review_credential_heuristic",
     "DataCategory",
     "DataClass",
     "DisclosureProposal",
@@ -87,8 +91,12 @@ __all__ = [
     "ReceiptCounts",
     "ReceiptPolicyBinding",
     "ReceiptSecretScan",
+    "ReceiptSecretScanStage",
     "ReceiptTransformations",
+    "OBSERVATION_ADVICE_PACKET_ITEM_ID",
+    "EgressOriginOperation",
     "REVIEW_PACKET_ITEM_ID",
+    "egress_origin_operation",
     "RequestCommitment",
     "ReviewContextProfile",
     "ReviewSelectionPolicy",
@@ -103,6 +111,8 @@ __all__ = [
 # Reserved item id for the structural review-packet envelope. Owned here rather than in the
 # application layer because the egress bound below is keyed on it.
 REVIEW_PACKET_ITEM_ID: Final = "review-packet"
+# Reserved item id for the background observation-advice packet (#619).
+OBSERVATION_ADVICE_PACKET_ITEM_ID: Final = "observation-advice-packet"
 
 MAX_EGRESS_ITEM_BYTES: Final = 16 * 1024
 # The structural review-packet envelope is one candidate item by transport, but it is not one
@@ -122,6 +132,10 @@ MAX_EGRESS_CASE_BYTES: Final = 512 * 1024
 # domain used to admit up to ``MAX_EGRESS_CASE_BYTES``, so a receipt between 256 and 512 KiB was
 # valid in the store and invalid on the wire, and failed every page it was listed on (issue #921).
 MAX_RECEIPT_FINAL_BYTES: Final = 262_144
+# The public receipt and semantic-result contracts carry at most 64 opaque item references. Keep
+# this bound in the shared privacy domain so proposals, prepared cases, receipts, and in-process
+# results reject an overlarge omission set before any object is finalized or encoded.
+MAX_WITHHELD_ITEM_IDS: Final = 64
 AUDIT_STORE_VERSION: Final = 1
 PRIVACY_REQUEST_COMMITMENT_ALGORITHM: Final = "hmac-sha256/yoetz-privacy-egress-request-v1"
 
@@ -220,12 +234,57 @@ class ReviewContextProfile(str, Enum):  # noqa: UP042 - durable enum
     CUSTOM = "custom"
 
 
+class CredentialHeuristic(str, Enum):  # noqa: UP042 - durable enum
+    """Whether disclosure applies the low-confidence credential *heuristic* (issue #982).
+
+    ``enforced`` is the default and the only value every policy approved before this field
+    existed can mean. ``disabled`` is an owner opt-out, granted only through the trusted policy
+    decision, that stops disclosure from replacing or withholding values that only the
+    assignment heuristic (``password = ...``, ``*_token = ...``) flags. It never touches the
+    high-confidence detectors: known credential shapes, private-key markers, URI passwords,
+    canaries and scanner saturation always block or redact.
+    """
+
+    ENFORCED = "enforced"
+    DISABLED = "disabled"
+
+
 class EgressChannel(str, Enum):  # noqa: UP042 - durable enum
     LLM_INFERENCE = "llm_inference"
     PRODUCT_TELEMETRY = "product_telemetry"
     CRASH_DIAGNOSTICS = "crash_diagnostics"
     UPDATE_CHECKS = "update_checks"
     CAPABILITY_TESTING = "capability_testing"
+
+
+class EgressOriginOperation(str, Enum):  # noqa: UP042 - durable enum
+    """The Yoetz operation that asked for one network disclosure (tb4n2 N-5).
+
+    Closed, so a receipt can name which operation minted it without carrying any request content.
+    """
+
+    SEMANTIC_CHECK = "semantic_check"
+    OBSERVATION_ADVICE = "observation_advice"
+    CREDENTIAL_PROBE = "credential_probe"
+
+
+def egress_origin_operation(purpose: str, item_ids: Iterable[str]) -> EgressOriginOperation | None:
+    """Name the operation behind one network disclosure from its purpose and reserved item ids.
+
+    Every producer marks its case with a reserved structural item id, so the origin is derived,
+    never asserted by a caller. An unrecognized shape returns ``None`` (the receipt omits it).
+    """
+
+    if purpose == "credential-probe":
+        return EgressOriginOperation.CREDENTIAL_PROBE
+    if purpose != "semantic-review":
+        return None
+    identities = frozenset(item_ids)
+    if REVIEW_PACKET_ITEM_ID in identities:
+        return EgressOriginOperation.SEMANTIC_CHECK
+    if OBSERVATION_ADVICE_PACKET_ITEM_ID in identities:
+        return EgressOriginOperation.OBSERVATION_ADVICE
+    return None
 
 
 class LocalDisclosureSink(str, Enum):  # noqa: UP042 - durable enum
@@ -925,6 +984,9 @@ class PrivacyPolicy:
     trusted_human_control_data_classes: tuple[DataClass, ...]
     created_at: datetime
     supersedes_policy_digest: str | None = None
+    # Owner opt-out for the low-confidence credential heuristic (issue #982). Encoded only when
+    # ``disabled`` so every policy written before the field existed keeps its bytes and digest.
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
     def __post_init__(self) -> None:
         validate_id(IdKind.PRIVACY_POLICY, self.policy_id)
@@ -1010,6 +1072,11 @@ class PrivacyPolicy:
         _time(self.created_at)
         if self.supersedes_policy_digest is not None:
             validate_sha256_digest(self.supersedes_policy_digest)
+        _enum(self.credential_heuristic, CredentialHeuristic)
+
+    @property
+    def credential_heuristic_enforced(self) -> bool:
+        return self.credential_heuristic is CredentialHeuristic.ENFORCED
 
     def meet(self, other: PrivacyPolicy) -> PrivacyPolicy:
         """Intersect two standing policies (ADR-009 decision 6 / protocol policy resolution).
@@ -1146,24 +1213,24 @@ class PrivacyPolicy:
             ),
             identity.created_at,
             None,
+            _composed_credential_heuristic(self, other),
         )
+        meet_identity: dict[str, JsonValue] = {
+            "components": cast(JsonValue, sorted((self.policy_digest, other.policy_digest))),
+            "meet": "yoetz.privacy-policy-meet/1",
+            "network_egress_permitted": placeholder.network_egress_permitted,
+            "profile": placeholder.profile.value,
+            "require_current_provider_data_use_evidence": (
+                placeholder.require_current_provider_data_use_evidence
+            ),
+            "review_context_profile": placeholder.review_context_profile.value,
+        }
+        if not placeholder.credential_heuristic_enforced:
+            # Absent when enforced, so every existing composition keeps its digest.
+            meet_identity["credential_heuristic"] = placeholder.credential_heuristic.value
         return replace(
             placeholder,
-            policy_digest=canonical_digest(
-                cast(
-                    JsonValue,
-                    {
-                        "components": sorted((self.policy_digest, other.policy_digest)),
-                        "meet": "yoetz.privacy-policy-meet/1",
-                        "network_egress_permitted": placeholder.network_egress_permitted,
-                        "profile": placeholder.profile.value,
-                        "require_current_provider_data_use_evidence": (
-                            placeholder.require_current_provider_data_use_evidence
-                        ),
-                        "review_context_profile": placeholder.review_context_profile.value,
-                    },
-                )
-            ),
+            policy_digest=canonical_digest(cast(JsonValue, meet_identity)),
         )
 
     @property
@@ -1205,6 +1272,46 @@ class PrivacyPolicy:
                 key=lambda item: item.value.encode("ascii"),
             )
         )
+
+
+def external_review_credential_heuristic(
+    policy: PrivacyPolicy, binding: ProviderBinding | None, *, local_sink: object = None
+) -> CredentialHeuristic:
+    """The credential-heuristic setting one disclosure applies (owner decision, 2026-10-07).
+
+    The opt-out reaches only the external AI reviewer: an LLM-inference disclosure to an external
+    provider binding. Every local output (agent context, local model, local views) keeps the
+    heuristic exactly as when it is enabled.
+    """
+
+    if type(policy) is not PrivacyPolicy:
+        raise _invalid()
+    if local_sink is None and binding is not None and binding.transport == "external":
+        return policy.credential_heuristic
+    return CredentialHeuristic.ENFORCED
+
+
+def _composed_credential_heuristic(
+    first: PrivacyPolicy, second: PrivacyPolicy
+) -> CredentialHeuristic:
+    """Compose the credential-heuristic setting of two scopes (owner decision, 2026-10-07).
+
+    The opt-out belongs to the repository grant: between the installation-wide row and a
+    repository row, the repository row decides, so a repository is "off" only where its own grant
+    says off. The installation-wide value is only the default a repository without a grant
+    inherits. Any other composition (two installation rows, or a task or request row) keeps
+    ``enforced`` unless both sides are ``disabled``.
+    """
+
+    kinds = {first.effective_scope.kind, second.effective_scope.kind}
+    if kinds == {AuthorizationScopeKind.MACHINE, AuthorizationScopeKind.WORKSPACE}:
+        repository = (
+            first if first.effective_scope.kind is AuthorizationScopeKind.WORKSPACE else second
+        )
+        return repository.credential_heuristic
+    if first.credential_heuristic_enforced or second.credential_heuristic_enforced:
+        return CredentialHeuristic.ENFORCED
+    return CredentialHeuristic.DISABLED
 
 
 @dataclass(frozen=True, slots=True)
@@ -1261,7 +1368,14 @@ PRIVACY_CHANGE_AREAS: Final = frozenset(
 # absent here can never reach a human approval screen, and a field present here always has a
 # fixed local label. Adding a policy dimension therefore has to add its token in one place.
 PRIVACY_CHANGE_FIELDS: Final = {
-    "global": frozenset({"effective_scope", "network_egress", "provider_data_use_evidence"}),
+    "global": frozenset(
+        {
+            "credential_heuristic",
+            "effective_scope",
+            "network_egress",
+            "provider_data_use_evidence",
+        }
+    ),
     "review": frozenset(
         {
             "sections",
@@ -1428,32 +1542,35 @@ _CHANGE_IMPACT: Final[dict[tuple[str, str], int]] = {
     ("local_model", "binding"): 5,
     ("channel", "preview_required"): 6,
     ("global", "provider_data_use_evidence"): 7,
-    ("channel", "data_classes"): 8,
-    ("channel", "categories"): 9,
-    ("channel", "purposes"): 10,
-    ("global", "effective_scope"): 11,
-    ("channel", "scope_ceiling"): 12,
-    ("channel", "authorization_ttl_seconds"): 13,
-    ("channel", "max_bytes"): 14,
-    ("channel", "max_tokens"): 15,
-    ("local_model", "data_classes"): 16,
-    ("local_model", "categories"): 17,
-    ("agent_context", "data_classes"): 18,
-    ("agent_context", "categories"): 19,
-    ("human_control", "data_classes"): 20,
-    ("human_control", "categories"): 21,
-    ("review", "include_exact_command_text"): 22,
-    ("review", "include_finding_prose"): 23,
-    ("review", "relevance"): 24,
-    ("review", "excerpt_kinds"): 25,
-    ("review", "sections"): 26,
-    ("review", "max_excerpt_bytes"): 27,
-    ("review", "max_total_excerpt_bytes"): 28,
-    ("review", "max_excerpts"): 29,
-    ("review", "max_change_observations"): 30,
-    ("review", "max_assessments"): 31,
-    ("review", "max_timeline_items"): 32,
-    ("review", "max_omissions"): 33,
+    # Whether possible-credential values are filtered out of what is disclosed: a disclosure
+    # dimension, read before which categories and sensitivity classes may leave (issue #982).
+    ("global", "credential_heuristic"): 8,
+    ("channel", "data_classes"): 9,
+    ("channel", "categories"): 10,
+    ("channel", "purposes"): 11,
+    ("global", "effective_scope"): 12,
+    ("channel", "scope_ceiling"): 13,
+    ("channel", "authorization_ttl_seconds"): 14,
+    ("channel", "max_bytes"): 15,
+    ("channel", "max_tokens"): 16,
+    ("local_model", "data_classes"): 17,
+    ("local_model", "categories"): 18,
+    ("agent_context", "data_classes"): 19,
+    ("agent_context", "categories"): 20,
+    ("human_control", "data_classes"): 21,
+    ("human_control", "categories"): 22,
+    ("review", "include_exact_command_text"): 23,
+    ("review", "include_finding_prose"): 24,
+    ("review", "relevance"): 25,
+    ("review", "excerpt_kinds"): 26,
+    ("review", "sections"): 27,
+    ("review", "max_excerpt_bytes"): 28,
+    ("review", "max_total_excerpt_bytes"): 29,
+    ("review", "max_excerpts"): 30,
+    ("review", "max_change_observations"): 31,
+    ("review", "max_assessments"): 32,
+    ("review", "max_timeline_items"): 33,
+    ("review", "max_omissions"): 34,
 }
 
 
@@ -1769,6 +1886,10 @@ class ClassifiedContextItem:
     scope_valid: bool
     classifier_ruleset_version: str
     provenance: DisclosureProvenance | None = None
+    # Low-confidence secret-like assignments are withheld item-by-item by semantic egress. They
+    # remain separate from ``forbidden_findings`` so a concrete credential still blocks the whole
+    # case and so local receipts can explain the omission without retaining matched bytes.
+    heuristic_findings: tuple[ForbiddenDataKind, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.candidate) is not CandidateContextItem:
@@ -1777,6 +1898,11 @@ class ClassifiedContextItem:
         object.__setattr__(
             self, "forbidden_findings", _sorted_enums(self.forbidden_findings, ForbiddenDataKind)
         )
+        object.__setattr__(
+            self, "heuristic_findings", _sorted_enums(self.heuristic_findings, ForbiddenDataKind)
+        )
+        if set(self.forbidden_findings) & set(self.heuristic_findings):
+            raise _invalid()
         if type(self.scope_valid) is not bool:
             raise _invalid()
         _text(self.classifier_ruleset_version, _VERSION)
@@ -1788,10 +1914,14 @@ class ClassifiedContextItem:
 class ClassifiedContext:
     candidate: CandidateContext
     items: tuple[ClassifiedContextItem, ...]
+    # The owner policy's credential-heuristic setting this classification ran under (issue #982).
+    # Minimization reads it from here, so the classifier and minimizer cannot disagree about it.
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
     def __post_init__(self) -> None:
         if type(self.candidate) is not CandidateContext or type(self.items) is not tuple:
             raise _invalid()
+        _enum(self.credential_heuristic, CredentialHeuristic)
         if any(type(item) is not ClassifiedContextItem for item in self.items):
             raise _invalid()
         if tuple(item.candidate for item in self.items) != self.candidate.items:
@@ -1974,8 +2104,33 @@ class DisclosureProposal:
     max_tokens: int
     expires_at: datetime
     proposal_commitment: str
+    # Opaque case item ids omitted by the heuristic scanner. This is persisted with the exact
+    # prepared proposal so a restart/replay can report the same coverage loss without reopening
+    # or re-scanning the original plaintext.
+    withheld_item_ids: tuple[str, ...] = ()
+    # Scanner identity is persisted with the proposal so a resume receipt can state the exact
+    # scanner that guarded the prepared case, rather than inventing a clean ``resume`` profile.
+    # Old proposal rows did not persist scanner identity. ``unknown`` keeps that fact explicit;
+    # ``legacy`` would misleadingly name a scanner registry that was never observed.
+    scanner_registry_version: str = "unknown"
+    scanner_profile_digest: str = "sha256:" + "0" * 64
+    # The minimized case identities are retained separately from their content digests.  A digest
+    # is evidence about bytes, not an opaque case-item identity, and substituting one for the
+    # other during resume loses the exact replacement/withheld-item binding.
+    included_item_ids: tuple[str, ...] = ()
+    # Proposal admission is route-bound.  Missing identity is an unreadable legacy proposal, not
+    # permission to resume it against whichever route happens to be active now.
+    route_identity_digest: str | None = None
+    # PL2-1 (issue #982): bounded item refs and line numbers of replaced or withheld
+    # credential-like values, persisted with the proposal so an approved resume or a replay
+    # reports them without reopening plaintext. Never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
 
     def __post_init__(self) -> None:
+        try:
+            validate_semantic_redacted_values(self.redacted_values)
+        except ValueError as exc:
+            raise _invalid() from exc
         validate_id(IdKind.PRIVACY_PROPOSAL, self.privacy_proposal_id)
         validate_id(IdKind.REQUEST, self.request_id)
         validate_id(IdKind.TASK, self.task_id)
@@ -2004,6 +2159,26 @@ class DisclosureProposal:
         _nonnegative(self.max_tokens)
         _time(self.expires_at)
         validate_commitment(self.proposal_commitment)
+        if type(self.withheld_item_ids) is not tuple or self.withheld_item_ids != tuple(
+            sorted(set(self.withheld_item_ids), key=str.encode)
+        ):
+            raise _invalid()
+        if len(self.withheld_item_ids) > MAX_WITHHELD_ITEM_IDS:
+            raise _invalid()
+        for item_id in self.withheld_item_ids:
+            _text(item_id, _OPAQUE)
+        _text(self.scanner_registry_version, _VERSION)
+        validate_sha256_digest(self.scanner_profile_digest)
+        if type(self.included_item_ids) is not tuple or self.included_item_ids != tuple(
+            sorted(set(self.included_item_ids), key=str.encode)
+        ):
+            raise _invalid()
+        if len(self.included_item_ids) > 4096:
+            raise _invalid()
+        for item_id in self.included_item_ids:
+            _text(item_id, _OPAQUE)
+        if self.route_identity_digest is not None:
+            validate_sha256_digest(self.route_identity_digest)
 
 
 type PrivacyAuditSubject = (
@@ -2094,6 +2269,11 @@ class ApprovedOutboundCase:
     authorization_id: str
     policy_digest: str
     case_digest: str
+    withheld_item_ids: tuple[str, ...] = ()
+    redacted_span_count: int = 0
+    # The owner policy's credential-heuristic setting the case was prepared under (issue #982);
+    # the gateway's final rendered-body scan honours exactly this value.
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
     def __post_init__(self) -> None:
         validate_id(IdKind.OUTBOUND_CASE, self.case_id)
@@ -2121,6 +2301,11 @@ class ApprovedOutboundCase:
         validate_id(IdKind.EGRESS_AUTHORIZATION, self.authorization_id)
         validate_sha256_digest(self.policy_digest)
         validate_sha256_digest(self.case_digest)
+        object.__setattr__(self, "withheld_item_ids", _sorted_text(self.withheld_item_ids))
+        if len(self.withheld_item_ids) > MAX_WITHHELD_ITEM_IDS:
+            raise _invalid()
+        _nonnegative(self.redacted_span_count)
+        _enum(self.credential_heuristic, CredentialHeuristic)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2140,6 +2325,11 @@ class ApprovedLocalDisclosureCase:
     purpose: str
     policy_digest: str
     case_digest: str
+    withheld_item_ids: tuple[str, ...] = ()
+    redacted_span_count: int = 0
+    # The owner policy's credential-heuristic setting the case was prepared under (issue #982);
+    # the gateway's final rendered-body scan honours exactly this value.
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
     def __post_init__(self) -> None:
         validate_id(IdKind.OUTBOUND_CASE, self.case_id)
@@ -2167,6 +2357,11 @@ class ApprovedLocalDisclosureCase:
         _text(self.purpose, _PURPOSE)
         validate_sha256_digest(self.policy_digest)
         validate_sha256_digest(self.case_digest)
+        object.__setattr__(self, "withheld_item_ids", _sorted_text(self.withheld_item_ids))
+        if len(self.withheld_item_ids) > MAX_WITHHELD_ITEM_IDS:
+            raise _invalid()
+        _nonnegative(self.redacted_span_count)
+        _enum(self.credential_heuristic, CredentialHeuristic)
 
 
 type ApprovedProviderCase = ApprovedOutboundCase | ApprovedLocalDisclosureCase
@@ -2256,24 +2451,60 @@ class ReceiptTransformations:
         _nonnegative(self.blocked_items)
 
 
+class ReceiptSecretScanStage(str, Enum):  # noqa: UP042 - durable receipt vocabulary
+    CANDIDATE = "candidate"
+    PREPARED_CASE = "prepared_case"
+    RENDERED_BODY = "rendered_body"
+    NOT_RUN = "not_run"
+    # Compatibility marker for pre-stage receipts.  Older rows did not say whether a zero-match
+    # result came from a prepared scan or from a pre-dispatch refusal; readers preserve that
+    # uncertainty instead of presenting it as a clean scan.
+    LEGACY_UNKNOWN = "legacy_unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class ReceiptSecretScan:
     registry_version: str
     scanner_profile_digest: str
     match_count: int
     passed: bool
+    stage: ReceiptSecretScanStage = ReceiptSecretScanStage.PREPARED_CASE
+    not_run_reason: PrivacyReason | None = None
+    # ``disabled`` records that the owner policy in force had the low-confidence credential
+    # heuristic turned off, so only high-confidence detectors ran (issue #982). Encoded only when
+    # disabled; every receipt written before the field existed keeps its exact bytes.
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED
 
     def __post_init__(self) -> None:
         _text(self.registry_version, _VERSION)
+        _enum(self.credential_heuristic, CredentialHeuristic)
         validate_sha256_digest(self.scanner_profile_digest)
         _nonnegative(self.match_count)
         if type(self.passed) is not bool:
             raise _invalid()
+        _enum(self.stage, ReceiptSecretScanStage)
+        if self.stage is ReceiptSecretScanStage.NOT_RUN:
+            if self.match_count != 0 or self.passed or self.not_run_reason is None:
+                raise _invalid()
+        elif self.stage is ReceiptSecretScanStage.LEGACY_UNKNOWN:
+            # Pre-stage receipts carried only ``match_count`` and ``passed``.  Keep their
+            # uncertainty for every historical combination, including blocked/unrun rows that
+            # stored ``passed=false`` with ``match_count=0``; a reader must not reinterpret that
+            # shape as a prepared clean scan.  ``not_run_reason`` is a field introduced with the
+            # explicit NOT_RUN stage.
+            if self.not_run_reason is not None:
+                raise _invalid()
+        elif self.not_run_reason is not None or self.passed is not (self.match_count == 0):
+            raise _invalid()
+        if self.not_run_reason is not None:
+            _enum(self.not_run_reason, PrivacyReason)
 
 
 @dataclass(frozen=True, slots=True)
 class EgressReceipt:
-    schema_version: Literal["1.0.0"]
+    # ``1.0.0`` is retained for durable rows written before the additive receipt extension;
+    # newly written receipts use ``1.1.0`` while the active control contract accepts both.
+    schema_version: Literal["1.0.0", "1.1.0"]
     receipt_id: str
     request_id: str
     privacy_proposal_id: str
@@ -2296,10 +2527,19 @@ class EgressReceipt:
     dispatch_id: str | None = None
     dispatch_started_at: datetime | None = None
     request_commitment: RequestCommitment | None = None
+    withheld_item_ids: tuple[str, ...] = ()
+    withheld_item_reason: Literal["never_send_heuristic"] | None = None
+    # The closed operation that asked for this disclosure (tb4n2 N-5); 1.1.0 only, optional so
+    # every receipt written before it keeps its exact bytes.
+    origin_operation: EgressOriginOperation | None = None
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not str or self.schema_version != "1.0.0":
+        if type(self.schema_version) is not str or self.schema_version not in {"1.0.0", "1.1.0"}:
             raise _invalid()
+        if self.origin_operation is not None:
+            _enum(self.origin_operation, EgressOriginOperation)
+            if self.schema_version == "1.0.0":
+                raise _invalid()
         validate_id(IdKind.EGRESS_RECEIPT, self.receipt_id)
         validate_id(IdKind.REQUEST, self.request_id)
         validate_id(IdKind.PRIVACY_PROPOSAL, self.privacy_proposal_id)
@@ -2388,11 +2628,37 @@ class EgressReceipt:
             or self.audit_store_version != AUDIT_STORE_VERSION
         ):
             raise _invalid()
+        if (
+            type(self.withheld_item_ids) is not tuple
+            or len(self.withheld_item_ids) > MAX_WITHHELD_ITEM_IDS
+            or self.withheld_item_ids != tuple(sorted(set(self.withheld_item_ids), key=str.encode))
+        ):
+            raise _invalid()
+        for item_id in self.withheld_item_ids:
+            _text(item_id, _OPAQUE)
+        if self.withheld_item_ids:
+            if self.withheld_item_reason is None:
+                object.__setattr__(self, "withheld_item_reason", "never_send_heuristic")
+            elif self.withheld_item_reason != "never_send_heuristic":
+                raise _invalid()
+        elif self.withheld_item_reason is not None:
+            raise _invalid()
+        if self.schema_version == "1.0.0" and (
+            self.withheld_item_ids
+            or (
+                type(self.secret_scan) is ReceiptSecretScan
+                and self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+            )
+        ):
+            # The released 1.0 wire contract has no safe place for omission identities or the
+            # credential-heuristic opt-out.  Do not let a caller construct a value that a legacy
+            # encoder would silently truncate.
+            raise _invalid()
 
 
 @dataclass(frozen=True, slots=True)
 class LocalDisclosureReceipt:
-    schema_version: Literal["1.0.0"]
+    schema_version: Literal["1.0.0", "1.1.0"]
     receipt_id: str
     request_id: str
     privacy_proposal_id: str
@@ -2410,9 +2676,11 @@ class LocalDisclosureReceipt:
     secret_scan: ReceiptSecretScan
     safe_failure_reason: PrivacyReason | None
     audit_store_version: Literal[1]
+    withheld_item_ids: tuple[str, ...] = ()
+    withheld_item_reason: Literal["never_send_heuristic"] | None = None
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not str or self.schema_version != "1.0.0":
+        if type(self.schema_version) is not str or self.schema_version not in {"1.0.0", "1.1.0"}:
             raise _invalid()
         validate_id(IdKind.EGRESS_RECEIPT, self.receipt_id)
         validate_id(IdKind.REQUEST, self.request_id)
@@ -2423,6 +2691,29 @@ class LocalDisclosureReceipt:
         if (
             type(self.scope) is not AuthorizationScope
             or type(self.policy) is not ReceiptPolicyBinding
+        ):
+            raise _invalid()
+        if (
+            type(self.withheld_item_ids) is not tuple
+            or len(self.withheld_item_ids) > MAX_WITHHELD_ITEM_IDS
+            or self.withheld_item_ids != tuple(sorted(set(self.withheld_item_ids), key=str.encode))
+        ):
+            raise _invalid()
+        for item_id in self.withheld_item_ids:
+            _text(item_id, _OPAQUE)
+        if self.withheld_item_ids:
+            if self.withheld_item_reason is None:
+                object.__setattr__(self, "withheld_item_reason", "never_send_heuristic")
+            elif self.withheld_item_reason != "never_send_heuristic":
+                raise _invalid()
+        elif self.withheld_item_reason is not None:
+            raise _invalid()
+        if self.schema_version == "1.0.0" and (
+            self.withheld_item_ids
+            or (
+                type(self.secret_scan) is ReceiptSecretScan
+                and self.secret_scan.credential_heuristic is not CredentialHeuristic.ENFORCED
+            )
         ):
             raise _invalid()
         _text(self.purpose, _PURPOSE)

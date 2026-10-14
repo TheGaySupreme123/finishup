@@ -9,6 +9,8 @@ from typing import cast
 import pytest
 
 from yoetz.cli.render import render_human_error
+from yoetz.mcp import resources
+from yoetz.mcp.resources import MAX_GUIDANCE_PAGE_SIZE
 from yoetz.mcp.summaries import (
     _MAX_SUMMARY_BYTES,  # pyright: ignore[reportPrivateUsage]
     summary_for_public_error,
@@ -39,6 +41,10 @@ from yoetz.protocol.recovery import (
 
 _GUIDANCE_ROOT = Path(__file__).resolve().parents[3] / "guidance"
 _CORRELATION_ID = "err_3f2a1b4c-5d6e-4f70-8a91-b2c3d4e5f607"
+
+
+def _read_canonical_resource(logical_name: str) -> bytes:
+    return (_GUIDANCE_ROOT.parent / logical_name).read_bytes()
 
 
 def _heading_slugs(path: Path) -> set[str]:
@@ -99,6 +105,32 @@ class TestRatchet:
 
 
 class TestRegistryBounds:
+    def test_every_guidance_pointer_is_registered_and_one_bounded_page(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Typed recovery never points at an orphan or oversized guidance section."""
+
+        monkeypatch.setattr(
+            resources,
+            "read_verified_resource",
+            _read_canonical_resource,
+        )
+        resources._topic_resource.cache_clear()  # pyright: ignore[reportPrivateUsage]
+        pointers = {
+            entry.guidance_uri for entry in RECOVERY_DIRECTIVES.values() if entry.guidance_uri
+        }
+        assert pointers
+        for uri in pointers:
+            resource = resources.resource_for_uri(uri)
+            payload = resources.read_resource(uri)
+            assert resource.uri == uri
+            assert payload.startswith(b"#")
+            assert 0 < len(payload) <= MAX_GUIDANCE_PAGE_SIZE
+            page = resources.read_resource_page(uri, page_size=MAX_GUIDANCE_PAGE_SIZE)
+            assert page.page_count == 1
+            assert page.complete
+            assert page.continuation is None
+
     @pytest.mark.parametrize("token", sorted(CONTINUATION_TOKENS))
     def test_guidance_pointer_resolves_to_a_real_document_and_anchor(self, token: str) -> None:
         """A pointer that leads nowhere teaches an agent to ignore every pointer."""

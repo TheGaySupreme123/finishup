@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from yoetz.application.observation_check_policy import (
+    ObservationCheckPolicyAbsent,
     load_observation_check_policy,
     parse_observation_check_policy,
 )
@@ -60,3 +61,48 @@ def test_policy_reader_accepts_fixed_in_workspace_file(tmp_path: Path) -> None:
     policy, raw = load_observation_check_policy(tmp_path)
     assert raw == _policy()
     assert tuple(item.approval_id for item in policy.checks) == ("smoke",)
+
+
+@pytest.mark.parametrize("make_dir", [False, True])
+def test_policy_reader_reports_missing_policy_as_absent_not_invalid(
+    tmp_path: Path, make_dir: bool
+) -> None:
+    if make_dir:
+        (tmp_path / ".yoetz").mkdir()
+    with pytest.raises(ObservationCheckPolicyAbsent) as caught:
+        load_observation_check_policy(tmp_path)
+    # Still the invalid-policy failure for callers that only need "no usable policy".
+    assert isinstance(caught.value, ProtocolValueError)
+    assert caught.value.reason_code == "invalid_approved_check_policy"
+
+
+def test_policy_reader_keeps_present_but_broken_policy_invalid(tmp_path: Path) -> None:
+    policy_dir = tmp_path / ".yoetz"
+    policy_dir.mkdir()
+    (policy_dir / "checks.toml").write_bytes(b"not = [valid")
+    with pytest.raises(ProtocolValueError) as caught:
+        load_observation_check_policy(tmp_path)
+    assert not isinstance(caught.value, ObservationCheckPolicyAbsent)
+    assert caught.value.reason_code == "invalid_approved_check_policy"
+
+
+@pytest.mark.parametrize("kind", ["file", "symlink"])
+def test_policy_reader_treats_non_directory_policy_dir_as_invalid(
+    tmp_path: Path, kind: str
+) -> None:
+    if kind == "file":
+        (tmp_path / ".yoetz").write_bytes(b"")
+    else:
+        (tmp_path / ".yoetz").symlink_to(tmp_path / "missing-dir")
+    with pytest.raises(ProtocolValueError) as caught:
+        load_observation_check_policy(tmp_path)
+    assert not isinstance(caught.value, ObservationCheckPolicyAbsent)
+
+
+def test_policy_reader_treats_dangling_policy_symlink_as_invalid(tmp_path: Path) -> None:
+    policy_dir = tmp_path / ".yoetz"
+    policy_dir.mkdir()
+    (policy_dir / "checks.toml").symlink_to(tmp_path / "missing.toml")
+    with pytest.raises(ProtocolValueError) as caught:
+        load_observation_check_policy(tmp_path)
+    assert not isinstance(caught.value, ObservationCheckPolicyAbsent)

@@ -381,6 +381,7 @@ _CHANGE_GROUPS: Final[tuple[tuple[str, tuple[tuple[str, str], ...]], ...]] = (
     (
         "Information disclosed",
         (
+            ("global", "credential_heuristic"),
             ("channel", "categories"),
             ("channel", "data_classes"),
             ("review", "sections"),
@@ -433,6 +434,7 @@ _CHANGE_LABELS: Final[dict[tuple[str, str], str]] = {
     ("global", "network_egress"): "Data leaving this computer",
     ("global", "effective_scope"): "Policy applies to",
     ("global", "provider_data_use_evidence"): "Current provider data-use evidence",
+    ("global", "credential_heuristic"): "Possible-credential filter",
     ("channel", "enabled"): "Channel",
     ("channel", "provider"): "Provider and model",
     ("channel", "fallback_provider"): "Fallback provider and model",
@@ -477,6 +479,13 @@ _CHANNEL_LABELS: Final[dict[str, str]] = {
 _FLAG_WORDS: Final[dict[tuple[str, str], tuple[str, str]]] = {
     ("global", "network_egress"): ("Allowed", "Not allowed"),
     ("global", "provider_data_use_evidence"): ("Required", "Not required"),
+    (
+        "global",
+        "credential_heuristic",
+    ): (
+        "On: values that look like passwords or tokens are withheld",
+        "Off: only known credential shapes, private keys and URL passwords are withheld",
+    ),
     ("channel", "enabled"): ("On", "Off"),
     ("channel", "preview_required"): ("Ask before every request", "No confirmation"),
     ("local_model", "enabled"): ("On", "Off"),

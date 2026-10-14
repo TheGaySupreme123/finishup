@@ -311,7 +311,7 @@ async def test_self_contained_clean_profile_restores_same_vault_authority(
                     },
                     "mode": "deterministic_only",
                     "max_findings": "3",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             )
         )

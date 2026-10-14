@@ -16,8 +16,10 @@ from yoetz.application.unit_of_work import (
     abandon_preappend_objects,
     run_prepared_append,
 )
+from yoetz.domain.command_segments import requested_command_shape
 from yoetz.domain.events import (
     LINEAGE_SERVICE_STAMPED_FAMILIES,
+    MAX_REQUESTED_ITEMS,
     PAYLOAD_TYPES,
     AcceptedEvent,
     ActionRecordedPayload,
@@ -45,6 +47,7 @@ from yoetz.domain.events import (
     ProjectionLocator,
     RedactionRecordedPayload,
     RedactionState,
+    RequestedItemKind,
     ResponseRecordedPayload,
     ResultRecordedPayload,
     UnknownEvent,
@@ -84,6 +87,7 @@ from yoetz.domain.values import (
 from yoetz.kernel.completion_scope import with_completion_scope_coverage
 from yoetz.kernel.projections import PROJECTION_VERSION, ProjectionState
 from yoetz.kernel.reducers import replay_extension
+from yoetz.kernel.task_facts import blocker_publication_notices
 from yoetz.ports.clock import ClockPort
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.ledger import (
@@ -130,15 +134,23 @@ from yoetz.protocol.errors import (
 from yoetz.protocol.models import (
     MAX_CANONICAL_REQUEST_BYTES,
     MAX_EVENTS_PER_BATCH,
+    PUBLISH_BLOCKER_NOTICE_TEXTS,
     CoverageModel,
     FrontierModel,
     PublishWorkAcceptedEventModel,
+    PublishWorkBlockerNoticeModel,
     PublishWorkDryRunModel,
     PublishWorkDryRunPreviewEventModel,
     PublishWorkRequestModel,
     PublishWorkResult,
     PublishWorkResultModel,
     PublishWorkVersionSliceModel,
+    RecordedVersionSlicePackWire,
+)
+from yoetz.protocol.policy_packs import (
+    RESEARCH_EVIDENCE_POLICY_ID,
+    WORK_INTEGRITY_POLICY_ID,
+    current_policy_pack,
 )
 
 __all__ = [
@@ -203,7 +215,13 @@ _STATE_SENSITIVE_FAMILIES = frozenset(
     }
 )
 _UNKNOWN_GAP = "unknown_event_schema_preserved"
-_POLICY_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_POLICY_PACKS = cast(
+    tuple[RecordedVersionSlicePackWire, ...],
+    (
+        current_policy_pack(RESEARCH_EVIDENCE_POLICY_ID),
+        current_policy_pack(WORK_INTEGRITY_POLICY_ID),
+    ),
+)
 
 
 class Application(Protocol):
@@ -254,11 +272,13 @@ class PublishWorkInternalResult:
     coverage: Coverage
     gaps: tuple[str, ...]
     versions: PublishWorkVersionSliceModel
+    # Issue #985: fixed publish-time notices for yoetz-blocker lines; empty means absent.
+    blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] = ()
 
     def as_json(self) -> dict[str, JsonValue]:
         """Serialize the closed internal result without materializing absent optional leaves."""
 
-        return {
+        body: dict[str, JsonValue] = {
             "protocol_version": self.protocol_version,
             "schema_version": self.schema_version,
             "request_id": self.request_id,
@@ -285,6 +305,12 @@ class PublishWorkInternalResult:
             "gaps": self.gaps,
             "versions": cast(JsonValue, self.versions.model_dump(mode="json")),
         }
+        if self.blocker_notices:
+            # Absent when the batch carried no yoetz-blocker line (never an empty list, #985).
+            body["blocker_notices"] = tuple(
+                cast(JsonValue, item.model_dump(mode="json")) for item in self.blocker_notices
+            )
+        return body
 
 
 def _error(
@@ -340,7 +366,10 @@ _LOCATABLE_PAYLOAD_FIELDS: Final = frozenset(
 
 
 def _draft_pointer(
-    event_index: int, subfield: str | None, payload_field: str | None = None
+    event_index: int,
+    subfield: str | None,
+    payload_field: str | None = None,
+    item_index: int | None = None,
 ) -> str | None:
     """Locate one rejected draft without ever naming caller-supplied keys or values.
 
@@ -359,6 +388,14 @@ def _draft_pointer(
     # Only the payload has opaque interior structure worth naming one level deeper.
     if subfield == "payload" and payload_field in _LOCATABLE_PAYLOAD_FIELDS:
         return f"{pointer}/{payload_field}"
+    if (
+        subfield == "payload"
+        and payload_field == "requested_items"
+        and type(item_index) is int
+        and 0 <= item_index < MAX_REQUESTED_ITEMS
+    ):
+        # The item ordinal is bounded by the frozen requested_items limit, never caller text.
+        return f"{pointer}/requested_items/{item_index}/value"
     return pointer
 
 
@@ -452,14 +489,40 @@ _REF_MIRROR_CORRECTIONS: Final[Mapping[str, Mapping[str, str]]] = MappingProxyTy
                     "mirrors. Correct the event payload before retrying."
                 ),
             }
-        )
+        ),
+        # #1023: the one obligation version rule (``domain.events.obligation_schema_admits``).
+        "invalid_event_schema": MappingProxyType(
+            {
+                "obligation_published": (
+                    "The event batch is invalid. obligation_published/1.0.0 cannot carry a "
+                    "directory item, an item role, or status acknowledged_not_done: publish such "
+                    "an obligation as obligation_published/1.1.0 (with an "
+                    "acknowledged_not_done_reason for that status). 1.1.0 also accepts a plain "
+                    "obligation, so 1.1.0 is always safe; only 1.0.0 and 1.1.0 exist."
+                ),
+            }
+        ),
     }
+)
+
+
+# Requested command items are matched against hook-observed runs by keyed command identity
+# (#977). A template placeholder can never match one, so it is refused before append.
+_PLACEHOLDER_CORRECTION: Final = (
+    "The event batch is invalid. The requested item of kind command at the named field holds a "
+    "<placeholder> token (such as <output-dir>) that no shell runs as written, so Yoetz could "
+    "never match it to an observed run. Replace each placeholder with the concrete value and "
+    "publish the exact command you will run. If the exact command is not known yet, drop that "
+    "item and state the check in acceptance_criteria, or name the produced file as a file item. "
+    "Then retry with a new request_id."
 )
 
 
 def _corrective_message(reason_code: str, schema_name: str | None) -> str | None:
     """Return the checked-in corrective message for one reason code and family, if registered."""
 
+    if reason_code == "requested_command_placeholder":
+        return _PLACEHOLDER_CORRECTION
     set_order = _SET_ORDER_CORRECTIONS.get(reason_code)
     if set_order is not None:
         return set_order
@@ -481,6 +544,7 @@ def _event_invalid(
     subfield: str | None = None,
     payload_field: str | None = None,
     schema_name: str | None = None,
+    item_index: int | None = None,
 ) -> PublicOperationError:
     # Only a stale frontier is fixed by rereading status; every other reason needs the event
     # payload corrected first, and retrying it unchanged would fail the same way.
@@ -504,7 +568,7 @@ def _event_invalid(
         )
     details: dict[str, str] = {"reason_code": reason_code}
     if event_index is not None:
-        pointer = _draft_pointer(event_index, subfield, payload_field)
+        pointer = _draft_pointer(event_index, subfield, payload_field, item_index)
         if pointer is not None:
             # Which draft failed is the difference between a one-line fix and re-deriving the
             # whole batch; a batch may carry up to MAX_EVENTS_PER_BATCH drafts.
@@ -576,6 +640,9 @@ def _decode_draft(value: JsonValue, event_index: int) -> _PreparedDraft:
     """Decode one draft, attributing any rejection to that draft and its owning field."""
 
     source = _mapping(value)
+    # The declared family selects a family-specific corrective hint (issue #1023: without it the
+    # obligation-version hint was unreachable and every rejection read as a generic one).
+    declared_family = _declared_schema_name(value)
 
     def _locate[T](subfield: str, decode: Callable[[], T]) -> T:
         try:
@@ -588,6 +655,7 @@ def _decode_draft(value: JsonValue, event_index: int) -> _PreparedDraft:
                 event_index=event_index,
                 subfield=subfield,
                 payload_field=_payload_field_of(exc),
+                schema_name=declared_family,
             ) from exc
 
     schema_source = _locate("schema", lambda: _mapping(_field(source, "schema")))
@@ -659,6 +727,19 @@ def _validate_admission(
         if (known and item.draft.schema.name not in admitted) or (not known and not trusted_import):
             raise _event_invalid("event_family_not_admitted", event_index=index, subfield="schema")
         payload = item.draft.payload
+        if type(payload) is ObligationPublishedPayload and not trusted_import:
+            for position, requested in enumerate(payload.requested_items):
+                if (
+                    requested.item_kind is RequestedItemKind.COMMAND
+                    and requested_command_shape(requested.value) == "placeholder"
+                ):
+                    raise _event_invalid(
+                        "requested_command_placeholder",
+                        event_index=index,
+                        subfield="payload",
+                        payload_field="requested_items",
+                        item_index=position,
+                    )
         if type(payload) is EvidenceRecordedPayload and payload.digest_binding is not None:
             provenance = payload.digest_binding.provenance
             if not trusted_import and provenance is not EvidenceDigestProvenance.CALLER_ASSERTED:
@@ -1014,6 +1095,7 @@ async def _internal_result(
     records = await _load_accepted_records(runtime, result)
     projection = await _projection_at_result_frontier(runtime, result)
     coverage = with_completion_scope_coverage(prepared.coverage, projection)
+    notices = _blocker_notices(projection, prepared)
     return PublishWorkInternalResult(
         protocol_version="0.1",
         schema_version="1.0.0",
@@ -1036,6 +1118,40 @@ async def _internal_result(
             projection_version=runtime.projection_version,
             policy_packs=_POLICY_PACKS,
         ),
+        blocker_notices=notices,
+    )
+
+
+def _blocker_notices(
+    projection: ProjectionState, prepared: PreparedPublication
+) -> tuple[PublishWorkBlockerNoticeModel, ...]:
+    """Publish-time challenge and no-effect notices for the batch's yoetz-blocker lines (#985).
+
+    ``projection`` already includes the batch (the accepted frontier, or a dry run's provisional
+    fold). Notices are closed codes with fixed text, so a replay returns the same body.
+    """
+
+    decisions = tuple(
+        (item.draft.event_id, item.draft.payload)
+        for item in prepared.drafts
+        if type(item.draft.payload) is DecisionRecordedPayload
+    )
+    if not decisions:
+        return ()
+    return tuple(
+        PublishWorkBlockerNoticeModel(
+            obligation_id=notice.obligation_id,
+            blocker_kind=cast(
+                Literal["authority", "consent", "credential", "dependency_unavailable"],
+                notice.kind,
+            ),
+            notice=cast(
+                Literal["blocker_claimed", "blocker_confirmed", "blocker_without_effect"],
+                notice.notice,
+            ),
+            text=PUBLISH_BLOCKER_NOTICE_TEXTS[notice.notice],
+        )
+        for notice in blocker_publication_notices(projection, decisions)[:64]
     )
 
 
@@ -1310,7 +1426,7 @@ async def _preflight_dry_run_feasibility(
     runtime: TaskRuntime,
     request: PublishWorkRequestModel,
     prepared: PreparedPublication,
-) -> tuple[Frontier, Coverage]:
+) -> tuple[Frontier, Coverage, ProjectionState]:
     """Reject batches the real append path would reject before reporting would_accept.
 
     Matches ``append_batch`` acceptance for frontier sequence, event-id uniqueness, causal
@@ -1448,7 +1564,7 @@ async def _preflight_dry_run_feasibility(
         TypeError,
     ):
         raise _event_invalid("invalid_event_value_type") from None
-    return current, with_completion_scope_coverage(prepared.coverage, projected)
+    return current, with_completion_scope_coverage(prepared.coverage, projected), projected
 
 
 def _validate_new_completion_scope(
@@ -1493,7 +1609,8 @@ async def _execute_dry_run(
     # Intentionally skip operation lookup: dry_run must not consume or conflict on request_id.
     prepared = prepare_publication(request, channel=channel, app=app)
     _validate_new_completion_scope(request, prepared)
-    current, coverage = await _preflight_dry_run_feasibility(runtime, request, prepared)
+    current, coverage, projected = await _preflight_dry_run_feasibility(runtime, request, prepared)
+    notices = _blocker_notices(projected, prepared)
     frontier = FrontierModel.model_validate(dict(current.as_wire()))
     preview = tuple(
         PublishWorkDryRunPreviewEventModel(
@@ -1521,6 +1638,7 @@ async def _execute_dry_run(
         would_accept=preview,
         coverage=CoverageModel.model_validate(coverage_to_json(coverage)),
         gaps=coverage.known_gaps,
+        **({"blocker_notices": notices} if notices else {}),
     )
     return PublishWorkResultModel.model_validate(
         body.model_dump(mode="json", by_alias=True, exclude_unset=True)

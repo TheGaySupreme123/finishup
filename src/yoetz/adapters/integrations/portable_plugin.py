@@ -48,6 +48,7 @@ from yoetz.protocol.canonical import (
     strict_json_parse,
 )
 from yoetz.protocol.errors import ProtocolValueError
+from yoetz.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
 
 __all__ = [
     "AGENT_PLUGIN_ROOT",
@@ -79,12 +80,10 @@ _SKILL_PATH_BY_HOST: Final[Mapping[str, str]] = {
     "portable": _SKILL_PATH,
     "cursor": "skills/cursor/yoetz/SKILL.md",
 }
-_GUIDANCE_NAMES: Final = (
-    "agent-instructions.md",
-    "coverage-and-receipts.md",
-    "publication-policy.md",
-    "request-templates.md",
-    "workflow.md",
+_GUIDANCE_URI_PREFIX: Final = "yoetz://guidance/"
+_GUIDANCE_NAMES: Final = tuple(
+    uri.removeprefix(_GUIDANCE_URI_PREFIX)
+    for uri in (*GUIDANCE_DOCUMENT_URIS, *FOCUSED_GUIDANCE_URIS)
 )
 _SCHEMA_ID: Final = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
 _MCP_SCHEMA_ID: Final = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json"

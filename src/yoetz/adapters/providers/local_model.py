@@ -211,7 +211,7 @@ def _judgment_from_json(parsed: JsonValue) -> SemanticJudgment:
     # second hidden schema.
     from yoetz.adapters.providers.openai_responses import normalize_judgment
 
-    return normalize_judgment(parsed)
+    return normalize_judgment(parsed, require_part2=True)
 
 
 def normalize_local_response(

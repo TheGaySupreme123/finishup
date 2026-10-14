@@ -16,6 +16,7 @@ from typing import TypeAliasType, cast
 import pytest
 
 import yoetz.protocol.errors as errors_module
+from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.errors import (
     PROTOCOL_REASON_CODES,
     SAFE_DETAIL_KEYS,
@@ -25,6 +26,7 @@ from yoetz.protocol.errors import (
     SafeDetailValue,
     normalize_safe_details,
 )
+from yoetz.protocol.schemas import validate_schema_instance
 
 _VALID_CORRELATION_ID = "err_00000000-0000-4000-8000-000000000000"
 _OTHER_CORRELATION_ID = "err_00000000-0000-4000-8000-000000000001"
@@ -40,6 +42,11 @@ attach_handle_invalid
 attach_handle_reused
 attach_handle_revoked
 attach_result_invalid
+bridge_error_mapping_failed
+bridge_invoke_failed
+bridge_request_validation_failed
+bridge_result_validate_failed
+bridge_result_wire_failed
 byte_order_mark_forbidden
 catalog_busy
 catalog_maintenance_busy
@@ -47,6 +54,7 @@ check_admission_capture_pending
 check_admission_contended
 check_admission_import_pending
 check_admission_in_progress
+check_pipeline_failed
 child_check_frontier_ahead_of_child
 child_check_frontier_missing
 child_check_frontier_without_check
@@ -58,6 +66,27 @@ child_frontier_missing
 child_gap_frontier_mismatch
 claim_revision_invalid
 claim_revision_mismatch
+closure_attempt_selection_required
+closure_claim_decision_required
+closure_command_revision_required
+closure_draft_invalid
+closure_evidence_unavailable
+closure_inventory_limit
+closure_item_omitted
+closure_item_unknown
+closure_obligation_content_unavailable
+closure_obligation_not_open
+closure_obligation_unknown
+closure_pagination_invalid
+closure_prepare_failed
+closure_resolution_decision_required
+closure_response_decision_required
+closure_result_too_large
+closure_result_unavailable
+closure_snapshot_unavailable
+closure_source_unknown
+closure_status_unavailable
+closure_unattempted_items
 commitment_only_object_kind
 coordination_admission_required
 coordination_consent_required
@@ -87,8 +116,15 @@ cursor_project_mcp_command_invalid
 cursor_project_mcp_invalid
 cursor_project_mcp_preview_required
 dependency_changed
+duplicate_has_duplicates
+duplicate_link_broken
 duplicate_object_key
 duplicate_set_member
+duplicate_target_different_issue
+duplicate_target_is_duplicate
+duplicate_target_not_earlier
+duplicate_target_same_finding
+duplicate_target_unknown
 empty_check_types
 empty_publication_channels
 empty_subject_state
@@ -107,6 +143,8 @@ evidence_strength_unsupported
 expected_frontier_required
 finding_actionable_mismatch
 finding_json_shape_invalid
+finding_not_proof_limited
+finding_not_rechecked
 finding_priority_mismatch
 finding_resolution_mismatch
 finding_terminal
@@ -126,6 +164,7 @@ id_wrong_prefix
 id_wrong_type
 implicit_project_requires_opt_out
 import_publication_authority_required
+import_publication_failed
 import_report_invalid
 input_not_bytes
 integer_out_of_safe_range
@@ -141,6 +180,7 @@ invalid_continuation_expiry
 invalid_continuation_kind
 invalid_continuation_pending_id
 invalid_continuation_repository_setup
+invalid_continuation_review_input
 invalid_cost_fields
 invalid_coverage_value
 invalid_digest
@@ -234,6 +274,7 @@ lineage_transition_conflict
 lineage_work_terminal
 lineage_work_transition
 lone_surrogate
+maintenance_state_unverified
 malformed_json
 method_forbidden
 missing_payload_field
@@ -248,6 +289,7 @@ obligation_change_invalid
 obligation_resolution_invalid
 obligation_resolution_mismatch
 observation_selection_session_limit
+opaque_item_id_invalid
 operation_recovery_unavailable
 ownership_contended
 payload_redaction_mismatch
@@ -275,12 +317,14 @@ receipt_coverage_mismatch
 receipt_gap_not_in_coverage
 receipt_json_projection_blocked
 receipt_json_shape_invalid
+receipt_semantic_withheld_items_not_canonical
 redaction_target_required
 ref_mirror_mismatch
 repository_identity_mismatch
 repository_identity_required
 request_identity_conflict
 request_timeout
+requested_command_placeholder
 resolution_attempt_required
 response_fields_invalid
 response_projection_failed
@@ -308,10 +352,12 @@ schema_reference_unresolved
 schema_version_mismatch
 selector_conflict
 semantic_provenance_json_shape_invalid
+semantic_redacted_values_invalid
 service_draining
 service_generation_changed
 service_incompatible
 service_stamp_required
+service_start_failed
 service_unavailable
 session_lineage_fields_incomplete
 session_superseded
@@ -320,6 +366,7 @@ start_busy_retry_ready
 start_catalog_retry_ready
 start_lease_pending
 start_runtime_rebind_retry_ready
+start_state_inconsistent
 stored_result_shape_invalid
 timestamp_not_utc
 timestamp_out_of_range
@@ -493,13 +540,13 @@ def test_public_error_code_membership() -> None:
     assert tuple(member.name for member in PublicErrorCode) == expected
     assert tuple(member.value for member in PublicErrorCode) == expected
     assert isinstance(SafeDetailValue, TypeAliasType)
-    assert SafeDetailValue.__value__ == str | int
+    assert SafeDetailValue.__value__ == str | int | tuple[str, ...]
 
 
 def test_protocol_reason_registry_is_exact_and_import_order_independent() -> None:
     source_values = cast(tuple[str, ...], getattr(errors_module, "_PROTOCOL_REASON_CODE_VALUES"))
     assert source_values == _EXPECTED_REASON_CODES
-    assert len(source_values) == 301
+    assert len(source_values) == 346
     assert source_values == tuple(sorted(source_values, key=str.encode))
     assert len(source_values) == len(set(source_values))
     assert PROTOCOL_REASON_CODES == frozenset(_EXPECTED_REASON_CODES)
@@ -757,6 +804,7 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
         "availability",
         "availability_inherited",
         "availability_request_id",
+        "blocking_reasons",
         "component",
         "continuation",
         "count",
@@ -822,6 +870,7 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
     accepted = normalize_safe_details(
         {
             "actual_version": "1.0.0+local",
+            "blocking_reasons": ("issue_returned_again",),
             "authorize_command": "yoetz consent authorize",
             "availability": "terminal_unavailable",
             "availability_inherited": True,
@@ -858,7 +907,9 @@ def test_safe_details_allowlist_and_types_are_exact() -> None:
     )
     assert tuple(accepted) == expected_keys
     assert accepted["component"] == "ready"
-    assert all(type(value) in {str, int, bool} for value in accepted.values())
+    assert normalize_safe_details({"phase": "projection"}) == {"phase": "projection"}
+    assert normalize_safe_details({"phase": "user_supplied_value"}) == {}
+    assert all(type(value) in {str, int, bool, tuple} for value in accepted.values())
     assert isinstance(accepted, MappingProxyType)
     hostile = _KnownKeyOnlyMapping()
     assert dict(normalize_safe_details(hostile)) == {"count": 3}
@@ -1067,3 +1118,37 @@ def test_public_dict_shape_and_copy_are_exact() -> None:
         _VALID_CORRELATION_ID,
     ).as_public_dict()
     assert tuple(empty) == ("code", "message", "retryable", "correlation_id")
+
+
+def test_blocking_reasons_detail_admits_only_bounded_closed_tokens() -> None:
+    """Issue #1023: the self_verified refusal names its closed reason tokens, never prose."""
+
+    accepted = normalize_safe_details(
+        {
+            "reason_code": "finding_not_proof_limited",
+            "blocking_reasons": ("coverage:completion_plan_not_claimed", "issue_returned_again"),
+        }
+    )
+    assert accepted["blocking_reasons"] == (
+        "coverage:completion_plan_not_claimed",
+        "issue_returned_again",
+    )
+    for bad in (
+        (),
+        ("Fix the bug please",),
+        ("coverage:" + "a" * 97,),
+        tuple(f"reason_{index}" for index in range(33)),
+        "issue_returned_again",
+        (1,),
+    ):
+        assert "blocking_reasons" not in normalize_safe_details({"blocking_reasons": bad})
+    error = PublicOperationError(
+        PublicErrorCode.INVALID_REQUEST,
+        "refused",
+        False,
+        safe_details={"blocking_reasons": ("issue_returned_again",)},
+        correlation_id="err_00000000-0000-4000-8000-000000000001",
+    )
+    public = error.as_public_dict()
+    assert public["safe_details"] == {"blocking_reasons": ["issue_returned_again"]}
+    validate_schema_instance("public-error", "1.0.0", cast(JsonValue, public))

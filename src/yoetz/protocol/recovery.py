@@ -40,7 +40,9 @@ __all__ = [
     "CLAIM_REVISION_CORRECTIONS",
     "CONTINUATION_TOKENS",
     "LOCAL_REASON_CONTINUATION_PREFIXES",
+    "READ_ONLY_CHECK_MODES",
     "REASON_CODE_DIRECTIVE_EXEMPTIONS",
+    "REASON_REMEDIES",
     "RECOVERY_DIRECTIVES",
     "RecoveryDirective",
     "TimeoutOperationKind",
@@ -66,12 +68,18 @@ type TimeoutOperationKind = Literal["read", "write", "start"]
 WRITE_OPERATIONS: Final[frozenset[str]] = frozenset(
     {"start", "publish_work", "check", "respond", "receipt"}
 )
+# The ``check`` modes that record nothing (ADR-047: ``inspect``). A check in one of them is a read
+# like ``status``: the daemon, the MCP bridge and the CLI all classify it so, and a lost answer is
+# repeated under a new request_id, never replayed as a write that may have committed.
+READ_ONLY_CHECK_MODES: Final[frozenset[str]] = frozenset({"inspect"})
 
-# Bounds chosen against the 512-byte ASCII ceiling in ``yoetz.mcp.summaries``: an error identity
-# clause plus a reason/location clause plus a directive plus a guidance pointer has to fit, with
-# the identity never the part that gets dropped.
+# Bounds chosen against the original 512-byte ASCII ceiling in ``yoetz.mcp.summaries`` (4,096 since
+# ADR-043): an error identity clause plus a reason/location clause plus a directive plus a guidance
+# pointer has to fit, with the identity never the part that gets dropped. They stay as chosen so a
+# tight bound still holds a whole directive.
 _MAX_DIRECTIVE_BYTES: Final = 232
 _MAX_NUDGE_BYTES: Final = 128
+_MAX_REMEDY_BYTES: Final = 420
 _GUIDANCE_URI_PATTERN: Final = re.compile(
     r"^yoetz://guidance/[a-z][a-z0-9-]*\.md(?:#[a-z0-9][a-z0-9-]*)?$", re.ASCII
 )
@@ -526,6 +534,16 @@ _DIRECTIVES: Final = (
         nudge="This names a Yoetz fault, never a finding about the work under review.",
     ),
     RecoveryDirective(
+        token="semantic_privacy_blocked",
+        directive=(
+            "Blocked before dispatch; never resend this case. Supply a safe replacement for Yoetz "
+            "to rescan, then check once under a NEW request_id. Else, for optional review, a "
+            "local-only check may stand with the gap; required review is unmet."
+        ),
+        guidance_uri=_SEMANTIC_COVERAGE,
+        nudge="Never reuse the blocked bytes or case identity.",
+    ),
+    RecoveryDirective(
         token="consent_outcome_unconfirmed",
         directive=(
             "The decision was submitted but its outcome could not be confirmed, so it may already "
@@ -851,6 +869,8 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         "receipt_json_shape_invalid",
         "redaction_target_required",
         "ref_mirror_mismatch",
+        # Issue #977: the message names the requested item and the exact repair.
+        "requested_command_placeholder",
         "response_fields_invalid",
         "runtime_attempt_evidence_json_shape_invalid",
         "semantic_provenance_json_shape_invalid",
@@ -937,6 +957,130 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         "service_incompatible",
         "service_unavailable",
         "workspace_task_exists",
+        # tb4n3 RC-2 (#1025). Typed INTERNAL_ERROR stages: each names where the bridge or the
+        # service failed so the failure is never a bare "internal error". The remedy for each
+        # reaches the text channel through ``REASON_REMEDIES`` below rather than a continuation.
+        "bridge_error_mapping_failed",
+        "bridge_invoke_failed",
+        "bridge_result_validate_failed",
+        "bridge_result_wire_failed",
+        "bridge_request_validation_failed",
+        "check_pipeline_failed",
+        "closure_prepare_failed",
+        "import_publication_failed",
+        "maintenance_state_unverified",
+        "start_state_inconsistent",
+        # #1040: a spawned service exited during startup; `phase` names its stage and the
+        # correlation_id resolves its exception class and origin.
+        "service_start_failed",
+        # Closure-preparation selection reasons: the reason names the selection to correct and
+        # the fixed remedy sentence in ``yoetz.domain.closure.PREPARATION_REMEDIATIONS`` reaches
+        # the text channel beside it (tb4n3 formal-crypto S).
+        "closure_attempt_selection_required",
+        "closure_claim_decision_required",
+        "closure_command_revision_required",
+        "closure_draft_invalid",
+        "closure_evidence_unavailable",
+        "closure_inventory_limit",
+        "closure_item_omitted",
+        "closure_item_unknown",
+        "closure_obligation_content_unavailable",
+        "closure_obligation_not_open",
+        "closure_obligation_unknown",
+        "closure_pagination_invalid",
+        "closure_resolution_decision_required",
+        "closure_result_too_large",
+        "closure_snapshot_unavailable",
+        "closure_response_decision_required",
+        "closure_result_unavailable",
+        "closure_source_unknown",
+        "closure_status_unavailable",
+        "closure_unattempted_items",
+    }
+)
+
+
+# Per-reason remedy sentences for the typed INTERNAL_ERROR stages (tb4n3 RC-2). Like a directive
+# these are repository text selected by a closed reason token and never derived from a caller;
+# unlike a directive they restate no guidance rule, they say what is known about the failure and
+# what the agent can safely do next. Each is bounded so the error identity, the reason and the
+# remedy fit the bounded text channel together.
+REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "bridge_request_validation_failed": (
+            "The bridge's own request validator failed before anything reached the service; "
+            "nothing was recorded. Send the same call once more, then report the correlation_id."
+        ),
+        "bridge_invoke_failed": (
+            "The bridge failed while calling the local service. A write (start, publish_work, "
+            "check other than an inspection, respond, receipt) may or may not be recorded: replay the same request_id "
+            "(never a new one); replay is idempotent and returns the stored result when the "
+            "write committed. A read changed nothing: repeat it. Report the correlation_id."
+        ),
+        "bridge_error_mapping_failed": (
+            "The service reported a failure that the bridge could not translate, so its code is "
+            "not shown. If you hold session and writer ids, read status view=compact before "
+            "repeating the call; a start that returned no ids is replayed once under the same "
+            "request_id. Report the correlation_id."
+        ),
+        "bridge_result_wire_failed": (
+            "The bridge could not serialize this call's result. A write (start, publish_work, "
+            "check other than an inspection, respond, receipt) is recorded: replaying its request_id fails the same way, "
+            "so read status view=operation and view=compact, and never resend it under a new "
+            "request_id. A read or dry run changed nothing: repeat it. Report the correlation_id."
+        ),
+        "bridge_result_validate_failed": (
+            "This call's result did not match its response schema. A write (start, publish_work, "
+            "check other than an inspection, respond, receipt) is recorded: replaying its request_id fails the same way, "
+            "so read status view=operation and view=compact, and never resend it under a new "
+            "request_id. A read or dry run changed nothing: repeat it. Report the correlation_id."
+        ),
+        "response_projection_failed": (
+            "The operation is recorded, but its response could not be shaped. Replay the same "
+            "request_id once to load the stored result; if that replay also fails, stop "
+            "replaying: read status view=operation for the committed outcome and view=compact "
+            "for the frontier, and never send the work again under a new request_id."
+        ),
+        "read_projection_failed": (
+            "The read changed nothing; its response could not be shaped. Repeat it with a new "
+            "request_id, or read status view=versions for the authoritative frontier."
+        ),
+        "check_pipeline_failed": (
+            "The check hit an internal failure and may not have produced a verdict. Replay the "
+            "same request_id once: a check that committed returns its stored verdict. If the "
+            "replay fails the same way, run check again under a new request_id. Report the "
+            "correlation_id."
+        ),
+        "closure_prepare_failed": (
+            "Closure preparation failed unexpectedly and recorded nothing. Read status "
+            "view=compact for the frontier, publish the change yourself with publish_work, and "
+            "report the correlation_id."
+        ),
+        "import_publication_failed": (
+            "The import's publication did not return an accepted result, so it may or may not "
+            "be recorded. Read status view=compact before repeating the import, and report the "
+            "correlation_id."
+        ),
+        "maintenance_state_unverified": (
+            "Maintenance could not verify its own state and changed nothing. Preview the plan "
+            "again, and report the correlation_id if it recurs."
+        ),
+        "internal_error": (
+            "The bridge failed while building its own error, so nothing more specific is known. "
+            "A write may or may not be recorded: replay the same request_id (never a new one). "
+            "Report the correlation_id."
+        ),
+        "start_state_inconsistent": (
+            "The start state recorded for this request is inconsistent. Do not start a "
+            "replacement task to escape it: read status for the task you meant to attach to, "
+            "and report the correlation_id."
+        ),
+        "service_start_failed": (
+            "The local Yoetz service exited while starting, so it is not running and nothing "
+            "was recorded; retrying fails the same way until the cause is repaired. Give the "
+            "user the correlation_id: 'yoetz service diagnostics --correlation-id' with it names "
+            "the failing stage and exception class. Do not run service lifecycle commands."
+        ),
     }
 )
 
@@ -1008,19 +1152,26 @@ _TIMEOUT_CONTINUATIONS: Final[Mapping[TimeoutOperationKind, str]] = MappingProxy
 
 
 def timeout_operation_kind(
-    operation: object, *, write_operations: frozenset[str] = WRITE_OPERATIONS
+    operation: object,
+    *,
+    write_operations: frozenset[str] = WRITE_OPERATIONS,
+    check_mode: object = None,
 ) -> TimeoutOperationKind | None:
     """Classify a timed-out operation name, or None when the name is not a known operation.
 
     ``start`` is a write whose lost response carries no route ids, so it is its own kind: the
     generic write recovery ("read status view=operation") is an instruction a first start cannot
     follow, and the shipped guidance has always excepted it (replay the exact start once).
+    ``check_mode`` is the request's ``mode``: a ``check`` in a ``READ_ONLY_CHECK_MODES`` mode
+    records nothing, so it is a read (ADR-047).
     """
 
     if type(operation) is not str:
         return None
     if operation == "start":
         return "start"
+    if operation == "check" and type(check_mode) is str and check_mode in READ_ONLY_CHECK_MODES:
+        return "read"
     if operation in write_operations:
         return "write"
     return "read"
@@ -1056,6 +1207,8 @@ _SEMANTIC_REASON_CONTINUATIONS: Final[Mapping[str, str]] = MappingProxyType(
         "retry_budget_exhausted": "semantic_no_judgment",
         "outcome_unknown": "semantic_no_judgment",
         "coordinator_failure": "semantic_coordinator_review",
+        "never_send_detected": "semantic_privacy_blocked",
+        "classification_uncertain": "semantic_privacy_blocked",
     }
 )
 
@@ -1226,6 +1379,11 @@ def _check_registry() -> None:
     # explicit exemption, so a newly registered reason can never reach an agent as a bare token
     # with nothing to do about it. Widening the reason vocabulary without deciding what an agent
     # should do is exactly the regression this gate exists to fail on.
+    for remedy_reason, remedy in REASON_REMEDIES.items():
+        if remedy_reason not in PROTOCOL_REASON_CODES:
+            raise RuntimeError("recovery_remedy_for_unregistered_reason_code")
+        if not remedy.isascii() or not 1 <= len(remedy) <= _MAX_REMEDY_BYTES:
+            raise RuntimeError("recovery_remedy_out_of_bounds")
     if PROTOCOL_REASON_CODES - covered_reason_codes():
         raise RuntimeError("protocol_reason_code_without_recovery_disposition")
     if covered_reason_codes() - PROTOCOL_REASON_CODES:

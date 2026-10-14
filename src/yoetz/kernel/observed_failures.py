@@ -1,25 +1,26 @@
 """One shared reading of hook-observed failed runs at a completion claim (#909).
 
 A completion claim must disclose failed work that is still *live* when it is made. For a result
-the harness observed (a hook-observed tool call), two later observed facts make an earlier
+the harness observed (a hook-observed tool call), a later qualifying run can make an earlier
 failure history instead of an omission:
 
 * **Supersession.** A later hook-observed run of the *same command identity* succeeded, or ran
-  again with any other outcome: only the latest run of a command identity is judged. The
+  again with another limiting outcome (failure or partial): only a run with a recorded outcome
+  can replace the earlier disclosure duty. An unknown outcome does not certify repair. The
   identity is the installation-keyed ``hmac-sha256:`` command commitment the hook computes and
   materialization stores as ``omitted:<commitment>`` in the action's ``command`` field; the raw
   command text never reaches the ledger. Any other command, and any unkeyed or structural
   placeholder, supersedes nothing.
-* **State scope.** A later hook-observed workspace edit completed (an edit action whose result
-  states success; a partial or outcome-less edit proves nothing). The failure described a
-  workspace state that no longer exists. Legacy rows
-  without a command identity (``omitted:structural``) reach this rule and never fall back to
-  "every failure is live".
+* **No edit inference.** A workspace edit changes the state being verified, but it does not prove
+  that a failed validation was repaired or passed. A failed run therefore stays live until a
+  later qualifying run of the same keyed command identity (or an explicit claim acknowledgement)
+  resolves its disclosure duty. Legacy rows without a command identity
+  (``omitted:structural``) never fall back to "every failure is live" supersession.
 
 Only service-stamped hook observations take part on either side: a cooperative result keeps its
 exact ADR-025 disclosure duty, and a cooperative "success" or "edit" can never retire a hook
-failure. A superseded or historical failure is not deleted or hidden: the receipt counts it once
-as history, and naming it in ``limitation_refs`` stays accepted.
+failure. A superseded or legacy historical failure is not deleted or hidden: the receipt counts it
+once as history, and naming it in ``limitation_refs`` stays accepted.
 
 The work-integrity and research-evidence packs, the claim-revision replay invariant, the receipt
 builder and the observation-advice rule all read this module, so no two of them can disagree
@@ -33,8 +34,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Final
+from typing import Final, cast
 
+from yoetz.domain.command_segments import MAX_COMMAND_COMMITMENTS
 from yoetz.domain.events import (
     AcceptedEvent,
     ActionKind,
@@ -50,18 +52,29 @@ from yoetz.protocol.coverage import Coverage, PublicationChannel
 
 __all__ = [
     "COMMAND_IDENTITY_PREFIX",
+    "NON_COUNTING_WRITE_TOKENS",
+    "SHELL_EDIT_TOKENS",
+    "observed_shell_write_counts",
+    "observed_edit_counts",
     "ObservedFailureState",
     "ObservedRun",
     "ObservedRunFacts",
     "classify_observed_runs",
     "command_identity",
+    "command_segment_identities",
+    "observed_command_field",
     "is_observed_run_record",
     "observed_event_ids_from_coverage",
     "observed_event_ids_from_records",
     "observed_failure_states",
     "observed_failure_states_from_records",
     "observed_action_description",
+    "observed_action_is_exploratory",
+    "observed_action_runner_class",
+    "observed_action_runtime_tokens",
     "observed_action_tool",
+    "INSTALL_TARGET_CLASSES",
+    "RUNTIME_SUFFIX_TOKENS",
     "observed_run_facts",
 ]
 
@@ -69,12 +82,53 @@ __all__ = [
 # installation-keyed commitment is an identity. ``omitted:structural`` carries none.
 COMMAND_IDENTITY_PREFIX: Final = "omitted:"
 _COMMITMENT_PATTERN: Final = re.compile(r"\Ahmac-sha256:[0-9a-f]{64}\Z", re.ASCII)
+# A compound, wrapped, prefixed or redirected observed command also carries, after its identity,
+# the closed composition token and the sorted keyed commitments to its simple commands (#977):
+# ``omitted:<identity> <composition> <segment> <segment> ...``. Commitments only, never text.
+_SEGMENT_COMPOSITIONS: Final = frozenset({"single", "and_chain", "masked"})
+_MAX_SEGMENT_IDENTITIES: Final = MAX_COMMAND_COMMITMENTS
 _FAILED_OUTCOMES: Final = frozenset({ResultOutcome.FAILURE, ResultOutcome.PARTIAL})
 _OBSERVED_RUN_FAMILIES: Final = frozenset({"action_recorded", "result_recorded"})
 # Hook materialization appends the host tool name to an observed action's description in this
 # closed form; the results view reads it back only from service-stamped observed actions.
 _TOOL_SUFFIX_RE: Final = re.compile(r" \(tool ([A-Za-z0-9][A-Za-z0-9._:/+-]{0,127})\)\Z", re.ASCII)
 _TOOL_TOKEN_RE: Final = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}\Z", re.ASCII)
+_RUNNER_SUFFIX_RE: Final = re.compile(
+    r" \(runner (exploration|test|build|lint|typecheck|vcs|other|compound)\)\Z", re.ASCII
+)
+_RUNNER_CLASSES: Final = frozenset(
+    {"exploration", "test", "build", "lint", "typecheck", "vcs", "other", "compound"}
+)
+# Hook-derived runtime facts (#977), appended after the runner suffix in this closed order:
+# where a package install resolved its interpreter, an edit outside the workspace root, and the
+# effective user the hook process ran as. Closed tokens only; never a path or command text.
+INSTALL_TARGET_CLASSES: Final = frozenset(
+    {"yoetz_runtime", "workspace_env", "private_env", "system", "unresolved"}
+)
+_RUNTIME_SUFFIX_RE: Final = re.compile(
+    r" \((install (?:yoetz_runtime|workspace_env|private_env|system|unresolved)"
+    r"|write (?:outside_workspace|scratch|yoetz_owned|notes|workspace)|user (?:root|non_root))\)\Z",
+    re.ASCII,
+)
+RUNTIME_SUFFIX_TOKENS: Final = frozenset(
+    {f"install {name}" for name in INSTALL_TARGET_CLASSES}
+    | {
+        "write outside_workspace",
+        "write scratch",
+        "write yoetz_owned",
+        "write notes",
+        "write workspace",
+        "user root",
+        "user non_root",
+    }
+)
+# Edit runtime tokens that name a write which changes nothing under test (ADR-042, tb4n2 R4):
+# every path the edit named was scratch (temp roots outside the workspace), Yoetz's own material
+# or the agent's own notes and logs (ADR-045).
+NON_COUNTING_WRITE_TOKENS: Final = frozenset({"write scratch", "write yoetz_owned", "write notes"})
+# A command's runtime tokens that make it an edit: it wrote files in the workspace, or a real
+# one outside it (ADR-045). A command with no such token wrote nothing the hook could attribute.
+SHELL_EDIT_TOKENS: Final = frozenset({"write workspace", "write outside_workspace"})
 
 
 class ObservedFailureState(str, Enum):  # noqa: UP042 - stable closed token
@@ -91,9 +145,9 @@ class ObservedRun:
     """One hook-observed tool result, reduced to the facts the supersession rule reads.
 
     ``position`` orders runs (ledger ingestion sequence, or envelope order for advice). ``edit``
-    marks an edit tool call; it counts as a workspace change only when the host stated its
-    success. A failed or denied edit changed nothing, and a partial or outcome-less edit is no
-    proof the workspace changed as intended, so retiring a failure on it could hide the failure.
+    marks an edit tool call for callers that need to retain that structural fact. Edits never
+    supersede a failed validation: only a qualifying rerun of the same keyed command identity can
+    establish that the earlier failure has been rerun or passed.
     """
 
     ref: str
@@ -117,33 +171,74 @@ class ObservedRun:
 def command_identity(command: object) -> str | None:
     """Return the keyed command commitment an observed action carries, or ``None``.
 
-    Only ``omitted:hmac-sha256:<hex>`` is an identity. Plain ``sha256`` digests are
-    dictionary-guessable for short commands and are never produced as identities, and
-    ``omitted:structural`` (every row recorded before command commitments existed) has none.
+    Only ``omitted:hmac-sha256:<hex>`` is an identity, optionally followed by the segment suffix
+    ``observed_command_field`` writes. Plain ``sha256`` digests are dictionary-guessable for
+    short commands and are never produced as identities, and ``omitted:structural`` (every row
+    recorded before command commitments existed) has none.
     """
 
     if type(command) is not str or not command.startswith(COMMAND_IDENTITY_PREFIX):
         return None
-    value = command.removeprefix(COMMAND_IDENTITY_PREFIX)
+    value = command.removeprefix(COMMAND_IDENTITY_PREFIX).split(" ", 1)[0]
     return value if _COMMITMENT_PATTERN.fullmatch(value) is not None else None
+
+
+def command_segment_identities(command: object) -> tuple[frozenset[str], str] | None:
+    """The segment commitments and composition an observed command carries, or ``None``.
+
+    ``None`` for a simple command (its whole identity is its only one), a legacy row, or a
+    suffix that is not exactly the closed form: a malformed suffix never widens a match.
+    """
+
+    if command_identity(command) is None:
+        return None
+    parts = cast(str, command).split(" ")
+    if len(parts) < 3 or parts[1] not in _SEGMENT_COMPOSITIONS:
+        return None
+    segments = parts[2:]
+    if len(segments) > _MAX_SEGMENT_IDENTITIES or any(
+        _COMMITMENT_PATTERN.fullmatch(item) is None for item in segments
+    ):
+        return None
+    return frozenset(segments), parts[1]
+
+
+def observed_command_field(
+    commitment: str, segments: tuple[str, ...] | None = None, composition: str | None = None
+) -> str:
+    """The ``command`` field of an observed command action for one keyed identity.
+
+    Without valid segments this is exactly ``omitted:<commitment>``, byte for byte what every
+    earlier ledger recorded, so simple commands keep their historical form.
+    """
+
+    base = f"{COMMAND_IDENTITY_PREFIX}{commitment}"
+    if (
+        _COMMITMENT_PATTERN.fullmatch(commitment) is None
+        or not segments
+        or composition not in _SEGMENT_COMPOSITIONS
+        or len(segments) > _MAX_SEGMENT_IDENTITIES
+        or any(_COMMITMENT_PATTERN.fullmatch(item) is None for item in segments)
+    ):
+        return base
+    return " ".join((base, composition, *sorted(set(segments))))
 
 
 def classify_observed_runs(runs: Iterable[ObservedRun]) -> Mapping[str, ObservedFailureState]:
     """Classify every failed or partial run against the runs that follow it.
 
-    One backward pass. Only the latest run of a command identity can be live: a failure is
-    ``SUPERSEDED`` when a later run with the same identity succeeded, else ``RERUN`` when a later
-    run with the same identity has any other outcome (that later run is the one judged), else
-    ``HISTORICAL`` when a later edit with a stated success followed, else ``LIVE``. A later failure of the same
-    identity is a new failure in its own right; it never revives an earlier superseded one. A run
-    without an identity is retired only by a later edit. The caller bounds ``runs`` to what
-    precedes the point being judged.
+    One backward pass. Only the latest *limiting* run of a command identity can be live: a failure
+    is ``SUPERSEDED`` when a later run with the same identity succeeded, else ``RERUN`` when a
+    later failure or partial run with the same identity follows it (that later run is the one
+    judged), else ``LIVE``. A later failure of the same identity is a new failure in its own
+    right; it never revives an earlier superseded one. Edits or other workspace-state changes do
+    not retire a failure because neither proves that the failed validation was covered. The caller
+    bounds ``runs`` to what precedes the point being judged.
     """
 
     ordered = sorted(runs, key=lambda run: run.position, reverse=True)
     if len({run.position for run in ordered}) != len(ordered):
         raise ValueError("observed_run_invalid")
-    edited_after = False
     passed_after: set[str] = set()
     ran_after: set[str] = set()
     states: dict[str, ObservedFailureState] = {}
@@ -153,13 +248,11 @@ def classify_observed_runs(runs: Iterable[ObservedRun]) -> Mapping[str, Observed
                 states[run.ref] = ObservedFailureState.SUPERSEDED
             elif run.identity is not None and run.identity in ran_after:
                 states[run.ref] = ObservedFailureState.RERUN
-            elif edited_after:
-                states[run.ref] = ObservedFailureState.HISTORICAL
             else:
                 states[run.ref] = ObservedFailureState.LIVE
-        if run.edit and run.outcome is ResultOutcome.SUCCESS:
-            edited_after = True
-        if run.identity is not None:
+        if run.identity is not None and (
+            run.outcome in _FAILED_OUTCOMES or run.outcome is ResultOutcome.SUCCESS
+        ):
             ran_after.add(run.identity)
             if run.outcome is ResultOutcome.SUCCESS:
                 passed_after.add(run.identity)
@@ -273,19 +366,117 @@ def observed_failure_states(
     )
 
 
-def observed_action_description(base: str, tool: str | None) -> str:
-    """Append the structural host tool name to an observed action description, when known."""
+def observed_action_description(
+    base: str,
+    tool: str | None,
+    runner_class: str | None = None,
+    *,
+    install_target: str | None = None,
+    write_outside_workspace: bool = False,
+    effective_user: str | None = None,
+    write_scope: str | None = None,
+) -> str:
+    """Append bounded host facts to an observed action description, when known.
 
-    if tool is None or _TOOL_TOKEN_RE.fullmatch(tool) is None:
-        return base
-    return f"{base} (tool {tool})"
+    The suffix order is fixed (tool, runner, install, write, user) so each reader can strip the
+    later suffixes before parsing an earlier one. Every value is a closed token.
+    """
+
+    result = base
+    if tool is not None and _TOOL_TOKEN_RE.fullmatch(tool) is not None:
+        result = f"{result} (tool {tool})"
+    if runner_class in _RUNNER_CLASSES:
+        result = f"{result} (runner {runner_class})"
+    if install_target in INSTALL_TARGET_CLASSES:
+        result = f"{result} (install {install_target})"
+    if write_outside_workspace is True or write_scope == "outside_workspace":
+        result = f"{result} (write outside_workspace)"
+    elif write_scope in {"scratch", "yoetz_owned", "notes", "workspace"}:
+        result = f"{result} (write {write_scope})"
+    if effective_user in {"root", "non_root"}:
+        result = f"{result} (user {effective_user})"
+    return result
+
+
+def _split_runtime_suffixes(description: str) -> tuple[str, frozenset[str]]:
+    tokens: set[str] = set()
+    remaining = description
+    for _ in range(3):
+        match = _RUNTIME_SUFFIX_RE.search(remaining)
+        if match is None:
+            break
+        tokens.add(match.group(1))
+        remaining = remaining[: match.start()]
+    return remaining, frozenset(tokens)
+
+
+def observed_action_runtime_tokens(description: str) -> frozenset[str]:
+    """Read back the closed runtime suffixes (``install <class>``, ``write outside_workspace``,
+    ``user root|non_root``) ``observed_action_description`` wrote."""
+
+    return _split_runtime_suffixes(description)[1]
+
+
+def observed_edit_counts(
+    description: str, exempt: frozenset[str] = NON_COUNTING_WRITE_TOKENS
+) -> bool:
+    """Whether an observed edit can change the work under test (ADR-042, tb4n2 R4).
+
+    ``False`` only for an edit whose every path was scratch (temp roots outside the workspace) or Yoetz's own
+    material (``write scratch`` / ``write yoetz_owned``): it never makes an earlier verification
+    stale and is not acting on the task. Deliverable, workspace and real outside-workspace edits,
+    and every edit recorded before the class existed, count. ``exempt`` narrows which
+    non-counting tokens apply (``task_facts.non_counting_edits_exempt``: deliverables win).
+    """
+
+    return not (observed_action_runtime_tokens(description) & exempt)
+
+
+def observed_shell_write_counts(
+    description: str, exempt: frozenset[str] = NON_COUNTING_WRITE_TOKENS
+) -> bool:
+    """Whether an observed COMMAND wrote files that can change the work under test (ADR-045).
+
+    The one shared rule behind ``task_facts`` (latest edit), ``later_material`` (supersession) and
+    the concern-fold materiality check: a command whose runtime tokens carry ``write workspace``
+    or ``write outside_workspace`` is an edit whatever its exit status; a command that only wrote
+    a non-counting class (``scratch``, ``yoetz_owned``, ``notes``) is an edit only when ``exempt``
+    does not exempt that class (a declared output makes it part of the delivery). A command with
+    no write token wrote nothing the hook could attribute and is not an edit.
+    """
+
+    tokens = observed_action_runtime_tokens(description)
+    return bool(tokens & SHELL_EDIT_TOKENS) or (
+        bool(tokens & NON_COUNTING_WRITE_TOKENS) and observed_edit_counts(description, exempt)
+    )
 
 
 def observed_action_tool(description: str) -> str | None:
     """Read back the tool name ``observed_action_description`` wrote, or ``None``."""
 
-    match = _TOOL_SUFFIX_RE.search(description)
+    # Runner and runtime suffixes are appended after the tool suffix. Strip those bounded
+    # suffixes before applying the anchored tool parser so adding them cannot break lookup.
+    without_runtime, _tokens = _split_runtime_suffixes(description)
+    without_runner = _RUNNER_SUFFIX_RE.sub("", without_runtime)
+    match = _TOOL_SUFFIX_RE.search(without_runner)
     return None if match is None else match.group(1)
+
+
+def observed_action_runner_class(description: str) -> str | None:
+    """Read the bounded command class derived at the host boundary, or ``None``."""
+
+    without_runtime, _tokens = _split_runtime_suffixes(description)
+    match = _RUNNER_SUFFIX_RE.search(without_runtime)
+    return None if match is None else match.group(1)
+
+
+def observed_action_is_exploratory(action: ActionRecordedPayload) -> bool:
+    """Return true only for a service-derived command classified as a safe exploration."""
+
+    return (
+        action.action_kind is ActionKind.COMMAND
+        and observed_action_runner_class(action.description) == "exploration"
+    )
 
 
 @dataclass(frozen=True, slots=True)

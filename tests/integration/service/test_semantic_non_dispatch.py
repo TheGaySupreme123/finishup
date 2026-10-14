@@ -1472,7 +1472,7 @@ def _wide_frozen(
         gaps=(CaseGap("missing_ref:bulk", "missing_ref", subjects),),
     )
     assessments, _ = run_deterministic_policies(
-        case, CheckScope((), ()), ("research-evidence/0.1.0", "work-integrity/0.1.0")
+        case, CheckScope((), ()), ("research-evidence/0.2.0", "work-integrity/0.3.0")
     )
     findings = allocate_findings(
         _FindingIds(),
@@ -1820,7 +1820,7 @@ def _prose_heavy_frozen(
         extra_refs=(*claims, *evidence),
     )
     assessments, _ = run_deterministic_policies(
-        case, CheckScope((), ()), ("research-evidence/0.1.0", "work-integrity/0.1.0")
+        case, CheckScope((), ()), ("research-evidence/0.2.0", "work-integrity/0.3.0")
     )
     findings = tuple(
         replace(finding, summary="s" * 8_192, detail="d" * 8_192)

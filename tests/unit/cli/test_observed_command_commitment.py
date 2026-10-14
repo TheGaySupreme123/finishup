@@ -222,9 +222,15 @@ def test_materialized_command_action_carries_only_the_keyed_identity() -> None:
         for item in batch.drafts
         if item.draft.schema.name == "action_recorded"
     ]
-    assert [action.command for action in actions] == [
-        "omitted:" + str(envelope.structural_payload["command_commitment"])
-    ]
+    (command,) = [action.command or "" for action in actions]
+    identity = "omitted:" + str(envelope.structural_payload["command_commitment"])
+    # ADR-045: a command of three or more arguments also carries domain-separated canonical
+    # commitments (a prefix and flags); every other word of the field is a keyed commitment.
+    assert command.split(" ")[0] == identity
+    assert all(
+        word == "single" or word.startswith("hmac-sha256:") for word in command.split(" ")[1:]
+    )
+    assert _CANARY not in command
     legacy = observe_hooks.map_hook_payload_to_envelope(
         "PostToolUse",
         {
@@ -393,3 +399,138 @@ def test_legacy_spool_keeps_only_the_keyed_identity_for_replay(tmp_path: Path) -
         key_material=store.key_material(),
     )
     assert replayed.structural_payload["command_commitment"] == expected
+
+
+# --- Segment commitments for planned-verification matching (#977 E3) ---------------------------
+
+
+def test_a_composed_command_carries_keyed_segment_commitments_never_text() -> None:
+    command = f"cd /app && python evaluate.py {_CANARY} && git diff --check"
+    envelope = _codex_envelope(_exec_command(command, "call-seg"))
+    structural = envelope.structural_payload
+    segments = cast(tuple[str, ...], structural["command_segment_commitments"])
+    assert structural["command_composition"] == "and_chain"
+    assert segments == tuple(sorted(segments))
+    assert observed_command_commitment(_KEY, f"python evaluate.py {_CANARY}") in segments
+    assert structural["command_commitment"] not in segments
+    assert _CANARY.encode() not in canonical_encode(cast(JsonValue, dict(structural)))
+
+    batch = materialize_observation_envelope(
+        envelope, task_id="tsk_00000000-0000-4000-8000-000000000909"
+    )
+    (action,) = [
+        cast(ActionRecordedPayload, item.draft.payload)
+        for item in batch.drafts
+        if item.draft.schema.name == "action_recorded"
+    ]
+    assert action.command == " ".join(
+        ("omitted:" + str(structural["command_commitment"]), "and_chain", *segments)
+    )
+    assert _CANARY not in (action.command or "")
+    # A one-word command, with no wrapper or alias to see through, keeps the historical
+    # single-identity field byte for byte (ADR-045 adds canonical commitments only where a
+    # canonical form differs or the command has arguments to commit).
+    simple = _codex_envelope(_exec_command("pytest", "call-simple"))
+    assert "command_segment_commitments" not in simple.structural_payload
+    assert "command_composition" not in simple.structural_payload
+    flagged = _codex_envelope(_exec_command("pytest -q", "call-flagged"))
+    assert flagged.structural_payload["command_composition"] == "single"
+    # A wrapped one carries the canonical full form, and never any text.
+    wrapped = _codex_envelope(_exec_command(f"timeout 60 python3 {_CANARY}.py", "call-wrapped"))
+    assert wrapped.structural_payload["command_composition"] == "single"
+    assert (
+        len(cast(tuple[str, ...], wrapped.structural_payload["command_segment_commitments"])) >= 1
+    )
+    assert _CANARY.encode() not in canonical_encode(
+        cast(JsonValue, dict(wrapped.structural_payload))
+    )
+
+
+def test_claude_ordinary_redirected_run_commits_to_the_bare_command(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    store = LocalObservationStore(_state=state)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    command = f"bash /app/{_CANARY}.sh > /tmp/{_CANARY}.log 2>&1"
+    assert (
+        observe_hooks.handle_claude_observe(
+            event_name="PostToolUse",
+            stdin_bytes=canonical_encode(
+                {
+                    "hook_event_name": "PostToolUse",
+                    "session_id": "claude-977",
+                    "tool_name": "Bash",
+                    "tool_use_id": "toolu-seg",
+                    "tool_input": {"command": command},
+                    "tool_response": {"stdout": "", "stderr": "", "interrupted": False},
+                }
+            ),
+            stdout=io.BytesIO(),
+            workspace=str(tmp_path),
+            _state=state,
+            skip_service=True,
+            observation_profile=CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
+        )
+        == 0
+    )
+    (envelope,) = LocalObservationStore(_state=state).list_envelopes(workspace)
+    key = LocalObservationStore(_state=state).key_material()
+    assert envelope.structural_payload["command_composition"] == "single"
+    segments = cast(tuple[str, ...], envelope.structural_payload["command_segment_commitments"])
+    # The segment commitment of the bare command (ADR-045 adds a domain-separated canonical
+    # commitment beside it for the flag-less program and script).
+    assert observed_command_commitment(key, f"bash /app/{_CANARY}.sh") in segments
+    assert all(item.startswith("hmac-sha256:") for item in segments)
+    assert _CANARY.encode() not in _state_bytes(state)
+
+
+def test_spool_replay_forwards_only_valid_segment_commitments(tmp_path: Path) -> None:
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    assert (
+        observe_hooks.handle_spool(
+            event_name="PostToolUse",
+            stdin_bytes=canonical_encode(
+                {
+                    "session_id": "spool-977",
+                    "tool_name": "shell",
+                    "tool_use_id": "call-spool-seg",
+                    "exit_status": 0,
+                    "tool_input": {"cmd": f"npm test {_CANARY} && npm run build"},
+                }
+            ),
+            stdout=io.BytesIO(),
+            workspace=str(tmp_path),
+            _state=tmp_path,
+        )
+        == 0
+    )
+    (spooled,) = list((tmp_path / "hook-spool").glob("*.jsonl"))
+    assert _CANARY.encode() not in spooled.read_bytes()
+    key = store.key_material()
+    whole = observed_command_commitment(key, f"npm test {_CANARY} && npm run build")
+    segments = sorted(
+        observed_command_commitment(key, part) for part in (f"npm test {_CANARY}", "npm run build")
+    )
+    for value in segments:
+        assert value.encode() in spooled.read_bytes()
+
+    def replay(supplied: object) -> Mapping[str, object]:
+        return observe_hooks.map_hook_payload_to_envelope(
+            "PostToolUse",
+            {
+                "session_id": "spool-977",
+                "tool_name": "shell",
+                "command_commitment": whole,
+                "command_segment_commitments": cast(JsonValue, supplied),
+                "command_composition": "and_chain",
+            },
+            session_commitment="hmac-sha256:" + "5" * 64,
+            event_ordinal=1,
+            key_material=key,
+        ).structural_payload
+
+    assert replay(segments)["command_segment_commitments"] == tuple(segments)
+    for invalid in (list(reversed(segments)), ["npm test"], [], "x"):
+        assert "command_segment_commitments" not in replay(invalid)

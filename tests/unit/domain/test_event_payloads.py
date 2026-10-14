@@ -68,6 +68,7 @@ from yoetz.domain.events import (
     RedactionState,
     RequestedItem,
     RequestedItemKind,
+    RequestedItemRole,
     ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
@@ -561,12 +562,14 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
         "1.1.0",
         "1.2.0",
         "1.3.0",
+        "1.4.0",
     }
     assert {schema.version for schema in PAYLOAD_TYPES if schema.name == "finding_recorded"} == {
         SCHEMA_VERSION,
         "1.1.0",
         "1.2.0",
         "1.3.0",
+        "1.4.0",
     }
     assert {
         schema.version for schema in PAYLOAD_TYPES if schema.name == "coordination_context_recorded"
@@ -588,7 +591,7 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
         assert {
             schema.version for schema in PAYLOAD_TYPES if schema.name == family
         } == expected_versions
-    for family in ("plan_published", "plan_revised"):
+    for family in ("plan_published", "plan_revised", "obligation_published"):
         assert {schema.version for schema in PAYLOAD_TYPES if schema.name == family} == {
             SCHEMA_VERSION,
             "1.1.0",
@@ -602,6 +605,7 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
             "claim_recorded",
             "evidence_recorded",
             "finding_recorded",
+            "obligation_published",
             "plan_published",
             "plan_revised",
             "response_recorded",
@@ -609,6 +613,10 @@ def test_exact_schema_pair_dispatch_and_unknown_boundary() -> None:
             "session_resumed",
         }
     )
+    # Issue #997: 1.1.0 admits the obligation-level ``acknowledged_not_done`` status.
+    assert {
+        schema.version for schema in PAYLOAD_TYPES if schema.name == "obligation_published"
+    } == {SCHEMA_VERSION, "1.1.0"}
     # Issue #905: 1.1.0 exists only for the terminal ``acknowledged_not_done`` disposition.
     assert {schema.version for schema in PAYLOAD_TYPES if schema.name == "response_recorded"} == {
         SCHEMA_VERSION,
@@ -863,6 +871,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
         "command",
         "change",
         "source",
+        "directory",
     )
     expected_enum_values = {
         NoObligationsReason: (
@@ -870,7 +879,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
             "single_atomic_change",
             "exploratory_scope_unknown",
         ),
-        ObligationStatus: ("open", "resolved"),
+        ObligationStatus: ("open", "resolved", "acknowledged_not_done"),
         WritePolicy: ("read_only", "writes_allowed"),
         ActionKind: ("command", "edit", "research", "review", "other"),
         ResultOutcome: ("success", "failure", "partial", "unknown"),
@@ -883,6 +892,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
             "other",
         ),
         ClaimKind: ("completion", "material"),
+        RequestedItemRole: ("input", "output"),
         ObligationChangeKind: ("superseded", "waived", "carried"),
         RedactionMethod: ("logical_redaction", "object_deletion"),
         RedactionReasonCategory: ("secret", "privacy", "retention", "legal", "other"),
@@ -891,7 +901,7 @@ def test_support_types_and_client_enum_identity_are_exact() -> None:
     }
     for enum_type, expected in expected_enum_values.items():
         assert tuple(member.value for member in enum_type) == expected
-    assert tuple(field.name for field in fields(RequestedItem)) == ("item_kind", "value")
+    assert tuple(field.name for field in fields(RequestedItem)) == ("item_kind", "value", "role")
     assert tuple(field.name for field in fields(ObligationChange)) == (
         "obligation_id",
         "change",
@@ -1547,6 +1557,31 @@ def test_subscription_provenance_requires_append_only_check_event_version() -> N
     with pytest.raises(ProtocolValueError, match="invalid_event_value_type"):
         decode_payload(EventSchema("check_recorded", "1.0.0"), wire)
     assert decode_payload(EventSchema("check_recorded", "1.1.0"), wire) == semantic
+
+
+def test_plain_check_written_by_older_builds_replays_at_every_legacy_version() -> None:
+    """A plain check row from a released ledger must decode after an upgrade.
+
+    Builds before the review-output check shape wrote plain deterministic checks as 1.0.0 (and
+    the semantic line as 1.1.0); the current writer mints 1.2.0. Every one of those stays
+    readable, while 1.3.0 and 1.4.0 stay reserved for the payloads that introduced them.
+    """
+    row = _ROW_BY_FAMILY["check_recorded"]
+    assert _schema_for(row) == EventSchema("check_recorded", SCHEMA_VERSION)
+    wire = freeze_json(row["payload"])
+    plain = cast(CheckRecordedPayload, decode_payload(EventSchema("check_recorded", "1.0.0"), wire))
+    assert plain.semantic_conclusion is None
+    assert plain.review_summary is None
+    assert plain.totals is None
+    for version in ("1.0.0", "1.1.0", "1.2.0"):
+        decoded = decode_payload(EventSchema("check_recorded", version), wire)
+        assert decoded == plain
+        assert encode_payload(decoded) == wire
+    for version in ("1.3.0", "1.4.0"):
+        _assert_reason(
+            "invalid_event_schema",
+            lambda version=version: decode_payload(EventSchema("check_recorded", version), wire),
+        )
 
 
 def test_check_payload_provenance_matches_selected_final_outcome() -> None:

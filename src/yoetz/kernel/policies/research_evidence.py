@@ -39,9 +39,11 @@ from yoetz.kernel.deterministic_checks import (
 )
 from yoetz.kernel.observed_failures import (
     ObservedFailureState,
+    observed_action_is_exploratory,
     observed_event_ids_from_coverage,
     observed_failure_states,
 )
+from yoetz.kernel.outcome_corrections import superseded_unknown_results
 from yoetz.kernel.policies.response_support import (
     BASE_RESPONSE_INADMISSIBLE_GAPS,
     RESEARCH_REJECTION_PRESENT_FACT,
@@ -49,6 +51,10 @@ from yoetz.kernel.policies.response_support import (
 )
 from yoetz.kernel.projections import ClaimProjectionRecord
 from yoetz.protocol.coverage import PublicationChannel
+from yoetz.protocol.policy_packs import (
+    RESEARCH_EVIDENCE_POLICY_ID,
+    RESEARCH_EVIDENCE_POLICY_VERSION,
+)
 
 __all__ = [
     "RESEARCH_EVIDENCE_FACT_CODES",
@@ -58,8 +64,6 @@ __all__ = [
     "research_evidence_findings",
 ]
 
-RESEARCH_EVIDENCE_POLICY_ID: Final = "research-evidence"
-RESEARCH_EVIDENCE_POLICY_VERSION: Final = "0.1.0"
 RESEARCH_EVIDENCE_POLICY_PACK: Final = PolicyPack(
     RESEARCH_EVIDENCE_POLICY_ID,
     RESEARCH_EVIDENCE_POLICY_VERSION,
@@ -138,7 +142,8 @@ def _typed_support_mismatch(
             record is not None
             and record.payload is not None
             and claim_kind is ClaimKind.COMPLETION
-            and record.payload.status is ObligationStatus.OPEN
+            # acknowledged_not_done (#1002) is not resolved: treated like open here.
+            and record.payload.status is not ObligationStatus.RESOLVED
             and record.plan_change is not ObligationChangeKind.WAIVED
         ):
             return True, relation
@@ -270,15 +275,33 @@ def _limiting_refs(
     if claim_record.payload is None:
         return ()
     limitations: set[FindingBasisRef] = set()
+    observed = observed_event_ids_from_coverage(case.coverage_by_ref)
     # The same reading work integrity applies (#909): an observed failure that a later passing run
-    # of its command superseded, or that a completed observed edit made historical, no longer
-    # limits this claim. The receipt still counts it as history.
+    # of its command superseded no longer limits this claim. A completed edit alone does not prove
+    # a covering rerun, so the failed result remains a limitation until it is rerun or disclosed.
     observed_states = observed_failure_states(
         case.projection,
-        observed_event_ids_from_coverage(case.coverage_by_ref),
+        observed,
         through=claim_record.source_frontier,
     )
+    # An unknown hook result whose outcome the host's stream later recorded for the same action
+    # is not a separate limitation: the corrected result stands for the call (#1001).
+    superseded = superseded_unknown_results(case.projection.results, include=observed.__contains__)
     for result_id, record in case.projection.results.items():
+        if result_id in superseded:
+            continue
+        action = (
+            None
+            if record.payload is None
+            else case.projection.actions.get(record.payload.action_id)
+        )
+        if (
+            action is not None
+            and action.payload is not None
+            and action.source_event_id in observed
+            and observed_action_is_exploratory(action.payload)
+        ):
+            continue
         if (
             record.payload is not None
             and record.payload.outcome

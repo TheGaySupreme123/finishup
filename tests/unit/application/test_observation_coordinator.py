@@ -6717,3 +6717,81 @@ async def test_ingest_releases_runtime_when_final_backlog_feedback_fails(
     release_gate.set()
     await asyncio.wait_for(release_finished.wait(), timeout=5)
     assert released_runtimes == [runtime]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("policy_bytes", [None, b"not = [valid"])
+async def test_verification_worker_records_no_capture_gap_for_an_absent_check_policy(
+    tmp_path: Path, policy_bytes: bytes | None
+) -> None:
+    """No `.yoetz/checks.toml` is the ordinary opt-in state, not lost content capture (tb4v1).
+
+    A present-but-broken policy still records the conservative capture gap, so this test fails if
+    the absent branch is deleted or widened.
+    """
+
+    import base64
+    from types import SimpleNamespace
+
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    subprocess.run(["git", "init", "-q", str(workspace_root)], check=True)
+    if policy_bytes is not None:
+        (workspace_root / ".yoetz").mkdir()
+        (workspace_root / ".yoetz" / "checks.toml").write_bytes(policy_bytes)
+    locator = canonical_encode(
+        {
+            "content_kind": "workspace_locator",
+            "content_b64": base64.b64encode(str(workspace_root).encode()).decode("ascii"),
+        }
+    )
+
+    class _Objects:
+        async def resolve_verified(self, *descriptor: object) -> object:
+            return descriptor
+
+        async def open_verified(self, _ref: object):
+            yield locator
+
+    noted: list[str] = []
+
+    class _Local:
+        def note_coverage_gap(self, _workspace: str, code: str) -> None:
+            noted.append(code)
+
+    def _unused(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("not reached before the policy gate")
+
+    def _descriptor(_workspace: str) -> tuple[str, str]:
+        return ("obj", "digest")
+
+    store = SimpleNamespace(
+        workspace_locator_descriptor=_descriptor,
+        verification_repository=_unused,
+        latest_verification_subject_digest=_unused,
+        policy_digest_is_trusted=_unused,
+        record_trusted_check_policy=_unused,
+    )
+    runtime = SimpleNamespace(
+        task_id=_task_id(), session_id="ses", writer_id="wri", objects=_Objects()
+    )
+    coordinator = ObservationCoordinator(
+        runtime=object(),  # type: ignore[arg-type]
+        local=_Local(),  # type: ignore[arg-type]
+        clock=object(),  # type: ignore[arg-type]
+        ids=object(),  # type: ignore[arg-type]
+        state_root=tmp_path,
+    )
+
+    worker = await coordinator._prepare_verification_worker(  # pyright: ignore[reportPrivateUsage]
+        cast(TaskRuntime, runtime),
+        "hmac-sha256:" + "8" * 64,
+        cast(TaskObservationPort, store),
+        _envelope(session=f"hmac-sha256:{'9' * 64}", kind="PostToolUse"),
+    )
+
+    assert worker is None
+    if policy_bytes is None:
+        assert noted == []
+    else:
+        assert noted == [ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value]

@@ -8,6 +8,7 @@ from yoetz.domain.observation_selection import (
     OBSERVATION_CLASSIFICATION_VERSION,
     ObservationContentRole,
     classify_observation,
+    command_runner_class,
     is_routine_read_candidate,
 )
 from yoetz.protocol.canonical import JsonValue
@@ -151,3 +152,63 @@ def test_json_result_outcome_is_bounded_and_closed() -> None:
     assert success.proven_routine_success is True
     assert unknown.proven_routine_success is False
     assert "unknown" in unknown.reason_tokens
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("rg -n observation src", "exploration"),
+        ("rg --pre ./prepare term src", "other"),
+        ("find src -exec pytest {} +", "other"),
+        # ADR-045: a composition is classed by its strongest verification, not left ``compound``.
+        ("pytest tests/unit && ruff check src", "test"),
+        ("cd /app && ls src", "compound"),
+        ("cat notes.txt > copy.txt", "compound"),
+        ("pytest tests/unit", "test"),
+    ],
+)
+def test_command_runner_class_is_closed_and_conservative(command: str, expected: str) -> None:
+    assert (
+        command_runner_class({"tool_name": "exec_command", "tool_input": {"cmd": command}})
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("command", "runner"),
+    [
+        ("python -m pytest -q /app/dev/test_cracker.py", "test"),
+        ("python3 -m pytest", "test"),
+        ("python3.12 -X dev -m pytest -q", "test"),
+        ("python -m unittest discover", "test"),
+        ("python -m mypy src", "typecheck"),
+        ("python -m ruff check .", "lint"),
+        ("python -m build", "build"),
+        ("python setup.py build", "build"),
+        ("python -m http.server", "other"),
+        ("python /app/dev/build_model.py", "other"),
+        ("node build.js", "other"),
+        ("make build", "build"),
+        ("pytest -q", "test"),
+        ("python -m pytest --version", "other"),
+        ("pytest --collect-only", "other"),
+        ("uv run python /app/dev/build_model.py", "other"),
+        ("uv run --with numpy python -m pytest -q", "test"),
+        ("poetry run mypy .", "typecheck"),
+        ("uv run -w numpy python -m pytest -q", "test"),
+        ("uv run --script build_model.py", "other"),
+        ("pytest --collectonly", "other"),
+        ("python -m pytest --fixtures-per-test", "other"),
+        # Codex review round 3: information-only invocations and uv global options.
+        ("python -m unittest --help", "other"),
+        ("python -m ruff --version", "other"),
+        ("ruff --version", "other"),
+        ("uv -q run python -m pytest --collectonly", "other"),
+        ("uv -q run --script build_model.py", "other"),
+        ("uv --directory /app run python -m pytest", "test"),
+    ],
+)
+def test_python_module_runs_and_build_named_scripts(command: str, runner: str) -> None:
+    """tb4n2 interleaved S (P1-2): `python -m pytest` is a test run; `build_model.py` is not a build."""
+
+    assert command_runner_class({"command": command}) == runner

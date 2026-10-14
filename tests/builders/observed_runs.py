@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 
 from yoetz.application.check import CheckScope, run_deterministic_policies
 from yoetz.application.observation_materialize import observation_author
+from yoetz.domain.command_segments import command_segment_commitments
 from yoetz.domain.events import (
     AcceptedEvent,
     ActionKind,
@@ -36,6 +37,7 @@ from yoetz.domain.events import (
 )
 from yoetz.domain.findings import FindingKind
 from yoetz.domain.observation import normalize_observed_command, observed_command_commitment
+from yoetz.domain.observation_selection import command_runner_class
 from yoetz.domain.receipts import (
     PolicyVersionEntry,
     ReceiptSectionKey,
@@ -49,6 +51,7 @@ from yoetz.domain.values import (
     EventId,
     Frontier,
     ResultId,
+    SubjectStateRef,
     action_id,
     actor_id,
     claim_id,
@@ -68,7 +71,7 @@ from yoetz.kernel.deterministic_checks import (
     DeterministicAssessment,
     build_deterministic_case,
 )
-from yoetz.kernel.observed_failures import observed_action_description
+from yoetz.kernel.observed_failures import observed_action_description, observed_command_field
 from yoetz.kernel.receipt_builder import ReceiptBuildContext, build_receipt
 from yoetz.kernel.reducers import replay
 from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest
@@ -106,7 +109,7 @@ _ACTION = EventSchema("action_recorded", "1.0.0")
 _RESULT = EventSchema("result_recorded", "1.0.0")
 _CLAIM_V1 = EventSchema("claim_recorded", "1.0.0")
 _CLAIM_V1_1 = EventSchema("claim_recorded", "1.1.0")
-_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 OMISSION_KINDS = frozenset(
     {FindingKind.FAILED_WORK_OMITTED, FindingKind.MATERIAL_LIMITATION_OMITTED}
 )
@@ -117,14 +120,26 @@ def command_identity_for(command: str) -> str:
 
     normalized = normalize_observed_command(command)
     assert normalized is not None
-    return "omitted:" + observed_command_commitment(INSTALLATION_KEY, normalized)
+    # The hook commits to the whole command and, for a composed one, to its simple commands
+    # (#977); materialization writes both into the action's ``command`` field.
+    segments = command_segment_commitments(INSTALLATION_KEY, normalized)
+    return observed_command_field(
+        observed_command_commitment(INSTALLATION_KEY, normalized),
+        None if segments is None else segments[0],
+        None if segments is None else segments[1],
+    )
 
 
-def _logical_key(payload: EventPayload) -> str:
-    for name in ("result_id", "action_id", "claim_id"):
+def _logical_key(payload: EventPayload, identifier: EventId) -> str:
+    for name in ("result_id", "action_id", "claim_id", "obligation_id", "evidence_id"):
         value = getattr(payload, name, None)
         if value is not None:
             return str(value)
+    plan_version = getattr(payload, "plan_version", None)
+    if plan_version is not None:
+        return str(plan_version)
+    if type(payload).__name__ == "DecisionRecordedPayload":
+        return str(identifier)
     raise AssertionError("unsupported payload")
 
 
@@ -142,8 +157,11 @@ class ObservedLedger:
         *,
         observed: bool,
         known_gaps: tuple[str, ...] = (),
+        causal_parents: tuple[EventId, ...] = (),
+        operation: str | None = None,
     ) -> EventId:
         sequence = len(self.records) + 1
+        operation_ref = _OPERATION if operation is None else request_id(operation)
         previous = "genesis" if not self.records else self.records[-1].entry_digest
         encoded = canonical_encode(encode_payload(payload))
         identifier = event_id(f"evt_00000000-0000-4000-8000-{sequence:012d}")
@@ -177,9 +195,9 @@ class ObservedLedger:
                 "previous_entry_digest": previous,
                 "accepted_at": _NOW.wire,
             },
-            "operation_id": _OPERATION,
+            "operation_id": operation_ref,
             "occurred_at": _NOW.wire,
-            "causal_parents": (),
+            "causal_parents": causal_parents,
             "publication_channel": channel.value,
             "coverage": coverage_to_json(coverage),
             "payload_ref": {
@@ -202,9 +220,9 @@ class ObservedLedger:
                 author=author,
                 writer=WriterChain(_WRITER, sequence, previous),
                 ledger=LedgerChain(sequence, previous, _NOW),
-                operation_id=_OPERATION,
+                operation_id=operation_ref,
                 occurred_at=_NOW,
-                causal_parents=(),
+                causal_parents=causal_parents,
                 publication_channel=channel,
                 coverage=coverage,
                 payload_ref=PayloadRef(reference, media, len(encoded), commitment),
@@ -215,7 +233,7 @@ class ObservedLedger:
                 payload=payload,
                 projection_locator=ProjectionLocator(
                     schema=schema,
-                    logical_key=_logical_key(payload),
+                    logical_key=_logical_key(payload, identifier),
                     canonical_payload_digest=canonical_digest(encode_payload(payload)),
                     redaction_target_event_ids=(),
                     redaction_target_object_ids=(),
@@ -224,10 +242,24 @@ class ObservedLedger:
         )
         return identifier
 
-    def append(self, schema: EventSchema, payload: EventPayload, *, observed: bool) -> EventId:
-        """Append one materialized or cooperative draft payload."""
+    def append(
+        self,
+        schema: EventSchema,
+        payload: EventPayload,
+        *,
+        observed: bool,
+        causal_parents: tuple[EventId, ...] = (),
+        operation: str | None = None,
+    ) -> EventId:
+        """Append one materialized or cooperative draft payload.
 
-        return self._append(schema, payload, observed=observed)
+        ``operation`` is the publish batch's request id; the default puts every append in one
+        batch, as the records were before the field mattered (#985 blocker confirmation).
+        """
+
+        return self._append(
+            schema, payload, observed=observed, causal_parents=causal_parents, operation=operation
+        )
 
     def run(
         self,
@@ -239,6 +271,12 @@ class ObservedLedger:
         observed: bool = True,
         raw_command: str | None = None,
         tool: str | None = None,
+        subject_state: SubjectStateRef | None = None,
+        install_target: str | None = None,
+        write_outside_workspace: bool = False,
+        effective_user: str | None = None,
+        runner: str | None = None,
+        write_scope: str | None = None,
     ) -> ResultId:
         """Record one tool call as the coordinator materializes it: action, then result."""
 
@@ -253,6 +291,20 @@ class ObservedLedger:
             )
         else:
             recorded = None
+        default_tool = (
+            tool
+            if tool is not None
+            else "exec_command"
+            if kind is ActionKind.COMMAND
+            else "apply_patch"
+        )
+        runner_class = (
+            runner
+            if runner is not None
+            else command_runner_class(
+                {"tool_name": default_tool, "command": command}  # type: ignore[dict-item]
+            )
+        )
         self._append(
             _ACTION,
             ActionRecordedPayload(
@@ -260,13 +312,15 @@ class ObservedLedger:
                 kind,
                 observed_action_description(
                     f"Observed {kind.value} via Codex hook",
-                    tool
-                    if tool is not None
-                    else "exec_command"
-                    if kind is ActionKind.COMMAND
-                    else "apply_patch",
+                    default_tool,
+                    runner_class,
+                    install_target=install_target,
+                    write_outside_workspace=write_outside_workspace,
+                    effective_user=effective_user,
+                    write_scope=write_scope,
                 ),
                 command=recorded,
+                subject_state=subject_state,
             ),
             observed=observed,
         )
@@ -279,6 +333,7 @@ class ObservedLedger:
                 outcome,
                 exit_status=exit_status,
                 summary=f"Observed result status={outcome.value}",
+                subject_state=subject_state,
             ),
             observed=observed,
             # The coordinator marks an outcome-less observed result with the one standing gap.
@@ -290,16 +345,61 @@ class ObservedLedger:
         )
         return result
 
+    def correct_outcome(
+        self, unknown: ResultId, outcome: ResultOutcome, *, exit_status: int | None
+    ) -> ResultId:
+        """Append the host stream's corrected result for the action of one unknown hook result.
+
+        Mirrors ``materialize_observation_outcome_correction``: a second, immutable result
+        linked to the same action, with no gap (#1001).
+        """
+
+        action = next(
+            record.payload.action_id
+            for record in self.records
+            if isinstance(record, AcceptedEvent)
+            and isinstance(record.payload, ResultRecordedPayload)
+            and record.payload.result_id == unknown
+        )
+        self.runs += 1
+        result = result_id(f"res_00000000-0000-4000-8000-{self.runs:012d}")
+        self._append(
+            _RESULT,
+            ResultRecordedPayload(
+                result,
+                action,
+                outcome,
+                exit_status=exit_status,
+                summary=f"Observed corrected result status={outcome.value}",
+            ),
+            observed=True,
+        )
+        return result
+
     def fail(self, command: str | None, *, exit_status: int = 1) -> ResultId:
         return self.run(command, ResultOutcome.FAILURE, exit_status=exit_status)
 
     def passes(self, command: str | None) -> ResultId:
         return self.run(command, ResultOutcome.SUCCESS, exit_status=0)
 
-    def edit(self, outcome: ResultOutcome = ResultOutcome.SUCCESS) -> ResultId:
+    def edit(
+        self,
+        outcome: ResultOutcome = ResultOutcome.SUCCESS,
+        *,
+        subject_state: SubjectStateRef | None = None,
+        write_outside_workspace: bool = False,
+        write_scope: str | None = None,
+    ) -> ResultId:
         """An observed apply_patch/edit capture; Codex states its exit code (#883)."""
 
-        return self.run(None, outcome, kind=ActionKind.EDIT)
+        return self.run(
+            None,
+            outcome,
+            kind=ActionKind.EDIT,
+            subject_state=subject_state,
+            write_outside_workspace=write_outside_workspace,
+            write_scope=write_scope,
+        )
 
     def claim(
         self,
@@ -364,7 +464,7 @@ def omitted_results(ledger: ObservedLedger) -> tuple[str, ...]:
     return tuple(refs)
 
 
-def receipt_limitations(ledger: ObservedLedger) -> str:
+def receipt_limitations(ledger: ObservedLedger, *, extra_gaps: tuple[str, ...] = ()) -> str:
     records = ledger.prefix
     projection = replay(records)
     coverage = Coverage(
@@ -374,14 +474,14 @@ def receipt_limitations(ledger: ObservedLedger) -> str:
         evidence_immutability=EvidenceImmutability.METADATA_ONLY,
         ledger_freshness=LedgerFreshness.PARTIAL,
         check_types=(CheckType.NONE,),
-        known_gaps=("check_not_recorded",),
+        known_gaps=tuple(sorted({"check_not_recorded", *extra_gaps})),
     )
     context = ReceiptBuildContext(
         projection=projection,
         subject_frontier=Frontier(projection.frontier, projection.head_digest),
         availability=CaseAvailabilityFacts(),
         coverage=coverage,
-        gaps=(CaseGap("check_not_recorded", "check_not_recorded", ()),),
+        gaps=tuple(CaseGap(code, code, ()) for code in sorted({"check_not_recorded", *extra_gaps})),
         finding_states=(),
         applicable_check=None,
         records=records,

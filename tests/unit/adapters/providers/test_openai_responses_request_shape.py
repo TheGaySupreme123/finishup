@@ -32,7 +32,8 @@ from yoetz.protocol.models import SemanticStatus
 _NOW = datetime(2026, 7, 25, tzinfo=UTC)
 _DIGEST = "sha256:" + "c" * 64
 _JUDGMENT = (
-    '{"conclusion":"no_material_discrepancy","reviewer_challenges":[],"prior_finding_verdicts":[]}'
+    '{"conclusion":"no_material_discrepancy","review_summary":"The supplied packet was reviewed.",'
+    '"verified":[],"reviewer_challenges":[],"prior_finding_verdicts":[]}'
 )
 
 

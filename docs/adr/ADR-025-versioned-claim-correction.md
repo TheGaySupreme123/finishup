@@ -89,14 +89,14 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    **Observed-failure supersession (#909, 2026-09-30).** Relevance above is necessary but no longer
    sufficient for a *hook-observed* failed or partial result. One shared kernel predicate
    (`kernel/observed_failures.py`) retires such a result from the required set when, before the
-   claim, either a later hook-observed run of the same command identity followed it (it passed:
-   supersession; any other outcome: that later run is the one judged, so only the latest run of a
-   command can be live) or a later hook-observed edit reported success (state scope). The command
-   identity is the installation-keyed `hmac-sha256:` commitment the hook computes and
-   materialization stores as `omitted:<commitment>`; rows without one (`omitted:structural`, every
-   pre-#909 ledger) take the state-scoped rule only, never "every failure is live". Only
-   service-stamped observations take part on either side: a cooperative failure keeps the exact duty
-   above, and a cooperative success or edit never retires an observed failure. A retired result
+   claim, a later hook-observed run of the same command identity succeeded, or ran again with a
+   limiting failure or partial outcome. An unknown outcome does not certify repair, and a later
+   edit never retires the failed verification. The command identity is the installation-keyed
+   `hmac-sha256:` commitment the hook computes and materialization stores as
+   `omitted:<commitment>`; rows without one (`omitted:structural`, every pre-#909 ledger) remain
+   live until explicitly acknowledged. Only service-stamped observations take part on either
+   side: a cooperative failure keeps the exact duty above, and a cooperative success or edit
+   never retires an observed failure. A retired result
    stays authorable in `limitation_refs`, and the receipt counts it once as history.
    `limitation_refs_complete`, `failed_work_omitted`, research-evidence limitations, and observation
    advice all read this one predicate, so admission and the packs cannot disagree. Loosening the
@@ -129,6 +129,18 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    field and bounded claim/result ids. `status(history)` supplies event identity and schema version;
    `status(results)` resolves each result id to source event, payload availability, outcome, action,
    and evidence ids. A new status wire version is unnecessary.
+
+8. **The required limitation ids are shown before the claim (amendment, F3; owner-approved).**
+   In tb4n1, 34 of 35 `claim_revision_mismatch` rejections were `limitation_refs_complete`: the
+   first completion claim missed a live failed or partial result, and only the retry, built from
+   the rejection's ids, succeeded. The required-set rule is now one pure kernel helper
+   (`kernel/claim_limitations.py`) that the replay reducer enforces unchanged. Status
+   `closure_readiness` on the unreleased status-result 1.4.0 carries the optional pair
+   `limitation_refs_required` (sorted result ids, at most 64) and `limitation_refs_required_count`.
+   This is the set a whole-task completion claim recorded now must name. A scoped claim needs
+   only those whose action names a claimed obligation, or names none. The MCP status summary,
+   the CLI/terminal status and the Stop gate name these ids (ids only, bounded). The gate drops
+   its sentence before the blocker re-check to stay within 2,000 characters.
 
 ## Consequences
 

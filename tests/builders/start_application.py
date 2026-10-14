@@ -195,8 +195,8 @@ class StartTestApplication:
     lineage: LineageCoordinator | None = None
     profile: RuntimeProfile = RuntimeProfile.TEST_FAKE
     policy_packs: tuple[str, ...] = (
-        "research-evidence/0.1.0",
-        "work-integrity/0.1.0",
+        "research-evidence/0.2.0",
+        "work-integrity/0.3.0",
     )
     version_manifest: Mapping[str, JsonValue] = {
         "protocol_version": "0.1",

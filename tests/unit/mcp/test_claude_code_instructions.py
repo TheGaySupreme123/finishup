@@ -48,10 +48,10 @@ def test_the_first_two_sentences_are_the_trigger_and_the_late_start_rule() -> No
     assert heading == "# Yoetz: call start first"
     first, second, *_rest = _sentences(body.split("\n\n")[0])
     assert first.startswith(
-        "If this session will edit files, run state-changing commands, or delegate"
+        "If this session edits files, runs state-changing commands, or delegates"
     )
-    assert first.endswith("call `start` before that work")
-    assert second.startswith("If material work already began without a task, call `start` now")
+    assert first.endswith("call `start` before work")
+    assert second.startswith("If work began without a task, call `start` now")
     assert "disclose the uncovered prefix in the receipt" in second
 
 
@@ -60,13 +60,20 @@ def test_the_claude_text_names_the_deferred_schema_load_step_and_the_catalog() -
     assert "ToolSearch `select:mcp__yoetz__start`" in text
     assert "plugin-prefixed name" in text
     assert "Read-only questions skip it." in text
-    # Everything that no longer fits is one read_guidance call away; both URIs stay named so the
-    # agent that only sees this block can still find the safety floor and the workflow.
-    assert "`read_guidance`" in text
-    assert "yoetz://guidance/agent-instructions.md" in text
-    assert "yoetz://guidance/workflow.md" in text
-    assert "do not list resources to find them" in text
-    assert "Never claim Yoetz is active before `start` returns" in text
+    assert "Subagents whose assignment names no handle or parent session skip it." in text
+    # Everything that no longer fits is one guidance read away (#961): the block names the
+    # mandatory core and defers the procedure topics until after `start`; the core names
+    # `read_guidance` and the workflow URI.
+    before_start, separator, after_start = text.partition("After `start`")
+    assert separator
+    assert "yoetz://guidance/agent-instructions.md" in before_start
+    assert "read workflow" in after_start
+    core = read_resource("yoetz://guidance/agent-instructions.md").decode("utf-8")
+    assert "`read_guidance`" in core
+    assert "yoetz://guidance/workflow.md" in core
+    assert "Do not list resources." in text
+    assert "if empty or clipped, page and verify." in text
+    assert "Never claim active before `start`" in text
     assert "a clean check does not mean the work is correct" in text
 
 
@@ -74,9 +81,9 @@ def test_a_subagent_without_a_child_selector_is_exempt_from_the_trigger() -> Non
     # Claude renders this block into native subagents with no cue that they are children
     # (issue #509). The exemption sits in the trigger paragraph, beside the read-only exemption.
     trigger_paragraph = CLAUDE_CODE_INITIALIZE_INSTRUCTIONS.split("\n\n")[1]
+    assert "Read-only questions skip it." in trigger_paragraph
     assert (
-        "Read-only questions skip it. So does a subagent whose assignment names no handle or "
-        "parent session." in trigger_paragraph
+        "Subagents whose assignment names no handle or parent session skip it." in trigger_paragraph
     )
 
 
@@ -166,8 +173,13 @@ def test_advertised_surface_metrics_charge_the_selected_host_body() -> None:
 def test_shared_guidance_retains_deferred_schema_and_late_start_recovery() -> None:
     instructions = read_resource("yoetz://guidance/agent-instructions.md").decode("utf-8")
     workflow = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
-    assert "If the tool list shows only names, load the `start` schema first." in instructions
-    assert "If material work already began without a task, call `start` now" in instructions
+    # The mandatory core sends a new session to discover schemas before `start`; the exact
+    # deferred-schema and late-start procedures live in the workflow's start-and-resume topic.
+    assert "read guidance/discover schemas, then `start`" in instructions
+    flat_workflow = " ".join(workflow.split())
+    assert "lists only names, load the `start` schema by name first" in flat_workflow
+    assert "If material work already began before `start`" in flat_workflow
+    assert "call `start` now, publish the transitions so far as a bounded plan" in flat_workflow
     assert "ToolSearch\n`select:mcp__yoetz__start`" in workflow
     assert "| Material work began before `start` was called" in workflow
     assert "backdate `occurred_at` to imply coverage that was not published" in workflow

@@ -21,6 +21,7 @@ from yoetz.observability.logging import (
     configure_logging,
     exception_origin,
     record_bounded_counts_without_raising,
+    record_bounded_event_without_raising,
     record_classified_exception_without_raising,
     record_unexpected_exception_without_raising,
 )
@@ -271,7 +272,7 @@ def test_bounded_counts_reach_the_durable_ring(
         component="service.daemon",
         operation="control_plane_saturation_entered",
         outcome="event_loop_lag",
-        counts={"duration_ms": 12_345, "operation_count": 7},
+        counts={"duration_ms": 12_345, "operation_count": 7, "phase": "projection"},
     )
 
     found = lookup_diagnostic_records(correlation_id, root=tmp_path)
@@ -280,6 +281,55 @@ def test_bounded_counts_reach_the_durable_ring(
     assert found[0]["reason"] == "event_loop_lag"
     assert found[0]["duration_ms"] == 12_345
     assert found[0]["operation_count"] == 7
+    assert found[0]["phase"] == "projection"
+
+
+def test_bounded_event_context_is_fenced_and_reaches_the_ring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """tb4n2 NEW-8: an abandoned response write carries closed, bounded control context."""
+
+    import yoetz.observability.diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    configure_logging(
+        LoggingConfig(level="error"),  # type: ignore[arg-type]
+        LogMode.SERVICE,
+        clock=frozen_clock(utc=_NOW, monotonic=0.0),
+    )
+
+    correlation_id = record_bounded_event_without_raising(
+        component="service.daemon",
+        operation="control_response_write",
+        reason="connection_failed",
+        request_id="req_00000000-0000-4000-8000-000000000001",
+        context={
+            "control_method": "observation_ingest",
+            "client_kind": "cli",
+            "duration_ms": 812,
+            # Not context: a bound identity field and two unknown or hostile names are dropped.
+            "reason": "overridden",
+            "path": "/home/user/secret",
+            "body": "secret",
+        },
+    )
+    (record,) = lookup_diagnostic_records(correlation_id, root=tmp_path)
+    assert record["reason"] == "connection_failed"
+    assert record["control_method"] == "observation_ingest"
+    assert record["client_kind"] == "cli"
+    assert record["duration_ms"] == 812
+    assert record["request_id"] == "req_00000000-0000-4000-8000-000000000001"
+    assert "secret" not in json.dumps(record)
+
+    hostile = record_bounded_event_without_raising(
+        component="service.daemon",
+        operation="control_response_write",
+        reason="connection_failed",
+        context={"control_method": "/etc/passwd", "duration_ms": -1},
+    )
+    (fenced,) = lookup_diagnostic_records(hostile, root=tmp_path)
+    assert fenced["control_method"] == "unavailable"
+    assert fenced["duration_ms"] == "unavailable"
 
 
 @pytest.mark.parametrize(
@@ -325,3 +375,89 @@ def test_packet_composition_diagnostics_admit_counts_but_not_content(
         request_id=_REQUEST,
     )
     assert "PRIVATE_CODE_CANARY" not in diagnostic_log_path(root=tmp_path).read_text()
+
+
+def test_review_outcome_counters_survive_stderr_and_the_durable_ring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The check path's review counters reach both sinks, not only the logger's name list.
+
+    A name the logger admits but the value fence does not know is dropped on both sinks without a
+    trace; ADR-040 names these counts as the attribution evidence for a run (#1042, #1043, #1047,
+    #1020). The accounting record is the largest the judgment schema allows (three challenges, so
+    at most three rejection reasons), so it also proves the record fits the ring's line cap.
+    """
+
+    import yoetz.observability.diagnostics as diagnostics
+
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
+    configure_logging(
+        LoggingConfig(level="info"),  # type: ignore[arg-type]
+        LogMode.SERVICE,
+        clock=frozen_clock(utc=_NOW, monotonic=0.0),
+    )
+    accounting: dict[str, object] = {
+        "semantic_conclusion": "challenges_returned",
+        "semantic_challenges_returned": 3,
+        "semantic_candidates_accepted": 3,
+        "semantic_challenges_rejected": 3,
+        "semantic_rejected_routine_completeness": 1,
+        "semantic_rejected_subject_refs_over_limit": 1,
+        "semantic_rejected_yoetz_process_state": 1,
+        "semantic_review_refs_reduced": 67,
+        "semantic_review_snippets_rejected": 67,
+        "semantic_restatements_suppressed": 3,
+        "semantic_challenges_advisory": 2,
+        "semantic_agent_criteria": 3,
+        "semantic_prior_rulings_set_aside": 16,
+        "semantic_rulings_disputed_after_rebuttal": 16,
+        "semantic_findings_selected": 3,
+        "semantic_findings_suppressed": 3,
+    }
+    follow_up: dict[str, object] = {
+        "semantic_follow_up_round": 3,
+        "semantic_follow_up_items": 8,
+        "semantic_follow_up_refs_added": 5,
+    }
+    emitted = {
+        record_bounded_counts_without_raising(
+            component="check",
+            operation=operation,
+            outcome="succeeded",
+            request_id=_REQUEST,
+            counts=counts,
+        ): counts
+        for operation, counts in (
+            ("semantic_review_accounting", accounting),
+            ("semantic_review_follow_up", follow_up),
+        )
+    }
+    stderr = {
+        line["correlation_id"]: line
+        for line in (json.loads(raw) for raw in capsys.readouterr().err.splitlines() if raw)
+    }
+    for correlation, counts in emitted.items():
+        (ring,) = lookup_diagnostic_records(correlation, root=tmp_path)
+        for name, value in counts.items():
+            assert ring.get(name) == value, name
+            assert stderr[correlation].get(name) == value, name
+
+    # The newly fenced names stay closed integers: content in their place reaches neither sink.
+    admitted = (
+        "semantic_rejected_routine_completeness",
+        "semantic_rejected_yoetz_process_state",
+        "semantic_challenges_advisory",
+        "semantic_agent_criteria",
+        "semantic_rulings_disputed_after_rebuttal",
+        *follow_up,
+    )
+    hostile = record_bounded_counts_without_raising(
+        component="check",
+        operation="semantic_review_follow_up",
+        outcome="succeeded",
+        counts=dict.fromkeys(admitted, "PRIVATE_CODE_CANARY"),
+    )
+    (fenced,) = lookup_diagnostic_records(hostile, root=tmp_path)
+    assert {name: fenced.get(name) for name in admitted} == dict.fromkeys(admitted, "unavailable")
+    assert "PRIVATE_CODE_CANARY" not in diagnostic_log_path(root=tmp_path).read_text()
+    assert "PRIVATE_CODE_CANARY" not in capsys.readouterr().err

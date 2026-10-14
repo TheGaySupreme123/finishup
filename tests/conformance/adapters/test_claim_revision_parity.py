@@ -175,9 +175,13 @@ async def test_claim_revision_mismatch_is_identical_on_durable_adapters() -> Non
         # ADR-030: the invariant is carried structurally, not only inside the message, so both
         # adapters must agree on the typed detail as well as the prose.
         assert error.safe_details == {
+            "count": 1,
             "invariant": "limitation_refs_complete",
             "reason_code": "claim_revision_mismatch",
             "field": "/event_drafts/0/payload/limitation_refs",
         }
         assert "limitation_refs_complete" in error.message
+        # The rejection names the exact live result the claim still owes (benchmark full3: agents
+        # could not see hook-observed failures and over- or under-listed them across retries).
+        assert f"Missing 1: {_RESULT}." in error.message
     assert failures[0].message == failures[1].message

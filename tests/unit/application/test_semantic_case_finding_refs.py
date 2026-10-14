@@ -53,7 +53,7 @@ from yoetz.protocol.coverage import EvidenceImmutability, LedgerFreshness
 from yoetz.protocol.ids import IdKind, new_id
 from yoetz.protocol.models import DataCategory
 
-_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 _PROSE_PROFILES = (
     ReviewContextProfile.GOAL_AWARE,
     ReviewContextProfile.ASSISTED,

@@ -27,6 +27,12 @@ from yoetz.protocol.canonical import (
     strict_json_parse,
 )
 from yoetz.protocol.errors import ProtocolValueError
+from yoetz.protocol.policy_packs import (
+    COORDINATION_POLICY_ID,
+    RESEARCH_EVIDENCE_POLICY_ID,
+    WORK_INTEGRITY_POLICY_ID,
+    current_policy_pack,
+)
 
 __all__ = [
     "BUNDLE_SCHEMA_VERSION",
@@ -63,13 +69,13 @@ __all__ = [
 PROTOCOL_VERSION: Final = "0.1"
 CONTROL_PROTOCOL_VERSION: Final = "1.0"
 PRIVACY_POLICY_SCHEMA_VERSION: Final = "1.2.0"
-EGRESS_RECEIPT_SCHEMA_VERSION: Final = "1.0.0"
+EGRESS_RECEIPT_SCHEMA_VERSION: Final = "1.1.0"
 PRIVACY_CLASSIFIER_RULESET_VERSION: Final = "privacy-classifier/0.1.0"
 ENGINE_VERSION: Final = "0.1.0"
 PROJECTION_VERSION: Final = "yoetz/0.1.0"
-WORK_INTEGRITY_POLICY_VERSION: Final = "work-integrity/0.1.0"
-RESEARCH_EVIDENCE_POLICY_VERSION: Final = "research-evidence/0.1.0"
-COORDINATION_POLICY_VERSION: Final = "coordination/0.1.0"
+WORK_INTEGRITY_POLICY_VERSION: Final = current_policy_pack(WORK_INTEGRITY_POLICY_ID)
+RESEARCH_EVIDENCE_POLICY_VERSION: Final = current_policy_pack(RESEARCH_EVIDENCE_POLICY_ID)
+COORDINATION_POLICY_VERSION: Final = current_policy_pack(COORDINATION_POLICY_ID)
 OBJECT_FORMAT_VERSION: Final = "yoetz-object/1"
 # Static identity on the status versions slice. Distinct from catalog/bundle schema counters
 # and from live SQLite user_version. Not a probed runtime fact.
@@ -102,7 +108,7 @@ _RESOURCE_LIMIT: Final = 4_194_304
 # One independently reviewed cardinality tripwire guards the generated resource manifest. All
 # per-kind counts are derived from the manifest entries so adding a resource has exactly one
 # hand-authored count to review and the owning resource-ripple command can regenerate the rest.
-REVIEWED_RESOURCE_COUNT: Final = 284
+REVIEWED_RESOURCE_COUNT: Final = 308  # #1048: +1 canonical vector CAN-017 (check inspection)
 _RESOURCE_KINDS: Final = frozenset(
     {
         "canonical_vector",
@@ -120,15 +126,17 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("catalog", "7.0.0"),
     ("chat-user-attestation", "1.0.0"),
     ("check-request", "1.1.0"),
-    ("check-result", "1.3.0"),
+    ("check-result", "1.4.0"),
+    ("closure-prepare-request", "1.0.0"),
+    ("closure-prepare-result", "1.0.0"),
     ("client-info", "1.0.0"),
     ("control-hello", "2.9.0"),
     ("control-hello-result", "2.9.0"),
     ("control-request", "2.9.0"),
     ("control-result", "2.9.0"),
     ("coverage", "1.0.0"),
-    ("egress-receipt", "1.0.0"),
-    ("finding", "1.3.0"),
+    ("egress-receipt", "1.1.0"),
+    ("finding", "1.4.0"),
     ("frontier", "1.0.0"),
     ("lineage-acceptance", "1.0.0"),
     ("lineage-origin", "1.0.0"),
@@ -140,12 +148,12 @@ _REQUEST_RESULT_VERSIONS: Final = (
     ("pending-agent", "7.0.0"),
     ("prepare-result", "7.0.0"),
     ("privacy-policy", "1.2.0"),
-    ("provider-judgment", "1.1.0"),
+    ("provider-judgment", "1.2.0"),
     ("public-error", "1.0.0"),
     ("publish-work-request", "1.2.0"),
-    ("publish-work-result", "1.0.0"),
-    ("read-guidance-request", "1.0.0"),
-    ("read-guidance-result", "1.0.0"),
+    ("publish-work-result", "1.1.0"),
+    ("read-guidance-request", "1.1.0"),
+    ("read-guidance-result", "1.1.0"),
     ("receipt-document", "1.3.0"),
     ("receipt-request", "1.0.0"),
     ("receipt-result", "1.3.0"),
@@ -785,7 +793,7 @@ def build_version_manifest(*, include_optional_probes: bool = False) -> VersionM
         event_schema_versions=tuple(
             (
                 name,
-                "1.3.0"
+                "1.4.0"
                 if name in {"finding_recorded", "check_recorded"}
                 else "1.2.0"
                 if name in {"evidence_recorded", "session_opened", "session_resumed"}
@@ -794,6 +802,7 @@ def build_version_manifest(*, include_optional_probes: bool = False) -> VersionM
                 in {
                     "check_recorded",
                     "claim_recorded",
+                    "obligation_published",
                     "plan_published",
                     "plan_revised",
                     "response_recorded",

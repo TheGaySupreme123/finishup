@@ -36,6 +36,7 @@ def with_checklist(
             standing_limitations=[],
             acknowledged_not_done=[],
             acknowledged_not_done_count="0",
+            blocked_obligations=[],
         )
         return result
     split = derive_closure_readiness(
@@ -48,5 +49,11 @@ def with_checklist(
         standing_limitations=list(split.standing_limitations),
         acknowledged_not_done=list(split.acknowledged_not_done),
         acknowledged_not_done_count=str(split.acknowledged_not_done_count),
+        blocked_obligations=[
+            {"obligation_id": obligation, "blocker_kind": kind, "decision_event_id": event}
+            for obligation, kind, event in (
+                () if facts is None else facts.blocked_obligation_details
+            )
+        ],
     )
     return result

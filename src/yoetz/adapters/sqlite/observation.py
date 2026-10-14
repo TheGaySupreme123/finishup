@@ -10,6 +10,7 @@ from typing import Final, Literal, cast
 import apsw
 
 from yoetz.domain.observation import (
+    MATERIAL_OBSERVATION_GAPS,
     AdviceSnapshot,
     ObservationCaptureBacklog,
     ObservationCapturePart,
@@ -2211,7 +2212,7 @@ class SqliteObservationStore:
             lifecycle = ObservationLifecycle.STOPPED
         elif not any(coverage.values()):
             lifecycle = ObservationLifecycle.DEGRADED
-        elif gaps or unsupported:
+        elif any(gap in MATERIAL_OBSERVATION_GAPS for gap in gaps) or unsupported:
             lifecycle = ObservationLifecycle.DEGRADED
         else:
             lifecycle = ObservationLifecycle.ACTIVE

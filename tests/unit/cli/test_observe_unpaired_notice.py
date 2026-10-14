@@ -2,8 +2,8 @@
 
 Real Codex hook ingress records a paired-profile orphan post. The durable gap
 stays on status after drain and after a restart, the ``refresh_observation``
-advisory is reserved for conditions that can recover in session, and the agent
-receives exactly one informational notice per new orphan scope.
+advisory is reserved for conditions that can recover in session, and the orphan
+record remains operator-visible without entering hook context (#974).
 """
 
 from __future__ import annotations
@@ -35,7 +35,6 @@ from yoetz.kernel.policies.observation_advice import (
 from yoetz.protocol.canonical import canonical_encode
 
 HOST = "019f9b27-orphan-scope-host"
-_NOTICE = "Yoetz notice (no response needed)"
 
 
 class _Cell:
@@ -113,7 +112,7 @@ class _Cell:
         return None if not gap else gap[0].evidence_refs
 
 
-def test_orphan_scope_is_announced_once_and_never_becomes_a_stale_advisory(
+def test_orphan_scope_stays_operator_visible_without_agent_advisory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-codex-home"))
@@ -121,12 +120,11 @@ def test_orphan_scope_is_announced_once_and_never_becomes_a_stale_advisory(
     cell.hook("SessionStart", source="startup")
 
     first = cell.orphan_post("call_orphan_1")
-    assert first.count(_NOTICE) == 1
-    assert "source codex_hook, generation 1" in first
+    assert "Yoetz notice (no response needed)" not in first
     assert "Observation coverage is incomplete or stale" not in first
-    # Repeated orphans in the same scope, and a restarted store, add no notice.
-    assert _NOTICE not in cell.orphan_post("call_orphan_2")
-    assert _NOTICE not in cell.orphan_post("call_orphan_3")
+    # Repeated orphans in the same scope, and a restarted store, remain silent.
+    assert "Yoetz notice (no response needed)" not in cell.orphan_post("call_orphan_2")
+    assert "Yoetz notice (no response needed)" not in cell.orphan_post("call_orphan_3")
 
     cell.drain()
     store = cell.store()
@@ -135,7 +133,8 @@ def test_orphan_scope_is_announced_once_and_never_becomes_a_stale_advisory(
     # Drain is healthy: the standing record alone is not stale acquisition.
     assert status.lifecycle is ObservationLifecycle.ACTIVE
     assert cell.advisory_refs() is None
-    assert store.peek_unpaired_notice(cell.commitment, cell.session) is None
+    # The bounded local notice remains available to operators, but is never consumed by a hook.
+    assert store.peek_unpaired_notice(cell.commitment, cell.session) is not None
 
     # A real transient condition still advises, names its cause first...
     store.note_coverage_gap(cell.commitment, ObservationGapCode.SERVICE_UNAVAILABLE.value)
@@ -143,14 +142,21 @@ def test_orphan_scope_is_announced_once_and_never_becomes_a_stale_advisory(
     assert refs is not None
     assert refs[0] == "cause:service_unavailable"
     assert "cause:unpaired_event" not in refs
+    assert (
+        ObservationGapCode.SERVICE_UNAVAILABLE.value
+        in store.status(ObservationStatusQuery(cell.commitment)).gaps
+    )
 
     # ...and clears once a delivery proves the service is reachable again.
-    assert _NOTICE not in cell.hook(
+    hook_context = cell.hook(
         "PreToolUse",
         tool_name="Bash",
         tool_use_id="call_paired",
         tool_input={"command": "npm run test-type"},
     )
+    assert "Yoetz notice (no response needed)" not in hook_context
+    assert "refresh_observation" not in hook_context
+    assert "Observation coverage is incomplete or stale" not in hook_context
     cell.drain()
     assert cell.advisory_refs() is None
     status = cell.store().status(ObservationStatusQuery(cell.commitment))

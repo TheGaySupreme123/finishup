@@ -335,6 +335,7 @@ _COORDINATION_CONTROL_ERROR_REASONS: Final[frozenset[str]] = frozenset(
 )
 _CONTROL_ERROR_REASONS = _TRANSPORT_CONTROL_ERROR_REASONS | _COORDINATION_CONTROL_ERROR_REASONS
 _EMPTY_ACCEPTED_STATE: Final[Mapping[str, SafeDetailValue]] = MappingProxyType({})
+_CONTROL_ERROR_PHASE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
 # The exact structural facts a caller needs to continue after a post-commit projection failure:
 # where the ledger landed, and how many events it accepted.
 ACCEPTED_STATE_KEYS: Final = ("count", "head_digest", "sequence")
@@ -363,12 +364,13 @@ class ControlError(Exception):
     bridge-local fault) and the bridge mints/records under its own id.
     """
 
-    __slots__ = ("accepted_state", "correlation_id", "reason", "retryable")
+    __slots__ = ("accepted_state", "correlation_id", "phase", "reason", "retryable")
 
     reason: str
     retryable: bool
     accepted_state: Mapping[str, SafeDetailValue]
     correlation_id: str | None
+    phase: str | None
 
     def __init__(
         self,
@@ -377,11 +379,16 @@ class ControlError(Exception):
         retryable: bool = False,
         accepted_state: Mapping[str, SafeDetailValue] | None = None,
         correlation_id: str | None = None,
+        phase: str | None = None,
     ) -> None:
         if type(reason) is not str or reason not in CONTROL_ERROR_REASONS:
             raise TypeError("control_error_reason_invalid")
         if type(retryable) is not bool:
             raise TypeError("control_error_retryable_invalid")
+        if phase is not None and (
+            type(phase) is not str or _CONTROL_ERROR_PHASE_PATTERN.fullmatch(phase) is None
+        ):
+            raise ValueError("control_error_phase_invalid")
         if reason in _COORDINATION_CONTROL_ERROR_REASONS and retryable:
             raise ValueError("coordination_control_error_must_not_be_retryable")
         if reason == "privacy_projection_unavailable" and not retryable:
@@ -419,6 +426,7 @@ class ControlError(Exception):
         self.retryable = retryable
         self.accepted_state = normalized or _EMPTY_ACCEPTED_STATE
         self.correlation_id = correlation_id
+        self.phase = phase
         super().__init__(reason)
 
 

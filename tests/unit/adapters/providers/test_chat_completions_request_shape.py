@@ -34,7 +34,7 @@ _NOW = datetime(2026, 7, 24, tzinfo=UTC)
 _DIGEST = "sha256:" + "c" * 64
 _CREDENTIAL = "sk-live-never-appears-anywhere"
 
-_JUDGMENT = '{"conclusion":"no_material_discrepancy","reviewer_challenges":[],"prior_finding_verdicts":[]}'  # exact judgment shape
+_JUDGMENT = '{"conclusion":"no_material_discrepancy","review_summary":"The supplied packet was reviewed.","verified":[],"reviewer_challenges":[],"prior_finding_verdicts":[]}'  # exact judgment shape
 
 
 def _profile(

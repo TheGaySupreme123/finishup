@@ -35,6 +35,7 @@ from yoetz.domain.findings import (
     SemanticFallbackOrigin,
 )
 from yoetz.domain.privacy import PrivacyOutcome, PrivacyReason, ProviderBinding
+from yoetz.domain.receipts import SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP
 from yoetz.ports.ledger import AttemptOutcome, FrozenCase
 from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
 from yoetz.ports.runtime import TaskRuntime
@@ -105,11 +106,13 @@ class _PairedPrivacy(_Privacy):
         task_id: str,
         primary_failure_class: SemanticFailureClass = SemanticFailureClass.TRANSPORT,
         primary_content_invalid: bool = False,
+        withheld_item_ids: tuple[str, ...] = (),
     ) -> None:
         super().__init__(task_id=task_id)
         self.bindings: list[ProviderBinding] = []
         self.primary_failure_class = primary_failure_class
         self.primary_content_invalid = primary_content_invalid
+        self.withheld_item_ids = withheld_item_ids
 
     async def evaluate_semantic(self, candidate: object, deadline: object) -> object:
         del deadline
@@ -148,6 +151,7 @@ class _PairedPrivacy(_Privacy):
                 case_digest="sha256:" + "5" * 64,
                 privacy_receipt_id=receipt,
                 request_commitment="hmac-sha256:" + "6" * 64,
+                withheld_item_ids=self.withheld_item_ids,
             )
         assert binding == _FALLBACK
         return SemanticEgressSuccess(
@@ -162,6 +166,7 @@ class _PairedPrivacy(_Privacy):
             case_digest="sha256:" + "5" * 64,
             privacy_receipt_id=receipt,
             request_commitment="hmac-sha256:" + "6" * 64,
+            withheld_item_ids=self.withheld_item_ids,
         )
 
 
@@ -268,6 +273,9 @@ class _DisclosingPrivacy(_PairedPrivacy):
     disclosed = frozenset(
         {"evd_53000000-0000-4000-8000-000000000907", "clm_53000000-0000-4000-8000-000000000907"}
     )
+    # tb4n1 D1: refs the sent packet withheld for room, and the subset privacy withheld.
+    room = frozenset({"evd_53000000-0000-4000-8000-000000000908"})
+    privacy = frozenset({"evd_53000000-0000-4000-8000-000000000909"})
 
     async def evaluate_semantic(self, candidate: object, deadline: object) -> object:
         del deadline
@@ -286,8 +294,12 @@ class _DisclosingPrivacy(_PairedPrivacy):
             privacy_receipt_id="egr_53000000-0000-4000-8000-000000000907",
             request_commitment="hmac-sha256:" + "6" * 64,
             disclosure=ReviewPacketDisclosure(
-                carried=self.disclosed, withheld=frozenset(), payload_events=frozenset()
+                carried=self.disclosed,
+                withheld=self.room | self.privacy,
+                payload_events=frozenset(),
+                privacy_withheld=self.privacy,
             ),
+            withheld_item_ids=("excerpt-heuristic",),
         )
 
 
@@ -315,12 +327,57 @@ async def test_the_selected_attempt_carries_what_its_sent_packet_included(
 
     assert original.status is SemanticStatus.SUCCEEDED
     assert original.case_included_refs == _DisclosingPrivacy.disclosed
+    assert original.semantic_withheld_item_ids == ("excerpt-heuristic",)
+    assert original.provider_input_manifest is None
     assert original.operation_lease is not None
     calls = cast(int, getattr(privacy, "calls"))
     recovered = await evaluator(FrozenCase(frozen.case, original.operation_lease), (), runtime)
     assert getattr(privacy, "calls") == calls
     assert recovered.status is SemanticStatus.SUCCEEDED
     assert recovered.case_included_refs == _DisclosingPrivacy.disclosed
+    assert original.case_withheld_refs == _DisclosingPrivacy.room
+    assert original.case_privacy_withheld_refs == _DisclosingPrivacy.privacy
+    assert recovered.case_withheld_refs == _DisclosingPrivacy.room
+    assert recovered.case_privacy_withheld_refs == _DisclosingPrivacy.privacy
+    assert recovered.semantic_withheld_item_ids == ("excerpt-heuristic",)
+    assert recovered.provider_input_manifest is None
+    assert (
+        recovered.provider_input_manifest_failure
+        == SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP
+    )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "adapter_factory",
+    (memory_adapter, sqlite_adapter),
+    ids=("memory", "sqlite"),
+)
+async def test_provider_outcome_keeps_withheld_item_ids_in_the_durable_final(
+    adapter_factory: Callable[[object], MemoryLedgerAdapter | SqliteLedger],
+) -> None:
+    """A failed provider attempt still reports the bounded omission identities."""
+
+    adapter = adapter_factory(append_command())
+    frozen, runtime = await _durable_semantic_case(adapter)
+    privacy = _PairedPrivacy(
+        task_id=runtime.task_id,
+        withheld_item_ids=("excerpt-heuristic",),
+    )
+
+    evaluator = _paired_evaluator(
+        privacy,
+        runtime,
+        fallback_binding=None,
+        primary_retries=0,
+    )
+    result = await evaluator(frozen, (), runtime)
+
+    assert (result.status, result.reason) == (
+        SemanticStatus.UNAVAILABLE,
+        SemanticReason.TRANSPORT_UNAVAILABLE,
+    )
+    assert result.semantic_withheld_item_ids == ("excerpt-heuristic",)
 
 
 @pytest.mark.anyio
@@ -740,7 +797,8 @@ async def test_budget_profile_is_frozen_with_the_job_and_scoped_to_every_attempt
     privacy = _BudgetRecordingFallback(runtime.task_id, clock)
     selected: list[str] = ["routine"]
 
-    def select(_projection: object) -> str:
+    def select(_projection: object, *, final_review: bool = False) -> str:
+        del final_review
         return selected[0]
 
     monkeypatch.setattr(ready_composition_module, "select_semantic_budget_profile", select)

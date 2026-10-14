@@ -20,7 +20,9 @@ from yoetz.mcp.resources import GUIDANCE_RESOURCES
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.models import (
     CheckRequestModel,
+    ClosurePrepareRequestModel,
     PublishWorkRequestModel,
+    ReadGuidanceRequestModel,
     ReceiptRequestModel,
     RespondRequestModel,
     StartRequestModel,
@@ -188,6 +190,10 @@ def _degraded_agent_surface(profile: McpRouteProfile) -> str:
 def _request_model_and_operation(
     request: Mapping[str, JsonValue],
 ) -> tuple[type[Any], str]:
+    if "uri" in request:
+        return ReadGuidanceRequestModel, "read_guidance"
+    if {"session_id", "writer_id", "selection"} <= request.keys():
+        return ClosurePrepareRequestModel, "closure_prepare"
     if "event_drafts" in request:
         return PublishWorkRequestModel, "publish_work"
     if "finding_id" in request:
@@ -243,7 +249,16 @@ def test_degraded_surface_templates_remain_authorable(profile: str) -> None:
         elif operation == "check":
             check_scopes.add("scoped" if "scope" in request else "whole")
 
-    assert operations == {"start", "publish_work", "status", "check", "respond", "receipt"}
+    assert operations == {
+        "start",
+        "publish_work",
+        "status",
+        "check",
+        "respond",
+        "receipt",
+        "closure_prepare",
+        "read_guidance",
+    }
     assert families == ORDINARY_MCP_PUBLISH_EVENT_FAMILIES
     assert check_scopes == {"whole", "scoped"}
 

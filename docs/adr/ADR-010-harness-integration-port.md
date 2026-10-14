@@ -98,10 +98,11 @@ The through-line is that "Codex is first" had been encoded as "Codex is the only
    resource URI is a key into a frozen table, never a path.
 
 6. **`mcp/descriptors.py` owns every agent-read string** — the six workflow tool names, the
-   read-only `read_guidance` tool, descriptions, and annotations, plus `instructions` — loaded from
-   verified packaged resources, never composed at runtime, and bound by the same honesty lint as
-   the guidance ("verified", "proved", "authenticated", "complete" rejected unless the sentence
-   states the exact sufficient coverage). `status` and `read_guidance` carry `readOnlyHint=true`;
+   read-only `read_guidance` and `closure_prepare` support tools, descriptions, and annotations,
+   plus `instructions` — loaded from verified packaged resources, never composed at runtime, and
+   bound by the same honesty lint as the guidance ("verified", "proved", "authenticated", "complete"
+   rejected unless the sentence states the exact sufficient coverage). `status`, `read_guidance`,
+   and `closure_prepare` carry `readOnlyHint=true`;
    `receipt` carries `readOnlyHint=false` because it stages a receipt object and appends a
    `receipt_recorded` event. Every tool carries an explicit `idempotentHint=true`. Nothing carries
    `destructiveHint`, because no Yoetz operation deletes recorded evidence. `read_guidance` is
@@ -311,6 +312,14 @@ bounded the adjacent surface since #128. Per-item budgets cannot catch this clas
 item can sit inside its own bound while the total doubles. Anyone inlining a document here again
 will fail CI rather than a live session.
 
+**Amendment (2026-10-03, issue #951): same-session specification recovery.** MCP advertises
+`plan_published/1.1.0` and `plan_revised/1.1.0`, including `task_statement`, so a caller can supply
+missing review input without superseding the session and writer that own its parked check. The
+older plan variants remain available and reject that field. These two variants add two branches,
+two payload definitions, and 3,000 bytes to the advertised schema. The measured publication schema
+is 51,432 bytes and the strict generic-host aggregate is 252,168 bytes. Their reviewed ceilings are
+52,000 and 253,000 bytes respectively; the compact native-host instruction ceilings are unchanged.
+
 **Amendment (2026-09-30, issue #918; also records #789): tier 0 is host-profiled.** The bridge's
 declared `--host` selects the tier-0 body. `generic` keeps `agent-instructions.md` verbatim.
 `claude` receives a compact body sized for Claude Code's observed 2,048-character cap (#789).
@@ -324,6 +333,19 @@ and an instruction to read `agent-instructions.md` before the first `start`. Tha
 route tail and destination disclosure are composed identically for every body. Separately, on
 `codex` only, a `read_guidance` result's text `content` points at `structuredContent.text`
 instead of repeating the document; tier 1 and tier 2 bytes and the output schema are unchanged.
+
+**Amendment (2026-10-03, issue #950; residual #918): bounded guidance delivery.** The additive
+`read_guidance` 1.1.0 request/result schemas retain URI-only full-document responses up to 64 KiB
+and automatically select page zero for larger documents. The document/offset bound is 1 MiB;
+individual response-body bounds remain unchanged. The UTF-8-safe page route binds a document URI,
+source-byte revision/digest, offsets, byte counts,
+page count, completion, and an exact continuation. Codex keeps its bounded pointer and reads the
+page body from `structuredContent`; generic, Claude Code, and Cursor page text carries explicit
+begin/end markers. A final `complete` flag records service emission only. The supported consumer
+assembler rejects clipped markers, missing or duplicate pages, stale identity, offset/length
+mismatches, and a final digest mismatch before exposing guidance. The frozen 1.0.0 schemas remain
+available for compatibility, and generated resource/skill mirrors continue to come from the
+resource ripple.
 
 **Amendment (ADR-023, 2026-08-21, issue #149): tier 2 gains a portable carrier; artifact and
 activation are sibling ports.** Tier 2 on-disk delivery may now be carried either by a host-native
@@ -385,7 +407,9 @@ Code, or Cursor to connect, sign in, or repair one. When intent is recorded and 
 structurally unusable, `connect_provider` is still produced, including when the fact has no factory
 id. Delivery stays on the standing session-boundary channels: Codex and Claude Code `SessionStart`
 and `Stop`, and Cursor `sessionStart`. `PostToolUse` does not carry it. Cursor `stop` still does
-not emit `followup_message`. No privacy widening, provider connection, or credential action is implied.
+not emit `followup_message` for advice. No privacy widening, provider connection, or credential action is implied.
+The one later exception is the Stop-time closure gate (ADR-033, #977): Codex `decision: block`,
+Claude Code `additionalContext`, and Cursor `followup_message`, once per ledger frontier.
 
 **Amendment (2026-08-14):** Hook advice delivery no longer falls back to the workspace-wide
 `advice_snapshot` for task-scoped conditions. Before a Codex session is mapped, task-scoped
@@ -458,20 +482,31 @@ session-scoped current advice; migration `0003` is immutable. Local advice consu
 evidence offline and materializes through existing `finding_recorded`; ordinary
 `status(view="advice")` loads only the advice for the routed workspace and Yoetz session, and safe
 hook context surfaces the same bounded finding/evidence identities. The MCP registry remains the
-six workflow tools plus read-only `read_guidance`. Observation is not a seventh workflow tool.
+six workflow tools plus read-only `read_guidance` and `closure_prepare` support tools. Observation
+is not a workflow tool.
 
 A fork can make Yoetz first-party on another harness by writing one adapter and one profile. It
 edits no port, no registry, no guidance, and no schema. That is the property this ADR exists to
 guarantee, and it follows from the ports/adapters pattern the rest of the tree already uses.
 
 Any MCP host works on day one with no integration, no skill, and no configuration: six workflow
-tools, `read_guidance`, the tier-0 instructions, and five fetchable guidance documents. The
+tools, `read_guidance`, the read-only `closure_prepare` support route, the tier-0 instructions,
+and five fetchable guidance documents. The
 request-template resource keeps
 all six requests and all nine ordinary publication families authorable when a host drops schema
 metadata; the catalog schema remains admission authority. The host earns `cooperative_mcp` with
 `self_asserted` authorship and `published_only` artifact observation — the weakest honest coverage,
 which the coverage vector already expresses precisely. That is not a degraded mode needing a warning
 label; it is an accurate one.
+
+**Amendment (2026-10-03, issue #953): bounded closure preparation is an MCP support route.**
+`closure_prepare/1.0.0` exposes the existing mechanical closure composer through the same
+cooperative identities and explicit selections as the CLI. It reads one pinned, privacy-projected
+inventory and prepares at most one request; it never appends, judges work, or claims completion.
+The bridge refuses a result after the complete host projection and JSON-RPC serialization would
+exceed the stdio frame bound, including Cursor's structured-content plus canonical-text copies,
+and directs larger inventories to the CLI `--output` fallback. This adds a read-only support tool,
+not a workflow operation or a new authority boundary.
 
 First-party Codex integration therefore buys ergonomics and, when the observation arm is
 capability-proven and consented, stronger coverage via `hook_observed`. It never buys a different
@@ -533,7 +568,9 @@ retained or admitted into observation evidence.
 
 Tier 0 remains the intake cue and safety floor. The skill routes through the existing five
 registered guidance resources: workflow before start, publication policy before publish, and
-coverage/receipts before check. Setup, consent, credential/vault and import procedures live in
+coverage/receipts before check. (Amended by ADR-047, 2026-10-12: the core is the operating card;
+those pages are read on demand, when a result, error or continuation names one, not before each
+operation.) Setup, consent, credential/vault and import procedures live in
 request templates and load only for those operations; recovery details load on a corresponding
 error or continuation. They remain available through MCP and installed reference copies.
 

@@ -34,6 +34,9 @@ from yoetz.domain.receipts import (
     COMPLETION_SCOPE_UNDECLARED_GAP,
 )
 from yoetz.domain.task_statement import (
+    NO_MATERIAL_WORK_MARKER,
+    TASK_STATEMENT_SCOPE_EMPTY_SUMMARY,
+    TASK_STATEMENT_UNMAPPED_SUMMARY,
     RecordedTaskStatement,
     current_task_statement,
     recorded_task_title,
@@ -65,6 +68,11 @@ from yoetz.domain.values import (
 )
 from yoetz.kernel.claims import effective_claim_items
 from yoetz.kernel.completion_scope import completion_scope_codes
+from yoetz.kernel.outcome_corrections import (
+    HOST_OUTCOME_UNAVAILABLE_GAP,
+    superseded_unknown_results,
+)
+from yoetz.kernel.plan_drift import plan_drift_signals
 from yoetz.kernel.plan_scope import current_plan_scope
 from yoetz.kernel.projections import (
     ProjectionRecord,
@@ -93,6 +101,12 @@ from yoetz.protocol.coverage import (
     coverage_to_json,
     weakest,
 )
+from yoetz.protocol.policy_packs import (
+    RESEARCH_EVIDENCE_POLICY_ID,
+    RESEARCH_EVIDENCE_POLICY_VERSION,
+    WORK_INTEGRITY_POLICY_ID,
+    WORK_INTEGRITY_POLICY_VERSION,
+)
 
 __all__ = [
     "CALLER_DIGEST_PROVENANCE_GAPS",
@@ -113,9 +127,19 @@ __all__ = [
     "MAX_FROZEN_HISTORY_BYTES",
     "MAX_FROZEN_HISTORY_EVENTS",
     "OBSERVED_FAILURE_LIVE_FACT",
+    "OBSERVED_VERIFICATION_ABSENT_FACT",
+    "REQUESTED_OUTPUT_ABSENT_FACT",
+    "OBSERVED_VERIFICATION_UNCITED_FACT",
+    "PREEXISTING_TEST_EDIT_UNJUSTIFIED_FACT",
+    "STATEMENT_SOURCED_OBLIGATION_ABSENT_FACT",
+    "TASK_STATEMENT_RECORDED_FACT",
+    "TASK_STATEMENT_SCOPE_EMPTY_FACT",
+    "TASK_STATEMENT_UNMAPPED_FACT",
     "PolicyPack",
     "UnavailableCapturedObject",
     "build_deterministic_case",
+    "build_task_statement_unmapped_assessment",
+    "build_test_edit_integrity_assessment",
     "case_coverage",
     "healthy_storage_availability",
     "deterministic_case_from_json",
@@ -134,8 +158,27 @@ type PublicSubjectRef = EventId | ObligationId | ClaimId
 
 _MAX_SAFE_INTEGER: Final = 2**53 - 1
 # Work-integrity fact naming a hook-observed failure that is still live at the claim: the latest
-# observed run of its command identity failed and no successful observed edit followed it (#909).
+# observed run of its command identity failed and no covering rerun or acknowledgement followed
+# it (#909).
 OBSERVED_FAILURE_LIVE_FACT: Final = "observed_failure_live"
+# The recorded task statement has no effective obligation citing it in source_refs (TB4 pilot).
+TASK_STATEMENT_UNMAPPED_FACT: Final = "task_statement_unmapped"
+STATEMENT_SOURCED_OBLIGATION_ABSENT_FACT: Final = "statement_sourced_obligation_absent"
+# A completion claim stands on no plan or an explicit empty scope while a task statement is
+# recorded and no no-material-work decision answers it (TB4 pilot).
+TASK_STATEMENT_SCOPE_EMPTY_FACT: Final = "task_statement_scope_empty"
+# The unjustified pre-existing test edit (ADR-032), and the statement event its repair must cite.
+PREEXISTING_TEST_EDIT_UNJUSTIFIED_FACT: Final = "preexisting_test_edit_unjustified"
+TASK_STATEMENT_RECORDED_FACT: Final = "task_statement_recorded"
+# A completion claim cites no verification (observed or self-published) made after the latest observed edit.
+OBSERVED_VERIFICATION_UNCITED_FACT: Final = "observed_verification_uncited"
+OBSERVED_VERIFICATION_ABSENT_FACT: Final = "observed_verification_absent"
+REQUESTED_OUTPUT_ABSENT_SUMMARY: Final = (
+    "A requested output file does not exist in the workspace at check time."
+)
+# A requested file the check-time workspace read found absent, and not a tracked file the change
+# deletes (#977). Its repair is the deliverable itself, never a revised obligation.
+REQUESTED_OUTPUT_ABSENT_FACT: Final = "requested_output_absent"
 _CODE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$", re.ASCII)
 _POLICY_PATTERN: Final = re.compile(r"^[a-z][a-z0-9-]{0,127}$", re.ASCII)
 _VERSION_PATTERN: Final = re.compile(
@@ -390,17 +433,57 @@ class DeterministicFindingTemplate:
             raise _invalid_policy()
 
 
+def _test_edit_repair(statement_refs: str) -> str:
+    """The complete working repair for an unjustified pre-existing test edit (ADR-032).
+
+    Every step is needed: ``source_refs`` cannot change on an existing obligation, the requested
+    file needs an attributable attempt, and the claim must name the new obligation.
+    """
+
+    return (
+        "If the user's request asks for this test change, do all of these, then check again:"
+        " (1) publish a NEW obligation_published (source_refs cannot change on an existing"
+        f" obligation) whose source_refs cite {statement_refs} and whose requested_items list"
+        " the test file's repository-relative path with item_kind file; (2) add it to the plan"
+        " with plan_revised, change=carried for it and for every obligation you keep; (3) record"
+        " an action_recorded (action_kind edit) whose attempted_items list that same path, with"
+        " its result_recorded;"
+        " (4) after step 3, rerun your verification (evidence from before step 3 is stale) and"
+        " republish the new obligation with status resolved and resolution_evidence_refs naming"
+        " that fresh observed verification result; (5) replace the"
+        " completion claim with claim_recorded/1.1.0 supersedes_claim_refs naming the old claim"
+        " and obligation_refs including the new obligation. Otherwise revert the test change and"
+        " check again."
+    )
+
+
 DETERMINISTIC_FINDING_TEMPLATES: Final[
     MappingProxyType[FindingKind, DeterministicFindingTemplate]
 ] = MappingProxyType(
     {
         FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS: DeterministicFindingTemplate(
             "A completion claim covers an obligation that remains open.",
-            "Resolve the obligation or revise the completion claim.",
+            "Resolve the obligation or revise the completion claim. An obligation you acknowledged"
+            " as not done is not completed: omit it from the completion claim (replace the claim"
+            " with claim_recorded/1.1.0 supersedes_claim_refs); the receipt discloses it as not"
+            " done, and omitting it is not a plan-scope gap.",
         ),
         FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED: DeterministicFindingTemplate(
             "A requested item has no recorded attempt.",
-            "Attempt the requested item or revise its obligation.",
+            "Attempt the requested item and record the action naming it in attempted_items."
+            " Revise the obligation only if the user's request itself changed. If you did the"
+            " work and Yoetz cannot show it (a Yoetz limit), verify it yourself and respond"
+            " self_verified with your evidence; a Yoetz limit is never a blocker. An inherent"
+            " verification limit (a hidden verifier, a private trace) or a best-effort choice is"
+            " not a blocker either: finish the work and disclose it with a decision line"
+            " yoetz-assumption:<obligation id> or yoetz-verification-limit:<obligation id>. If you"
+            " truly will not do it, after repair, republish the obligation with status"
+            " acknowledged_not_done and an acknowledged_not_done_reason: the honest last resort. Only when"
+            " something genuinely outside your control (authority, consent, a credential, a"
+            " dependency you cannot obtain) prevents this open obligation, and the task does not"
+            " say the outcome is recoverable, record a decision_recorded naming it in"
+            " affected_obligation_ids with the statement line yoetz-blocker:<authority|consent|"
+            "credential|dependency_unavailable>; the publish result then challenges it.",
         ),
         FindingKind.FAILED_WORK_OMITTED: DeterministicFindingTemplate(
             "Recorded failed work is omitted from the published account.",
@@ -453,6 +536,23 @@ DETERMINISTIC_FINDING_TEMPLATES: Final[
         FindingKind.COORDINATION_OVERLAP: DeterministicFindingTemplate(
             "Accepted work overlaps another live task in the coordination scope.",
             "Record a coordination disposition, then run a qualifying check to resolve the overlap.",
+        ),
+        FindingKind.CODE_DEFECT: DeterministicFindingTemplate(
+            "A code defect was recorded without a qualifying deterministic repair.",
+            "Record the repair evidence or revise the code-defect finding.",
+        ),
+        FindingKind.TASK_REQUIREMENT_UNMET: DeterministicFindingTemplate(
+            "An existing test file was edited without a recorded justification.",
+            _test_edit_repair(
+                "the task-statement event (the newest event that carried task_statement:"
+                " session_opened, session_resumed, plan_published or plan_revised)"
+            ),
+        ),
+        # Issue #1043: raised only by the AI-powered review (or routed to it by the check); no
+        # local pack emits it. The template exists because every kind needs one.
+        FindingKind.AGENT_CRITERION_UNMET: DeterministicFindingTemplate(
+            "A criterion the agent set for itself beyond the task's stated scope is not met.",
+            "Fix the work, or narrow the criterion by responding acknowledged with the reason.",
         ),
     }
 )
@@ -540,6 +640,114 @@ def render_deterministic_finding_text(
                     " resolve it, and it stays current until a qualifying check proves those"
                     f" other gaps absent.{support}"
                 )
+    if kind is FindingKind.ACTION_WITHOUT_RESULT:
+        # tb4n3 N3-5: the subject is the event that recorded the action, but a result links by the
+        # action's own act_ id. cargo D could not find it and tried a causal parent instead.
+        action_ids = tuple(
+            dict.fromkeys(
+                ref
+                for fact in observed_facts
+                if fact.fact_code == "action_present"
+                for ref in fact.subject_refs
+                if ref.startswith("act_")
+            )
+        )
+        if action_ids:
+            named = ", ".join(action_ids[:3]) + (
+                f" and {len(action_ids) - 3} more" if len(action_ids) > 3 else ""
+            )
+            return (
+                template.summary,
+                f"Subjects: {', '.join(refs)}. Main agent: {template.next_action} The action to"
+                f" link is {named} (the subject above is the event that recorded it). Link a"
+                " result by publishing a result_recorded whose payload action_id is that act_ id,"
+                " with outcome success, failure, partial or unknown and a summary; a causal"
+                " parent alone names the event but does not link the result. If the attempt was"
+                " abandoned, record its result with outcome unknown and say so in the summary.",
+            )
+    if kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED and any(
+        fact.fact_code == REQUESTED_OUTPUT_ABSENT_FACT for fact in observed_facts
+    ):
+        return (
+            REQUESTED_OUTPUT_ABSENT_SUMMARY,
+            f"Subjects: {', '.join(refs)}. Main agent: Write each requested file the obligation"
+            " names (status view=obligations lists them) at its requested path, then check again."
+            " If an input looks inconsistent, still write a best-effort artifact in the requested"
+            " format and disclose the assumption; an input problem is not a reason to omit a"
+            " requested output, and publishing an action that names the file does not create it."
+            " If the requested item is not the path the request asks for, correct the item."
+            " Do not git-ignore, exclude, stash or delete a requested output to keep it out of"
+            " review: Yoetz redacts what it sends.",
+        )
+    if kind is FindingKind.TASK_REQUIREMENT_UNMET and any(
+        fact.fact_code == TASK_STATEMENT_UNMAPPED_FACT for fact in observed_facts
+    ):
+        statement_refs = ", ".join(ref for ref in refs if ref.startswith("evt_"))
+        return (
+            TASK_STATEMENT_UNMAPPED_SUMMARY,
+            f"Subjects: {', '.join(refs)}. Main agent: Decompose the user's request into"
+            " obligations, one per stated requirement, symptom, constraint, or deliverable."
+            " Publish each as a NEW obligation_published (source_refs cannot change on an"
+            f" existing obligation) with source_refs [{statement_refs}], observable"
+            " acceptance_criteria, and requested_items for every file or output the request"
+            " names. Add them with plan_revised (change=carried for them and for every"
+            " obligation you keep), resolve each with its own evidence, and replace the"
+            " completion claim with claim_recorded/1.1.0 supersedes_claim_refs naming them in"
+            " obligation_refs. A check rerun without that plan change returns this finding"
+            " again. If the request asks for no material work, revise the plan to an explicit"
+            " empty scope and record a decision_recorded whose statement holds the exact line"
+            f" {NO_MATERIAL_WORK_MARKER}:{statement_refs} and whose rationale says why; that"
+            " decision counts only while the task records no edit and the check-time change"
+            " shows no changed file.",
+        )
+    if kind is FindingKind.TASK_REQUIREMENT_UNMET and any(
+        fact.fact_code == TASK_STATEMENT_SCOPE_EMPTY_FACT for fact in observed_facts
+    ):
+        statement_refs = ", ".join(ref for ref in refs if ref.startswith("evt_"))
+        return (
+            TASK_STATEMENT_SCOPE_EMPTY_SUMMARY,
+            f"Subjects: {', '.join(refs)}. Main agent: The completion claim stands on no plan or"
+            " an explicit empty scope, so the user's request was never decomposed. Either"
+            " publish one obligation per stated requirement, symptom, constraint, or deliverable"
+            f" with source_refs [{statement_refs}], add them with plan_published (or plan_revised"
+            " from the empty-scope plan, change=carried), resolve each with its own evidence,"
+            " and replace the completion claim with claim_recorded/1.1.0 supersedes_claim_refs"
+            " naming them in obligation_refs; or, if the request asks for no material work,"
+            " record a decision_recorded whose statement holds the exact line"
+            f" {NO_MATERIAL_WORK_MARKER}:{statement_refs} and whose rationale says why. That"
+            " decision counts only while the task records no edit and the check-time change"
+            " shows no changed file (shell writes count). Then check again; a rerun without one"
+            " of these returns this finding again.",
+        )
+    if kind is FindingKind.TASK_REQUIREMENT_UNMET and any(
+        fact.fact_code == TASK_STATEMENT_RECORDED_FACT for fact in observed_facts
+    ):
+        statement_refs = ", ".join(
+            ref
+            for fact in observed_facts
+            if fact.fact_code == TASK_STATEMENT_RECORDED_FACT
+            for ref in fact.subject_refs
+        )
+        return (
+            template.summary,
+            f"Subjects: {', '.join(refs)}. Main agent: " + _test_edit_repair(f"[{statement_refs}]"),
+        )
+    if kind is FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE and any(
+        fact.fact_code == OBSERVED_VERIFICATION_UNCITED_FACT for fact in observed_facts
+    ):
+        claim_refs = ", ".join(ref for ref in refs if ref.startswith("clm_"))
+        return (
+            "A completion claim cites no verification made after the latest observed edit.",
+            f"Subjects: {', '.join(refs)}. Main agent: Every verification the claim cites"
+            " predates your latest edit, or it cites none. Run the verification the request"
+            " needs after your last edit and replace the claim with claim_recorded/1.1.0"
+            f" supersedes_claim_refs [{claim_refs}], citing that run in supporting_refs (or in"
+            " limitation_refs when it failed): the observed res_ id from status view=results"
+            " (tool, occurrence, exit status), or your own command result or test_result"
+            " evidence published after the edit; self-generated evidence is admissible."
+            " A check rerun alone returns this finding again; if no verification is possible,"
+            " narrow the claim or answer with respond.",
+        )
     if kind is FindingKind.MATERIAL_LIMITATION_OMITTED:
         limitation_refs = tuple(
             ref
@@ -606,13 +814,12 @@ def render_deterministic_finding_text(
             named = f"result {run_results}" + (f" of action {run_actions}" if run_actions else "")
             detail = (
                 f"{detail} Observed run: {named} failed, and before the claim no later "
-                "hook-observed run of the same command identity followed it and no observed "
-                "workspace edit that reported success followed it. status view=results lists its "
+                "hook-observed run of the same command identity followed it. status view=results lists its "
                 "tool, occurrence, command commitment (when recorded) and exit status; command "
                 "text is never recorded. Either disclose it as above, or fix it and publish a "
-                "replacement claim once a later observed run of the same command passes or an "
-                "observed edit that reports success follows it (a run without a command "
-                "commitment is retired only by the edit)."
+                "replacement claim once a later observed run of the same command passes. A run "
+                "without a command commitment keeps its disclosure duty until it is explicitly "
+                "acknowledged."
             )
     if kind is FindingKind.CONTRADICTORY_CLAIMS_UNRESOLVED:
         claim_refs = tuple(ref for ref in refs if ref.startswith("clm_"))
@@ -678,8 +885,44 @@ def _text_contract_corpus() -> tuple[JsonValue, ...]:
             ("evidence_digest_subject_legacy_unknown", "unknown_event"),
             (),
         ),
+        (
+            # tb4n3 N3-5: the action finding names the act_ id a result must link to.
+            "action_without_result_link",
+            FindingKind.ACTION_WITHOUT_RESULT,
+            (),
+            (
+                FindingFact(
+                    "action_present",
+                    (action_id("act_00000000-0000-4000-8000-000000000000"),),
+                ),
+            ),
+        ),
         ("limitation_result", FindingKind.MATERIAL_LIMITATION_OMITTED, (), (limitation_result,)),
         ("limitation_record", FindingKind.MATERIAL_LIMITATION_OMITTED, (), (limitation_record,)),
+        (
+            "task_statement_unmapped",
+            FindingKind.TASK_REQUIREMENT_UNMET,
+            (),
+            (FindingFact(TASK_STATEMENT_UNMAPPED_FACT, subject),),
+        ),
+        (
+            "task_statement_scope_empty",
+            FindingKind.TASK_REQUIREMENT_UNMET,
+            (),
+            (FindingFact(TASK_STATEMENT_SCOPE_EMPTY_FACT, subject),),
+        ),
+        (
+            "test_edit_with_statement",
+            FindingKind.TASK_REQUIREMENT_UNMET,
+            (),
+            (
+                FindingFact(PREEXISTING_TEST_EDIT_UNJUSTIFIED_FACT, subject),
+                FindingFact(
+                    TASK_STATEMENT_RECORDED_FACT,
+                    (event_id("evt_00000000-0000-4000-8000-000000000001"),),
+                ),
+            ),
+        ),
     )
     failed_subjects = (failed_claim, *subject)
     return (
@@ -687,6 +930,16 @@ def _text_contract_corpus() -> tuple[JsonValue, ...]:
             [label, kind.value, *render_deterministic_finding_text(kind, subject, gaps, facts)]
             for label, kind, gaps, facts in branches
         ),
+        [
+            "observed_verification_uncited",
+            FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE.value,
+            *render_deterministic_finding_text(
+                FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE,
+                (failed_claim,),
+                (),
+                (FindingFact(OBSERVED_VERIFICATION_UNCITED_FACT, (failed_claim,)),),
+            ),
+        ],
         [
             "failed_observed_run",
             FindingKind.FAILED_WORK_OMITTED.value,
@@ -992,19 +1245,24 @@ _OBSERVATION_TASK_CONTEXT_CASE_JSON_KEYS: Final = _OBSERVATION_CASE_JSON_KEYS | 
 )
 
 
+def _task_statement_to_json(statement: RecordedTaskStatement) -> dict[str, JsonValue]:
+    value: dict[str, JsonValue] = {
+        "ingestion_sequence": statement.ingestion_sequence,
+        "source_event_id": statement.source_event_id,
+        "source_family": statement.source_family,
+        "text": statement.text,
+    }
+    if statement.equivalent_event_ids != (statement.source_event_id,):
+        # Emitted only when an unchanged statement was recorded more than once, so every case
+        # frozen with a single statement event keeps its exact bytes.
+        value["equivalent_event_ids"] = list(statement.equivalent_event_ids)
+    return value
+
+
 def _task_context_to_json(case: DeterministicCase) -> dict[str, JsonValue]:
     statement = case.task_statement
     return {
-        "task_statement": (
-            None
-            if statement is None
-            else {
-                "ingestion_sequence": statement.ingestion_sequence,
-                "source_event_id": statement.source_event_id,
-                "source_family": statement.source_family,
-                "text": statement.text,
-            }
-        ),
+        "task_statement": None if statement is None else _task_statement_to_json(statement),
         "task_title": case.task_title,
     }
 
@@ -1017,19 +1275,27 @@ def _task_context_from_json(value: JsonValue) -> tuple[RecordedTaskStatement | N
     raw_statement = source["task_statement"]
     if raw_statement is None:
         return None, title
-    statement = _case_json_object(
-        raw_statement,
-        required=frozenset({"ingestion_sequence", "source_event_id", "source_family", "text"}),
+    base_keys = frozenset({"ingestion_sequence", "source_event_id", "source_family", "text"})
+    statement = _case_json_object(raw_statement)
+    keys = frozenset(statement)
+    if keys not in {base_keys, base_keys | {"equivalent_event_ids"}}:
+        raise _invalid_case()
+    equivalent: tuple[EventId, ...] = ()
+    if "equivalent_event_ids" in keys:
+        raw_equivalent = _case_json_array(statement["equivalent_event_ids"])
+        if len(raw_equivalent) < 2 or any(type(item) is not str for item in raw_equivalent):
+            raise _invalid_case()
+        equivalent = tuple(cast(EventId, item) for item in raw_equivalent)
+    parsed = RecordedTaskStatement(
+        text=cast(str, statement["text"]),
+        source_event_id=cast(EventId, statement["source_event_id"]),
+        source_family=cast(str, statement["source_family"]),
+        ingestion_sequence=cast(int, statement["ingestion_sequence"]),
+        equivalent_event_ids=equivalent,
     )
-    return (
-        RecordedTaskStatement(
-            text=cast(str, statement["text"]),
-            source_event_id=cast(EventId, statement["source_event_id"]),
-            source_family=cast(str, statement["source_family"]),
-            ingestion_sequence=cast(int, statement["ingestion_sequence"]),
-        ),
-        title,
-    )
+    if equivalent and parsed.equivalent_event_ids != equivalent:
+        raise _invalid_case()
+    return parsed, title
 
 
 def _case_json_object(
@@ -1745,6 +2011,22 @@ def build_deterministic_case(
             scope_gap.subject_refs,
         )
 
+    # Plan drift is a bounded advisory derived from the same accepted prefix.  Keep it in the
+    # frozen case so a resumed check and a receipt replay disclose the same signal, while the
+    # check/receipt conclusion paths explicitly treat these codes as non-blocking diagnostics.
+    for code in plan_drift_signals(projection, accepted_prefix).codes:
+        _add_gap(gaps, code, code, ())
+
+    # Task facts (#977): what hook observations and the ledger establish about the task's own
+    # work. Frozen with the case so a resumed check and a receipt replay disclose the same facts.
+    from yoetz.kernel.task_facts import task_fact_signals
+
+    for code, obligation in task_fact_signals(projection, accepted_prefix).markers:
+        if obligation is None:
+            _add_gap(gaps, code, code, ())
+        else:
+            _add_gap(gaps, f"{code}:{obligation}", code, (obligation,))
+
     relevant_evidence: set[EvidenceId] = set()
     relevant_results: set[ResultId] = set()
     for _, record in effective_claim_items(projection):
@@ -1842,8 +2124,25 @@ def build_deterministic_case(
             (item.source_event_id,),
         )
 
+    # A hook result whose unknown outcome the host's stream later supplied for the same action
+    # no longer leaves `host_outcome_unavailable` in the case: the outcome is recorded (#1001).
+    # Only service-derived hook observations take part on either side (ADR-022 decision 2 keeps
+    # `hook_observed` unselectable by cooperative requests), so an agent-published result can
+    # neither be superseded nor supersede.
+    def _hook_observed(source_event: EventId) -> bool:
+        record = records_by_event.get(source_event)
+        return record is not None and PublicationChannel.HOOK_OBSERVED in set(
+            record.coverage.publication_channels
+        )
+
+    superseded_sources = {
+        projection.results[result].source_event_id
+        for result in superseded_unknown_results(projection.results, include=_hook_observed)
+    }
     for record in accepted_prefix:
         for known_gap in record.coverage.known_gaps:
+            if known_gap == HOST_OUTCOME_UNAVAILABLE_GAP and record.event_id in superseded_sources:
+                continue
             if known_gap not in gaps:
                 _add_gap(gaps, known_gap, known_gap, ())
 
@@ -1996,6 +2295,21 @@ def build_deterministic_case(
                 }
             ),
         )
+
+    if superseded_sources:
+        for ref, source_event in source_by_ref.items():
+            coverage = coverage_by_ref.get(ref)
+            if (
+                source_event in superseded_sources
+                and coverage is not None
+                and HOST_OUTCOME_UNAVAILABLE_GAP in coverage.known_gaps
+            ):
+                coverage_by_ref[ref] = replace(
+                    coverage,
+                    known_gaps=tuple(
+                        gap for gap in coverage.known_gaps if gap != HOST_OUTCOME_UNAVAILABLE_GAP
+                    ),
+                )
 
     return DeterministicCase(
         projection=projection,
@@ -2246,6 +2560,83 @@ def build_policy_assessment(
     return DeterministicAssessment(candidate, basis)
 
 
+def build_test_edit_integrity_assessment(
+    case: DeterministicCase,
+    source_event_refs: tuple[EventId, ...],
+    support_refs: tuple[EventId, ...],
+) -> DeterministicAssessment:
+    """Build the local finding for an unjustified pre-existing test edit.
+
+    The public subjects are action source events; the same safe event identities stay in the basis
+    as exact structural support. Neither side contains a captured path.
+    """
+
+    if not source_event_refs or not support_refs:
+        raise _invalid_policy()
+    facts = [FindingFact(PREEXISTING_TEST_EDIT_UNJUSTIFIED_FACT, support_refs)]
+    statement = case.task_statement
+    if statement is not None and statement.source_event_id in case.allowed_ids:
+        # Name the statement event the repair obligation must cite, so the finding text spells
+        # out the whole working sequence instead of sending the agent to look it up.
+        facts.append(FindingFact(TASK_STATEMENT_RECORDED_FACT, (statement.source_event_id,)))
+    return build_policy_assessment(
+        case,
+        PolicyPack(RESEARCH_EVIDENCE_POLICY_ID, RESEARCH_EVIDENCE_POLICY_VERSION),
+        FindingKind.TASK_REQUIREMENT_UNMET,
+        source_event_refs,
+        tuple(facts),
+    )
+
+
+def build_task_statement_unmapped_assessment(
+    case: DeterministicCase,
+    *,
+    workspace_changed: bool | None = None,
+) -> DeterministicAssessment | None:
+    """Raise the local finding for a task statement the plan does not decompose (TB4 pilot).
+
+    The rule reads exact relations only, never statement, plan or obligation prose:
+
+    * the effective plan declares obligations, none of which names an event that recorded the
+      current statement content in ``source_refs`` (``task_statement_unmapped``); or
+    * a completion claim stands on no plan or an explicit empty scope and no recorded
+      no-material-work decision answers it (``task_statement_scope_empty``). Mid-task checks
+      before any completion claim never raise this form. The decision answers it only when
+      ``workspace_changed`` is ``False``: the caller's check-time change capture showed no changed
+      path. A changed path or an unavailable capture (the default ``None``) fails closed.
+
+    No statement and an unreadable plan raise nothing. The single public subject is the current
+    statement event, so both forms share one issue identity across plan revisions until the
+    request is mapped (or, for the empty form, answered by the decision).
+    """
+
+    from yoetz.kernel.plan_drift import (
+        task_statement_scope_empty_at_completion,
+        task_statement_unmapped,
+    )
+
+    statement = case.task_statement
+    if statement is None or statement.source_event_id not in case.allowed_ids:
+        return None
+    if task_statement_unmapped(case.projection, statement):
+        fact = TASK_STATEMENT_UNMAPPED_FACT
+    elif task_statement_scope_empty_at_completion(
+        case.projection, statement, workspace_changed=workspace_changed
+    ):
+        fact = TASK_STATEMENT_SCOPE_EMPTY_FACT
+    else:
+        return None
+    subject = (statement.source_event_id,)
+    return build_policy_assessment(
+        case,
+        PolicyPack(RESEARCH_EVIDENCE_POLICY_ID, RESEARCH_EVIDENCE_POLICY_VERSION),
+        FindingKind.TASK_REQUIREMENT_UNMET,
+        subject,
+        (FindingFact(fact, subject),),
+        (FindingFact(STATEMENT_SOURCED_OBLIGATION_ABSENT_FACT, subject),),
+    )
+
+
 def run_deterministic_policies(
     case: DeterministicCase,
     policy: PolicyPack,
@@ -2254,12 +2645,13 @@ def run_deterministic_policies(
 
     if type(case) is not DeterministicCase or type(policy) is not PolicyPack:
         raise _invalid_policy()
-    if (policy.policy_id, policy.policy_version) == ("work-integrity", "0.1.0"):
+    if (policy.policy_id, policy.policy_version) == (
+        WORK_INTEGRITY_POLICY_ID,
+        WORK_INTEGRITY_POLICY_VERSION,
+    ):
         from yoetz.kernel.policies.work_integrity import (
             WORK_INTEGRITY_FACT_CODES,
-            WORK_INTEGRITY_POLICY_ID,
             WORK_INTEGRITY_POLICY_PACK,
-            WORK_INTEGRITY_POLICY_VERSION,
             work_integrity_findings,
         )
 
@@ -2283,12 +2675,13 @@ def run_deterministic_policies(
             FindingKind.WEAK_OR_STALE_RESPONSE,
         )
         assessments = work_integrity_findings(case)
-    elif (policy.policy_id, policy.policy_version) == ("research-evidence", "0.1.0"):
+    elif (policy.policy_id, policy.policy_version) == (
+        RESEARCH_EVIDENCE_POLICY_ID,
+        RESEARCH_EVIDENCE_POLICY_VERSION,
+    ):
         from yoetz.kernel.policies.research_evidence import (
             RESEARCH_EVIDENCE_FACT_CODES,
-            RESEARCH_EVIDENCE_POLICY_ID,
             RESEARCH_EVIDENCE_POLICY_PACK,
-            RESEARCH_EVIDENCE_POLICY_VERSION,
             research_evidence_findings,
         )
 

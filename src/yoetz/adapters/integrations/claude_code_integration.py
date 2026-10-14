@@ -61,6 +61,7 @@ from yoetz.protocol.canonical import (
     strict_json_parse,
 )
 from yoetz.protocol.errors import ProtocolValueError
+from yoetz.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
 
 __all__ = [
     "CLAUDE_CODE_HARNESS_PROFILE",
@@ -168,12 +169,10 @@ _DESCRIPTION: Final = (
     "Records material work in a local Yoetz ledger and checks completion claims "
     "against that record."
 )
-_GUIDANCE_NAMES: Final = (
-    "agent-instructions.md",
-    "coverage-and-receipts.md",
-    "publication-policy.md",
-    "request-templates.md",
-    "workflow.md",
+_GUIDANCE_URI_PREFIX: Final = "yoetz://guidance/"
+_GUIDANCE_NAMES: Final = tuple(
+    uri.removeprefix(_GUIDANCE_URI_PREFIX)
+    for uri in (*GUIDANCE_DOCUMENT_URIS, *FOCUSED_GUIDANCE_URIS)
 )
 _SKILL_PATH: Final = "skills/claude-code/yoetz/SKILL.md"
 _YOETZ_SCOPED_TOOL_MATCHER: Final = (
@@ -927,14 +926,7 @@ def render_claude_code_plugin(
         renderer_version=_RENDERER_VERSION,
         source_refs=tuple(
             sorted(
-                {
-                    "guidance/agent-instructions.md",
-                    "guidance/coverage-and-receipts.md",
-                    "guidance/publication-policy.md",
-                    "guidance/request-templates.md",
-                    "guidance/workflow.md",
-                    _SKILL_PATH,
-                },
+                {*(f"guidance/{name}" for name in _GUIDANCE_NAMES), _SKILL_PATH},
                 key=str.encode,
             )
         ),

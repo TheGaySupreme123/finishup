@@ -24,7 +24,9 @@ from yoetz.domain.observation import (
     ObservationIngestResult,
     ObservationSource,
 )
+from yoetz.domain.observation_budget import AdmissionLossCause
 from yoetz.domain.values import JsonObject, JsonValue, validate_commitment
+from yoetz.observability.exception_reasons import EXCEPTION_REASON_TOKENS, exception_reason
 from yoetz.ports.control_reasons import CONTROL_ERROR_REASONS
 from yoetz.protocol.ids import IdKind, validate_id
 
@@ -35,6 +37,7 @@ except ImportError:  # pragma: no cover - supported hook hosts are POSIX
 
 __all__ = [
     "hook_diagnostic_summary",
+    "observe_exception_reason",
     "record_hook_diagnostic",
     "record_hook_timing",
     "record_store_lock_event",
@@ -72,8 +75,18 @@ _REASONS: Final = frozenset(
         *("control_" + reason for reason in _CONTROL_REASONS),
         "drain_diagnostic_unavailable",
         "invalid_session",
+        # Pre-tb4n2 rows: an unexpected hook-pass exception with no class. New passes record
+        # `observe_<exception class>` below instead (tb4n2 N-3a).
         "observe",
+        # An unexpected exception in a hook pass, named by the service's reviewed closed
+        # exception-class vocabulary (`observe_exception_value_error`, ...). An unlisted class
+        # collapses to `observe_exception_unavailable`; no class name a caller controls is kept.
+        *("observe_" + token for token in EXCEPTION_REASON_TOKENS),
         "outbox_overflow",
+        # The closed admission dimension that refused a non-replayable input,
+        # recorded beside `outbox_overflow` so a loss range is diagnosable
+        # without input content (tb4n1 B3).
+        *("admission_loss_" + item.value for item in AdmissionLossCause),
         "service_unavailable",
         "service_incompatible",
         "vault_locked",
@@ -84,7 +97,13 @@ _REASONS: Final = frozenset(
         "timeout",
         "drain_budget_exhausted",
         "drain_lease_contended",
+        # Pre-tb4n2 rows conflated the service connect with native-content staging. New rows name
+        # the stage: the connect timed out or failed, content staging raised, or (still
+        # `drain_preflight_failed`) the local outbox read before the connect raised (tb4n2 N-3b).
         "drain_preflight_failed",
+        "drain_connect_timeout",
+        "drain_connect_failed",
+        "native_content_stage_failed",
         # A structural defect in the buffered admission account refused this
         # hook's pre-flush. Before this token the failure reached the outer
         # handler as the bare `observe` reason, so a permanently wedged flush
@@ -95,7 +114,8 @@ _REASONS: Final = frozenset(
         # temporary selection override are still active (issue #843).
         "session_end_unrecorded",
         # One host event refused at stdin ingress for exceeding
-        # ``MAX_HOOK_STDIN_BYTES``, named per host because the reading process
+        # ``MAX_HOOK_SKIM_BYTES`` (or a complete oversized body that failed the
+        # skim's safety checks), named per host because the reading process
         # is the only thing that still knows which host it was: the body was
         # never parsed, so hook payload identity (tool name, session, paths) is
         # unavailable. Before these, an oversized Cursor write was recorded as
@@ -105,10 +125,13 @@ _REASONS: Final = frozenset(
         "codex_payload_too_large",
         "claude_payload_too_large",
         "cursor_payload_too_large",
-        # Cursor retained a structural identity for one hook body over the
-        # trusted cap and inside the skim cap. Content was not captured. Codex
-        # and Claude Code do not skim, so they have no sibling of this reason
-        # (issue #667).
+        # A host retained a structural identity for one hook body over the
+        # trusted cap and inside the skim cap. Content was not captured (issue
+        # #667). Codex and Claude Code skim too since tb4n1 (B5); a body that
+        # fits again once its image bytes are dropped, or a Yoetz-owned tool
+        # whose content is never captured, records none of these.
+        "codex_payload_content_omitted",
+        "claude_payload_content_omitted",
         "cursor_payload_content_omitted",
         "auto_attach_retry_failed",
         # Why a consented SessionStart (or its turn-boundary retry) produced no
@@ -176,6 +199,34 @@ _REASONS: Final = frozenset(
         # enforcement point. Aborting mid-hook would drop ingest.
         "hook_budget_exceeded",
         "hook_followup_deferred",
+        # The Stop-time closure gate (#977): it continued the agent once, closure needed no
+        # action, it already fired at this frontier, a Stop the gate had already continued this
+        # turn ended with nothing more to say (the normal end of a continued turn, renamed from
+        # ``closure_gate_loop_guard`` in tb4n3 RC-8: it is not a defect and guards no loop), too
+        # little of the Stop budget was left for the status read, or the read failed.
+        "closure_gate_continued",
+        "closure_gate_not_required",
+        "closure_gate_repeat_suppressed",
+        "closure_gate_turn_end_after_continue",
+        "closure_gate_budget_exhausted",
+        "closure_gate_unavailable",
+        # The delivered continuation also re-asked a recorded blocker once (#977), or its
+        # once-per-frontier/once-per-blocker memory could not be written.
+        "closure_gate_blocker_rechecked",
+        "closure_gate_memory_unwritten",
+        # The delivered continuation also asked the acceptance re-read (A-12) readiness announced
+        # (tb4n3 RC-8): the count of extra Stop turns that re-read costs.
+        "closure_gate_acceptance_rechecked",
+        # The host's final message addressed every resolved obligation's acceptance, so the
+        # acceptance re-read was not asked at this Stop (#1050). No text, ids or counts recorded.
+        "closure_gate_acceptance_covered",
+        # The Stop pass drained this task's hook rows to the current frontier before the
+        # closure gate read status, or the bounded Stop drain left some pending (tb4n1 B4/C6).
+        "stop_drain_complete",
+        "stop_drain_incomplete",
+        # A Stop the host had already continued this turn still re-asked a blocker published
+        # since the last gate, once, within the per-turn cap (#985).
+        "closure_gate_active_stop_rechecked",
         "hook_slo_breached",
         # A host's automatic tool-call reviewer (Claude Code auto mode) denied a
         # scoped AI-powered ``check`` before Yoetz received it, or a permission
@@ -317,6 +368,12 @@ def record_hook_diagnostic(
     ):
         row["candidate_count"] = candidate_count
     _append_row(row, _state=_state)
+
+
+def observe_exception_reason(failure: BaseException) -> str:
+    """Return the closed hook reason for an unexpected exception in a hook pass (tb4n2 N-3a)."""
+
+    return "observe_" + exception_reason(failure)
 
 
 def _store_lock_phase_valid(value: object) -> bool:

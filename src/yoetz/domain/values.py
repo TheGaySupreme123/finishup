@@ -24,6 +24,8 @@ from yoetz.protocol.ids import IdKind, validate_actor_id, validate_id
 __all__ = [
     "DISCLOSURE_CONTINUATION_INSTRUCTION",
     "DISCLOSURE_CONTINUATION_KIND",
+    "REVIEW_INPUT_CONTINUATION_INSTRUCTION",
+    "REVIEW_INPUT_CONTINUATION_KIND",
     "REPOSITORY_GRANT_CONTINUATION_INSTRUCTION",
     "REPOSITORY_GRANT_CONTINUATION_KIND",
     "GENESIS_DIGEST",
@@ -74,6 +76,7 @@ __all__ = [
     "render_wire_sequence",
     "request_id",
     "repository_grant_continuation",
+    "review_input_continuation",
     "result_id",
     "session_id",
     "subject_state_relation",
@@ -639,6 +642,7 @@ def subject_state_relation(
 
 DISCLOSURE_CONTINUATION_KIND: Final = "privacy_disclosure_decision"
 REPOSITORY_GRANT_CONTINUATION_KIND: Final = "repository_privacy_setup"
+REVIEW_INPUT_CONTINUATION_KIND: Final = "review_input_required"
 
 # The check result and the status recovery query must return the *same* continuation. Two copies
 # of this prose would eventually disagree, and the caller has no way to tell which one is current.
@@ -652,6 +656,16 @@ REPOSITORY_GRANT_CONTINUATION_INSTRUCTION: Final = (
     "command above in a trusted local CLI/TUI, then replay this exact check request with the same "
     "request_id. This is not a one-use disclosure confirmation. Do not approve through chat, "
     "create a new check request, or request a receipt until this request reaches a terminal result."
+)
+REVIEW_INPUT_CONTINUATION_INSTRUCTION: Final = (
+    "A complete task statement is required before this full-specification review can dispatch. "
+    "Use the existing task binding: publish a plan event in the same session and writer carrying "
+    "task_statement with the user's request, then replay this exact check request with the same "
+    "request_id. Through MCP call publish_work with the existing writer_id and result_frontier; "
+    "through the CLI, put that publish request in the private PATH file and run the command above. "
+    "A plan publish or revision is a statement amendment, not privacy approval, and it must not "
+    "create a new check request or a new task. Do not request a receipt until this request reaches "
+    "a terminal result."
 )
 
 
@@ -674,6 +688,7 @@ class SemanticContinuation:
         if self.kind not in {
             DISCLOSURE_CONTINUATION_KIND,
             REPOSITORY_GRANT_CONTINUATION_KIND,
+            REVIEW_INPUT_CONTINUATION_KIND,
         }:
             raise ProtocolValueError("invalid_continuation_kind")
         _validated_id(IdKind.REQUEST, self.request_id)
@@ -683,8 +698,11 @@ class SemanticContinuation:
             _validated_id(IdKind.PRIVACY_PROPOSAL, self.pending_id)
             if type(self.expires_at) is not Timestamp:
                 raise ProtocolValueError("invalid_continuation_expiry")
+        elif self.kind == REPOSITORY_GRANT_CONTINUATION_KIND:
+            if self.pending_id is not None or self.expires_at is not None:
+                raise ProtocolValueError("invalid_continuation_repository_setup")
         elif self.pending_id is not None or self.expires_at is not None:
-            raise ProtocolValueError("invalid_continuation_repository_setup")
+            raise ProtocolValueError("invalid_continuation_review_input")
 
     @property
     def command(self) -> tuple[str, ...]:
@@ -692,6 +710,8 @@ class SemanticContinuation:
 
         if self.kind == REPOSITORY_GRANT_CONTINUATION_KIND:
             return ("yoetz", "--privacy")
+        if self.kind == REVIEW_INPUT_CONTINUATION_KIND:
+            return ("yoetz", "publish-work", "--input", "PATH")
         assert self.pending_id is not None
         return ("yoetz", "privacy", "decide-disclosure", self.pending_id)
 
@@ -699,6 +719,8 @@ class SemanticContinuation:
     def instruction(self) -> str:
         if self.kind == REPOSITORY_GRANT_CONTINUATION_KIND:
             return REPOSITORY_GRANT_CONTINUATION_INSTRUCTION
+        if self.kind == REVIEW_INPUT_CONTINUATION_KIND:
+            return REVIEW_INPUT_CONTINUATION_INSTRUCTION
         return DISCLOSURE_CONTINUATION_INSTRUCTION
 
 
@@ -723,6 +745,17 @@ def repository_grant_continuation(*, request_id: str) -> SemanticContinuation:
 
     return SemanticContinuation(
         REPOSITORY_GRANT_CONTINUATION_KIND,
+        None,
+        None,
+        request_id,
+    )
+
+
+def review_input_continuation(*, request_id: str) -> SemanticContinuation:
+    """Build the fixed input handoff for a missing full-specification statement."""
+
+    return SemanticContinuation(
+        REVIEW_INPUT_CONTINUATION_KIND,
         None,
         None,
         request_id,

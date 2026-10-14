@@ -167,7 +167,7 @@ def test_pinned_sdk_protocol_negotiation_and_validation_authority(tmp_path: Path
     )
     tools = cast(list[dict[str, object]], cast(dict[str, object], by_id[2]["result"])["tools"])
     assert [tool["name"] for tool in tools] == [item.name for item in TOOL_DESCRIPTORS["policy"]]
-    assert len(tools) == 7
+    assert len(tools) == 8
 
     fallback, _ = _run_raw(tmp_path, _initialize("1900-01-01"))
     fallback_result = cast(dict[str, object], fallback[0]["result"])
@@ -261,7 +261,7 @@ async def test_sdk_tool_annotations_match_frozen_descriptors() -> None:
     from yoetz.mcp.server import list_tools
 
     tools = await list_tools()
-    assert len(tools) == 7
+    assert len(tools) == 8
     for tool, descriptor in zip(tools, TOOL_DESCRIPTORS["policy"], strict=True):
         assert tool.name == descriptor.name
         assert tool.outputSchema is not None

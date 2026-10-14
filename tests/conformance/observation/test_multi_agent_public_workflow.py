@@ -167,7 +167,7 @@ async def test_explicit_siblings_have_independent_public_checks_receipts_and_wor
                         "expected_frontier": task.frontier.model_dump(mode="json"),
                         "mode": "deterministic_only",
                         "max_findings": "10",
-                        "policy_packs": ["work-integrity/0.1.0"],
+                        "policy_packs": ["work-integrity/0.3.0"],
                     }
                 ),
                 repository_privacy_context=_REPOSITORY,
@@ -452,7 +452,7 @@ async def test_real_delegation_attach_publication_and_child_receipt_preserve_par
                     "expected_frontier": dict(publication.result_frontier.as_wire().items()),
                     "mode": "deterministic_only",
                     "max_findings": "10",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             ),
             repository_privacy_context=_REPOSITORY,
@@ -1208,7 +1208,7 @@ async def test_late_subagent_stop_after_parent_reattach_keeps_registry_annotatio
                     "expected_frontier": dict(current.head_frontier.as_wire().items()),
                     "mode": "deterministic_only",
                     "max_findings": "10",
-                    "policy_packs": ["work-integrity/0.1.0"],
+                    "policy_packs": ["work-integrity/0.3.0"],
                 }
             ),
             repository_privacy_context=_REPOSITORY,

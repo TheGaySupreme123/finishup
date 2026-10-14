@@ -1235,6 +1235,7 @@ async def test_partial_result_claim_repair_preflights_and_preserves_history() ->
             cast(Application, app), PublishWorkRequestModel.model_validate(incomplete_wire)
         )
     assert rejected.value.safe_details == {
+        "count": 1,
         "field": "/event_drafts/0/payload/limitation_refs",
         "invariant": "limitation_refs_complete",
         "reason_code": "claim_revision_mismatch",
@@ -1530,6 +1531,7 @@ async def test_claim_replacement_links_a_limitation_whose_action_is_unrecorded()
             cast(Application, app), PublishWorkRequestModel.model_validate(silent_wire)
         )
     assert rejected.value.safe_details == {
+        "count": 1,
         "field": "/event_drafts/0/payload/limitation_refs",
         "invariant": "limitation_refs_complete",
         "reason_code": "claim_revision_mismatch",
@@ -1773,6 +1775,61 @@ async def test_explicit_empty_completion_scope_remains_authorable() -> None:
     assert accepted.outcome == "accepted"
 
 
+@pytest.mark.parametrize("scoped_replacement", (False, True))
+async def test_claim_without_obligation_scope_can_be_corrected(scoped_replacement: bool) -> None:
+    """TB4 pilot (finding F): an early claim naming no obligations stays correctable.
+
+    The pilot's own session ran 0.2.5, which rejected this correction with
+    ``scope_overlap_required``; an empty-scope target has no scope to overlap, so a replacement
+    with either an empty or a populated scope is admitted. A populated target still requires
+    overlap (kernel replay tests lock that side).
+    """
+
+    app, _ = _composition()
+    first = _claim_revision_draft(
+        870,
+        claim_tail=870,
+        version="1.1.0",
+        supporting_refs=[],
+        limitation_refs=[],
+        supersedes_claim_refs=[],
+    )
+    cast(dict[str, object], first["payload"])["obligation_refs"] = []
+    accepted = await execute_publish_work(
+        cast(Application, app),
+        _request(
+            request_tail=870,
+            event_drafts=(first,),
+            expected_frontier={"sequence": "0", "head_digest": "genesis"},
+        ),
+    )
+    assert accepted.outcome == "accepted"
+    correction = _claim_revision_draft(
+        871,
+        claim_tail=871,
+        version="1.1.0",
+        supporting_refs=[],
+        limitation_refs=[],
+        supersedes_claim_refs=["clm_00000000-0000-4000-8000-000000000870"],
+    )
+    payload = cast(dict[str, object], correction["payload"])
+    payload["statement"] = "Corrected: the earlier claim overstated the result."
+    if not scoped_replacement:
+        payload["obligation_refs"] = []
+    frontier = await app.runtime.task.ledger.load_frontier()
+    request = _request(
+        request_tail=871,
+        event_drafts=(correction,),
+        expected_frontier={"sequence": str(frontier.sequence), "head_digest": frontier.head_digest},
+    )
+    preview = await execute_publish_work(
+        cast(Application, app), request.model_copy(update={"dry_run": True})
+    )
+    assert preview.outcome == "dry_run"
+    corrected = await execute_publish_work(cast(Application, app), request)
+    assert corrected.outcome == "accepted"
+
+
 @pytest.mark.parametrize("route_field", ("session_id", "writer_id"))
 @pytest.mark.parametrize("preview", (True, False))
 async def test_empty_scope_correction_keeps_session_and_writer_fences(
@@ -1802,3 +1859,78 @@ async def test_empty_scope_correction_keeps_session_and_writer_fences(
         await execute_publish_work(cast(Application, app), req)
     assert caught.value.code is PublicErrorCode.SESSION_CONFLICT
     assert await app.runtime.task.ledger.load_frontier() == before
+
+
+async def test_a_plain_obligation_published_as_1_1_0_is_accepted() -> None:
+    """tb4n2 cad D (issue #1023): a feature-free obligation at 1.1.0 is admitted.
+
+    1.1.0 is a superset of 1.0.0; before #1023 the exact-version rule refused a plain obligation
+    copied from the 1.1.0 template, and 24 of 28 such attempts in the run were rejected.
+    """
+
+    app, _objects = _composition()
+    draft = _obligation_draft(
+        712,
+        {
+            "obligation_id": "obl_00000000-0000-4000-8000-000000000711",
+            "description": "Complete within 28800 seconds",
+            "evidence_expectation": "The task finishes inside its time budget.",
+            "status": "open",
+            "requested_items": [],
+        },
+    )
+    draft["schema"] = {"name": "obligation_published", "version": "1.1.0"}
+    request = _request(
+        request_tail=713,
+        event_drafts=(draft,),
+        expected_frontier={"sequence": "0", "head_digest": "genesis"},
+    )
+    preview = await execute_publish_work(
+        cast(Application, app), request.model_copy(update={"dry_run": True})
+    )
+    assert preview.outcome == "dry_run"
+    result = await execute_publish_work(cast(Application, app), request)
+    assert result.outcome == "accepted"
+
+
+async def test_a_roled_obligation_published_as_1_0_0_names_the_1_1_0_correction() -> None:
+    """The application decode path attributes the version refusal to the obligation hint.
+
+    The wire request schema already refuses ``role`` on a 1.0.0 obligation, so the batch is
+    swapped in after model validation (``model_copy`` does not revalidate) to reach
+    ``_decode_draft`` itself, which must name the 1.1.0 correction (issue #1023).
+    """
+
+    app, _objects = _composition()
+    roled = _obligation_draft(
+        722,
+        {
+            "obligation_id": "obl_00000000-0000-4000-8000-000000000721",
+            "description": "Write the outputs",
+            "evidence_expectation": "The produced files",
+            "status": "open",
+            "requested_items": [{"item_kind": "file", "value": "/app/out.json", "role": "output"}],
+        },
+    )
+    with pytest.raises(ValidationError):
+        _request(request_tail=723, event_drafts=(roled,))
+    request = _request(
+        request_tail=723,
+        event_drafts=(_obligation_draft(722, dict(_OPEN_MEANING)),),
+        expected_frontier={"sequence": "0", "head_digest": "genesis"},
+    )
+    for dry_run in (True, False):
+        with pytest.raises(PublicOperationError) as caught:
+            await execute_publish_work(
+                cast(Application, app),
+                request.model_copy(update={"event_drafts": (roled,), "dry_run": dry_run}),
+            )
+        assert caught.value.code is PublicErrorCode.EVENT_INVALID
+        details = caught.value.safe_details
+        assert details["reason_code"] == "invalid_event_schema"
+        assert details["field"] == "/event_drafts/0/payload"
+        assert "obligation_published/1.1.0" in caught.value.message
+        assert "obligation_published/1.0.0 cannot carry" in caught.value.message
+        # The caller's payload text never reaches the error.
+        assert "/app/out.json" not in caught.value.message
+        assert "/app/out.json" not in repr(dict(details))

@@ -25,6 +25,7 @@ from typing import Literal, cast
 
 import yoetz.service.ready_composition as ready_composition
 from builders.ledger_adapters import MemoryObjects, ownership_fence
+from builders.review_manifests import provider_bound_manifest
 from builders.start_application import (
     MemoryStartRuntime,
     StartTestLookup,
@@ -218,6 +219,7 @@ async def _semantic_never(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     """Fail if a local-only composition reaches AI-powered evaluation."""
 
@@ -230,6 +232,7 @@ async def _semantic_succeeds(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     """Return a succeeded AI-powered review outcome that raises no challenge of its own.
 
@@ -263,6 +266,7 @@ async def _semantic_succeeds(
             egress_authorization_id=protocol_id("aut_", 1492),
             request_commitment="hmac-sha256:" + "b" * 64,
         ),
+        provider_input_manifest=provider_bound_manifest(),
     )
 
 
@@ -342,7 +346,7 @@ async def build_projection_application(
         waiver_authorizer=lambda _: False,
         import_publication_authorizer=lambda _: False,
         profile=RuntimeProfile.TEST_FAKE,
-        policy_packs=("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        policy_packs=("research-evidence/0.2.0", "work-integrity/0.3.0"),
         version_manifest=start_app.version_manifest,
         enforce_repository_identity=False,
         connected_provider_ids=() if semantic == "disabled" else ("fake",),

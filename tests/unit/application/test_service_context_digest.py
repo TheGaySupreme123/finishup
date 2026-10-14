@@ -336,7 +336,7 @@ def _application(
         waiver_authorizer=cast(Callable[[object], bool], _deny),
         import_publication_authorizer=cast(Callable[[object], bool], _deny),
         profile=RuntimeProfile.TEST_FAKE,
-        policy_packs=("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        policy_packs=("research-evidence/0.2.0", "work-integrity/0.3.0"),
         version_manifest={},
         project_application=cast(ProjectApplication, projects),
         enforce_repository_identity=False,

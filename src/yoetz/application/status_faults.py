@@ -134,12 +134,14 @@ def classify_status_fault(
         component=_COMPONENT,
         operation=f"status_{view}_{stage.value}_failed",
         request_id=request_id,
+        phase=stage.value,
     )
     return PublicOperationError(
         _CODES[stage],
         _MESSAGES[stage] if message is None else message,
         False,
         correlation_id=correlation_id,
+        safe_details={"phase": stage.value},
     )
 
 

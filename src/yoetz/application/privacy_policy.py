@@ -12,6 +12,7 @@ from yoetz.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
+    CredentialHeuristic,
     EgressChannel,
     PolicyOverlay,
     PrivacyPolicy,
@@ -52,6 +53,8 @@ from yoetz.protocol.ids import IdKind, validate_id
 
 __all__ = [
     "AllowedBlockedExample",
+    "CredentialHeuristicState",
+    "credential_heuristic_state",
     "ChannelSetupChoice",
     "DecidePrivacyPolicyRequest",
     "GetPrivacyEffectiveRequest",
@@ -271,6 +274,53 @@ class PrivacyPolicyApplication:
             raise ValueError("privacy_proposal_ttl_invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class CredentialHeuristicState:
+    """The possible-credential filter for the external reviewer, as every surface shows it.
+
+    ``repository`` is what the current repository applies (its own grant decides, owner decision
+    2026-10-07); ``machine_default`` is what a new grant is drafted from (issue #982).
+    """
+
+    repository: Literal["enforced", "disabled", "unknown"]
+    machine_default: Literal["enforced", "disabled", "unknown"]
+
+
+def _heuristic_token(value: CredentialHeuristic) -> Literal["enforced", "disabled"]:
+    return "disabled" if value is CredentialHeuristic.DISABLED else "enforced"
+
+
+def credential_heuristic_state(
+    authority: RepositoryPrivacyAuthority,
+) -> CredentialHeuristicState:
+    """One derivation of the filter state from a repository authority snapshot (issue #982).
+
+    A granted repository applies its own grant. A repository without a grant sends nothing to the
+    external reviewer; when a migration is pending, report the grant the first check will create
+    (the meet of the migration frontier and the installation row), and otherwise ``enforced``.
+    """
+
+    machine = authority.machine_policy
+    machine_default: Literal["enforced", "disabled", "unknown"] = (
+        "unknown" if machine is None else _heuristic_token(machine.credential_heuristic)
+    )
+    if authority.grant_state == "granted":
+        return CredentialHeuristicState(
+            _heuristic_token(authority.effective.policy.credential_heuristic), machine_default
+        )
+    if authority.migration_frontiers and machine is not None:
+        outcomes = {
+            frontier.meet(machine).credential_heuristic
+            for frontier in authority.migration_frontiers
+        }
+        if outcomes == {CredentialHeuristic.DISABLED}:
+            return CredentialHeuristicState("disabled", machine_default)
+        if CredentialHeuristic.DISABLED in outcomes:
+            # Which frontier carries forward depends on the task that checks first.
+            return CredentialHeuristicState("unknown", machine_default)
+    return CredentialHeuristicState("enforced", machine_default)
+
+
 async def privacy_get_effective(
     app: PrivacyPolicyApplication, request: GetPrivacyEffectiveRequest
 ) -> EffectivePrivacyPolicy:
@@ -426,8 +476,10 @@ async def privacy_propose_policy(
             ),
         )
         compound: list[PolicyTransitionMember] = []
+        # The credential-heuristic opt-out belongs to the repository grant (owner decision,
+        # 2026-10-07): a repository-bound proposal never moves the installation-wide default.
         machine_candidate = _policy_for_scope(
-            candidate,
+            replace(candidate, credential_heuristic=machine.policy.credential_heuristic),
             machine_scope,
             policy_id=machine.policy.policy_id,
             version=machine.policy.version + 1,
@@ -911,6 +963,18 @@ def privacy_policy_changes(
         current.require_current_provider_data_use_evidence
         and not candidate.require_current_provider_data_use_evidence,
     )
+    # Turning the low-confidence credential heuristic off lets values it would have withheld
+    # leave, so it is a widening that needs the trusted decision; turning it back on is a
+    # tightening that applies directly (issue #982).
+    _append(
+        changes,
+        "global",
+        "credential_heuristic",
+        None,
+        PrivacyPolicyChangeValue.of_flag(current.credential_heuristic_enforced),
+        PrivacyPolicyChangeValue.of_flag(candidate.credential_heuristic_enforced),
+        current.credential_heuristic_enforced and not candidate.credential_heuristic_enforced,
+    )
     _review_changes(changes, candidate.review_selection, current.review_selection)
     for new, old in zip(candidate.channel_policies, current.channel_policies, strict=True):
         _channel_changes(changes, new, old)
@@ -1018,7 +1082,12 @@ def _to_json(value: object) -> object:
     if type(value) is datetime:
         return value.isoformat()
     if is_dataclass(value):
-        return {field.name: _to_json(getattr(value, field.name)) for field in fields(value)}
+        return {
+            field.name: _to_json(getattr(value, field.name))
+            for field in fields(value)
+            # Never written at its default, so every existing policy identity is unchanged.
+            if getattr(value, field.name) is not CredentialHeuristic.ENFORCED
+        }
     if type(value) is tuple:
         return [_to_json(member) for member in cast(tuple[object, ...], value)]
     raise TypeError("privacy_policy_identity_invalid")

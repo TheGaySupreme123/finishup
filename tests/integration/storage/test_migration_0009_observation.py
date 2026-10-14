@@ -7,7 +7,12 @@ import asyncio
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, initialize_bundle, run_migrations
+from yoetz.adapters.sqlite.migrations import (
+    BUNDLE_MIGRATIONS,
+    current_schema_version,
+    initialize_bundle,
+    run_migrations,
+)
 from yoetz.adapters.sqlite.observation import SqliteObservationStore
 from yoetz.domain.observation import (
     ObservationCursor,
@@ -112,8 +117,11 @@ def test_schema_eight_upgrade_preserves_rows_and_admits_every_source() -> None:
         "0013",
         "0014",
         "0015",
+        "0016",
     )
-    assert db.execute("PRAGMA user_version").fetchone() == (15,)
+    assert db.execute("PRAGMA user_version").fetchone() == (
+        current_schema_version(BUNDLE_MIGRATIONS),
+    )
     assert db.execute("PRAGMA foreign_key_check").fetchall() == []
 
     # Existing rows, their ids, and the receipt index survive the rebuild.

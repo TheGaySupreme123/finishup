@@ -722,12 +722,12 @@ def test_observation_gap_or_stale() -> None:
 def test_standing_unpaired_record_raises_no_stale_advisory() -> None:
     """#917: only conditions that can recover in session raise ``refresh_observation``."""
 
-    standing = ObservationAdviceContext(
+    standing_context = ObservationAdviceContext(
         envelopes=(),
         lifecycle=ObservationLifecycle.ACTIVE,
         gaps=(ObservationGapCode.UNPAIRED_EVENT.value,),
     )
-    assert "observation_gap_or_stale" not in _rules(standing)
+    assert "observation_gap_or_stale" not in _rules(standing_context)
     for transient in (
         ObservationGapCode.SOURCE_LAG,
         ObservationGapCode.CURSOR_STALE,
@@ -735,17 +735,29 @@ def test_standing_unpaired_record_raises_no_stale_advisory() -> None:
         ObservationGapCode.VAULT_LOCKED,
     ):
         candidates = observation_advice_findings(
-            replace(standing, gaps=(ObservationGapCode.UNPAIRED_EVENT.value, transient.value))
+            replace(
+                standing_context,
+                gaps=(ObservationGapCode.UNPAIRED_EVENT.value, transient.value),
+            )
         )
         gap = [item for item in candidates if item.rule_code == "observation_gap_or_stale"]
         assert len(gap) == 1, transient
         # The live cause leads the refs; the standing record is never named as one.
         assert gap[0].evidence_refs[0] == f"cause:{transient.value}"
         assert "cause:unpaired_event" not in gap[0].evidence_refs
-    stale = observation_advice_findings(replace(standing, lifecycle=ObservationLifecycle.STALE))
-    assert [
-        item.evidence_refs[0] for item in stale if item.rule_code == "observation_gap_or_stale"
-    ] == ["cause:lifecycle_stale"]
+    for standing_gap in (
+        ObservationGapCode.UNSUPPORTED_EVENT,
+        ObservationGapCode.UNSUPPORTED_FORMAT,
+    ):
+        assert "observation_gap_or_stale" not in _rules(
+            replace(standing_context, gaps=(standing_gap.value,))
+        )
+    # A lifecycle label without a named recoverable cause is operator status, not
+    # agent-facing work. In particular, a drain backlog must not inject ceremony.
+    stale = observation_advice_findings(
+        replace(standing_context, lifecycle=ObservationLifecycle.STALE)
+    )
+    assert "observation_gap_or_stale" not in {item.rule_code for item in stale}
 
 
 def test_provider_not_ready() -> None:
@@ -1049,14 +1061,14 @@ def test_passing_run_of_a_different_command_keeps_the_failure_unresolved() -> No
     assert [item.evidence_refs for item in unresolved] == [("hook:toolu-1:1",)]
 
 
-def test_completed_edit_after_a_failure_makes_it_history() -> None:
+def test_completed_edit_after_a_failure_keeps_it_unresolved() -> None:
     edit = _envelope(
         "PostToolUse",
         pos=2,
         identity="hook:toolu-edit:2",
         payload={"tool_name": "Edit", "tool_call_id": "toolu-edit", "success": True},
     )
-    assert not _unresolved(_bash(1, "toolu-1", success=False, commitment=_PYTEST_X), edit)
+    assert _unresolved(_bash(1, "toolu-1", success=False, commitment=_PYTEST_X), edit)
     denied_edit = _envelope(
         "PostToolUse",
         pos=2,
@@ -1078,7 +1090,7 @@ def test_completed_edit_after_a_failure_makes_it_history() -> None:
     assert _unresolved(_bash(1, "toolu-1", success=False, commitment=_PYTEST_X), pending_edit)
 
 
-def test_legacy_envelopes_without_identity_fall_back_to_the_edit_rule() -> None:
+def test_legacy_envelopes_without_identity_stay_unresolved_after_edit() -> None:
     assert _unresolved(
         _bash(1, "toolu-1", success=False, commitment=None),
         _bash(2, "toolu-2", success=True, commitment=None),
@@ -1089,7 +1101,7 @@ def test_legacy_envelopes_without_identity_fall_back_to_the_edit_rule() -> None:
         identity="hook:toolu-edit:3",
         payload={"tool_name": "Write", "tool_call_id": "toolu-edit", "success": True},
     )
-    assert not _unresolved(
+    assert _unresolved(
         _bash(1, "toolu-1", success=False, commitment=None),
         _bash(2, "toolu-2", success=True, commitment=None),
         edit,
@@ -1138,7 +1150,7 @@ def test_only_the_latest_run_of_a_command_can_stay_unresolved() -> None:
         identity="hook:toolu-2:2",
         payload={"tool_name": "Bash", "tool_call_id": "toolu-2", "command_commitment": _PYTEST_X},
     )
-    assert not _unresolved(
+    assert _unresolved(
         _bash(1, "toolu-1", success=False, commitment=_PYTEST_X), rerun_without_outcome
     )
 

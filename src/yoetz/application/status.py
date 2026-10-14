@@ -9,11 +9,16 @@ import hmac
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Final, Literal, Protocol, cast
+from typing import Any, Final, Literal, Protocol, cast
 
 from pydantic import BaseModel
 
 from yoetz.application.check import CheckScope, run_deterministic_policies
+from yoetz.application.closure_basis import (
+    ClosureBasisUnavailable,
+    LoadedClosureBasis,
+    load_closure_basis,
+)
 from yoetz.application.coordination import CoordinationAdvice
 from yoetz.application.ledger_snapshot import projection_for_records
 from yoetz.application.projects import ProjectApplication, ProjectCommandError
@@ -34,17 +39,25 @@ from yoetz.domain.values import (
     disclosure_continuation,
     format_rfc3339_millis,
     repository_grant_continuation,
+    review_input_continuation,
 )
+from yoetz.kernel.closure_class import FindingClosureClass, closure_counts, counted_findings
 from yoetz.kernel.closure_readiness import (
     GAP_CLASSIFICATION_VERSION,
+    ClosureReadinessFacts,
+    ClosureReadinessSplit,
     derive_closure_readiness,
     live_lineage_blockers,
 )
+from yoetz.kernel.closure_verdict import rechecks_from_closures
 from yoetz.kernel.deterministic_checks import (
     DeterministicAssessment,
     build_deterministic_case,
     finding_basis_to_status_json,
 )
+from yoetz.kernel.fact_lineage import lineage_to_wire
+from yoetz.kernel.gap_effect import UNCLASSIFIED_GAP_PREFIX, GapEffectKind
+from yoetz.kernel.receipt_prediction import predict_receipt_conclusion
 from yoetz.observability.logging import record_unexpected_exception_without_raising
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.host_lineage import HostLineageRegistryPort
@@ -93,47 +106,67 @@ from yoetz.protocol.coverage import (
 )
 from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.models import (
+    FactLineageModel,
     SemanticProgressPhase,
     StatusAdvicePageModel,
     StatusAssignmentFilterModel,
     StatusAssignmentPageModel,
+    StatusAwaitingRulingFindingModel,
+    StatusBlockedObligationModel,
     StatusCandidateFindingItemModel,
     StatusCandidateFindingsFilterModel,
     StatusCandidateFindingsPageModel,
     StatusCheckAdmissionModel,
+    StatusCheckCauseModel,
     StatusClosureReadinessModel,
     StatusCompactItemModel,
     StatusCompactPageModel,
     StatusEvidenceFilterModel,
     StatusEvidencePageModel,
     StatusFilter,
+    StatusFindingCountsModel,
     StatusFindingsFilterModel,
     StatusFindingsPageModel,
     StatusHistoryFilterModel,
     StatusHistoryPageModel,
     StatusImportStatusModel,
     StatusLineagePageModel,
+    StatusObligationCountsModel,
     StatusObligationsFilterModel,
     StatusObligationsPageModel,
     StatusOperationFilterModel,
     StatusOperationPageModel,
     StatusPage,
+    StatusPredictedReasonModel,
+    StatusPredictedReceiptModel,
     StatusProjectPageModel,
+    StatusRecheckModel,
     StatusRequest,
     StatusResultsPageModel,
     StatusSemanticProgressModel,
+    StatusUndeclaredReferenceModel,
     StatusVersionSliceModel,
     StatusVersionsPageModel,
 )
+from yoetz.protocol.policy_packs import (
+    RESEARCH_EVIDENCE_POLICY_ID,
+    WORK_INTEGRITY_POLICY_ID,
+    current_policy_pack,
+)
+from yoetz.protocol.redacted_values import validate_semantic_redacted_values
 
 __all__ = [
     "Application",
     "StatusInternalResult",
+    "current_closure_readiness",
     "execute_status",
     "semantic_progress_wire",
 ]
 
-_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_PACKS = (
+    current_policy_pack(RESEARCH_EVIDENCE_POLICY_ID),
+    current_policy_pack(WORK_INTEGRITY_POLICY_ID),
+)
 _CURSOR_VERSION = "1"
 
 
@@ -145,7 +178,9 @@ def _dump_closed_omitting_optional_nulls(model: BaseModel) -> dict[str, JsonValu
     entirely — never reintroduced as null — so the closed wire models accept the body.
     """
 
-    dumped = cast(dict[str, JsonValue], model.model_dump(mode="json", exclude_none=False))
+    dumped = cast(
+        dict[str, JsonValue], model.model_dump(mode="json", by_alias=True, exclude_none=False)
+    )
     return _strip_optional_non_null_nulls(model, dumped)
 
 
@@ -162,7 +197,13 @@ def _strip_optional_non_null_nulls(
     for key, value in dumped.items():
         if key in optional_fields and value is None:
             continue
-        attr: object = getattr(model, key)
+        attr_name = key
+        if key not in type(model).model_fields:
+            for name, field in type(model).model_fields.items():
+                if field.alias == key:
+                    attr_name = name
+                    break
+        attr: object = getattr(model, attr_name)
         if isinstance(attr, BaseModel) and isinstance(value, Mapping):
             result[key] = cast(
                 JsonValue,
@@ -227,6 +268,9 @@ class StatusInternalResult:
     # Service-read ledger authorship of the page's evidence rows at ``subject_frontier``. It feeds
     # the agent-context provenance decision and is deliberately not part of ``as_json``.
     item_authorship: tuple[ProjectionItemAuthorship, ...] = ()
+    # ``(repository, machine_default)`` possible-credential filter state, composed by the service
+    # from the owner's privacy policy (issue #982); ``None`` when not composed.
+    credential_heuristic: tuple[str, str] | None = None
 
     def as_json(self) -> dict[str, JsonValue]:
         # Unset optional non-null leaves (today: obligation ``acceptance_criteria``, structural
@@ -259,6 +303,16 @@ class StatusInternalResult:
             ),
             "closure_readiness": cast(
                 JsonValue, _dump_closed_omitting_optional_nulls(self.closure_readiness)
+            ),
+            **(
+                {}
+                if self.credential_heuristic is None
+                else {
+                    "credential_heuristic": {
+                        "repository": self.credential_heuristic[0],
+                        "machine_default": self.credential_heuristic[1],
+                    }
+                }
             ),
         }
 
@@ -628,6 +682,8 @@ async def _operation_continuation(
     continuation: SemanticContinuation | None = None
     if operation.suspension_kind is CheckSuspensionKind.REPOSITORY_GRANT:
         continuation = repository_grant_continuation(request_id=operation_request_id)
+    elif operation.suspension_kind is CheckSuspensionKind.REVIEW_INPUT:
+        continuation = review_input_continuation(request_id=operation_request_id)
     elif load is not None:
         try:
             wait = await load(operation.writer_id, operation_request_id)
@@ -730,6 +786,72 @@ async def _operation_semantic_progress(
         return None
 
 
+async def _operation_semantic_omissions(
+    runtime: TaskRuntime, operation: object | None
+) -> tuple[tuple[dict[str, JsonValue], ...] | None, tuple[dict[str, JsonValue], ...] | None]:
+    """Recover the completed check event's withheld identities and PL2-1 line refs, if any.
+
+    Returns ``(semantic_withheld_items, semantic_redacted_values)``; each is ``None`` when the
+    check recorded none. Only structural item ids, catalogued refs and line numbers are read.
+    """
+
+    if (
+        type(operation) is not OperationRecord
+        or operation.operation_kind is not OperationKind.CHECK
+        or operation.state is not OperationState.COMPLETE
+        or operation.result_locator is None
+        or operation.result_locator.first_ingestion_sequence is None
+        or operation.result_locator.last_ingestion_sequence is None
+    ):
+        return None, None
+    locator = operation.result_locator
+    first_sequence = locator.first_ingestion_sequence
+    last_sequence = locator.last_ingestion_sequence
+    if first_sequence is None or last_sequence is None:
+        return None, None
+    event_ids = frozenset(locator.structural_ids)
+    try:
+        records = [
+            record
+            async for record in runtime.ledger.load_events(
+                runtime.session_id,
+                after=first_sequence - 1,
+                through=last_sequence,
+            )
+        ]
+        for record in records:
+            if str(record.event_id) not in event_ids:
+                continue
+            if getattr(record.schema, "name", None) != "check_recorded":
+                continue
+            payload = getattr(record, "payload", None)
+            withheld: tuple[dict[str, JsonValue], ...] | None = None
+            raw_item_ids = getattr(payload, "semantic_withheld_item_ids", ())
+            if type(raw_item_ids) is tuple and raw_item_ids:
+                raw_items = cast(tuple[object, ...], raw_item_ids)
+                if all(type(item_id) is str for item_id in raw_items):
+                    withheld = tuple(
+                        {"item_id": item_id, "reason": "never_send_heuristic"}
+                        for item_id in cast(tuple[str, ...], raw_items)
+                    )
+            redacted: tuple[dict[str, JsonValue], ...] | None = None
+            raw_redacted = getattr(payload, "semantic_redacted_values", ())
+            if type(raw_redacted) is tuple and raw_redacted:
+                redacted = tuple(
+                    cast(dict[str, JsonValue], item.as_wire())
+                    for item in validate_semantic_redacted_values(cast(object, raw_redacted))
+                )
+            return withheld, redacted
+    except Exception as exc:  # noqa: BLE001 - status enrichment must never block recovery
+        record_unexpected_exception_without_raising(
+            exc,
+            component="application.status",
+            operation="status_semantic_withheld_items_unavailable",
+            request_id=operation.operation_id,
+        )
+    return None, None
+
+
 def check_admission_wire(
     record: CheckAdmissionRecord, observed_at: datetime
 ) -> dict[str, JsonValue]:
@@ -790,7 +912,9 @@ def _operation_page_from_record(
     operation: object | None,
     continuation: Mapping[str, JsonValue] | None = None,
     semantic_progress: Mapping[str, JsonValue] | None = None,
+    semantic_withheld_items: tuple[Mapping[str, JsonValue], ...] | None = None,
     admission: Mapping[str, JsonValue] | None = None,
+    semantic_redacted_values: tuple[Mapping[str, JsonValue], ...] | None = None,
 ) -> StatusOperationPageModel:
     """Project one operation record into the recovery page, or a bounded not-found page.
 
@@ -853,6 +977,14 @@ def _operation_page_from_record(
             }
             if semantic_progress is not None and kind == "check":
                 complete["semantic_progress"] = cast(JsonValue, dict(semantic_progress))
+            if semantic_withheld_items is not None and kind == "check":
+                complete["semantic_withheld_items"] = cast(
+                    JsonValue, tuple(dict(item) for item in semantic_withheld_items)
+                )
+            if semantic_redacted_values is not None and kind == "check":
+                complete["semantic_redacted_values"] = cast(
+                    JsonValue, tuple(dict(item) for item in semantic_redacted_values)
+                )
             return StatusOperationPageModel.model_validate(complete)
         source = _mapping(strict_json_parse(record.result_canonical))
         accepted_raw = source["accepted"]
@@ -1126,6 +1258,155 @@ def _unknown_structural_coverage() -> Coverage:
     )
 
 
+def _check_cause_model(
+    facts: ClosureReadinessFacts, actionable: tuple[str, ...], standing: tuple[str, ...]
+) -> StatusCheckCauseModel | None:
+    """The lineage of ``check_not_applicable`` / a bounding earlier-frontier code, when listed.
+
+    Emitted only beside the token it explains (tb4n3 RC-6, owner lineage rule): a superseded
+    check beside ``check_not_applicable`` (work), a bounding suffix beside the standing
+    ``check_current_as_of_earlier_frontier`` (a disclosure), so a reader never sees a cause for a
+    condition the checklist does not list.
+    """
+
+    cause = facts.check_cause
+    if cause is None:
+        return None
+    if cause.effect == "superseded":
+        if "check_not_applicable" not in actionable:
+            return None
+    elif "check_current_as_of_earlier_frontier" not in standing:
+        return None
+    material = cause.record.material
+    return StatusCheckCauseModel(
+        effect=cause.effect,
+        event_id=str(cause.record.event_id),
+        ledger_sequence=str(cause.record.ingestion_sequence),
+        check_event_id=str(cause.check_event_id),
+        check_subject_frontier=str(cause.check_subject_sequence),
+        family=cause.record.family,
+        material_class=material.material_class.value,
+        rule=material.rule,
+        **({} if material.tool is None else {"tool": material.tool}),
+    )
+
+
+_MAX_AWAITING_RULING_FINDINGS: Final = 8
+_CHECK_ABSENCE_CODES: Final = frozenset(
+    {"check_not_recorded", "check_not_applicable", "check_payload_unavailable"}
+)
+
+
+async def _closure_basis_or_none(
+    runtime: TaskRuntime, frontier: Frontier, request_id: str | None
+) -> LoadedClosureBasis | None:
+    """The receipt's own context at this frontier, or ``None`` when it cannot be read.
+
+    Status stays total: an unreadable case omits the predicted conclusion (never guesses one) and
+    leaves a bounded diagnostic. The fallback is visible, not silent.
+    """
+
+    try:
+        return await load_closure_basis(runtime, frontier)
+    except (ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError) as exc:
+        record_unexpected_exception_without_raising(
+            exc,
+            component="application.status",
+            operation="status_closure_prediction_unavailable",
+            request_id=request_id,
+        )
+        return None
+
+
+def _closure_verdict_fields(
+    facts: ClosureReadinessFacts,
+    checklist: ClosureReadinessSplit,
+    loaded: LoadedClosureBasis | None,
+    *,
+    live_blockers: tuple[str, ...],
+    check_in_flight: bool,
+) -> dict[str, Any]:
+    """The wire form of the counters, the re-reads and the predicted receipt conclusion."""
+
+    fields: dict[str, Any] = {}
+    findings = facts.finding_closures
+    if findings is not None:
+        counts = closure_counts(findings, facts.obligation_closures or ())
+        fields["finding_counts"] = StatusFindingCountsModel(
+            to_do=str(counts.findings_to_do),
+            awaiting_ruling=str(counts.findings_awaiting_ruling),
+            unmet=str(counts.findings_unmet),
+            disclosed=str(counts.findings_disclosed),
+            to_disclose=str(counts.findings_to_disclose),
+            self_verify_eligible=str(counts.findings_self_verify_eligible),
+        )
+        fields["obligation_counts"] = StatusObligationCountsModel(
+            open=str(counts.obligations_open),
+            acknowledged=str(counts.obligations_acknowledged),
+            disclosed=str(counts.obligations_disclosed),
+        )
+        awaiting = sorted(
+            (
+                item
+                for item in counted_findings(findings).values()
+                if item.closure_class is FindingClosureClass.AWAITING_RULING
+            ),
+            key=lambda item: str(item.finding_id).encode(),
+        )[:_MAX_AWAITING_RULING_FINDINGS]
+        if awaiting:
+            fields["awaiting_ruling_findings"] = tuple(
+                StatusAwaitingRulingFindingModel.model_validate(
+                    {
+                        "finding_id": str(item.finding_id),
+                        "since_frontier": str(item.since_frontier or 0),
+                    }
+                )
+                for item in awaiting
+            )
+        fields["rechecks"] = tuple(
+            StatusRecheckModel.model_validate(
+                {
+                    "kind": item.kind,
+                    "key": item.key,
+                    "subjects": item.subjects,
+                    "rule": item.rule,
+                    "since_frontier": str(item.since_frontier),
+                }
+            )
+            for item in rechecks_from_closures(
+                facts.obligation_closures or (),
+                facts,
+                acknowledged_count=checklist.acknowledged_not_done_count,
+            )
+        )
+    if loaded is not None:
+        basis = replace(loaded.basis, live_blockers=live_blockers, check_in_flight=check_in_flight)
+        prediction = predict_receipt_conclusion(basis)
+        fields["predicted_receipt"] = StatusPredictedReceiptModel(
+            conclusion=prediction.conclusion.value,
+            reasons=tuple(
+                StatusPredictedReasonModel.model_validate(
+                    {
+                        "code": reason.code,
+                        "rule": reason.rule,
+                        "count": str(reason.count),
+                        "refs": reason.refs,
+                        **(
+                            {}
+                            if reason.since_frontier is None
+                            else {"since_frontier": str(reason.since_frontier)}
+                        ),
+                    }
+                )
+                for reason in prediction.reasons
+            ),
+            reason_total=str(prediction.reason_total),
+            basis_frontier=str(prediction.basis_frontier.sequence),
+            provisional=prediction.provisional,
+        )
+    return fields
+
+
 def _readiness_unknown() -> StatusClosureReadinessModel:
     # Unknown is never "nothing to do": the one checklist entry is to read status again once the
     # projection can be read.
@@ -1142,6 +1423,7 @@ def _readiness_unknown() -> StatusClosureReadinessModel:
         standing_limitations=(),
         acknowledged_not_done=(),
         acknowledged_not_done_count="0",
+        blocked_obligations=(),
     )
 
 
@@ -1173,6 +1455,7 @@ async def _closure_readiness(
     lineage_gaps: tuple[str, ...] = (),
     semantic_review_required: bool = False,
     check_in_flight: bool = False,
+    lineage_self_verified: bool = False,
 ) -> StatusClosureReadinessModel:
     """Derive what currently bounds a completion conclusion, from the compact projection.
 
@@ -1233,6 +1516,25 @@ async def _closure_readiness(
         # Recorded gaps (the ones a receipt folds) are classified; live lineage tokens that no
         # recorded evaluation carries yet cannot be promised as receipt disclosures (#913).
         gap_markers = tuple(page.gaps)
+        loaded = await _closure_basis_or_none(runtime, frontier, request_id)
+        if loaded is not None:
+            # The receipt folds gaps status does not read off the compact row (a retained finding's
+            # coverage, case-derived codes): list them too, so a receipt that will bound on one never
+            # sits beside a status that reads clean (ADR-046).
+            gap_markers = tuple(
+                sorted(
+                    set(gap_markers)
+                    | {
+                        gap.code
+                        for gap in loaded.basis.gaps
+                        if gap.kind is not GapEffectKind.HISTORICAL
+                        and not gap.code.startswith(UNCLASSIFIED_GAP_PREFIX)
+                        # Readiness lists the check's absence from its own facts, never as a gap.
+                        and gap.code not in _CHECK_ABSENCE_CODES
+                    },
+                    key=str.encode,
+                )
+            )
         live_blockers = live_lineage_blockers(lineage_gaps, gap_markers)
         declared_gaps = bool(gap_markers or lineage_gaps)
         facts = page.readiness_facts
@@ -1270,6 +1572,42 @@ async def _closure_readiness(
         semantic_review_required=semantic_review_required,
         check_in_flight=check_in_flight,
         live_blockers=live_blockers,
+        lineage_self_verified=lineage_self_verified,
+    )
+    confirmations = dict(facts.blocked_obligation_confirmations)
+    # Optional fields are omitted, never null, when there is nothing to name: no cause for the
+    # check's applicability (tb4n3 RC-6), no derived fact with provenance (ADR-045), so a status
+    # without them keeps its bytes.
+    cause = _check_cause_model(facts, checklist.agent_actionable, checklist.standing_limitations)
+    optional_fields: dict[str, Any] = {}
+    if cause is not None:
+        optional_fields["check_cause"] = cause
+    if facts.fact_lineage:
+        optional_fields["fact_lineage"] = tuple(
+            FactLineageModel.model_validate(lineage_to_wire(item))
+            for item in facts.fact_lineage[:64]
+        )
+    if facts.undeclared_references:
+        # tb4n4 (#1044): the files a delivered file names that no item declares, so the Stop
+        # gate can name them. Paths are repository-excerpt content under the privacy projection.
+        optional_fields["undeclared_references"] = tuple(
+            StatusUndeclaredReferenceModel(
+                obligation_id=obligation,
+                item_index=str(index),
+                paths=paths,
+                total=str(total),
+            )
+            for obligation, index, paths, total in facts.undeclared_references[:16]
+            if index is not None
+        )
+    optional_fields.update(
+        _closure_verdict_fields(
+            facts,
+            checklist,
+            loaded,
+            live_blockers=live_blockers,
+            check_in_flight=check_in_flight,
+        )
     )
     return StatusClosureReadinessModel(
         declared_obligation_count=str(declared_obligations),
@@ -1283,6 +1621,28 @@ async def _closure_readiness(
         standing_limitations=checklist.standing_limitations,
         acknowledged_not_done=checklist.acknowledged_not_done,
         acknowledged_not_done_count=str(checklist.acknowledged_not_done_count),
+        acknowledged_obligation_count=str(len(facts.acknowledged_obligation_ids)),
+        blocked_obligations=tuple(
+            StatusBlockedObligationModel(
+                obligation_id=obligation,
+                blocker_kind=cast(
+                    Literal["authority", "consent", "credential", "dependency_unavailable"], kind
+                ),
+                decision_event_id=decision,
+                # #985: a claimed blocker is still agent work until a later decision confirms it.
+                confirmation="confirmed" if obligation in confirmations else "claimed",
+                **(
+                    {"confirmation_event_id": confirmations[obligation]}
+                    if obligation in confirmations
+                    else {}
+                ),
+            )
+            for obligation, kind, decision in facts.blocked_obligation_details[:64]
+        ),
+        **optional_fields,
+        # F3: what a whole-task completion claim must name in limitation_refs (ids only).
+        limitation_refs_required=tuple(facts.limitation_refs_required[:64]),
+        limitation_refs_required_count=str(len(facts.limitation_refs_required)),
         blocking_conditions=cast(
             tuple[
                 Literal[
@@ -1345,7 +1705,7 @@ async def _task_coverage(
 
 async def _lineage_readiness_gaps(
     app: Application, runtime: TaskRuntime, frontier: Frontier, request_id: str
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, ...], bool]:
     """Compare accepted catalog children with recorded facts without opening child bundles.
 
     These are current advisory gaps only. Checks and receipts still replay service-stamped
@@ -1356,17 +1716,14 @@ async def _lineage_readiness_gaps(
 
     try:
         if not await app.start_catalog.list_child_task_ids(runtime.task_id):
-            return ()
+            return (), False
         snapshot = await lineage_status_page(app.start_catalog, runtime, frontier)
-        return tuple(
-            sorted(
-                {
-                    gap
-                    for child in snapshot.children
-                    if child.acceptance == "accepted"
-                    for gap in child.blocking_conditions
-                }
-            )
+        accepted = tuple(child for child in snapshot.children if child.acceptance == "accepted")
+        # Issue #984/#996 (S2): an accepted child with self-verified findings keeps the parent
+        # receipt at best insufficient_coverage, so readiness discloses it as standing.
+        return (
+            tuple(sorted({gap for child in accepted for gap in child.blocking_conditions})),
+            any(child.self_verified_finding_count is not None for child in accepted),
         )
     except Exception as exc:
         # A secondary read must neither strand operation recovery nor turn an unreadable
@@ -1378,7 +1735,38 @@ async def _lineage_readiness_gaps(
             operation="status_lineage_readiness_unavailable",
             request_id=request_id,
         )
-        return ("lineage_readiness_unavailable",)
+        return ("lineage_readiness_unavailable",), False
+
+
+async def current_closure_readiness(
+    app: Application,
+    runtime: TaskRuntime,
+    request_id: str,
+    *,
+    route_profile: Literal["policy", "strict"] | None = None,
+) -> tuple[Frontier, StatusClosureReadinessModel]:
+    """The current frontier and the closure readiness every status view prints there (ADR-046).
+
+    For a read that holds its own routed runtime (the ``mode: inspect`` check, ADR-047): the same
+    lineage gaps, review requirement and in-flight rule as ``execute_status``, so the inspection
+    and status can never disagree about what is left. Reads only.
+    """
+
+    frontier, head = await _exact_frontier(runtime, None)
+    lineage_gaps, lineage_self_verified = await _lineage_readiness_gaps(
+        app, runtime, frontier, request_id
+    )
+    readiness = await _closure_readiness(
+        runtime,
+        frontier,
+        None,
+        request_id,
+        lineage_gaps=lineage_gaps,
+        lineage_self_verified=lineage_self_verified,
+        semantic_review_required=_semantic_review_required(app, route_profile),
+        check_in_flight=frontier == head and await _check_in_flight(runtime),
+    )
+    return frontier, readiness
 
 
 async def execute_status(
@@ -1442,6 +1830,9 @@ async def execute_status(
                     operation,
                 )
             semantic_progress = await _operation_semantic_progress(app, runtime, operation)
+            semantic_withheld_items, semantic_redacted_values = await _operation_semantic_omissions(
+                runtime, operation
+            )
             admission = (
                 await _operation_admission(
                     app, runtime, request.writer_id, request.filter.operation_request_id
@@ -1453,9 +1844,11 @@ async def execute_status(
                 page = _operation_page_from_record(
                     request.filter.operation_request_id,
                     operation,
-                    continuation,
-                    semantic_progress,
-                    admission,
+                    continuation=continuation,
+                    semantic_progress=semantic_progress,
+                    semantic_withheld_items=semantic_withheld_items,
+                    admission=admission,
+                    semantic_redacted_values=semantic_redacted_values,
                 )
             except (AttributeError, TypeError, ValueError) as exc:
                 raise StatusFault(
@@ -1769,7 +2162,9 @@ async def execute_status(
             lag = raw_page.lag
             projection_version = raw_page.projection_version
             rebuild_state = raw_page.rebuild_state
-        lineage_gaps = await _lineage_readiness_gaps(app, runtime, frontier, request.request_id)
+        lineage_gaps, lineage_self_verified = await _lineage_readiness_gaps(
+            app, runtime, frontier, request.request_id
+        )
         if lineage_gaps:
             gaps = tuple(sorted(set(gaps) | set(lineage_gaps)))
             coverage = replace(
@@ -1787,6 +2182,7 @@ async def execute_status(
             compact_page,
             request.request_id,
             lineage_gaps=lineage_gaps,
+            lineage_self_verified=lineage_self_verified,
             semantic_review_required=_semantic_review_required(app, route_profile),
             check_in_flight=frontier == head and await _check_in_flight(runtime),
         )

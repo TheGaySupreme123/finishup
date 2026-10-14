@@ -131,6 +131,7 @@ async def _semantic_forbidden(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     del frozen, findings, runtime, lineage_evaluation
     raise AssertionError("resume capability cell must never invoke the AI-powered evaluator")
@@ -200,7 +201,7 @@ async def test_idempotent_reattach_does_not_duplicate_local_effect(tmp_path: Pat
         waiver_authorizer=lambda _: False,
         import_publication_authorizer=lambda _: False,
         profile=RuntimeProfile.STRICT_LOCAL,
-        policy_packs=("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        policy_packs=("research-evidence/0.2.0", "work-integrity/0.3.0"),
         version_manifest=start_app.version_manifest,
         enforce_repository_identity=False,
     )

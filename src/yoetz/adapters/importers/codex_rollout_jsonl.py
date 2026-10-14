@@ -21,7 +21,7 @@ from yoetz.adapters.importers.codex_jsonl import (
 )
 from yoetz.adapters.integrations.codex_capability_cells import CODEX_ROLLOUT_HISTORY_MODES
 from yoetz.domain.values import JsonObject, JsonValue, freeze_json
-from yoetz.observability.privacy import redact_sensitive_content
+from yoetz.observability.privacy import redact_high_confidence_content
 from yoetz.ports.importer import ImportLineStatus
 from yoetz.protocol.canonical import canonical_digest
 from yoetz.protocol.errors import ProtocolValueError
@@ -192,9 +192,16 @@ _COMPATIBLE_WRAPPER_TYPES: Final = tuple(
         key=str.encode,
     )
 )
+# Item families only the compatibility profile admits, on the same terms (issue #1041).
+# ``HookPrompt`` is the ``event_msg.item_completed`` item a Codex 0.159.3 rollout writes when a
+# Stop hook continues the turn with a prompt (Yoetz's own closure gate text). Yoetz reads no
+# structural field from it: it names no tool call and pairs with nothing, so it is bookkeeping,
+# not an ``unsupported_event`` gap on every gated attempt.
+_COMPATIBLE_ONLY_ITEM_TYPES: Final = ("HookPrompt",)
 _COMPATIBLE_ITEM_TYPES: Final = tuple(
     sorted(
-        {item for profile in SUPPORTED_ROLLOUT_PROFILES.values() for item in profile.item_types},
+        {item for profile in SUPPORTED_ROLLOUT_PROFILES.values() for item in profile.item_types}
+        | set(_COMPATIBLE_ONLY_ITEM_TYPES),
         key=str.encode,
     )
 )
@@ -489,7 +496,9 @@ def _parse_json_line(content: bytes) -> dict[str, object]:
 
 
 def _redact_json_tree(value: dict[str, object]) -> dict[str, object]:
-    """Redact decoded JSON strings and drop unrepresentable numeric leaves.
+    """Redact high-confidence secrets in decoded JSON strings and drop unrepresentable numbers.
+
+    Heuristic-only assignment matches are kept (issue #982); egress redacts them.
 
     Tree shape stays intact: strings are redacted in place and a fractional number becomes
     ``null`` in the same position. The canonical value model has no float (``float_forbidden``),
@@ -506,7 +515,9 @@ def _redact_json_tree(value: dict[str, object]) -> dict[str, object]:
         if depth > _MAX_JSON_DEPTH:
             raise ValueError("nesting_too_deep")
         if type(item) is str:
-            redacted, _detected = redact_sensitive_content(item.encode("utf-8", errors="strict"))
+            redacted, _detected = redact_high_confidence_content(
+                item.encode("utf-8", errors="strict")
+            )
             return redacted.decode("utf-8", errors="strict")
         if type(item) is float:
             return None

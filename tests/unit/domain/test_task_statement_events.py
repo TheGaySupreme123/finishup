@@ -20,10 +20,12 @@ from yoetz.domain.events import (
     decode_payload,
     encode_payload,
 )
+from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
 from yoetz.domain.task_statement import (
     TASK_STATEMENT_NOT_AUTHORIZED_GAP,
     TASK_STATEMENT_NOT_SUPPLIED_GAP,
     TASK_STATEMENT_UNAVAILABLE_GAP,
+    specification_preflight,
     task_statement_gap_detail,
 )
 from yoetz.domain.values import Frontier, freeze_json, obligation_id
@@ -141,6 +143,28 @@ def test_gap_details_are_fixed_words_for_each_code() -> None:
         str, task_statement_gap_detail(TASK_STATEMENT_NOT_AUTHORIZED_GAP)
     )
     assert task_statement_gap_detail("content_unselected") is None
+
+
+def test_full_specification_preflight_distinguishes_title_missing_and_withheld() -> None:
+    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.ASSISTED)
+    title = specification_preflight(None, "task title", selection, required=True)
+    assert title.status == "title_only"
+    assert title.actionable is True
+    assert title.gap == TASK_STATEMENT_NOT_SUPPLIED_GAP
+    assert title.content_digest is not None
+
+    missing = specification_preflight(None, None, selection, required=True)
+    assert missing.status == "missing"
+    assert missing.actionable is True
+    assert missing.gap == TASK_STATEMENT_NOT_SUPPLIED_GAP
+
+    legacy = ReviewSelectionPolicy.for_profile(
+        ReviewContextProfile.ASSISTED, preset_version="1.1.0"
+    )
+    withheld = specification_preflight(None, None, legacy, required=True)
+    assert withheld.status == "withheld"
+    assert withheld.actionable is False
+    assert withheld.gap == TASK_STATEMENT_NOT_AUTHORIZED_GAP
 
 
 def test_an_older_service_contract_refuses_the_statement_instead_of_dropping_it() -> None:

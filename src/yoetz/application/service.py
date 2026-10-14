@@ -106,7 +106,12 @@ from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.host_lineage import HostLineageRegistryPort
 from yoetz.ports.ids import IdPort
 from yoetz.ports.importer import ImportAllocation
-from yoetz.ports.ledger import CheckAwaitingHuman, CheckCommitResult, FrozenCase
+from yoetz.ports.ledger import (
+    CheckAwaitingHuman,
+    CheckCommitResult,
+    CheckObservationsAwaited,
+    FrozenCase,
+)
 from yoetz.ports.publish_response_catalog import (
     PublishResponseCatalogPort,
     PublishResponseKey,
@@ -124,6 +129,7 @@ from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind, validate_id
 from yoetz.protocol.models import (
     CheckAwaitingHumanModel,
+    CheckInspectionModel,
     CheckRequest,
     CheckResult,
     CheckResultModel,
@@ -494,6 +500,10 @@ from yoetz.application.check import (  # noqa: E402
     check_awaiting_human_json,
     check_internal_json,
 )
+from yoetz.application.check_inspection import (  # noqa: E402
+    CheckInspection,
+    check_inspection_json,
+)
 from yoetz.application.import_review import (  # noqa: E402
     ImportCodexJsonlRequest,
     ImportReportInternal,
@@ -503,6 +513,7 @@ from yoetz.application.import_review import (  # noqa: E402
     execute_review,
     import_request_from_control,
 )
+from yoetz.application.missing_for_assessment import ReviewFollowUp  # noqa: E402
 from yoetz.application.publish_work import (  # noqa: E402
     PublishWorkInternalResult,
     execute_publish_work,
@@ -524,6 +535,7 @@ type UnprojectedControlBody = (
     | PublishWorkInternalResult
     | CheckCommitResult
     | CheckAwaitingHuman
+    | CheckInspection
     | RespondInternalResult
     | StatusInternalResult
     | ReceiptInternalResult
@@ -540,7 +552,11 @@ class _SemanticEvaluator(Protocol):
         findings: tuple[Finding, ...],
         runtime: TaskRuntime | None = None,
         lineage_evaluation: LineageEvaluation | None = None,
+        require_complete_specification: bool = False,
     ) -> Awaitable[object]: ...
+
+    # ``final_review`` (issue #976) is optional on this port: ``evaluate_semantic_check`` passes
+    # it only to evaluators whose signature declares it, so older doubles stay assignable.
 
 
 type _ScopeResolver = Callable[
@@ -548,6 +564,31 @@ type _ScopeResolver = Callable[
 ]
 type _ReceiptVersions = Callable[[TaskRuntime], ReceiptVersionSlice]
 type _SupportHandler = Callable[..., Awaitable[JsonObject]]
+
+
+def _accepts_keyword(function: object, name: str) -> bool:
+    try:
+        parameters = inspect.signature(cast(Callable[..., object], function)).parameters.values()
+    except TypeError, ValueError:
+        return False
+    return any(
+        parameter.name == name or parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _declares_keyword(function: object, name: str) -> bool:
+    """Whether ``function`` names keyword ``name`` itself; ``**kwargs`` does not count."""
+
+    try:
+        parameters = inspect.signature(cast(Callable[..., object], function)).parameters
+    except TypeError, ValueError:
+        return False
+    parameter = parameters.get(name)
+    return parameter is not None and parameter.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
 
 
 def _empty_support_handlers() -> Mapping[ControlMethod, _SupportHandler]:
@@ -645,6 +686,8 @@ def _internal_json(result: UnprojectedControlBody) -> dict[str, JsonValue]:
         return dict(check_internal_json(result).items())
     if type(result) is CheckAwaitingHuman:
         return dict(check_awaiting_human_json(result).items())
+    if type(result) is CheckInspection:
+        return check_inspection_json(result)
     if type(result) is RespondInternalResult:
         return result.as_json()
     if type(result) is StatusInternalResult:
@@ -785,7 +828,11 @@ def _public_model(method: ControlMethod, value: Mapping[str, JsonValue]) -> Proj
     # CHECK has two success shapes. The nonterminal one carries no verdict or coverage, so it
     # cannot validate against the terminal model; pick the branch the body actually declares.
     check_success: type[BaseModel] = (
-        CheckAwaitingHumanModel if value.get("state") == "awaiting_human" else CheckSuccessModel
+        CheckAwaitingHumanModel
+        if value.get("state") in {"awaiting_human", "awaiting_input"}
+        else CheckInspectionModel
+        if value.get("state") == "inspected"
+        else CheckSuccessModel
     )
     model: tuple[type[BaseModel], type[BaseModel]] | None = {
         ControlMethod.START: (StartSuccessModel, StartResultModel),
@@ -2393,11 +2440,20 @@ class Application:
         route_profile: Literal["policy", "strict"] = "policy",
         host_profile: McpHostProfile = "generic",
         repository_privacy_context: RepositoryPrivacyContext | None = None,
-    ) -> CheckCommitResult | CheckAwaitingHuman:
+        observations_awaited: CheckObservationsAwaited | None = None,
+    ) -> CheckCommitResult | CheckAwaitingHuman | CheckInspection:
+        """Run one check; ``observations_awaited`` is the daemon's pre-gate wait (issue #1012)."""
+
         from yoetz.application.check import execute_check
 
         await self._require_repository_route(request, repository_privacy_context)
         await self._renew_activity_session(request.session_id, request)
+        if request.mode == "inspect":
+            # ADR-047: a read. No default mode, no workspace capture, no reviewer route.
+            inspection = await execute_check(self, request, route_profile=route_profile)  # pyright: ignore[reportArgumentType]
+            if observations_awaited is not None and type(inspection) is CheckInspection:
+                inspection = replace(inspection, observations_awaited=observations_awaited)
+            return inspection
         # Resolve omitted mode via policy so recorded check events carry the resolved value.
         if request.mode is None:
             request = request.model_copy(
@@ -2416,12 +2472,16 @@ class Application:
             else CheckWorkspaceSource(locator.path, repository_privacy_context.commitment)
         )
         with check_workspace_source_scope(source):
-            return await execute_check(
+            result = await execute_check(
                 self,  # pyright: ignore[reportArgumentType]
                 request,
                 route_profile=route_profile,
                 host_profile=host_profile,
             )
+        if observations_awaited is not None and type(result) is CheckCommitResult:
+            # Describes this call's wait only; nothing about it is recorded in the ledger.
+            result = replace(result, observations_awaited=observations_awaited)
+        return result
 
     async def respond(
         self,
@@ -2442,11 +2502,68 @@ class Application:
     ) -> StatusInternalResult:
         await self._require_repository_route(request, repository_privacy_context)
         await self._renew_activity_session(request.session_id, request)
-        return await execute_status(
+        result = await execute_status(
             self,  # pyright: ignore[reportArgumentType]
             request,
             route_profile=route_profile,
         )
+        state = await self._credential_heuristic_state(repository_privacy_context)
+        return result if state is None else replace(result, credential_heuristic=state)
+
+    async def _credential_heuristic_state(
+        self, repository_privacy_context: RepositoryPrivacyContext | None
+    ) -> tuple[str, str] | None:
+        """The possible-credential filter state status shows before any check (issue #982).
+
+        ``repository`` follows the current repository's own grant (owner decision, 2026-10-07);
+        without a grant nothing reaches the external reviewer, so it reads ``enforced``.
+        ``machine_default`` is what a repository without a grant inherits. Read-only; any read
+        failure reports ``unknown`` rather than guessing. ``None`` when this application has no
+        privacy support at all.
+        """
+
+        if (
+            ControlMethod.PRIVACY_GET_SETUP not in self.support_handlers
+            or ControlMethod.PRIVACY_GET_EFFECTIVE not in self.support_handlers
+        ):
+            return None
+
+        def token(value: object) -> str:
+            if value == "enforced" or value == "disabled" or value == "unknown":
+                return cast(str, value)
+            return "unknown"
+
+        def state_of(policy: object) -> str:
+            if not isinstance(policy, Mapping):
+                return "unknown"
+            value = cast(Mapping[str, object], policy).get("credential_heuristic", "enforced")
+            if value == "enforced" or value == "disabled":
+                return cast(str, value)
+            return "unknown"
+
+        if repository_privacy_context is not None:
+            # The setup read carries the one derivation every surface shows (repository grant,
+            # pending migration outcome, installation default).
+            try:
+                setup = await self._support(
+                    ControlMethod.PRIVACY_GET_SETUP,
+                    JsonObject({"schema_version": "2.0.0"}),
+                    repository_privacy_context=repository_privacy_context,
+                )
+                pair = setup.get("credential_heuristic")
+                if isinstance(pair, Mapping):
+                    typed = cast(Mapping[str, object], pair)
+                    return token(typed.get("repository")), token(typed.get("machine_default"))
+            except Exception:  # noqa: BLE001 - status stays readable; the state is unknown
+                pass
+        try:
+            effective = await self._support(
+                ControlMethod.PRIVACY_GET_EFFECTIVE, JsonObject({"schema_version": "1.0.0"})
+            )
+            machine_default = state_of(effective.get("policy"))
+        except Exception:  # noqa: BLE001 - status stays readable; the state is unknown
+            machine_default = "unknown"
+        return "unknown", machine_default
 
     async def receipt(
         self,
@@ -2705,8 +2822,39 @@ class Application:
         deterministic_findings: tuple[Finding, ...],
         runtime: object | None = None,
         lineage_evaluation: LineageEvaluation | None = None,
+        require_complete_specification: bool = False,
+        final_review: bool = False,
+        task_fact_gaps: tuple[str, ...] = (),
+        follow_up: ReviewFollowUp | None = None,
     ) -> object:
         evaluator = self.semantic_evaluator
+        # The closing-review choice (issue #976) and the check-time task-fact codes (#977) reach
+        # only evaluators that declare them, so an older double keeps its exact call shape
+        # instead of failing into the fallbacks below.
+        extra: dict[str, object] = {}
+        if final_review and _accepts_keyword(evaluator, "final_review"):
+            extra["final_review"] = True
+        if task_fact_gaps and _accepts_keyword(evaluator, "task_fact_gaps"):
+            extra["task_fact_gaps"] = task_fact_gaps
+        if follow_up is not None:
+            # An in-check follow-up round (issue #1047) reaches only an evaluator that names the
+            # keyword itself; any other dispatches nothing (``None``), and the first review
+            # stands. It never falls back to a first-review call shape.
+            if not _declares_keyword(evaluator, "follow_up"):
+                return None
+            # Declared by name (checked above); the port protocol keeps it optional so older
+            # evaluator doubles stay assignable.
+            follow_up_evaluator = cast(Callable[..., Awaitable[object]], evaluator)
+            if _accepts_keyword(evaluator, "require_complete_specification"):
+                extra["require_complete_specification"] = require_complete_specification
+            return await follow_up_evaluator(
+                frozen,
+                deterministic_findings,
+                cast(TaskRuntime | None, runtime),
+                lineage_evaluation,
+                follow_up=follow_up,
+                **extra,
+            )
         # Production evaluators accept the task runtime for durable job/attempt coordination.
         # Test doubles may still be binary callables.
         try:
@@ -2715,6 +2863,8 @@ class Application:
                 deterministic_findings,
                 cast(TaskRuntime | None, runtime),
                 lineage_evaluation,
+                require_complete_specification=require_complete_specification,
+                **extra,
             )
         except TypeError:
             try:

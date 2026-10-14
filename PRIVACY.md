@@ -73,7 +73,28 @@ review recipe selects diff excerpts, the service reads the task's own repository
 with Git's hooks, helpers, filters and network transports disabled, and renders the change from the
 commit the task started on (for a task started before this version, the commit at its first check)
 to the working tree, including untracked files Git does not ignore. Because that base is a commit,
-uncommitted or untracked work that already existed when the task started is included too. Files
+uncommitted work that already existed when the task started is included too; untracked files that
+already existed then and are unchanged since are left out, because the task-start base also records,
+encrypted, the names of the untracked files and a digest of their file metadata (never their
+content), and the commit each nested repository held with the same names and digests for its own
+untracked files. A nested Git repository inside the task's repository has its own change read from
+that commit, under every fence below, at most eight per check, and its untracked files are left
+out or shown exactly like the outer ones. When no commit was recorded for a nested repository the
+outer one tracks (for example, a task started before Yoetz recorded one), its change starts from
+the commit the outer repository records for it, and the header says that commits made in it before
+the task may then be included. When a nested repository's untracked files were not recorded whole
+(for example: the task started before Yoetz recorded them; the repository was created during the
+task, had no commit when it started, came after the eighth nested repository or was refused by a
+safety check; or its untracked names did not fit the record, could not be stored in it, could not
+be examined or could not be listed in time), they are named but their content is never read,
+because any of them may predate the task; they count as not shown.
+The same read also carries up to four read-only task input files the task statement names (or that
+the task declares as inputs), each at most 16 KiB, only when the file is inside the repository, is
+unchanged since the task started, is not ignored by Git and is not credential-named. A tracked file
+counts as unchanged only when the task's own starting commit was recorded, Git compares the file
+normally (a file marked skip-worktree or assume-unchanged is never read) and its bytes match that
+commit exactly. The statement is read only to find those names; nothing about a skipped file is
+kept. Files
 named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and similar) are listed by name
 only; that list is a name heuristic, not a detector. Links and files with a second name, tracked or
 untracked, are listed without their content or line counts: Git may open a link target while it

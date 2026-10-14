@@ -17,10 +17,11 @@ the accepted prefix, and every earlier one stays in the ledger history.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Final
+from typing import Final, Literal
 
 from yoetz.domain.events import (
     AcceptedEvent,
@@ -32,8 +33,9 @@ from yoetz.domain.events import (
     SessionResumedPayload,
 )
 from yoetz.domain.privacy import PrivacyPolicy, ReviewSelectionPolicy
-from yoetz.domain.values import EventId, event_id
-from yoetz.protocol.models import DataCategory
+from yoetz.domain.values import EventId, event_id, validate_sha256_digest
+from yoetz.protocol.errors import ProtocolValueError
+from yoetz.protocol.models import MAX_TASK_STATEMENT_BYTES, DataCategory
 
 __all__ = [
     "TASK_STATEMENT_GAPS",
@@ -41,7 +43,12 @@ __all__ = [
     "TASK_STATEMENT_NOT_SUPPLIED_GAP",
     "TASK_STATEMENT_UNAVAILABLE_GAP",
     "TASK_STATEMENT_SECTION",
+    "NO_MATERIAL_WORK_MARKER",
     "RecordedTaskStatement",
+    "SpecificationPreflight",
+    "TASK_STATEMENT_FINDING_SUMMARIES",
+    "TASK_STATEMENT_SCOPE_EMPTY_SUMMARY",
+    "TASK_STATEMENT_UNMAPPED_SUMMARY",
     "TaskStatementSource",
     "current_task_statement",
     "may_carry_task_statement",
@@ -49,6 +56,7 @@ __all__ = [
     "review_selection_for_delivery",
     "task_statement_disclosure_text",
     "task_statement_gap_detail",
+    "specification_preflight",
 ]
 
 # The privacy review section and the packet section share one name, so the consent vocabulary and
@@ -87,6 +95,26 @@ _GAP_DETAILS: Final = {
         "stayed local. Run 'yoetz --privacy' to review and approve it."
     ),
 }
+
+
+# Fixed summaries of the two local findings whose basis is the task statement itself (TB4 pilot).
+# Finding resolution reads the summary to tell these statement-based ``task_requirement_unmet``
+# findings from the test-edit one, whose basis is structural test-edit accounting; any other
+# summary is treated as the stricter test-edit basis, so a wording change can only fail closed.
+TASK_STATEMENT_UNMAPPED_SUMMARY: Final = (
+    "No obligation in the current plan cites the recorded task statement."
+)
+TASK_STATEMENT_SCOPE_EMPTY_SUMMARY: Final = (
+    "A completion claim was recorded while the plan declares no obligation for the recorded"
+    " task statement."
+)
+TASK_STATEMENT_FINDING_SUMMARIES: Final = frozenset(
+    {TASK_STATEMENT_UNMAPPED_SUMMARY, TASK_STATEMENT_SCOPE_EMPTY_SUMMARY}
+)
+# A ``decision_recorded`` statement line ``yoetz-no-material-work:<statement event id>`` is the
+# agent's recorded, justified decision that the user's request asks for no material work. It is
+# read only as that exact line; it counts only while the task records no edit action.
+NO_MATERIAL_WORK_MARKER: Final = "yoetz-no-material-work"
 
 
 class TaskStatementSource(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -134,17 +162,34 @@ def task_statement_gap_detail(code: str) -> str | None:
 
 @dataclass(frozen=True, slots=True)
 class RecordedTaskStatement:
-    """The newest agent-supplied statement at one frozen frontier."""
+    """The newest agent-supplied statement at one frozen frontier.
+
+    ``equivalent_event_ids`` names every readable statement-carrying event in the prefix whose
+    statement content is byte-identical to this one (its own event included). A re-attach or a
+    plan event that repeats an unchanged statement does not amend it, so an obligation citing any
+    of these events still maps the current request; a genuinely amended statement has a different
+    digest and none of the earlier events.
+    """
 
     text: str
     source_event_id: EventId
     source_family: str
     ingestion_sequence: int
+    equivalent_event_ids: tuple[EventId, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.text) is not str or not self.text:
             raise ValueError("task_statement_invalid")
         object.__setattr__(self, "source_event_id", event_id(self.source_event_id))
+        if type(self.equivalent_event_ids) is not tuple:
+            raise ValueError("task_statement_invalid")
+        equivalent = tuple(
+            sorted(
+                {event_id(value) for value in self.equivalent_event_ids} | {self.source_event_id},
+                key=str.encode,
+            )
+        )
+        object.__setattr__(self, "equivalent_event_ids", equivalent)
         if self.source_family not in {
             "session_opened",
             "session_resumed",
@@ -156,20 +201,136 @@ class RecordedTaskStatement:
             raise ValueError("task_statement_invalid")
 
     @property
+    def content_digest(self) -> str:
+        return "sha256:" + hashlib.sha256(self.text.encode("utf-8")).hexdigest()
+
+    @property
     def source(self) -> TaskStatementSource:
         # Every recorded statement arrives through the agent (``start`` or a plan event). Only a
         # future host-capture path may record anything else, and it will say so explicitly.
         return TaskStatementSource.AGENT_TRANSCRIBED
 
 
+@dataclass(frozen=True, slots=True)
+class SpecificationPreflight:
+    """The service-owned completeness decision before a semantic provider call.
+
+    ``title_only`` is intentionally a distinct state. A task title can identify a task, but it
+    cannot stand in for a complete user specification when the caller requested full-spec review.
+    The digest and byte length are structural commitments; the statement text never appears in
+    this value (issue #951).
+    """
+
+    status: Literal["complete", "title_only", "missing", "withheld"]
+    source: TaskStatementSource | None
+    content_digest: str | None
+    content_bytes: int
+    revision: int | None
+    required: bool
+    actionable: bool
+    gap: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"complete", "title_only", "missing", "withheld"}:
+            raise ValueError("specification_preflight_invalid")
+        if self.status == "complete" and self.source is not TaskStatementSource.AGENT_TRANSCRIBED:
+            raise ValueError("specification_preflight_invalid")
+        if self.status == "title_only" and self.source is not TaskStatementSource.TASK_TITLE_ONLY:
+            raise ValueError("specification_preflight_invalid")
+        if self.status in {"missing", "withheld"} and self.source is not None:
+            raise ValueError("specification_preflight_invalid")
+        if self.content_digest is not None:
+            try:
+                validate_sha256_digest(self.content_digest)
+            except (ProtocolValueError, TypeError) as exc:
+                raise ValueError("specification_preflight_invalid") from exc
+        if (
+            type(self.content_bytes) is not int
+            or not 0 <= self.content_bytes <= MAX_TASK_STATEMENT_BYTES
+        ):
+            raise ValueError("specification_preflight_invalid")
+        if self.revision is not None and (type(self.revision) is not int or self.revision < 0):
+            raise ValueError("specification_preflight_invalid")
+        if type(self.required) is not bool or type(self.actionable) is not bool:
+            raise ValueError("specification_preflight_invalid")
+        if self.status == "complete" and self.actionable:
+            raise ValueError("specification_preflight_invalid")
+        if self.status == "withheld" and self.actionable:
+            raise ValueError("specification_preflight_invalid")
+
+    @property
+    def complete(self) -> bool:
+        return self.status == "complete"
+
+
+def specification_preflight(
+    statement: RecordedTaskStatement | None,
+    title: str | None,
+    selection: ReviewSelectionPolicy,
+    *,
+    required: bool,
+    channel_sends_task_description: bool = True,
+) -> SpecificationPreflight:
+    """Return the bounded specification state before substantive semantic dispatch.
+
+    A policy that withholds ``task_description`` is never converted into an agent request to
+    transmit it. When the channel is authorized, a title-only or missing specification is
+    actionable only for a full-spec review; reduced review continues with the explicit status.
+    """
+
+    selected = TASK_STATEMENT_SECTION in selection.sections
+    if not selected or not channel_sends_task_description:
+        return SpecificationPreflight(
+            "withheld", None, None, 0, None, required, False, TASK_STATEMENT_NOT_AUTHORIZED_GAP
+        )
+    if statement is not None:
+        raw = statement.text.encode("utf-8")
+        return SpecificationPreflight(
+            "complete",
+            statement.source,
+            "sha256:" + hashlib.sha256(raw).hexdigest(),
+            len(raw),
+            statement.ingestion_sequence,
+            required,
+            False,
+            None,
+        )
+    if title is not None:
+        raw = title.encode("utf-8")
+        return SpecificationPreflight(
+            "title_only",
+            TaskStatementSource.TASK_TITLE_ONLY,
+            "sha256:" + hashlib.sha256(raw).hexdigest(),
+            len(raw),
+            0,
+            required,
+            required,
+            TASK_STATEMENT_NOT_SUPPLIED_GAP if required else None,
+        )
+    return SpecificationPreflight(
+        "missing",
+        None,
+        None,
+        0,
+        None,
+        required,
+        required,
+        TASK_STATEMENT_NOT_SUPPLIED_GAP if required else None,
+    )
+
+
 def current_task_statement(records: Iterable[LedgerRecord]) -> RecordedTaskStatement | None:
     """Return the newest readable statement in ``records``, oldest-first ledger order.
 
     A redacted or unreadable event carries nothing: its statement is skipped, never
-    reconstructed, and the earlier statements remain what the ledger still holds.
+    reconstructed, and the earlier statements remain what the ledger still holds. A later event
+    that repeats the current statement byte for byte does not amend it: the earlier event stays
+    the current statement event. The result names every readable event that carried the same
+    statement content (``equivalent_event_ids``), so an obligation citing any of them maps it.
     """
 
     current: RecordedTaskStatement | None = None
+    by_text: dict[str, list[EventId]] = {}
     for record in records:
         if type(record) is not AcceptedEvent or record.redaction is not RedactionState.PRESENT:
             continue
@@ -184,13 +345,21 @@ def current_task_statement(records: Iterable[LedgerRecord]) -> RecordedTaskState
         statement = getattr(payload, "task_statement", None)
         if type(statement) is not str:
             continue
+        by_text.setdefault(statement, []).append(record.event_id)
+        if current is not None and current.text == statement:
+            # Repeating the unchanged statement (a re-attach, or a plan event that restates it)
+            # is not an amendment: the event that recorded it stays current, so the finding
+            # subject, the review packet's source ref and every obligation citing it stay put.
+            continue
         current = RecordedTaskStatement(
             text=statement,
             source_event_id=record.event_id,
             source_family=record.schema.name,
             ingestion_sequence=record.ledger.ingestion_sequence,
         )
-    return current
+    if current is None:
+        return None
+    return replace(current, equivalent_event_ids=tuple(by_text[current.text]))
 
 
 # Event versions minted to carry a task statement. Nothing older can, so a review whose frozen

@@ -33,7 +33,6 @@ _SHIPPED: Final = (
     *sorted((_REPO_ROOT / "src" / "yoetz" / "resources" / "skills").glob("*/yoetz/SKILL.md")),
 )
 _DISCOVER: Final = "## Discover evidence before authoring replacements"
-_EVIDENCE_FIRST: Final = "## Evidence-first closure"
 
 # Each pattern is one phrasing of the retired unfiltered walk or its description match.
 _RETIRED: Final = (
@@ -95,31 +94,21 @@ def test_discovery_procedure_uses_published_ids_filters_and_structural_links(nam
         assert phrase in section, phrase
 
 
-@pytest.mark.parametrize(
-    "path",
-    (_GUIDANCE / "workflow.md", _REPO_ROOT / "skills" / "codex" / "yoetz" / "SKILL.md"),
-    ids=lambda path: str(path.relative_to(_REPO_ROOT)),
-)
-def test_evidence_first_closure_keeps_the_check_and_makes_it_satisfiable(path: Path) -> None:
-    section = _section(path, _EVIDENCE_FIRST)
-    for phrase in (
-        "cite the evidence IDs your own `publish_work` requests carry",
-        "`status view=evidence` with `filter.author=mine` lists them",
-        "`filter.strength=immutable_snapshot`",
-        "Reuse only native IDs a structural link ties to the claim",
-        "do not author duplicate digest-only placeholders",
-        "is a privacy setting, not missing evidence",
-        "do not page through every item to match prose you cannot see",
-        "do not republish to reveal it",
-    ):
-        assert phrase in section, phrase
+def test_codex_skill_routes_evidence_first_closure_to_the_workflow_topic() -> None:
+    text = _collapsed(_REPO_ROOT / "skills" / "codex" / "yoetz" / "SKILL.md")
+    assert "yoetz://guidance/workflow.md#start-and-resume" in text
+    # Issue #1048: the core is the operating card; other pages are read on demand.
+    assert "that core is the operating card" in text
+    assert "other pages only when a result names them" in text
 
 
 def test_agent_instructions_floor_names_the_filtered_discovery() -> None:
     text = _collapsed(_GUIDANCE / "agent-instructions.md")
     for phrase in (
-        "Before material evidence or a completion claim, read `status`; cite IDs you published",
-        "find native captures with `view=evidence` filter `strength=immutable_snapshot`",
+        # Issue #1048: no mandatory status read before a write; discovery stays named.
+        "a prior `status` read or `dry_run` is optional",
+        "Cite IDs you published; find native captures with `view=evidence` filter "
+        "`strength=immutable_snapshot`",
         "reusing only IDs a structural link ties to the claim",
         "Omitted descriptions are a privacy setting, not missing evidence",
     ):

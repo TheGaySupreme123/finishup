@@ -19,9 +19,11 @@ from yoetz.domain.coordination import (
 )
 from yoetz.domain.events import (
     CheckChangeShownFiles,
+    DeliverableState,
     EventDraft,
     LedgerRecord,
     MissingForAssessmentItem,
+    validate_deliverable_states,
 )
 from yoetz.domain.findings import (
     CheckVerdict,
@@ -32,9 +34,11 @@ from yoetz.domain.findings import (
     SemanticProvenance,
 )
 from yoetz.domain.privacy import SourceAuthorship
+from yoetz.domain.task_statement import SpecificationPreflight
 from yoetz.domain.values import (
     Actor,
     Frontier,
+    JsonObject,
     SemanticContinuation,
     format_rfc3339_millis,
     validate_commitment,
@@ -42,13 +46,14 @@ from yoetz.domain.values import (
 )
 from yoetz.kernel.closure_readiness import ClosureReadinessFacts
 from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, DeterministicCase
+from yoetz.kernel.fact_lineage import FactLineage
 from yoetz.kernel.finding_todo import FindingTodoCounts
 from yoetz.kernel.lineage import LineageRollupState
 from yoetz.kernel.projections import ProjectionState
 from yoetz.ports.objects import ObjectKind, ObjectRef
 from yoetz.protocol.coverage import Coverage, PublicationChannel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, validate_actor_id, validate_id
+from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+from yoetz.protocol.ids import IdKind, validate_actor_id, validate_id, validate_opaque_item_id
 from yoetz.protocol.models import (
     MAX_EVENTS_PER_BATCH,
     CheckScopeModel,
@@ -60,16 +65,20 @@ from yoetz.protocol.models import (
     StatusEvidenceItemModel,
     StatusFindingItemModel,
     StatusHistoryItemModel,
+    StatusHistoryItemV14Model,
     StatusObligationItemModel,
     StatusResultItemModel,
     StatusVersionSliceModel,
     validate_semantic_outcome,
     validate_semantic_provenance_binding,
 )
+from yoetz.protocol.policy_packs import RECORDED_POLICY_PACKS
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 
 __all__ = [
     "CheckChecklistItem",
     "CheckFindingChecklist",
+    "CheckOverallNext",
     "AcceptedEventSummary",
     "AppendCommand",
     "AppendEntry",
@@ -87,6 +96,7 @@ __all__ = [
     "CheckChildPreviewItem",
     "CheckChildrenPreview",
     "CheckCommitResult",
+    "CheckObservationsAwaited",
     "CheckPhase",
     "CheckPolicyExecution",
     "CheckVersionSlice",
@@ -167,6 +177,7 @@ class CheckPhase(str, Enum):  # noqa: UP042 - exact durable enum base
 
 class CheckSuspensionKind(str, Enum):  # noqa: UP042 - exact durable enum base
     REPOSITORY_GRANT = "repository_grant"
+    REVIEW_INPUT = "review_input"
 
 
 class AttemptOutcome(str, Enum):  # noqa: UP042 - exact durable enum base
@@ -289,11 +300,8 @@ type QueryableProjectionView = Literal[
 _MAX_SAFE_INTEGER: Final = 2**53 - 1
 _MAX_SQLITE_SIGNED_INTEGER: Final = 2**63 - 1
 _IDENTITY_PATTERN: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,127}$", re.ASCII)
-_POLICY_IDS: Final = (
-    "coordination/0.1.0",
-    "research-evidence/0.1.0",
-    "work-integrity/0.1.0",
-)
+# A replayed check reports the pack versions it recorded, which may predate the current ones.
+_POLICY_IDS: Final = RECORDED_POLICY_PACKS
 
 
 def _invalid() -> ValueError:
@@ -305,6 +313,14 @@ def _id(kind: IdKind, value: object) -> str:
         return validate_id(kind, value)
     except ValueError as exc:
         raise _invalid() from exc
+
+
+def _valid_opaque_item_id(value: object) -> bool:
+    try:
+        validate_opaque_item_id(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _uint(value: object, *, positive: bool = False, sqlite: bool = False) -> int:
@@ -717,15 +733,74 @@ class CheckAdvisoryNote:
 
 
 FindingTodoStateWire = Literal[
-    "acknowledged_not_done", "open", "rejection_accepted", "verified_resolved"
+    "acknowledged_not_done",
+    "disputed_after_rebuttal",
+    "open",
+    "rejection_accepted",
+    "self_verified",
+    "verified_resolved",
 ]
 _TODO_STATES: Final = frozenset(
-    {"acknowledged_not_done", "open", "rejection_accepted", "verified_resolved"}
+    {
+        "acknowledged_not_done",
+        "disputed_after_rebuttal",
+        "open",
+        "rejection_accepted",
+        "self_verified",
+        "verified_resolved",
+    }
 )
-# The closed "next:" tokens of the finding checklist (issue #905).
-ChecklistNext = Literal["decide_at_budget", "request_receipt", "work_open_findings"]
-_CHECKLIST_NEXT: Final = frozenset({"decide_at_budget", "request_receipt", "work_open_findings"})
+# The closed "next:" tokens of the finding checklist (issue #905). ``disclose_limitations``
+# (owner decision 2026-10-12, #1024) is the only remaining agent work being a reviewer's
+# limitation request the agent has not answered yet; real work keeps ``work_open_findings``.
+ChecklistNext = Literal[
+    "decide_at_budget",
+    "disclose_limitations",
+    "request_receipt",
+    "request_ruling",
+    "work_open_findings",
+]
+_CHECKLIST_NEXT: Final = frozenset(
+    {
+        "decide_at_budget",
+        "disclose_limitations",
+        "request_receipt",
+        "request_ruling",
+        "work_open_findings",
+    }
+)
 MAX_CHECKLIST_ITEMS: Final = 100
+
+OverallNextAction = Literal[
+    "supply_missing_input",
+    "work_open_findings",
+    "disclose_limitations",
+    "request_ruling",
+    "review_recorded_work",
+    "request_receipt",
+]
+OverallNextStatus = Literal["action_required", "ready_with_limitations", "ready"]
+_OVERALL_NEXT_ACTIONS: Final = frozenset(
+    {
+        "supply_missing_input",
+        "work_open_findings",
+        "disclose_limitations",
+        "request_ruling",
+        "review_recorded_work",
+        "request_receipt",
+    }
+)
+_PREDICTED_CONCLUSIONS: Final = frozenset(
+    {
+        "unresolved_findings_remain",
+        "insufficient_coverage",
+        "no_unresolved_deterministic_findings",
+    }
+)
+_CLOSURE_CLASSES: Final = frozenset(
+    {"agent_work", "awaiting_ruling", "settled_unmet", "settled_disclosed", "resolved"}
+)
+_OVERALL_NEXT_STATUSES: Final = frozenset({"action_required", "ready_with_limitations", "ready"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -735,12 +810,47 @@ class CheckChecklistItem:
     finding_id: str
     todo_state: FindingTodoStateWire
     review_rounds: int
+    # ADR-046: who owes the next move and why; ``None`` for a result an earlier build shaped.
+    closure_class: str | None = None
+    closure_basis: str | None = None
 
     def __post_init__(self) -> None:
         _id(IdKind.FINDING, self.finding_id)
         if type(self.todo_state) is not str or self.todo_state not in _TODO_STATES:
             raise _invalid()
         _uint(self.review_rounds)
+        if (self.closure_class is None) != (self.closure_basis is None) or (
+            self.closure_class is not None
+            and (
+                self.closure_class not in _CLOSURE_CLASSES
+                or type(self.closure_basis) is not str
+                or _IDENTITY_PATTERN.fullmatch(self.closure_basis) is None
+            )
+        ):
+            raise _invalid()
+
+
+@dataclass(frozen=True, slots=True)
+class ChecklistClosureCounts:
+    """The finding counters of ADR-046, the same five numbers status prints."""
+
+    to_do: int
+    awaiting_ruling: int
+    unmet: int
+    disclosed: int
+    to_disclose: int
+
+    def __post_init__(self) -> None:
+        for value in (
+            self.to_do,
+            self.awaiting_ruling,
+            self.unmet,
+            self.disclosed,
+            self.to_disclose,
+        ):
+            _uint(value)
+        if self.awaiting_ruling > self.to_do:
+            raise _invalid()
 
 
 @dataclass(frozen=True, slots=True)
@@ -756,8 +866,15 @@ class CheckFindingChecklist:
     next: ChecklistNext
     # Counted over every current actionable item, not only the listed ones.
     counts: FindingTodoCounts
+    # ADR-046: the closure counters every surface prints, over the same current findings
+    # (``None`` for a result an earlier build shaped). ``to_do`` includes ``awaiting_ruling``.
+    closure_counts: ChecklistClosureCounts | None = None
 
     def __post_init__(self) -> None:
+        if self.closure_counts is not None and type(self.closure_counts) is not (
+            ChecklistClosureCounts
+        ):
+            raise _invalid()
         if type(self.attempt_budget) is not int or not 1 <= self.attempt_budget <= 50:
             raise _invalid()
         if type(self.counts) is not FindingTodoCounts:
@@ -768,6 +885,8 @@ class CheckFindingChecklist:
             self.counts.acknowledged_not_done,
             self.counts.rejection_accepted,
             self.counts.budget_reached,
+            self.counts.self_verified,
+            self.counts.disputed_after_rebuttal,
         ):
             _uint(value)
         total = (
@@ -775,6 +894,8 @@ class CheckFindingChecklist:
             + self.counts.verified_resolved
             + self.counts.acknowledged_not_done
             + self.counts.rejection_accepted
+            + self.counts.self_verified
+            + self.counts.disputed_after_rebuttal
         )
         if total < len(self.items) or self.counts.budget_reached > self.counts.open:
             raise _invalid()
@@ -785,6 +906,100 @@ class CheckFindingChecklist:
         if len({item.finding_id for item in self.items}) != len(self.items):
             raise _invalid()
         if type(self.next) is not str or self.next not in _CHECKLIST_NEXT:
+            raise _invalid()
+
+
+@dataclass(frozen=True, slots=True)
+class CheckOverallNext:
+    """The authoritative continuation beside the finding-only checklist (#963).
+
+    ``finding_checklist.next`` describes only the finding to-do list.  This projection names the
+    task-level continuation and its safe structural targets.  A coverage-limited result keeps the
+    ordinary receipt endpoint available so an agent can acknowledge the limitation without
+    turning it into a clean review.
+    """
+
+    status: OverallNextStatus
+    action: OverallNextAction
+    target_refs: tuple[str, ...] = ()
+    acknowledged_incomplete_endpoint: Literal["receipt"] | None = None
+    # ADR-046: the receipt conclusion a request now would carry (the same function the receipt
+    # runs); ``None`` when the closure basis could not be read.
+    predicted_conclusion: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.predicted_conclusion is not None and (
+            type(self.predicted_conclusion) is not str
+            or self.predicted_conclusion not in _PREDICTED_CONCLUSIONS
+        ):
+            raise _invalid()
+        if type(self.status) is not str or self.status not in _OVERALL_NEXT_STATUSES:
+            raise _invalid()
+        if type(self.action) is not str or self.action not in _OVERALL_NEXT_ACTIONS:
+            raise _invalid()
+        if type(self.target_refs) is not tuple or len(self.target_refs) > 64:
+            raise _invalid()
+        if any(
+            type(item) is not str or _IDENTITY_PATTERN.fullmatch(item) is None
+            for item in self.target_refs
+        ):
+            raise _invalid()
+        if self.target_refs != tuple(sorted(set(self.target_refs), key=str.encode)):
+            raise _invalid()
+        if self.acknowledged_incomplete_endpoint not in {None, "receipt"}:
+            raise _invalid()
+        if (
+            self.action
+            in {
+                "supply_missing_input",
+                "work_open_findings",
+                "disclose_limitations",
+                "request_ruling",
+                "review_recorded_work",
+            }
+            and self.status != "action_required"
+        ):
+            raise _invalid()
+        if (
+            self.action
+            in {
+                "work_open_findings",
+                "disclose_limitations",
+                "request_ruling",
+                "review_recorded_work",
+            }
+            and not self.target_refs
+        ):
+            raise _invalid()
+        if self.acknowledged_incomplete_endpoint is not None and (
+            self.action != "request_receipt" or self.status != "ready_with_limitations"
+        ):
+            raise _invalid()
+
+
+CHECK_OBSERVATIONS_AWAITED_STATES: Final = frozenset({"bounded_timeout", "complete", "unavailable"})
+
+
+@dataclass(frozen=True, slots=True)
+class CheckObservationsAwaited:
+    """Outcome of the optional bounded pre-check wait for this task's hook rows (issue #1012).
+
+    ``pending_count`` is how many of the task's local outbox rows that were pending when the
+    check arrived were still pending when the wait ended; ``unavailable`` means the wait could
+    not observe the local outbox and reports ``0``. Never recorded in the ledger: it describes
+    the call that asked for it.
+    """
+
+    state: Literal["complete", "bounded_timeout", "unavailable"]
+    pending_count: int
+
+    def __post_init__(self) -> None:
+        if type(self.state) is not str or self.state not in CHECK_OBSERVATIONS_AWAITED_STATES:
+            raise _invalid()
+        _uint(self.pending_count)
+        if self.state != "bounded_timeout" and self.pending_count != 0:
+            raise _invalid()
+        if self.state == "bounded_timeout" and self.pending_count == 0:
             raise _invalid()
 
 
@@ -806,11 +1021,35 @@ class CheckCommitResult:
     semantic_provenance: SemanticProvenance | None
     coverage: Coverage
     versions: CheckVersionSlice
+    semantic_conclusion: str | None = None
+    review_summary: str | None = None
+    verified: tuple[JsonObject, ...] = ()
     children: CheckChildrenPreview | None = None
     advisory_notes: tuple[CheckAdvisoryNote, ...] = ()
     # Structural record of what an ``insufficient_packet`` review named as missing (issue #907).
     missing_for_assessment: tuple[MissingForAssessmentItem, ...] = ()
     finding_checklist: CheckFindingChecklist | None = None
+    # Task-level continuation; ``finding_checklist.next`` remains finding-only (issue #963).
+    overall_next: CheckOverallNext | None = None
+    # Opaque case item identities withheld by the never-send heuristic. The check result keeps
+    # these bounded references so recovery and every presentation surface can name the omitted
+    # context without exposing matched bytes.
+    semantic_withheld_item_ids: tuple[str, ...] = ()
+    review_input_manifest: JsonObject | None = None
+    totals: JsonObject | None = None
+    # PL2-1 (issue #982): item refs and 1-based line numbers of values the external reviewer's
+    # copy did not carry. Structural only; never values.
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
+    # Present only when the check request set ``await_observations`` (issue #1012).
+    observations_awaited: CheckObservationsAwaited | None = None
+    # Issue #986: ``False`` when the check's route did not require AI-powered review; ``None``
+    # when it did or the check predates the field (``CheckRecordedPayload``).
+    semantic_route_required: bool | None = None
+    # ADR-045: the deliverable states the check recorded (empty when it read no declared output).
+    deliverable_states: tuple[DeliverableState, ...] = ()
+    # ADR-045: where each derived task fact this check carries came from; derived by the caller
+    # (never recorded), bounded and sorted.
+    fact_lineage: tuple[FactLineage, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.outcome) is not str or self.outcome not in {"committed", "replayed"}:
@@ -851,11 +1090,64 @@ class CheckCommitResult:
             raise _invalid()
         if type(self.coverage) is not Coverage or type(self.versions) is not CheckVersionSlice:
             raise _invalid()
+        if self.semantic_conclusion is not None and (
+            type(self.semantic_conclusion) is not str
+            or self.semantic_conclusion
+            not in {"no_material_discrepancy", "challenges_returned", "insufficient_packet"}
+            or self.semantic_status is not SemanticStatus.SUCCEEDED
+        ):
+            raise _invalid()
+        if self.review_summary is not None and (
+            type(self.review_summary) is not str or not self.review_summary
+        ):
+            raise _invalid()
+        if type(self.verified) is not tuple or len(self.verified) > 64:
+            raise _invalid()
+        if any(type(item) is not JsonObject for item in self.verified):
+            raise _invalid()
         if self.children is not None and type(self.children) is not CheckChildrenPreview:
             raise _invalid()
         if (
             self.finding_checklist is not None
             and type(self.finding_checklist) is not CheckFindingChecklist
+        ):
+            raise _invalid()
+        if self.overall_next is not None and type(self.overall_next) is not CheckOverallNext:
+            raise _invalid()
+        if self.totals is not None:
+            from yoetz.domain.check_totals import validate_check_totals
+
+            object.__setattr__(self, "totals", validate_check_totals(self.totals))
+        if (
+            type(self.semantic_withheld_item_ids) is not tuple
+            or len(self.semantic_withheld_item_ids) > 64
+            or any(
+                not _valid_opaque_item_id(item_id) for item_id in self.semantic_withheld_item_ids
+            )
+            or self.semantic_withheld_item_ids
+            != tuple(sorted(set(self.semantic_withheld_item_ids), key=str.encode))
+        ):
+            raise _invalid()
+        try:
+            validate_semantic_redacted_values(self.semantic_redacted_values)
+        except ValueError as exc:
+            raise _invalid() from exc
+        if (
+            self.semantic_route_required is not None
+            and type(self.semantic_route_required) is not bool
+        ):
+            raise _invalid()
+        try:
+            validate_deliverable_states(self.deliverable_states)
+        except ProtocolValueError as exc:
+            raise _invalid() from exc
+        if type(self.fact_lineage) is not tuple or len(self.fact_lineage) > 64:
+            raise _invalid()
+        if any(type(item) is not FactLineage for item in self.fact_lineage):
+            raise _invalid()
+        if (
+            self.review_input_manifest is not None
+            and type(self.review_input_manifest) is not JsonObject
         ):
             raise _invalid()
         if type(self.advisory_notes) is not tuple or len(self.advisory_notes) > 64:
@@ -869,6 +1161,11 @@ class CheckCommitResult:
             raise _invalid()
         if type(self.missing_for_assessment) is not tuple or any(
             type(item) is not MissingForAssessmentItem for item in self.missing_for_assessment
+        ):
+            raise _invalid()
+        if (
+            self.observations_awaited is not None
+            and type(self.observations_awaited) is not CheckObservationsAwaited
         ):
             raise _invalid()
 
@@ -890,6 +1187,8 @@ class CheckAwaitingHuman:
     result_frontier: Frontier
     continuation: SemanticContinuation
     versions: CheckVersionSlice
+    specification_preflight: SpecificationPreflight | None = None
+    state: Literal["awaiting_human", "awaiting_input"] = "awaiting_human"
 
     def __post_init__(self) -> None:
         _id(IdKind.TASK, self.task_id)
@@ -909,6 +1208,18 @@ class CheckAwaitingHuman:
         if self.continuation.request_id != self.request_id:
             raise _invalid()
         if type(self.versions) is not CheckVersionSlice:
+            raise _invalid()
+        if (
+            self.specification_preflight is not None
+            and type(self.specification_preflight) is not SpecificationPreflight
+        ):
+            raise _invalid()
+        expected_state = (
+            "awaiting_input"
+            if self.continuation.kind == "review_input_required"
+            else "awaiting_human"
+        )
+        if self.state != expected_state:
             raise _invalid()
 
 
@@ -1273,7 +1584,10 @@ class SemanticAttemptRecord:
             if self.terminal_code is None or self.result_object_ref is None:
                 raise _invalid()
         elif self.state == "expired":
-            if self.terminal_code is None or self.result_object_ref is not None:
+            # A retryable non-success may carry a durable response object solely for bounded
+            # privacy omission metadata. It remains unselected and claimable, but terminal replay
+            # can recover the same metadata if the frozen deadline closes the job before retry.
+            if self.terminal_code is None:
                 raise _invalid()
         elif self.state == "late":
             if self.terminal_code is None or self.result_object_ref is None:
@@ -1493,8 +1807,11 @@ class FindingsProjectionFilter:
             "none",
             "acknowledged",
             "acknowledged_not_done",
+            "duplicate_of",
             "provenance_disputed",
             "rejected",
+            "reopened",
+            "self_verified",
             "waived",
         ]
         | None
@@ -1518,8 +1835,11 @@ class FindingsProjectionFilter:
                 "none",
                 "acknowledged",
                 "acknowledged_not_done",
+                "duplicate_of",
                 "provenance_disputed",
                 "rejected",
+                "reopened",
+                "self_verified",
                 "waived",
             }
         ):
@@ -1751,6 +2071,7 @@ type ProjectionItem = (
     | StatusEvidenceItemModel
     | StatusFindingItemModel
     | StatusHistoryItemModel
+    | StatusHistoryItemV14Model
     | StatusObligationItemModel
     | StatusResultItemModel
     | StatusVersionSliceModel
@@ -1764,6 +2085,7 @@ def _is_projection_item(value: object) -> bool:
         StatusEvidenceItemModel,
         StatusFindingItemModel,
         StatusHistoryItemModel,
+        StatusHistoryItemV14Model,
         StatusObligationItemModel,
         StatusResultItemModel,
         StatusVersionSliceModel,
@@ -1834,7 +2156,14 @@ class ProjectionPage:
             "results": StatusResultItemModel,
             "versions": StatusVersionSliceModel,
         }
-        if any(type(item) is not item_type_by_view[self.view] for item in self.items):
+        expected_item_type = item_type_by_view[self.view]
+        if self.view == "history":
+            if any(
+                type(item) not in {StatusHistoryItemModel, StatusHistoryItemV14Model}
+                for item in self.items
+            ):
+                raise _invalid()
+        elif any(type(item) is not expected_item_type for item in self.items):
             raise _invalid()
         if self.view in {"compact", "versions"} and (
             len(self.items) > 1 or self.next_position is not None
@@ -1938,6 +2267,8 @@ class LedgerPort(Protocol):
 
     async def suspend_check_for_repository_grant(self, lease: OperationLease) -> None: ...
 
+    async def suspend_check_for_review_input(self, lease: OperationLease) -> None: ...
+
     async def enqueue_semantic_job(
         self,
         lease: OperationLease,
@@ -1973,8 +2304,15 @@ class LedgerPort(Protocol):
     ) -> SelectedAttempt: ...
 
     async def load_semantic_job(
-        self, writer_id: str, operation_id: str
-    ) -> SemanticJobRecord | None: ...
+        self, writer_id: str, operation_id: str, case_digest: str | None = None
+    ) -> SemanticJobRecord | None:
+        """The operation's review job, or with ``case_digest`` exactly the job of that case.
+
+        A check owns one job per distinct case it sent: its own review and each in-check
+        follow-up round (issue #1047). Without ``case_digest`` the result is one of them.
+        """
+
+        ...
 
     async def list_semantic_attempts(self, job_id: str) -> tuple[SemanticAttemptRecord, ...]: ...
 
@@ -2014,7 +2352,15 @@ class LedgerPort(Protocol):
 
     async def load_semantic_progress(
         self, writer_id: str, operation_id: str
-    ) -> SemanticProgressRecord | None: ...
+    ) -> SemanticProgressRecord | None:
+        """The operation's structural review progress, from one of its jobs.
+
+        A check owns one job per in-check follow-up round (issue #1047). The live job is read
+        when there is one; otherwise the latest round's, the review the check records, by the
+        round its frozen case object names. Attempt count and job id only order jobs of one round.
+        """
+
+        ...
 
     async def renew_leases(self, lease: OperationLease) -> OperationLease:
         """Return a replacement lease under the operation's authenticated lifetime policy.
@@ -2044,10 +2390,18 @@ class LedgerPort(Protocol):
         *,
         scope: CheckScopeModel | None = None,
         semantic_conclusion: str | None = None,
+        review_summary: str | None = None,
+        verified: tuple[JsonObject, ...] = (),
         prior_finding_verdicts: tuple[PriorFindingVerdictRecord, ...] = (),
         missing_for_assessment: tuple[MissingForAssessmentItem, ...] = (),
         check_change_files: CheckChangeShownFiles | None = None,
         semantic_included_refs: tuple[str, ...] | None = None,
+        semantic_withheld_item_ids: tuple[str, ...] = (),
+        review_input_manifest: JsonObject | None = None,
+        totals: JsonObject | None = None,
+        semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
+        semantic_route_required: bool | None = None,
+        deliverable_states: tuple[DeliverableState, ...] = (),
     ) -> CheckCommitResult: ...
 
     async def fail_check_if_current(

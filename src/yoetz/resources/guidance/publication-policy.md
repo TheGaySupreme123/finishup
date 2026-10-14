@@ -1,5 +1,9 @@
 # Publication policy
 
+Use the small `publication.md` topic through `read_guidance` for ordinary materiality, evidence,
+and claim decisions. This complete document remains authoritative for event families and field
+rules.
+
 ## Materiality checklist
 
 Publish a fact when it changes an independently reviewable work package, a requested outcome, an obligation, a decision, a material attempt, a result, evidence, a claim, a plan, or a finding response. Keep routine navigation, searches, formatting, generated-file writes, repeated status reads, tool chatter, and per-file bookkeeping out of the ledger.
@@ -134,7 +138,14 @@ to 8,192 characters, so the field limit does not protect against excerpt truncat
 When the review recipe selects diff excerpts, Yoetz itself also reads the task's repository at
 check time and gives the reviewer that **check-time change** first: committed and uncommitted
 changes from the commit the task started on, plus untracked files Git does not ignore, including
-edits made by scripts or commits that no hook captured. Do not paste or digest the whole diff for the reviewer;
+edits made by scripts or commits that no hook captured. Untracked files already there when the task
+started and unchanged since are left out, a nested repository's own change is included the same
+way (when the header says its untracked files are named but not shown, give the reviewer evidence
+for one it must read), and up to
+four files the task statement names that the task only reads (a specification, the source being
+ported) travel beside it, so they need no evidence of their own. Yoetz redacts secret-shaped content in that
+check-time change, so no deliverable ever needs hiding: never git-ignore, exclude (including
+`.git/info/exclude`), stash, or move a requested output for privacy. Do not paste or digest the whole diff for the reviewer;
 use `description` for the problem-local hunk or test slice the claim depends on. The
 `check_time_change_unavailable`, `check_time_change_base_unavailable`,
 `check_time_change_truncated` and `check_time_change_redacted` coverage gaps name what that change
@@ -212,8 +223,9 @@ operations and does not add a composer or a new protocol field:
    repair, a response to another older finding, or any other material record follows the check,
    run another check before requesting a receipt.
 6. Request `receipt`, then publish `work_closed` when the work is complete. Read `closure_readiness.unanswered_finding_count` and
-   `closure_readiness.receipt_blocking_finding_count`, then report those actual counts alongside the
-   receipt's checked frontier, AI-powered review status/reason, and material coverage limits. After
+   `closure_readiness.receipt_blocking_finding_count` (findings to do plus acknowledged requirements), then report a scope-first summary of what was
+   verified/not verified alongside the receipt's checked frontier, AI-powered review status/reason,
+   and material coverage limits. Never lead with a bare zero-findings count. After
    one current-state recheck still fails to qualify, stop repeating an unchanged check, continue any
    distinct authorized repair, and disclose the remaining blocker.
 
@@ -284,10 +296,23 @@ its refs and optional empty-scope reason become the complete effective declarati
 root or version gap makes the chain unreadable. Yoetz never infers obligations from prompts, source
 code, workspace state, or plan prose.
 
+You decompose the request; Yoetz checks the link. When a task statement is recorded and the
+effective plan declares obligations, at least one of them must name the statement event in
+`source_refs`, or every whole-task check returns the agent-actionable `task_requirement_unmet`
+finding (subject: the statement event) and readiness lists `instruction_requirement_unmapped`.
+Cite it from every obligation that maps a stated requirement. The rule checks presence of the
+link, not that every requirement is mapped: an obligation per stated requirement is your duty, and
+AI-powered review, when it runs, compares the plan with the statement.
+
 An empty-scope reason clears the `no_obligations_declared` readiness blocker, but it does not buy a
 clean completion check. A completion claim over zero declared obligations remains
 coverage-incomplete: `completion_scope_undeclared` without a reason or
-`completion_scope_declared_none` with one.
+`completion_scope_declared_none` with one. With a task statement recorded, that completion claim
+also returns `task_requirement_unmet` until you either publish statement-sourced obligations or
+record a `decision_recorded` whose statement holds the exact line
+`yoetz-no-material-work:<statement event id>` with a rationale. The decision counts only while the
+task records no edit action and the check sees no changed file in the workspace (shell writes
+count); a task that changed files must map the work to obligations.
 
 ## Obligation resolution
 
@@ -303,9 +328,11 @@ Resolving an obligation is a one-way `open → resolved` state transition, not a
 3. supplies the final bounded `resolution_evidence_refs` (one or more evidence or result ids).
 
 Only `status` and `resolution_evidence_refs` may differ. Changing meaning fields, republishing
-`status: open` for an existing id, mutating an already-resolved obligation, or reopening
-`resolved → open` is rejected with reason `obligation_resolution_mismatch` and invariant
-`meaning_fields_must_repeat` (or `open_to_resolved_only` for an invalid status transition). The
+`status: open` for an open id, or re-resolving an already-resolved obligation is rejected with
+reason `obligation_resolution_mismatch` and invariant `meaning_fields_must_repeat` (or
+`open_to_resolved_only` for an invalid status transition). A resolved obligation whose work no
+longer holds may be reopened (`status: open`) or acknowledged as not done
+(`acknowledged_not_done` with its reason, on `1.1.0`), repeating every meaning field. The
 public error names the mismatched schema field names only — never their values. A worked open +
 resolution pair lives in the `publish_work` tool input schema `examples` entry. Complete request
 bodies remain available at `yoetz://guidance/request-templates.md` if a host drops schema examples.
@@ -341,7 +368,7 @@ replay once only for `absent`, use the stored `complete` outcome, and follow an 
 continuation before replaying a `pending` request. A read timeout gets a new read request ID with
 the same intent. Never manufacture a replacement event merely because a response was lost.
 
-Before a material publish over MCP, read `status view=obligations` and inspect the exact `unattempted_items` values before resolving an obligation. Then set `dry_run: true` to validate the batch and preview accepted event ids and coverage without appending. The dry-run result is not evidential and must not be cited as a check, publication, or coverage source. When the preview is acceptable, publish with the same `request_id` and `dry_run` omitted or false.
+A `status` read and a dry run before a publish are optional, not a ritual: the write is all or nothing. A rejected batch appends nothing and names what stopped it, not every error (for drafts, the first rejected draft and its field): fix it and resubmit, since another bad draft surfaces only on the next attempt, as it would in a dry run. An accepted write returns the new frontier and the accepted event ids. Use `dry_run: true` when you are unsure a batch will be accepted (a claim correction, a plan revision, a large batch); the preview is not evidential and must not be cited as a check, publication, or coverage source, and the real publish reuses the same `request_id` with `dry_run` omitted or false. Before resolving an obligation that names requested items, account for each exact value that has no attempt yet. When you need the picture, call `check` with `mode: inspect` instead of several status reads: it records nothing and returns what is left with whose move each gap is (requested items not attempted are named by index), what the hooks observed since the last check, and whether each obligation's resolution evidence links to its declared deliverables or commands. Your host approves it as it approves any `check` call; if the host holds or refuses it, nothing is pending in Yoetz, so read `status` instead. `status view=obligations` shows the exact `unattempted_items` values.
 
 Worked examples for each ordinary publishable family — and a cross-linked
 action/result/evidence/claim batch — live in the `publish_work` tool input schema `examples` entry
@@ -458,8 +485,8 @@ For 100 files, group them into independently reviewable packages, record partial
 
 ### Check completion scope before append
 
-Preview a completion claim with `publish_work dry_run=true`. A
-`completion_claim_outside_plan` gap means its `obligation_refs` extend beyond the effective plan;
+To see these diagnostics before appending, preview a completion claim with `publish_work
+dry_run=true`. A `completion_claim_outside_plan` gap means its `obligation_refs` extend beyond the effective plan;
 `completion_plan_not_claimed` means declared plan refs remain outside that claim. These diagnostics
 also appear after append and in status/check/receipts; they never auto-include obligations.
 

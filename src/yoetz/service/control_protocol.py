@@ -366,6 +366,8 @@ def _plain_wire_value(value: object) -> JsonValue:
         body: dict[str, JsonValue] = {"code": value.reason, "retryable": value.retryable}
         if value.correlation_id is not None:
             body["correlation_id"] = value.correlation_id
+        if value.phase is not None:
+            body["phase"] = value.phase
         if value.accepted_state:
             body["accepted_state"] = {
                 key: cast(JsonValue, value.accepted_state[key])
@@ -732,11 +734,14 @@ def parse_control_result(frame: ControlFrame) -> ControlResult:
             )
             raw_correlation = error.get("correlation_id")
             correlation_id = raw_correlation if type(raw_correlation) is str else None
+            raw_phase = error.get("phase")
+            phase = raw_phase if type(raw_phase) is str else None
             body: object = ControlError(
                 cast(str, error["code"]),
                 retryable=cast(bool, error["retryable"]),
                 accepted_state=accepted_state,
                 correlation_id=correlation_id,
+                phase=phase,
             )
         elif method in {ControlMethod.SERVICE_STATUS, ControlMethod.SERVICE_LOCK}:
             body = _service_status_from_wire(raw_body)

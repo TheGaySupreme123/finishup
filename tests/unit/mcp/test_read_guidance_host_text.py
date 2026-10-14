@@ -1,11 +1,12 @@
-"""`read_guidance` carries its document once on the Codex host profile (issue #918).
+"""`read_guidance` carries one bounded document/page on each host profile (issue #918).
 
 Before this change every host received each ~50 KB guidance document twice: in `content[0].text`
 and again in `structuredContent.text`. The `codex` profile, which already relies on
 `structuredContent` for every other tool's full result, now gets a bounded pointer in `content`.
-`structuredContent`, and so the output schema, is unchanged for every host, and the generic,
-Claude Code and Cursor results stay byte-identical: those hosts may depend on `content` for the
-model-visible text.
+For documents that fit the legacy result cap, `structuredContent`, and so the output schema, is
+unchanged for every host, and the generic, Claude Code and Cursor results stay byte-identical.
+Oversized registered documents use the bounded page contract, covered by
+`test_guidance_paging.py`.
 """
 
 from __future__ import annotations
@@ -17,11 +18,12 @@ from mcp import types
 
 from yoetz.mcp import server as bridge
 from yoetz.mcp.resources import GUIDANCE_RESOURCES
-from yoetz.mcp.summaries import summary_for_read_guidance
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_read_guidance
 from yoetz.ports.control import McpHostProfile
 from yoetz.protocol.models import ReadGuidanceResult, public_model_to_wire
 
 _UNCHANGED_HOSTS: Final[tuple[McpHostProfile, ...]] = ("generic", "claude", "cursor")
+_LEGACY_GUIDANCE_MAX_BYTES: Final = 65_536
 
 
 @pytest.fixture
@@ -63,6 +65,8 @@ async def test_other_hosts_receive_the_document_in_both_channels_byte_for_byte(
     host: McpHostProfile,
 ) -> None:
     for resource in GUIDANCE_RESOURCES:
+        if resource.size > _LEGACY_GUIDANCE_MAX_BYTES:
+            continue
         result = await _read(host, resource.uri)
         expected = _legacy_result(resource.uri, resource.media_type, resource.text)
         assert result.model_dump(mode="json") == expected.model_dump(mode="json"), resource.uri
@@ -74,6 +78,8 @@ async def test_other_hosts_receive_the_document_in_both_channels_byte_for_byte(
 @pytest.mark.anyio
 async def test_the_codex_host_receives_one_copy_and_a_bounded_pointer() -> None:
     for resource in GUIDANCE_RESOURCES:
+        if resource.size > _LEGACY_GUIDANCE_MAX_BYTES:
+            continue
         result = await _read("codex", resource.uri)
         legacy = _legacy_result(resource.uri, resource.media_type, resource.text)
         assert result.isError is False
@@ -90,7 +96,7 @@ async def test_the_codex_host_receives_one_copy_and_a_bounded_pointer() -> None:
             f"Guidance {resource.uri}: {byte_count} bytes; full text in structuredContent.text."
         )
         assert block.text.isascii()
-        assert len(block.text.encode("ascii")) <= 512
+        assert len(block.text.encode("ascii")) <= MAX_SUMMARY_BYTES
         assert resource.text not in block.text
 
 

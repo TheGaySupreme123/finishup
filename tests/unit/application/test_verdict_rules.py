@@ -83,7 +83,7 @@ def test_deterministic_packs_account_and_rank_actual_kernel_findings() -> None:
     assessments, executions = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     findings = allocate_findings(_Ids(), tuple(item.candidate for item in assessments))
     coverage = case_coverage(case)
@@ -213,7 +213,7 @@ def test_finding_response_penalty_has_one_policy_owner(
     assessments, executions = run_deterministic_policies(
         _finding_response_case(disposition, stale=stale),
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
 
     assert tuple(item.candidate.kind for item in assessments) == (expected_kind,)
@@ -228,7 +228,7 @@ def test_response_with_work_only_evidence_gap_is_not_dropped() -> None:
             work_only_gap=True,
         ),
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
 
     assert tuple(item.candidate.kind for item in assessments) == (
@@ -244,7 +244,7 @@ def test_work_pack_selected_alone_still_reports_the_hollow_rejection() -> None:
     assessments, _executions = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("work-integrity/0.1.0",),
+        ("work-integrity/0.3.0",),
     )
 
     assert tuple(item.candidate.kind for item in assessments) == (
@@ -261,8 +261,8 @@ def test_failed_research_pack_leaves_the_work_response_finding_standing() -> Non
     assessments, executions = run_deterministic_policies(
         _finding_response_case(ResponseDisposition.REJECTED, stale=False),
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
-        evaluators={"research-evidence/0.1.0": _explode},
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
+        evaluators={"research-evidence/0.2.0": _explode},
     )
 
     assert tuple(item.candidate.kind for item in assessments) == (
@@ -281,7 +281,7 @@ def test_collapse_is_scoped_to_the_response_it_matched() -> None:
     assessments, _executions = run_deterministic_policies(
         _two_response_case(),
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
 
     # fnd(1) is a plain hollow rejection and collapses to the research-evidence kind; fnd(2) is
@@ -300,7 +300,7 @@ def test_direct_scope_excludes_pack_without_selected_root() -> None:
     assessments, executions = run_deterministic_policies(
         case,
         CheckScope((), (unrelated,)),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
 
     assert assessments == ()
@@ -316,8 +316,8 @@ def test_policy_failure_is_accounted_without_inventing_findings() -> None:
     assessments, executions = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("work-integrity/0.1.0",),
-        evaluators={"work-integrity/0.1.0": fail},
+        ("work-integrity/0.3.0",),
+        evaluators={"work-integrity/0.3.0": fail},
     )
 
     assert assessments == ()
@@ -359,7 +359,7 @@ def test_deterministic_only_marks_semantic_not_requested_gap_without_verdict_cha
     assessments, _executions = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     findings = allocate_findings(_Ids(), tuple(item.candidate for item in assessments))
     coverage = case_coverage(case)
@@ -405,7 +405,7 @@ def test_completion_scope_gaps_dominate_an_actionable_finding(
     assessments, _executions = run_deterministic_policies(
         case,
         CheckScope((), ()),
-        ("research-evidence/0.1.0", "work-integrity/0.1.0"),
+        ("research-evidence/0.2.0", "work-integrity/0.3.0"),
     )
     findings = allocate_findings(_Ids(), tuple(item.candidate for item in assessments))
     coverage = case_coverage(case)

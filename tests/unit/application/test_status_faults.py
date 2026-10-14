@@ -83,10 +83,12 @@ def test_each_stage_has_one_typed_public_error_and_a_joined_record(
     assert error.message == message
     assert error.retryable is False
     assert error.correlation_id is not None
+    assert error.safe_details == {"phase": stage.value}
     (record,) = _records()
     assert record["correlation_id"] == error.correlation_id
     assert record["component"] == "application.status"
     assert record["operation"] == f"status_project_{stage.value}_failed"
+    assert record["phase"] == stage.value
     # The class token and origin describe the original exception, not the stage marker: the
     # origin is the yoetz frame that raised, never the stage boundary that tagged it.
     assert record["reason"] == "exception_protocol_value_error"

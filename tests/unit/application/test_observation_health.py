@@ -77,6 +77,16 @@ def test_degraded_with_pending_outbox_or_gap() -> None:
     assert gap is ObservationLifecycle.DEGRADED
 
 
+def test_recent_pending_outbox_does_not_degrade_healthy_observation() -> None:
+    """A non-empty queue is healthy while its drain is recent (#974)."""
+
+    lifecycle = compute_observation_lifecycle(
+        _signals(pending_outbox_count=1, last_successful_drain_monotonic=109.0),
+        now_monotonic=110.0,
+    )
+    assert lifecycle is ObservationLifecycle.ACTIVE
+
+
 def test_standing_unpaired_record_is_not_degraded_health() -> None:
     """#917: a sticky orphan record is disclosed coverage, not current acquisition health."""
 
@@ -87,6 +97,18 @@ def test_standing_unpaired_record_is_not_degraded_health() -> None:
         )
         is ObservationLifecycle.ACTIVE
     )
+    for standing in (
+        "truncated_payload",
+        "content_capture_unavailable",
+        "pending_attempt_expired",
+        "content_unselected",
+    ):
+        assert (
+            compute_observation_lifecycle(
+                _signals(gaps=(standing,)), now_monotonic=110.0, thresholds=thresholds
+            )
+            is ObservationLifecycle.ACTIVE
+        ), standing
     # Transient acquisition conditions still degrade the lifecycle beside it.
     for transient in ("source_lag", "cursor_stale", "service_unavailable", "vault_locked"):
         assert (

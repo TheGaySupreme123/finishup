@@ -303,6 +303,27 @@ class PrivacyPosture:
     # True when the approved review selection is an earlier version of its recipe (for example
     # Expanded before privacy policy 1.2.0); the newer one needs its own approval (issue #907).
     recipe_outdated: bool = False
+    # The external reviewer's possible-credential filter pair (``repository``,
+    # ``machine_default``) from the repository setup read, the same derivation status shows
+    # (issue #982); ``None`` when it could not be read.
+    credential_heuristic: tuple[str, str] | None = None
+
+    @property
+    def credential_heuristic_disabled(self) -> bool:
+        return self.credential_heuristic is not None and self.credential_heuristic[0] == "disabled"
+
+    @property
+    def credential_heuristic_summary(self) -> str | None:
+        """The shared sentence, shown when anything is off or unknown."""
+
+        from yoetz.cli.render import credential_heuristic_line
+
+        if self.credential_heuristic is None or self.credential_heuristic == (
+            "enforced",
+            "enforced",
+        ):
+            return None
+        return credential_heuristic_line(*self.credential_heuristic)
 
     @property
     def choice(self) -> PrivacyChoice | None:

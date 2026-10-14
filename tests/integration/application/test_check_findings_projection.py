@@ -29,13 +29,14 @@ from typing import Literal, cast
 import pytest
 
 import yoetz.application.service as service_module
+from builders.observed_runs import ObservedLedger
 from builders.projection_workflow import (
     build_projection_application,
     frontier_json,
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from yoetz.application.check import FinalSemanticEvaluation
+from yoetz.application.check import FinalSemanticEvaluation, build_overall_next
 from yoetz.application.service import (
     Application,
     ClientProjectionContext,
@@ -46,8 +47,16 @@ from yoetz.application.service import (
 from yoetz.domain.findings import Finding, FindingKind, SemanticDispatchKind, SemanticProvenance
 from yoetz.domain.privacy import PrivacyPolicy
 from yoetz.domain.values import JsonObject
+from yoetz.kernel.check_totals import build_check_totals
+from yoetz.kernel.deterministic_checks import (
+    CaseAvailabilityFacts,
+    build_deterministic_case,
+    case_coverage,
+)
+from yoetz.kernel.finding_todo import FindingTodoCounts
+from yoetz.kernel.reducers import replay
 from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.ledger import CheckCommitResult, FrozenCase
+from yoetz.ports.ledger import CheckCommitResult, CheckFindingChecklist, FrozenCase
 from yoetz.ports.semantic import ReviewerChallenge, SamplingParams, SemanticJudgment
 from yoetz.protocol.canonical import MAX_JSON_DEPTH, JsonValue, canonical_encode
 from yoetz.protocol.errors import ProtocolValueError
@@ -295,6 +304,63 @@ async def _semantic_projected(seed: int) -> Mapping[str, JsonValue]:
     return await _project(app, check_wire, checked, seed + 7)
 
 
+def _empty_finding_checklist() -> CheckFindingChecklist:
+    return CheckFindingChecklist(
+        5,
+        (),
+        "request_receipt",
+        FindingTodoCounts(),
+    )
+
+
+async def test_overall_next_uses_current_live_failures_and_allows_disclosed_limits() -> None:
+    """Retired or disclosed observed failures must not create another work continuation."""
+
+    _app, _check_wire, checked, _policy = await _checked(
+        "disabled", "deterministic_only", 1660, claims=1
+    )
+    checklist = _empty_finding_checklist()
+
+    ledger = ObservedLedger()
+    retired = ledger.fail("pytest -q tests/checks.py")
+    live = ledger.fail("pytest -q tests/checks.py")
+    case = build_deterministic_case(replay(ledger.prefix), ledger.prefix, CaseAvailabilityFacts())
+    continuation = build_overall_next(
+        replace(checked, totals=build_check_totals(case), coverage=case_coverage(case)),
+        checklist,
+        case.projection,
+        case.coverage_by_ref,
+    )
+    assert continuation is not None
+    assert continuation.action == "review_recorded_work"
+    assert str(live) in continuation.target_refs
+    assert str(retired) not in continuation.target_refs
+    live_payload = case.projection.results[live].payload
+    assert live_payload is not None
+    assert str(live_payload.action_id) in continuation.target_refs
+
+    disclosed_ledger = ObservedLedger()
+    disclosed = disclosed_ledger.fail("pytest -q tests/checks.py")
+    disclosed_ledger.claim(limitations=(disclosed,))
+    disclosed_case = build_deterministic_case(
+        replay(disclosed_ledger.prefix), disclosed_ledger.prefix, CaseAvailabilityFacts()
+    )
+    limited = build_overall_next(
+        replace(
+            checked,
+            totals=build_check_totals(disclosed_case),
+            coverage=case_coverage(disclosed_case),
+        ),
+        checklist,
+        disclosed_case.projection,
+        disclosed_case.coverage_by_ref,
+    )
+    assert limited is not None
+    assert limited.status == "ready_with_limitations"
+    assert limited.action == "request_receipt"
+    assert limited.acknowledged_incomplete_endpoint == "receipt"
+
+
 @pytest.mark.parametrize(("semantic", "mode"), _MODES)
 async def test_check_with_a_finding_projects_a_complete_success(
     semantic: Literal["disabled", "optional"], mode: str
@@ -311,6 +377,20 @@ async def test_check_with_a_finding_projects_a_complete_success(
 
     assert projected["ok"] is True
     assert projected["verdict"] == "action_required"
+    # Frozen work counters must survive the same privacy/public-model projection as findings,
+    # in every configured review mode; no follow-up status call is needed (#971).
+    assert checked.totals is not None
+    totals = cast(Mapping[str, Mapping[str, str]], projected["totals"])
+    assert totals["commands"]["observed"] == "0"
+    assert int(totals["findings"]["returned"]) == len(checked.findings)
+    assert int(totals["findings"]["actionable_returned"]) > 0
+    overall_next = cast(Mapping[str, JsonValue], projected["overall_next"])
+    assert overall_next["status"] == "action_required"
+    assert overall_next["action"] == "work_open_findings"
+    assert checked.finding_checklist is not None
+    assert set(cast(tuple[str, ...], overall_next["target_refs"])) == {
+        str(item.finding_id) for item in checked.finding_checklist.items
+    }
     assert projected["semantic_status"] == (
         "not_requested" if semantic == "disabled" else "succeeded"
     )

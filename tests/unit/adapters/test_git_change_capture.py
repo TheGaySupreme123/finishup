@@ -11,14 +11,17 @@ import pytest
 
 import yoetz.adapters.git_change_capture as capture_module
 from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
+from yoetz.kernel.test_edit_visibility import check_change_header_entries, preexisting_test_edits
 from yoetz.ports.change_capture import (
     ChangeCaptureUnavailable,
     CheckChangeCapture,
+    CheckChangeMetadata,
     TaskChangeBase,
     decode_check_change,
     decode_task_change_base,
     encode_check_change,
     encode_task_change_base,
+    metadata_path_representable,
 )
 
 _EMPTY_SHA1_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
@@ -129,6 +132,98 @@ def test_script_rewrite_without_any_edit_tool_is_captured_against_the_task_base(
     assert "  A notes.md (+1 -0) untracked" in text
 
 
+def test_real_capture_reduces_a_preexisting_test_edit_to_structural_counts(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    tests_dir = repository / "tests"
+    tests_dir.mkdir()
+    test_file = tests_dir / "test_existing.py"
+    test_file.write_text("def test_existing():\n    assert 1 == 1\n", encoding="utf-8")
+    _git(repository, "add", "--", "tests/test_existing.py")
+    _commit(repository, "add existing test")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    test_file.write_text("def test_existing():\n    assert 1 == 2\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), base)
+    facts = preexisting_test_edits(capture)
+
+    assert facts.modified == 1
+    assert facts.renamed == facts.deleted == facts.skipped == 0
+    assert facts.gaps == ("preexisting_test_modified",)
+
+
+def test_metadata_capture_lists_test_paths_without_reading_file_content(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    tests_dir = repository / "tests"
+    tests_dir.mkdir()
+    test_file = tests_dir / "test_existing.py"
+    test_file.write_text("def test_existing():\n    assert 1 == 1\n", encoding="utf-8")
+    _git(repository, "add", "--", "tests/test_existing.py")
+    _commit(repository, "add existing test")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    test_file.write_text("SECRET_METADATA_CANARY\n", encoding="utf-8")
+
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+
+    assert type(metadata) is CheckChangeMetadata
+    assert metadata.base == "task_start"
+    assert [(entry.status, entry.path) for entry in metadata.entries] == [
+        ("M", "tests/test_existing.py")
+    ]
+    assert "SECRET_METADATA_CANARY" not in repr(metadata)
+
+
+def test_real_capture_handles_a_test_path_containing_git_header_delimiter_bytes(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    test_file = repository / "tests" / "foo b"
+    test_file.mkdir(parents=True)
+    test_file = test_file / "test.js"
+    test_file.write_text("it('works', fn)\n", encoding="utf-8")
+    _git(repository, "add", "--", "tests/foo b/test.js")
+    _commit(repository, "add existing js test")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    test_file.write_text("it.skip('works', fn)\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), base)
+    facts = preexisting_test_edits(capture)
+
+    assert "  M tests/foo b/test.js" in _text(capture)
+    assert facts.modified == 1
+    assert facts.skipped == 1
+
+
+def test_real_capture_marks_a_git_rename_for_structural_test_accounting(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    tests_dir = repository / "tests"
+    tests_dir.mkdir()
+    old_file = tests_dir / "test_existing.py"
+    old_file.write_text("def test_existing():\n    assert 1 == 1\n", encoding="utf-8")
+    _git(repository, "add", "--", "tests/test_existing.py")
+    _commit(repository, "add existing test")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _git(repository, "mv", "--", "tests/test_existing.py", "tests/test_renamed.py")
+
+    capture = adapter.capture(os.fspath(repository), base)
+    facts = preexisting_test_edits(capture)
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+
+    assert "  R tests/test_renamed.py" in _text(capture)
+    assert facts.renamed == 1
+    assert facts.modified == facts.deleted == facts.skipped == 0
+    assert [(entry.status, entry.original_path, entry.path) for entry in metadata.entries] == [
+        ("R", "tests/test_existing.py", "tests/test_renamed.py")
+    ]
+
+
 def test_without_a_recorded_base_the_change_is_against_head_and_says_so(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     adapter = GitChangeCaptureAdapter()
@@ -197,7 +292,8 @@ def test_links_are_named_but_never_followed(tmp_path: Path) -> None:
 
 def test_oversized_files_are_left_out_whole_and_the_rest_is_still_shown(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
-    (repository / "a_generated.txt").write_text("x" * 200_000 + "\n", encoding="utf-8")
+    # Over the per-file read bound (232 KiB since issue #983), so it is named, never read.
+    (repository / "a_generated.txt").write_text("x" * 300_000 + "\n", encoding="utf-8")
     (repository / "big.lock").write_text(
         "".join(f"line {index}\n" for index in range(40_000)), encoding="utf-8"
     )
@@ -217,6 +313,21 @@ def test_oversized_files_are_left_out_whole_and_the_rest_is_still_shown(tmp_path
     assert "line 39999" not in text
 
 
+def test_a_large_new_source_file_is_shown_whole(tmp_path: Path) -> None:
+    # Issue #983: a ~140 KiB untracked deliverable was named only above the old 64 KiB read bound.
+    repository = _repository(tmp_path)
+    source = "".join(f"TABLE_{index} = [{', '.join(['1234'] * 20)}]\n" for index in range(1_100))
+    assert 128 * 1024 < len(source) < 160 * 1024
+    (repository / "cracker.py").write_text(source, encoding="utf-8")
+
+    capture = GitChangeCaptureAdapter().capture(os.fspath(repository), None)
+
+    text = _text(capture)
+    assert not capture.truncated and capture.omitted_files == 0
+    assert "+TABLE_1099 = [" in text
+    assert "not shown" not in text
+
+
 def test_binary_untracked_file_is_described_not_embedded(tmp_path: Path) -> None:
     repository = _repository(tmp_path)
     (repository / "image.bin").write_bytes(b"\x89PNG\0\0binary-canary")
@@ -234,7 +345,8 @@ def test_unborn_repository_starts_from_the_empty_tree(tmp_path: Path) -> None:
     adapter = GitChangeCaptureAdapter()
 
     base = adapter.read_task_base(os.fspath(repository))
-    assert base == TaskChangeBase("sha1", _EMPTY_SHA1_TREE)
+    # The task-start snapshot (#1045) holds no untracked file and is complete.
+    assert base == TaskChangeBase("sha1", _EMPTY_SHA1_TREE, untracked_complete=True)
     (repository / "first.py").write_text("print(1)\n", encoding="utf-8")
     _git(repository, "add", "--", "first.py")
     _commit(repository, "first commit")
@@ -1043,3 +1155,1048 @@ def test_submodule_checkout_opened_as_the_root_is_unsafe_root(tmp_path: Path) ->
         GitChangeCaptureAdapter().capture(os.fspath(checkout), None)
 
     assert raised.value.reason == "unsafe_root"
+
+
+def test_metadata_capture_skips_and_counts_a_line_break_file_name(tmp_path: Path) -> None:
+    """#1019: a CR or LF in a name is skipped and counted, never a failed capture or a path."""
+
+    repository = _repository(tmp_path)
+    tracked = repository / "tracked\nname.txt"
+    tracked.write_text("one\n", encoding="utf-8")
+    _git(repository, "add", "--", "tracked\nname.txt")
+    _commit(repository, "add odd tracked name")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    tracked.write_text("two\n", encoding="utf-8")
+    (repository / "a\nb").write_bytes(b"x\n")
+    (repository / "c\rd").write_bytes(b"x\n")
+    (repository / "selectors.ts").write_text("export const changed = 1;\n", encoding="utf-8")
+    (repository / "out.txt").write_text("result\n", encoding="utf-8")
+
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+
+    assert [(entry.status, entry.path, entry.untracked) for entry in metadata.entries] == [
+        ("M", "selectors.ts", False),
+        ("A", "out.txt", True),
+    ]
+    assert metadata.unrepresentable_files == 3
+    assert metadata.tracked_files == 2
+    assert metadata.untracked_files == 3
+    assert metadata.omitted_files == 3
+    assert metadata.truncated is True
+    assert "a\nb" not in repr(metadata) and "c\rd" not in repr(metadata)
+
+
+def test_metadata_capture_skips_a_rename_from_a_line_break_name(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    odd = repository / "old\nname.txt"
+    odd.write_text("same content\n", encoding="utf-8")
+    _git(repository, "add", "--", "old\nname.txt")
+    _commit(repository, "add odd name")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _git(repository, "mv", "--", "old\nname.txt", "plain.txt")
+
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+
+    assert metadata.entries == ()
+    assert metadata.unrepresentable_files == 1
+    assert metadata.omitted_files == 1 and metadata.truncated is True
+
+
+def test_metadata_counter_invariants() -> None:
+    """The skipped-path count is part of ``omitted_files``, which implies ``truncated``."""
+
+    with pytest.raises(ValueError):
+        CheckChangeMetadata(
+            base="head",
+            entries=(),
+            tracked_files=1,
+            untracked_files=0,
+            omitted_files=0,
+            truncated=False,
+            unrepresentable_files=1,
+        )
+    with pytest.raises(ValueError):
+        CheckChangeMetadata(
+            base="head",
+            entries=(),
+            tracked_files=1,
+            untracked_files=0,
+            omitted_files=1,
+            truncated=True,
+            unrepresentable_files=True,
+        )
+    assert not metadata_path_representable("a\nb")
+    assert not metadata_path_representable("a\rb")
+    assert not metadata_path_representable("a\x00b")
+    assert metadata_path_representable("a\tb")
+
+
+# --- Issue #1045: packet completeness within the existing budget ---------------------------------
+
+
+def _nested_repository(parent: Path, name: str = "api") -> Path:
+    """An embedded Git repository inside ``parent``, with one committed file."""
+
+    nested = parent / name
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet")
+    (nested / "server.py").write_text("def handler():\n    return 'v1'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _git(
+        nested,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "nested baseline",
+    )
+    return nested
+
+
+def test_untracked_files_present_at_task_start_are_baseline_not_additions(
+    tmp_path: Path,
+) -> None:
+    """pretrain shape: a pre-existing untracked ``index.json`` was shown to the reviewer as added."""
+
+    repository = _repository(tmp_path)
+    (repository / "index.json").write_text('{"shards": 4}\n', encoding="utf-8")
+    (repository / "notes.txt").write_text("before the task\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert base.untracked_complete is True
+    assert {item.path for item in base.untracked} == {"index.json", "notes.txt"}
+    assert decode_task_change_base(encode_task_change_base(base)) == base
+
+    (repository / "notes.txt").write_text("before the task\nand during it\n", encoding="utf-8")
+    (repository / "train.py").write_text("print('train')\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), base)
+    text = _text(capture)
+    assert "index.json" not in text
+    assert (
+        "Untracked files that already existed when the task started and are unchanged since: 1."
+        in text
+    )
+    assert "  A train.py (+1 -0) untracked\n" in text
+    assert (
+        "  M notes.txt (+2 -0) untracked; existed when the task started; its earlier content "
+        "was not recorded, so it is shown whole\n"
+    ) in text
+    assert capture.untracked_files == 2
+
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+    entries = {entry.path: entry for entry in metadata.entries}
+    assert "index.json" not in entries
+    assert entries["notes.txt"].status == "M" and not entries["notes.txt"].untracked
+    assert entries["train.py"].status == "A" and entries["train.py"].untracked
+    assert metadata.untracked_files == 2 and not metadata.truncated
+
+
+def test_a_base_without_a_snapshot_keeps_every_untracked_file_as_before(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    (repository / "index.json").write_text('{"shards": 4}\n', encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    recorded = adapter.read_task_base(os.fspath(repository))
+    legacy = TaskChangeBase(recorded.object_format, recorded.commit)
+    # A base written before the snapshot existed keeps its exact bytes and reads back as one.
+    assert set(strict_json_keys(encode_task_change_base(legacy))) == {
+        "commit",
+        "object_format",
+        "origin",
+        "schema",
+    }
+
+    text = _text(adapter.capture(os.fspath(repository), legacy))
+    assert "  A index.json (+1 -0) untracked\n" in text
+    assert "existed when the task started" not in text
+
+
+def test_first_check_base_cannot_carry_a_task_start_snapshot() -> None:
+    from yoetz.ports.change_capture import UntrackedBaselineFile
+
+    with pytest.raises(ValueError):
+        TaskChangeBase(
+            "sha1",
+            "a" * 40,
+            "first_check",
+            (UntrackedBaselineFile("x.txt", "sha256:" + "0" * 64),),
+            True,
+        )
+
+
+def test_nested_repository_change_is_captured_under_its_directory(tmp_path: Path) -> None:
+    """live-database-cutover shape: the implementation lived in a nested ``/app/api`` repository."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert [path for path, _ in base.nested] == ["api"]
+
+    (nested / "server.py").write_text("def handler():\n    return 'v2'\n", encoding="utf-8")
+    _git(
+        nested,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-am",
+        "cut over",
+    )
+    (nested / "server.py").write_text("def handler():\n    return 'v3'\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), base)
+    text = _text(capture)
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started.\n" in text
+    )
+    # The committed and the uncommitted work inside the nested repository, against its start.
+    assert "diff --git a/api/server.py b/api/server.py" in text
+    assert "-    return 'v1'" in text and "+    return 'v3'" in text
+    assert "  M api/server.py (+1 -1)\n" in text
+    # The directory's one-line placeholder gave way to its files.
+    assert "  A api/ untracked" not in text
+    assert capture.tracked_files == 1 and capture.untracked_files == 0
+    assert capture.omitted_files == 0 and not capture.truncated
+
+
+def _spy_reads(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
+    """Record every file the adapter opens for content, by its path under the opened root."""
+
+    read: list[bytes] = []
+    original = getattr(capture_module, "_read_beneath")
+
+    def spy(root_descriptor: int, path: bytes, limit: int, expected: Any) -> Any:
+        read.append(path)
+        return original(root_descriptor, path, limit, expected)
+
+    monkeypatch.setattr(capture_module, "_read_beneath", spy)
+    return read
+
+
+_NESTED_NAMED_ONLY = (
+    " untracked; not shown: untracked inside a nested repository whose untracked files the "
+    "task-start record does not fully list, so it may predate the task\n"
+)
+
+
+def test_nested_repository_untracked_files_present_at_task_start_are_baseline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #1045: the task-start snapshot listed only the outer level's untracked files, so
+    a developer's untracked note inside a nested repository was read whole on every check and
+    shown as the agent's addition. The snapshot now lists each nested repository's own untracked
+    files, which are then treated exactly as at the outer level."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    (nested / "private_notes.md").write_text("NESTED_PREEXISTING_NOTE\n", encoding="utf-8")
+    (nested / "todo.md").write_text("before the task\n", encoding="utf-8")
+    (repository / "outer_notes.txt").write_text("OUTER_PREEXISTING_NOTE\n", encoding="utf-8")
+    read = _spy_reads(monkeypatch)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert read == []  # metadata only: no file is opened at task start
+    assert [path for path, _ in base.nested] == ["api"]
+    assert [item.path for item in base.untracked] == ["outer_notes.txt"]
+    (listing,) = base.nested_untracked
+    assert (listing.path, listing.complete) == ("api", True)
+    assert [item.path for item in listing.files] == ["private_notes.md", "todo.md"]
+    assert decode_task_change_base(encode_task_change_base(base)) == base
+    (nested / "server.py").write_text("def handler():\n    return 'v2'\n", encoding="utf-8")
+    (nested / "migrate.py").write_text("AGENT_NESTED_ADDITION\n", encoding="utf-8")
+    (nested / "todo.md").write_text("before the task\nand during it\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), base)
+
+    text = _text(capture)
+    assert b"private_notes.md" not in read
+    assert "NESTED_PREEXISTING_NOTE" not in text and "private_notes.md" not in text
+    assert "OUTER_PREEXISTING_NOTE" not in text and "outer_notes.txt" not in text
+    assert (
+        "Untracked files that already existed when the task started and are unchanged since: 2."
+        in text
+    )
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started.\n" in text
+    )
+    # The agent's new file is the task's addition, shown whole; a pre-task file it changed is
+    # shown whole and marked, exactly as at the outer level.
+    assert "  A api/migrate.py (+1 -0) untracked\n" in text
+    assert "+AGENT_NESTED_ADDITION" in text
+    assert (
+        "  M api/todo.md (+2 -0) untracked; existed when the task started; its earlier content "
+        "was not recorded, so it is shown whole\n"
+    ) in text
+    assert "+    return 'v2'" in text
+    assert "Changed files: 1 tracked, 2 untracked. Not shown: 0." in text
+    assert capture.omitted_files == 0 and not capture.truncated
+
+
+def test_a_base_recorded_without_nested_listings_names_nested_untracked_files_only(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a base recorded before nested listings existed cannot tell a nested
+    repository's untracked files apart from ones that predate the task: each is named, never
+    read, and counts as not shown."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    (nested / "private_notes.md").write_text("NESTED_PREEXISTING_NOTE\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    recorded = adapter.read_task_base(os.fspath(repository))
+    assert recorded.nested_untracked
+    older = TaskChangeBase(
+        recorded.object_format,
+        recorded.commit,
+        "task_start",
+        recorded.untracked,
+        recorded.untracked_complete,
+        recorded.nested,
+    )
+    assert b"nested_untracked" not in encode_task_change_base(older)
+    (nested / "migrate.py").write_text("AGENT_NESTED_ADDITION\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), older)
+
+    text = _text(capture)
+    assert "NESTED_PREEXISTING_NOTE" not in text and "AGENT_NESTED_ADDITION" not in text
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started. Untracked files in it are named but not shown: the "
+        "task-start record does not list them, so any of them may predate the task.\n"
+    ) in text
+    assert "  A api/private_notes.md" + _NESTED_NAMED_ONLY in text
+    assert "  A api/migrate.py" + _NESTED_NAMED_ONLY in text
+    assert "Changed files: 0 tracked, 2 untracked. Not shown: 2." in text
+    assert capture.omitted_files == 2 and capture.truncated
+
+
+def _block_stat_once(monkeypatch: pytest.MonkeyPatch, target: bytes) -> None:
+    """Make the next ``stat`` of ``target`` fail as EMFILE or a raced directory would."""
+
+    original = getattr(capture_module, "_path_identity")
+    armed = [True]
+
+    def flaky(descriptor: int, path: bytes) -> Any:
+        if armed[0] and path == target:
+            armed[0] = False
+            return getattr(capture_module, "_BLOCKED")
+        return original(descriptor, path)
+
+    monkeypatch.setattr(capture_module, "_path_identity", flaky)
+
+
+def test_a_failed_stat_at_task_start_never_records_a_listing_as_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #1045: Git never lists a path behind a link, so a listed file whose ``stat``
+    fails is still there. Skipping it left the listing complete, and the pre-task file was then
+    read and sent whole as the agent's addition."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    (nested / "private_notes.md").write_text("PRETASK_PRIVATE_NOTE\n", encoding="utf-8")
+    (repository / "outer_notes.txt").write_text("OUTER_PRETASK_NOTE\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+
+    _block_stat_once(monkeypatch, b"private_notes.md")
+    base = adapter.read_task_base(os.fspath(repository))
+    assert [(row.path, row.complete, row.files) for row in base.nested_untracked] == [
+        ("api", False, ())
+    ]
+    capture = adapter.capture(os.fspath(repository), base)
+    assert "PRETASK_PRIVATE_NOTE" not in _text(capture)
+    assert "  A api/private_notes.md" + _NESTED_NAMED_ONLY in _text(capture)
+    assert capture.truncated
+
+    # The outer listing says so too: an incomplete snapshot is disclosed, never read as whole.
+    _block_stat_once(monkeypatch, b"outer_notes.txt")
+    outer = adapter.read_task_base(os.fspath(repository))
+    assert not outer.untracked_complete
+    assert "outer_notes.txt" not in {item.path for item in outer.untracked}
+    assert (
+        "The task-start list of untracked files was incomplete, so an untracked file listed "
+        "below as added may predate the task."
+        in _text(adapter.capture(os.fspath(repository), outer))
+    )
+
+
+def test_a_snapshot_the_base_refuses_keeps_the_commit_base_and_is_recorded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = _repository(tmp_path)
+    adapter = GitChangeCaptureAdapter()
+    recorded: list[tuple[str, str]] = []
+
+    def refused(self: object, pinned: object, deadline: float) -> object:
+        # A listing for a repository without a recorded HEAD: the base object refuses it.
+        from yoetz.ports.change_capture import NestedUntrackedBaseline
+
+        return (), True, (), (NestedUntrackedBaseline("api", True),)
+
+    def record(exc: BaseException, *, component: str, operation: str) -> str:
+        recorded.append((component, operation))
+        return "correlation"
+
+    monkeypatch.setattr(GitChangeCaptureAdapter, "_start_snapshot", refused)
+    monkeypatch.setattr(capture_module, "record_unexpected_exception_without_raising", record)
+
+    base = adapter.read_task_base(os.fspath(repository))
+
+    assert base == TaskChangeBase(base.object_format, base.commit)
+    assert recorded == [("start", "task_change_base_snapshot_dropped")]
+
+
+def test_a_nested_listing_past_the_snapshot_bound_names_its_untracked_files_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of #1045: nested listings share the outer listing's bound and are kept whole or not
+    at all, so one that does not fit is recorded incomplete and its files are named only, while a
+    later one that fits is still complete."""
+
+    monkeypatch.setattr(capture_module, "MAX_BASELINE_UNTRACKED_FILES", 2)
+    repository = _repository(tmp_path)
+    (repository / "outer_notes.txt").write_text("OUTER_PREEXISTING_NOTE\n", encoding="utf-8")
+    api = _nested_repository(repository)
+    (api / "one.md").write_text("API_PREEXISTING_ONE\n", encoding="utf-8")
+    (api / "two.md").write_text("API_PREEXISTING_TWO\n", encoding="utf-8")
+    lib = _nested_repository(repository, "lib")
+    (lib / "notes.md").write_text("LIB_PREEXISTING_NOTE\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert base.untracked_complete and [item.path for item in base.untracked] == ["outer_notes.txt"]
+    assert [(row.path, row.complete, len(row.files)) for row in base.nested_untracked] == [
+        ("api", False, 0),
+        ("lib", True, 1),
+    ]
+    assert decode_task_change_base(encode_task_change_base(base)) == base
+
+    capture = adapter.capture(os.fspath(repository), base)
+
+    text = _text(capture)
+    assert "API_PREEXISTING" not in text and "LIB_PREEXISTING_NOTE" not in text
+    assert "lib/notes.md" not in text  # complete listing: baseline, left out
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started. Untracked files in it are named but not shown: the "
+        "task-start list of them was incomplete, so any of them may predate the task.\n"
+    ) in text
+    assert "  A api/one.md" + _NESTED_NAMED_ONLY in text
+    assert "  A api/two.md" + _NESTED_NAMED_ONLY in text
+    assert capture.omitted_files == 2 and capture.truncated
+
+
+def test_nested_untracked_listings_decode_strictly(tmp_path: Path) -> None:
+    from yoetz.ports.change_capture import NestedUntrackedBaseline, UntrackedBaselineFile
+
+    state = "sha256:" + "0" * 64
+    note = UntrackedBaselineFile("notes.md", state)
+    good = TaskChangeBase(
+        "sha1",
+        "a" * 40,
+        "task_start",
+        (),
+        True,
+        (("api", "b" * 40), ("lib", "c" * 40)),
+        (NestedUntrackedBaseline("api", True, (note,)), NestedUntrackedBaseline("lib", False)),
+    )
+    encoded = encode_task_change_base(good)
+    assert decode_task_change_base(encoded) == good
+    assert b'"nested_untracked":[["api",true,[["notes.md",' in encoded
+    assert b'["lib",false,[]]' in encoded
+
+    head, rest = encoded.split(b'"nested_untracked":', 1)
+    tail = rest[rest.index(b',"object_format"') :]
+
+    def rejected(listings: str) -> bytes:
+        return head + b'"nested_untracked":' + listings.encode("utf-8") + tail
+
+    assert decode_task_change_base(rejected('[["api",true,[]]]')).nested_untracked == (
+        NestedUntrackedBaseline("api", True),
+    )
+    for listings in (
+        "[]",  # never written empty
+        "null",  # never written either
+        '[["lib",false,[]],["api",true,[]]]',  # rows out of order
+        '[["web",true,[]]]',  # no recorded HEAD for it
+        '[["api",1,[]]]',  # flag is not a boolean
+        f'[["api",false,[["notes.md","{state}"]]]]',  # an incomplete row names files
+        f'[["api",true,[["z.md","{state}"],["a.md","{state}"]]]]',  # files out of order
+        '[["api",true,[["notes.md"]]]]',  # malformed file row
+        '[["api",true]]',  # malformed row
+    ):
+        with pytest.raises(ValueError):
+            decode_task_change_base(rejected(listings))
+
+    # Only shapes the encoder writes are read: the snapshot's keys together, never empty, and
+    # the nested listings only beside them.
+    def body(origin: str = "task_start", **keys: str) -> bytes:
+        fields = {
+            "commit": '"' + "a" * 40 + '"',
+            "object_format": '"sha1"',
+            "origin": f'"{origin}"',
+            "schema": '"yoetz.task-change-base/1"',
+            **keys,
+        }
+        return ("{" + ",".join(f'"{key}":{fields[key]}' for key in sorted(fields)) + "}").encode()
+
+    assert decode_task_change_base(
+        body(untracked="[]", untracked_complete="true", nested="[]")
+    ).untracked_complete
+    for data in (
+        body(untracked="[]", untracked_complete="false", nested="[]"),
+        body("first_check", untracked="[]", untracked_complete="false", nested="[]"),
+        body(nested='[["api","' + "b" * 40 + '"]]'),
+        body(untracked="[]", untracked_complete="true"),
+        body(nested_untracked='[["api",false,[]]]'),
+    ):
+        with pytest.raises(ValueError):
+            decode_task_change_base(data)
+    # The nested listings share the outer listing's bounds.
+    many = tuple(UntrackedBaselineFile(f"f{index:05}.md", state) for index in range(4_097))
+    with pytest.raises(ValueError):
+        TaskChangeBase(
+            "sha1",
+            "a" * 40,
+            "task_start",
+            (),
+            True,
+            (("api", "b" * 40),),
+            (NestedUntrackedBaseline("api", True, many),),
+        )
+    # A first-check pin never carries one.
+    with pytest.raises(ValueError):
+        TaskChangeBase(
+            "sha1",
+            "a" * 40,
+            "first_check",
+            nested_untracked=(NestedUntrackedBaseline("api", False),),
+        )
+
+
+def test_metadata_capture_reads_a_nested_repository_like_the_full_capture(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: the metadata read refused every workspace holding an untracked nested
+    repository (``api/`` failed the relative-path check), so the scope deferral (#1046) and the
+    undeclared-reference fact (#1044) never saw a change there while ``capture`` showed it."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    (nested / "notes.md").write_text("before the task\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+
+    idle = adapter.capture_metadata(os.fspath(repository), base)
+
+    # Present and unchanged since the task started: no change by itself.
+    assert idle.entries == ()
+    assert (idle.tracked_files, idle.untracked_files, idle.omitted_files) == (0, 0, 0)
+    assert not idle.truncated
+
+    (nested / "server.py").write_text("def handler():\n    return 'v2'\n", encoding="utf-8")
+    (nested / "migrate.py").write_text("print('migrate')\n", encoding="utf-8")
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+
+    assert {(entry.status, entry.path, entry.untracked) for entry in metadata.entries} == {
+        ("M", "api/server.py", False),
+        ("A", "api/migrate.py", True),
+    }
+    assert (metadata.tracked_files, metadata.untracked_files, metadata.omitted_files) == (1, 1, 0)
+    assert not metadata.truncated
+    # The same files the full capture lists, with the same counts.
+    capture = adapter.capture(os.fspath(repository), base)
+    assert {path for _, path in check_change_header_entries(capture)} == {
+        entry.path for entry in metadata.entries
+    }
+    assert (capture.tracked_files, capture.untracked_files) == (1, 1)
+
+
+def test_metadata_capture_counts_a_nested_repository_it_cannot_fully_list(tmp_path: Path) -> None:
+    """Review of #1045: where the full capture names a nested file without showing it, or cannot
+    read the repository, the metadata read lists no entry for it and counts it as omitted."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    (nested / "notes.md").write_text("before the task\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    recorded = adapter.read_task_base(os.fspath(repository))
+    older = TaskChangeBase(
+        recorded.object_format,
+        recorded.commit,
+        "task_start",
+        recorded.untracked,
+        recorded.untracked_complete,
+        recorded.nested,
+    )
+    (nested / "server.py").write_text("def handler():\n    return 'v2'\n", encoding="utf-8")
+
+    # No task-start listing of its untracked files: they are counted, never entries.
+    unlisted = adapter.capture_metadata(os.fspath(repository), older)
+    assert [(entry.status, entry.path) for entry in unlisted.entries] == [("M", "api/server.py")]
+    assert (unlisted.untracked_files, unlisted.omitted_files) == (1, 1)
+    assert unlisted.truncated
+
+    # A repository a fence refuses: its directory counts as one omitted untracked entry.
+    nested.chmod(0o777)
+    try:
+        refused = adapter.capture_metadata(os.fspath(repository), recorded)
+    finally:
+        nested.chmod(0o700)
+    assert refused.entries == ()
+    assert (refused.untracked_files, refused.omitted_files) == (1, 1)
+    assert refused.truncated
+
+
+def test_metadata_capture_reads_a_changed_gitlink_like_the_full_capture(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    _git(repository, "add", "--", "api")
+    _commit(repository, "track api as a gitlink")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _nested_commit(nested, "def handler():\n    return 'v2'\n", "work inside the gitlink")
+    (nested / "migrate.py").write_text("print('migrate')\n", encoding="utf-8")
+
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+
+    assert {(entry.status, entry.path) for entry in metadata.entries} == {
+        ("M", "api"),
+        ("M", "api/server.py"),
+        ("A", "api/migrate.py"),
+    }
+    assert not metadata.truncated
+    capture = adapter.capture(os.fspath(repository), base)
+    assert {path for _, path in check_change_header_entries(capture)} == {
+        entry.path for entry in metadata.entries
+    }
+
+
+def test_metadata_capture_counts_a_changed_gitlink_it_cannot_read(tmp_path: Path) -> None:
+    """A submodule checkout (``.git`` is a file) is never opened: its gitlink entry stands and the
+    repository's own change counts as omitted, as the full capture marks it not shown."""
+
+    repository = _repository(tmp_path)
+    nested = repository / "api"
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet", f"--separate-git-dir={tmp_path / 'api.git'}")
+    (nested / "server.py").write_text("def handler():\n    return 'v1'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _nested_commit(nested, "def handler():\n    return 'v1'\n", "nested baseline")
+    _git(repository, "add", "--", "api")
+    _commit(repository, "track api as a gitlink")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _nested_commit(nested, "SUBMODULE_CANARY = 1\n", "work inside the submodule")
+
+    metadata = adapter.capture_metadata(os.fspath(repository), base)
+
+    assert [(entry.status, entry.path) for entry in metadata.entries] == [("M", "api")]
+    assert (metadata.tracked_files, metadata.omitted_files) == (1, 1)
+    assert metadata.truncated
+    assert adapter.capture(os.fspath(repository), base).omitted_files == 1
+
+
+def test_gitlink_repository_diff_starts_at_the_commit_it_held_when_the_task_started(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    _git(repository, "add", "--", "api")
+    _commit(repository, "track api as a gitlink")
+    recorded = _git(nested, "rev-parse", "HEAD").strip()
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert base.nested == (("api", recorded),)  # the gitlinked repository's own HEAD
+    assert decode_task_change_base(encode_task_change_base(base)) == base
+
+    (nested / "server.py").write_text("def handler():\n    return 'v2'\n", encoding="utf-8")
+
+    text = _text(adapter.capture(os.fspath(repository), base))
+    assert "-Subproject commit" in text  # the outer gitlink line still stands
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started.\n" in text
+    )
+    assert "diff --git a/api/server.py b/api/server.py" in text
+    assert "+    return 'v2'" in text
+
+
+def test_gitlink_repository_ahead_of_its_recorded_commit_starts_at_its_task_start_head(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a commit made inside a gitlinked repository before the task, never added
+    in the outer repository, was diffed from the outer gitlink's older commit and sent as the
+    task's change under "from the commit it held when the task started"."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    _git(repository, "add", "--", "api")
+    _commit(repository, "track api as a gitlink")
+    _pre_task_nested_commit(nested)
+    started = _git(nested, "rev-parse", "HEAD").strip()
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert base.nested == (("api", started),)
+    (nested / "server.py").write_text("AGENT_TASK_EDIT = 1\n", encoding="utf-8")
+
+    capture = adapter.capture(os.fspath(repository), base)
+
+    text = _text(capture)
+    assert "PRE_TASK_NESTED_COMMIT" not in text and "api/private.py" not in text
+    assert "+AGENT_TASK_EDIT = 1\n" in text
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started.\n" in text
+    )
+    assert capture.tracked_files == 2  # the outer gitlink and api/server.py
+
+
+def _pre_task_nested_commit(nested: Path) -> None:
+    """A commit made inside ``nested`` and never recorded by the outer repository's gitlink."""
+
+    (nested / "private.py").write_text("PRE_TASK_NESTED_COMMIT = 1\n", encoding="utf-8")
+    _git(nested, "add", "--", "private.py")
+    _commit(nested, "the developer's own commit, before the task")
+
+
+def test_a_gitlink_whose_task_start_head_was_not_recorded_says_earlier_commits_are_included(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a base recorded before the snapshot named gitlinked repositories falls
+    back to the outer base tree's commit, and the header must not claim that is where the task
+    started inside the repository."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    _git(repository, "add", "--", "api")
+    _commit(repository, "track api as a gitlink")
+    _pre_task_nested_commit(nested)
+    adapter = GitChangeCaptureAdapter()
+    recorded = adapter.read_task_base(os.fspath(repository))
+    legacy = TaskChangeBase(recorded.object_format, recorded.commit)
+    (nested / "server.py").write_text("AGENT_TASK_EDIT = 1\n", encoding="utf-8")
+
+    text = _text(adapter.capture(os.fspath(repository), legacy))
+
+    # The earlier commit is part of this change, and the header says it may be.
+    assert "+PRE_TASK_NESTED_COMMIT = 1\n" in text
+    assert "from the commit it held when the task started" not in text
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "the base above records for it (its own HEAD when the task started was not recorded, so "
+        "any commits made in it before the task that the outer repository does not record are "
+        "included too).\n"
+    ) in text
+
+
+def test_nested_repository_that_fails_a_fence_is_named_and_not_read(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    (nested / "server.py").write_text("NESTED_CANARY = 1\n", encoding="utf-8")
+    nested.chmod(0o777)  # group- and world-writable: the ADR-011 root fence refuses it
+    try:
+        capture = adapter.capture(os.fspath(repository), base)
+    finally:
+        nested.chmod(0o700)
+
+    text = _text(capture)
+    assert "NESTED_CANARY" not in text
+    assert "Nested repository api/: its own change is not shown (it failed a safety check)." in text
+    assert (
+        "  A api/ untracked; not shown: a nested Git repository whose own change was not read"
+        in text
+    )
+    assert capture.truncated
+
+
+def _nested_commit(nested: Path, content: str, message: str) -> None:
+    (nested / "server.py").write_text(content, encoding="utf-8")
+    _git(
+        nested,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-am",
+        message,
+    )
+
+
+def test_changed_gitlink_whose_repository_is_not_read_counts_as_not_shown(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a submodule checkout (its ``.git`` is a file) is never opened, so its own
+    change is not shown; the gitlink's commit-id lines alone must not read as a complete change."""
+
+    repository = _repository(tmp_path)
+    nested = repository / "api"
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet", f"--separate-git-dir={tmp_path / 'api.git'}")
+    (nested / "server.py").write_text("def handler():\n    return 'v1'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _nested_commit(nested, "def handler():\n    return 'v1'\n", "nested baseline")
+    _git(repository, "add", "--", "api")
+    _commit(repository, "track api as a gitlink")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _nested_commit(nested, "SUBMODULE_CANARY = 1\n", "work inside the submodule")
+
+    capture = adapter.capture(os.fspath(repository), base)
+
+    text = _text(capture)
+    assert "SUBMODULE_CANARY" not in text
+    assert "+Subproject commit" in text  # the outer gitlink lines still stand
+    assert (
+        "Nested repository api/: its own change is not shown (its Git configuration or layout is "
+        "not supported)." in text
+    )
+    assert "  M api (+1 -1) not shown: a nested Git repository whose own change was not read" in (
+        text
+    )
+    assert "Changed files: 1 tracked, 0 untracked. Not shown: 1." in text
+    assert capture.omitted_files == 1 and capture.truncated
+
+
+def test_gitlink_added_over_an_untracked_repository_starts_at_its_task_start_head(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: untracked at task start, staged as a new gitlink later. The new gitlink's
+    source commit is Git's null id, which must not hide the snapshot's starting commit."""
+
+    repository = _repository(tmp_path)
+    nested = _nested_repository(repository)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert [path for path, _ in base.nested] == ["api"]
+    _nested_commit(nested, "def handler():\n    return 'COMMITTED_IN_TASK'\n", "cut over")
+    _git(repository, "add", "--", "api")
+
+    text = _text(adapter.capture(os.fspath(repository), base))
+
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started." in text
+    )
+    assert "diff --git a/api/server.py b/api/server.py" in text
+    assert "-    return 'v1'" in text and "+    return 'COMMITTED_IN_TASK'" in text
+
+
+def test_nested_repository_borrowing_another_store_is_refused_at_task_start(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a ``commondir`` naming another repository is refused before its HEAD is
+    read, so that repository's commit never becomes the task's starting state."""
+
+    repository = _repository(tmp_path)
+    other = _nested_repository(tmp_path, "other")
+    _nested_commit(other, "OTHER_REPOSITORY = 1\n", "another repository's work")
+    other_head = _git(other, "rev-parse", "HEAD").strip()
+    nested = _nested_repository(repository)
+    assert _git(nested, "rev-parse", "HEAD").strip() != other_head
+    (nested / ".git" / "commondir").write_text(os.fspath(other / ".git") + "\n", "utf-8")
+    adapter = GitChangeCaptureAdapter()
+
+    base = adapter.read_task_base(os.fspath(repository))
+
+    assert base.origin == "task_start"
+    assert base.nested == ()
+    assert other_head not in encode_task_change_base(base).decode("utf-8")
+    # Check time refuses the same repository for the same reason.
+    text = _text(adapter.capture(os.fspath(repository), base))
+    assert (
+        "Nested repository api/: its own change is not shown (its Git configuration or layout is "
+        "not supported)." in text
+    )
+
+
+def test_gitlink_inside_a_nested_repository_counts_as_not_shown(tmp_path: Path) -> None:
+    """Review of #1045: a repository nested inside a nested one is never read, so its changed
+    gitlink counts as not shown, as an untracked repository at that depth already does."""
+
+    repository = _repository(tmp_path)
+    api = _nested_repository(repository)
+    lib = _nested_repository(api, "lib")
+    _git(api, "add", "--", "lib")
+    _commit(api, "track lib as a gitlink")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    _nested_commit(lib, "INNER_CANARY = 1\n", "work inside the inner repository")
+
+    capture = adapter.capture(os.fspath(repository), base)
+
+    text = _text(capture)
+    assert "INNER_CANARY" not in text
+    assert "Nested repository api/: its own change is shown under that directory" in text
+    assert "+Subproject commit" in text  # the inner gitlink's commit-id lines still stand
+    assert (
+        "  M api/lib (+1 -1) not shown: a nested Git repository whose own change was not read"
+        in text
+    )
+    assert "Not shown: 1." in text
+    assert capture.omitted_files == 1 and capture.truncated
+
+
+def test_gitlink_replacing_a_tracked_file_starts_at_its_task_start_head(tmp_path: Path) -> None:
+    """Review of #1045: a gitlink staged where the base tree held a file has a blob id as its
+    source, which must not hide the snapshot's starting commit either."""
+
+    repository = _repository(tmp_path)
+    (repository / "api").write_text("a placeholder file\n", encoding="utf-8")
+    _git(repository, "add", "--", "api")
+    _commit(repository, "api starts as a file")
+    _git(repository, "rm", "--cached", "--quiet", "--", "api")
+    (repository / "api").unlink()
+    nested = _nested_repository(repository)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert [path for path, _ in base.nested] == ["api"]
+    _nested_commit(nested, "def handler():\n    return 'COMMITTED_IN_TASK'\n", "cut over")
+    _git(repository, "add", "--", "api")
+
+    text = _text(adapter.capture(os.fspath(repository), base))
+
+    assert (
+        "Nested repository api/: its own change is shown under that directory, from the commit "
+        "it held when the task started." in text
+    )
+    assert "-    return 'v1'" in text and "+    return 'COMMITTED_IN_TASK'" in text
+
+
+def test_task_input_files_the_statement_names_are_read_only_when_unchanged(
+    tmp_path: Path,
+) -> None:
+    """vba-userform-port shape: the VBA source to port never reached the reviewer."""
+
+    repository = _repository(tmp_path)
+    (repository / "vba").mkdir()
+    (repository / "vba" / "UserForm1.frm").write_text(
+        'Private Sub CommandButton1_Click()\n    MsgBox "hi"\nEnd Sub\n', encoding="utf-8"
+    )
+    (repository / "DESIGN.md").write_text("# Design\n" + "rule line\n" * 4000, encoding="utf-8")
+    (repository / "secrets.pem").write_text("not a real key\n", encoding="utf-8")
+    _git(repository, "add", "--", "vba/UserForm1.frm", "DESIGN.md", "secrets.pem")
+    _commit(repository, "inputs")
+    (repository / "local.env").write_text("IGNORED_CANARY=1\n", encoding="utf-8")
+    (repository / "brief.txt").write_text("UNTRACKED_BRIEF_MARKER\n", encoding="utf-8")
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    (repository / "form.py").write_text("def click():\n    print('hi')\n", encoding="utf-8")
+    (repository / "notes.md").write_text("AGENT_NOTES_MARKER\n", encoding="utf-8")
+
+    capture = adapter.capture(
+        os.fspath(repository),
+        base,
+        input_paths=(
+            os.fspath(repository / "vba" / "UserForm1.frm"),
+            "DESIGN.md",
+            "form.py",  # the agent's own work: part of the change, never an input
+            "secrets.pem",  # credential-named
+            "local.env",  # ignored
+            "/etc/hostname",  # outside the repository
+            "missing.md",
+            "notes.md",  # created by the agent: untracked and not in the task-start snapshot
+            "brief.txt",  # untracked before the task started and unchanged since
+        ),
+    )
+
+    assert [item.path for item in capture.inputs] == [
+        "vba/UserForm1.frm",
+        "DESIGN.md",
+        "brief.txt",
+    ]
+    form, design, brief = capture.inputs
+    assert brief.text == b"UNTRACKED_BRIEF_MARKER\n"
+    assert b"MsgBox" in form.text and form.size == len(form.text)
+    # A large input keeps its head and tail with the cut marked, within the per-input bound.
+    assert design.size > len(design.text) and len(design.text) <= 16_384
+    assert design.text.startswith(b"# Design\n")
+    assert b"bytes elided here; head and tail kept]" in design.text
+    joined = b"".join(item.text for item in capture.inputs)
+    assert b"IGNORED_CANARY" not in joined and b"AGENT_NOTES_MARKER" not in joined
+    # Inputs never enter the change text, and they round-trip with the stored object.
+    assert b"MsgBox" not in capture.text
+    assert decode_check_change(encode_check_change(capture)) == capture
+
+
+@pytest.mark.parametrize(
+    "hide",
+    [
+        ("update-index", "--skip-worktree", "--", "config/settings.py"),
+        ("update-index", "--assume-unchanged", "--", "config/settings.py"),
+        ("config", "core.checkStat", "minimal"),
+    ],
+    ids=["skip-worktree", "assume-unchanged", "stat-blind"],
+)
+def test_a_tracked_input_git_does_not_see_changed_is_never_read_as_unchanged(
+    tmp_path: Path, hide: tuple[str, ...]
+) -> None:
+    """Review of #1045: ``git diff`` never compares a skip-worktree or assume-unchanged entry with
+    its working copy, and misses a same-size rewrite under ``core.checkStat=minimal``. Absent from
+    the change, such a file held local-only content that was sent labelled unchanged since the
+    task started."""
+
+    repository = _repository(tmp_path)
+    settings = repository / "config" / "settings.py"
+    settings.parent.mkdir()
+    settings.write_text("DB_HOST = 'localhost'\n", encoding="utf-8")
+    os.utime(settings, ns=(1_577_836_800 * 10**9, 1_577_836_800 * 10**9))
+    _git(repository, "add", "--", "config/settings.py")
+    _commit(repository, "settings")
+    _git(repository, *hide)
+    _git(repository, "update-index", "--refresh")
+    # Local-only content of the same size, with the committed modification time put back.
+    settings.write_text("DB_HOST = 'LOCALONLY'\n", encoding="utf-8")
+    os.utime(settings, ns=(1_577_836_800 * 10**9, 1_577_836_800 * 10**9))
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    assert "settings" not in _git(repository, "diff", "--name-only", "HEAD", "--")
+
+    capture = adapter.capture(os.fspath(repository), base, input_paths=("config/settings.py",))
+
+    assert "settings.py" not in _text(capture)
+    assert capture.inputs == ()
+
+
+def test_tracked_inputs_are_read_only_against_the_task_start_base(tmp_path: Path) -> None:
+    """Review of #1045: against a first-check pin or HEAD, a file absent from the change may be
+    the agent's committed work, so it is never carried as unchanged since the task started."""
+
+    repository = _repository(tmp_path)
+    (repository / "deliverable.md").write_text("AGENT_COMMITTED_DELIVERABLE\n", encoding="utf-8")
+    _git(repository, "add", "--", "deliverable.md")
+    _commit(repository, "the agent's work, committed before the first check")
+    adapter = GitChangeCaptureAdapter()
+    recorded = adapter.read_task_base(os.fspath(repository))
+    pin = TaskChangeBase(recorded.object_format, recorded.commit, "first_check")
+    legacy = TaskChangeBase(recorded.object_format, recorded.commit)
+
+    pinned = adapter.capture(os.fspath(repository), pin, input_paths=("deliverable.md",))
+    unpinned = adapter.capture(os.fspath(repository), None, input_paths=("deliverable.md",))
+    started = adapter.capture(os.fspath(repository), legacy, input_paths=("deliverable.md",))
+
+    assert (pinned.base, pinned.inputs) == ("first_check", ())
+    assert (unpinned.base, unpinned.inputs) == ("head", ())
+    # The same file against the task's own start is unchanged since then, and is read.
+    assert started.base == "task_start"
+    assert [item.text for item in started.inputs] == [b"AGENT_COMMITTED_DELIVERABLE\n"]
+
+
+def strict_json_keys(data: bytes) -> list[str]:
+    import json
+
+    return list(json.loads(data))

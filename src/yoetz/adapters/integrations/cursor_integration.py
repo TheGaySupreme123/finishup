@@ -74,6 +74,7 @@ from yoetz.protocol.canonical import (
     strict_json_parse,
 )
 from yoetz.protocol.errors import ProtocolValueError
+from yoetz.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
 
 __all__ = [
     "CURSOR_HOOK_EVENTS",
@@ -169,12 +170,10 @@ _MAX_FILES: Final = 64
 _MAX_PATH: Final = 4_096
 _MAX_CURSOR_IDENTITY_BYTES: Final = 4_096
 _MAX_CURSOR_IDENTITY_METADATA_BYTES: Final = 1_048_576
-_GUIDANCE_NAMES: Final = (
-    "agent-instructions.md",
-    "coverage-and-receipts.md",
-    "publication-policy.md",
-    "request-templates.md",
-    "workflow.md",
+_GUIDANCE_URI_PREFIX: Final = "yoetz://guidance/"
+_GUIDANCE_NAMES: Final = tuple(
+    uri.removeprefix(_GUIDANCE_URI_PREFIX)
+    for uri in (*GUIDANCE_DOCUMENT_URIS, *FOCUSED_GUIDANCE_URIS)
 )
 _SKILL_PATH: Final = "skills/cursor/yoetz/SKILL.md"
 _DESCRIPTION: Final = (
@@ -899,14 +898,7 @@ def render_cursor_plugin(
         renderer_version=_RENDERER_VERSION,
         source_refs=tuple(
             sorted(
-                {
-                    "guidance/agent-instructions.md",
-                    "guidance/coverage-and-receipts.md",
-                    "guidance/publication-policy.md",
-                    "guidance/request-templates.md",
-                    "guidance/workflow.md",
-                    _SKILL_PATH,
-                },
+                {*(f"guidance/{name}" for name in _GUIDANCE_NAMES), _SKILL_PATH},
                 key=str.encode,
             )
         ),

@@ -6,7 +6,11 @@ import apsw
 import pytest
 
 from yoetz.adapters.sqlite.connection import verify_schema_identity
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
+from yoetz.adapters.sqlite.migrations import (
+    BUNDLE_MIGRATIONS,
+    current_schema_version,
+    run_migrations,
+)
 
 _TASK_ID = "tsk_00000000-0000-4000-8000-000000001501"
 
@@ -41,12 +45,13 @@ def test_schema_fourteen_upgrade_adds_only_an_empty_progress_table() -> None:
 
     report = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)  # type: ignore[arg-type]
 
-    assert (report.from_version, report.to_version) == (14, 15)
-    assert report.applied_versions == ("0015",)
-    assert db.execute("PRAGMA user_version").fetchone() == (15,)
+    current = current_schema_version(BUNDLE_MIGRATIONS)
+    assert (report.from_version, report.to_version) == (14, current)
+    assert report.applied_versions == ("0015", "0016")
+    assert db.execute("PRAGMA user_version").fetchone() == (current,)
     assert db.execute(
         "SELECT value FROM bundle_meta WHERE key='storage_schema_version'"
-    ).fetchone() == ("15",)
+    ).fetchone() == (str(current),)
     assert verify_schema_identity(db).state == "current"
     after = {
         row[0]

@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Final, Literal
 
+from yoetz.domain.advice_actions import STANDING_MACHINE_ACTIONS as STANDING_MACHINE_ACTIONS
 from yoetz.domain.events import ResultOutcome
 from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind
 from yoetz.domain.observation import ObservationEnvelope, ObservationGapCode, ObservationLifecycle
@@ -33,7 +34,7 @@ __all__ = [
 ]
 
 OBSERVATION_ADVICE_POLICY_ID: Final = "observation-advice"
-OBSERVATION_ADVICE_POLICY_VERSION: Final = "0.1.7"
+OBSERVATION_ADVICE_POLICY_VERSION: Final = "0.1.8"
 
 OBSERVATION_ADVICE_FACT_CODES: Final = frozenset(
     {
@@ -48,6 +49,11 @@ OBSERVATION_ADVICE_FACT_CODES: Final = frozenset(
         "semantic_sign_in_required",
         "semantic_provider_attention",
         "semantic_claim_without_attempt",
+        # Runtime facts the hook classified at the host boundary (#977). Advice only: they are
+        # recorded history the receipt discloses through the matching standing task-fact gap.
+        "install_into_yoetz_runtime",
+        "install_into_private_env",
+        "write_outside_workspace",
     }
 )
 
@@ -80,15 +86,6 @@ type AdviceNextAction = Literal[
     "attempt_semantic_dispatch",
     "reground_status",
 ]
-
-# Next-action tokens naming conditions of the machine/installation, not of the
-# work: the agent cannot discharge them, so evidence-sensitivity is the wrong
-# redelivery trigger and they get a bounded cadence instead (#241).
-# refresh_observation is deliberately excluded: it reflects live coverage
-# degradation the agent should hear about once per distinct occurrence.
-STANDING_MACHINE_ACTIONS: Final = frozenset(
-    {"connect_provider", "renew_provider_sign_in", "repair_semantic_provider", "update_yoetz"}
-)
 
 _EDIT_TOOLS: Final = frozenset(
     {
@@ -437,13 +434,14 @@ def _candidate(
 def _failed_commands(envelopes: Sequence[ObservationEnvelope]) -> list[ObservationAdviceCandidate]:
     """Report a failed command only while it is still live (#909).
 
-    A failure clears when the same host call later reports success (its correlation key), when a
-    later run of the same command identity follows it with any outcome (the keyed
-    ``command_commitment`` the hook computed, never command text; only the latest run of a
-    command is judged), or when an edit post-event with a stated success follows it. This is the shared
-    supersession rule the local packs and the claim-revision invariant apply, so the advice
-    cannot keep a failure the packs already treat as history. An envelope without a commitment
-    (every legacy envelope) is still cleared by a later successful edit, never kept forever.
+    A failure clears when the same host call later reports success (its correlation key), or when
+    a later run of the same command identity reports a success, failure, or partial outcome (the
+    keyed ``command_commitment`` the hook computed, never command text; only the latest limiting
+    run is judged). An unknown outcome cannot certify repair. An edit changes the state under test
+    but proves no covering rerun. This is the shared supersession rule the local packs and
+    claim-revision invariant apply, so advice cannot keep a failure the packs already treat as
+    history. An envelope without a commitment keeps its disclosure duty until it is explicitly
+    acknowledged.
     """
 
     results: list[ObservationAdviceCandidate] = []
@@ -461,7 +459,12 @@ def _failed_commands(envelopes: Sequence[ObservationEnvelope]) -> list[Observati
         failed = (exit_status is not None and exit_status != 0) or success is False
         passed = not failed and (exit_status == 0 or success is True)
         ref = str(position)
+        runner_class = envelope.structural_payload.get("runner_class")
         if tool is not None and tool in _COMMAND_TOOLS:
+            if runner_class == "exploration":
+                # Known read/exploration failures are not verification commands. Keep unknown
+                # command classes on the ordinary advice path (#972).
+                continue
             identity = _command_commitment(envelope)
             if failed:
                 unresolved[key] = (ref, envelope)
@@ -470,8 +473,9 @@ def _failed_commands(envelopes: Sequence[ObservationEnvelope]) -> list[Observati
                 unresolved.pop(key, None)
                 runs.append(ObservedRun(ref, position, ResultOutcome.SUCCESS, identity))
             elif identity is not None and envelope.event_kind in _POST_TOOL_EVENT_KINDS:
-                # A later run of the same command without a stated outcome still replaces the
-                # earlier failure as the run that is judged; only the latest run can be live.
+                # Preserve the unknown observation for ordering, but it cannot certify or retire
+                # the earlier failure. Only a later success, failure, or partial result is a
+                # qualifying same-command rerun.
                 runs.append(ObservedRun(ref, position, ResultOutcome.UNKNOWN, identity))
         elif (
             envelope.event_kind in _POST_TOOL_EVENT_KINDS
@@ -710,16 +714,14 @@ def _outside_plan(
 # Observation conditions that still raise the ``refresh_observation`` advisory.
 # Source lag, a stale cursor, an unavailable service and a locked vault recover
 # while the session continues (reconcile, drain, restart, unlock), and the
-# advisory clears when they do. Unsupported rollout records keep their earlier
-# treatment and do not clear in session.
+# advisory clears when they do. Unsupported rollout records remain disclosed
+# operator coverage, but cannot be repaired by an agent refresh (#974).
 _ADVISED_OBSERVATION_GAPS: Final = frozenset(
     {
         ObservationGapCode.SOURCE_LAG.value,
         ObservationGapCode.CURSOR_STALE.value,
         ObservationGapCode.SERVICE_UNAVAILABLE.value,
         ObservationGapCode.VAULT_LOCKED.value,
-        ObservationGapCode.UNSUPPORTED_EVENT.value,
-        ObservationGapCode.UNSUPPORTED_FORMAT.value,
     }
 )
 
@@ -734,32 +736,26 @@ def _observation_gaps(
     # rest of the session, and no drain or wait can clear it. It is announced
     # once per new orphan scope instead, so it never raises this advisory.
     present = sorted({gap for gap in gaps if gap in _ADVISED_OBSERVATION_GAPS}, key=str.encode)
-    if lifecycle in {ObservationLifecycle.STALE, ObservationLifecycle.DEGRADED} or present:
-        # Name the live cause. Refs are sorted, and ``cause:`` sorts before every
-        # observation source identity, so the hook's single evidence reference
-        # names it rather than a rolling envelope.
-        causes = [f"cause:{gap}" for gap in present] or [f"cause:lifecycle_{lifecycle.value}"]
-        refs = [*causes, *(_envelope_ref(item) for item in envelopes[-3:])]
-        return [
-            _candidate(
-                FindingKind.LEDGER_STALE_OR_INCOMPLETE,
-                "observation_gap_or_stale",
-                "refresh_observation",
-                refs,
-                "observation-gap",
-            )
-        ]
-    if not envelopes and lifecycle is not ObservationLifecycle.ACTIVE:
-        return [
-            _candidate(
-                FindingKind.LEDGER_STALE_OR_INCOMPLETE,
-                "observation_gap_or_stale",
-                "refresh_observation",
-                ("observation:empty",),
-                "observation-empty",
-            )
-        ]
-    return []
+    if not present:
+        # A lifecycle state can be degraded/stale because of a standing coverage record, a
+        # bounded drain backlog, or an empty/unmapped observation path.  Those facts remain in
+        # operator status and receipts; without a named recoverable cause they must never become
+        # agent-facing ``refresh_observation`` advice (#974).
+        return []
+    # Name the live cause. Refs are sorted, and ``cause:`` sorts before every
+    # observation source identity, so the hook's single evidence reference
+    # names it rather than a rolling envelope.
+    causes = [f"cause:{gap}" for gap in present]
+    refs = [*causes, *(_envelope_ref(item) for item in envelopes[-3:])]
+    return [
+        _candidate(
+            FindingKind.LEDGER_STALE_OR_INCOMPLETE,
+            "observation_gap_or_stale",
+            "refresh_observation",
+            refs,
+            "observation-gap",
+        )
+    ]
 
 
 def _provider_not_ready(
@@ -857,6 +853,38 @@ def _semantic_without_attempt(
     return []
 
 
+_RUNTIME_ADVICE_RULES: Final = (
+    ("install_target", "yoetz_runtime", "install_into_yoetz_runtime"),
+    ("install_target", "private_env", "install_into_private_env"),
+    ("write_scope", "outside_workspace", "write_outside_workspace"),
+)
+
+
+def _runtime_facts(envelopes: Sequence[ObservationEnvelope]) -> list[ObservationAdviceCandidate]:
+    """One advisory per runtime fact the hook classified (#977), named at its first occurrence.
+
+    The detail token is the rule itself, so each fact is delivered once per session condition;
+    the evidence references accumulate but never mint a new identity.
+    """
+
+    refs: dict[str, list[str]] = {}
+    for envelope in envelopes:
+        payload = envelope.structural_payload
+        for field, value, rule in _RUNTIME_ADVICE_RULES:
+            if payload.get(field) == value:
+                refs.setdefault(rule, []).append(_envelope_ref(envelope))
+    return [
+        _candidate(
+            FindingKind.MATERIAL_LIMITATION_OMITTED,
+            rule,
+            "disclose_limitation",
+            tuple(items[:16]),
+            f"runtime:{rule}",
+        )
+        for rule, items in sorted(refs.items())
+    ]
+
+
 def observation_advice_findings(
     context: ObservationAdviceContext,
 ) -> tuple[ObservationAdviceCandidate, ...]:
@@ -876,6 +904,7 @@ def observation_advice_findings(
     collected.extend(_provider_not_ready(context.composition))
     collected.extend(_semantic_attention(context.composition))
     collected.extend(_semantic_without_attempt(envelopes))
+    collected.extend(_runtime_facts(envelopes))
 
     # Deduplicate by rule_code + detail_token; keep first occurrence.
     seen: set[tuple[str, str]] = set()

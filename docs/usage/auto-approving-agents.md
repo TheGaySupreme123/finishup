@@ -97,8 +97,11 @@ privacy grant permits external review. A grant is written only when all of these
   edited or written beside;
 - the file could be read. An unreadable file is `unknown`, never treated as empty.
 
-Host admission currently covers only `check`. The other operations remain local or read-only, but
-an auto-review host may still hold a non-allowlisted MCP call. Yoetz cannot guarantee that a host
+Host admission currently covers only `check`, which includes `check` with `mode: inspect`: hosts
+approve tools, not modes, so an inspection is admitted or held exactly like any check even though
+it records nothing and sends nothing. If a host holds an inspection, nothing is waiting in Yoetz and
+the agent reads `status` instead. The other operations remain local or read-only, but an
+auto-review host may still hold a non-allowlisted MCP call. Yoetz cannot guarantee that a host
 will admit any call, and no host hold should be described as a Yoetz privacy denial or AI-powered
 review result.
 

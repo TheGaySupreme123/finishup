@@ -1730,6 +1730,9 @@ class YoetzTui(App[int]):
             authority_lines.append(current.repository_migration_summary)
         if current.task_statement_disclosure is not None:
             authority_lines.append(f"Task statement: {current.task_statement_disclosure}")
+        if current.credential_heuristic_summary is not None:
+            # Owner opt-out (issue #982): the same pair and sentence as `yoetz status`.
+            authority_lines.append(current.credential_heuristic_summary)
         self.say(
             Level.ACTIVE,
             "Privacy",
@@ -2547,8 +2550,13 @@ class YoetzTui(App[int]):
             if not check.done():
                 check.cancel()
         verdict, lines = check.result()
-        if verdict == "awaiting_human":
-            self.settle(Level.ACTIVE, "Check awaiting your decision", lines)
+        if verdict in {"awaiting_human", "awaiting_input"}:
+            heading = (
+                "Check awaiting review input"
+                if verdict == "awaiting_input"
+                else "Check awaiting your decision"
+            )
+            self.settle(Level.ACTIVE, heading, lines)
             return
         level = Level.VERIFIED if verdict == "pass" else Level.UNPROVEN
         self.settle(level, f"Check complete: {verdict}", lines)

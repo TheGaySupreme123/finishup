@@ -1372,6 +1372,47 @@ async def test_manual_drain_names_service_unavailable_terminal_with_the_pending_
 
 
 @pytest.mark.anyio
+async def test_manual_drain_names_a_service_it_started_that_exited_while_starting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1040 review: the drain's on-demand start names the stage and record, exit 20 unchanged."""
+
+    import yoetz.observability.diagnostics as diagnostics
+    from yoetz.ports.control import ControlError
+    from yoetz.service.startup_failure import record_startup_failure
+
+    ring = tmp_path / "ring"
+    ring.mkdir(mode=0o700)
+    monkeypatch.setattr(diagnostics, "log_dir", lambda: ring)
+    startup_id = "err_11111111-2222-4333-8444-555555555555"
+    record_startup_failure(NotImplementedError("x"), stage="activation", correlation_id=startup_id)
+    store = LocalObservationStore(_state=tmp_path)
+    store.grant_consent(store.workspace_commitment(str(tmp_path.resolve())))
+    _enqueue_shell_rows(tmp_path, "offline", (1,))
+
+    async def connect(_kind: object):
+        raise ControlError(
+            "service_unavailable", retryable=False, correlation_id=startup_id, phase="activation"
+        )
+
+    capsys.readouterr()  # the structural line recording the failure, when a sink is installed
+    code, summary = await observe_cli._drain_observation_async(  # pyright: ignore[reportPrivateUsage]
+        workspace=str(tmp_path),
+        _state=tmp_path,
+        connect=connect,  # type: ignore[arg-type]
+    )
+
+    assert code == 20
+    assert summary["terminal"] == "service_unavailable"
+    assert summary["reasons"] == {ObservationGapCode.SERVICE_UNAVAILABLE.value: 1}
+    assert capsys.readouterr().err.splitlines() == [
+        "service_unavailable: the local service exited while starting (stage: activation; "
+        f"exception_not_implemented_error); correlation_id {startup_id}; read it with "
+        f"'yoetz service diagnostics --correlation-id {startup_id}'"
+    ]
+
+
+@pytest.mark.anyio
 async def test_manual_drain_is_bounded_against_a_producer_that_never_stops(
     tmp_path: Path,
 ) -> None:
@@ -1778,3 +1819,112 @@ def test_checks_status_names_the_probed_sandbox_outcome(
     assert payload["state"] == "untrusted"
     if reason != "ready":
         assert payload["sandbox"]["remediation"] != ""
+
+
+def test_checks_status_reports_missing_policy_as_not_configured(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A workspace without `.yoetz/checks.toml` is the ordinary opt-in state (tb4v1).
+
+    It used to print `observation_checks_status_failed:invalid_policy` and exit 20, which an agent
+    read as an owner-authority blocker.
+    """
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    code = observe_cli.observe_checks_status(
+        workspace=str(workspace), json_output=True, _state=tmp_path / "state"
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "invalid_policy" not in captured.err
+    payload = json.loads(captured.out)
+    assert payload["state"] == "not_configured"
+    assert payload["policy_digest"] is None
+    assert payload["executable_checks"] == []
+    assert payload["network_check_state"] == "not_requested"
+    assert "not a task blocker" in payload["note"]
+    assert set(payload) == {
+        "workspace_commitment",
+        "policy_digest",
+        "state",
+        "sandbox",
+        "executable_checks",
+        "network_check_state",
+        "note",
+    }
+
+
+def test_checks_status_text_output_reports_not_configured(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    code = observe_cli.observe_checks_status(
+        workspace=str(workspace), json_output=False, _state=tmp_path / "state"
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "state: not_configured" in captured.out
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("operation", ["preview", "trust", "run"])
+def test_checks_operations_name_missing_policy_and_say_it_is_not_a_blocker(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], operation: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    kwargs: dict[str, object] = {"workspace": str(workspace), "_state": tmp_path / "state"}
+    if operation == "trust":
+        kwargs["policy_digest"] = "sha256:" + "0" * 64
+    else:
+        kwargs["json_output"] = True
+
+    code = getattr(observe_cli, f"observe_checks_{operation}")(**kwargs)
+
+    err = capsys.readouterr().err
+    assert code == 20
+    assert f"observation_checks_{operation}_failed:policy_not_configured" in err
+    assert "invalid_policy" not in err
+    assert "not a task blocker" in err
+
+
+@pytest.mark.parametrize("operation", ["status", "preview", "trust", "run"])
+def test_checks_operations_keep_invalid_policy_for_a_broken_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], operation: str
+) -> None:
+    workspace = tmp_path / "workspace"
+    (workspace / ".yoetz").mkdir(parents=True)
+    (workspace / ".yoetz" / "checks.toml").write_bytes(b"format = 1\n")
+    kwargs: dict[str, object] = {"workspace": str(workspace), "_state": tmp_path / "state"}
+    if operation == "trust":
+        kwargs["policy_digest"] = "sha256:" + "0" * 64
+    else:
+        kwargs["json_output"] = True
+
+    code = getattr(observe_cli, f"observe_checks_{operation}")(**kwargs)
+
+    captured = capsys.readouterr()
+    assert code == 20
+    assert captured.out == ""
+    assert f"observation_checks_{operation}_failed:invalid_policy" in captured.err
+    assert "not a task blocker" in captured.err
+
+
+@pytest.mark.parametrize("operation", ["status", "preview", "run"])
+def test_checks_operations_do_not_call_a_missing_workspace_a_policy_fault(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], operation: str
+) -> None:
+    code = getattr(observe_cli, f"observe_checks_{operation}")(
+        workspace=str(tmp_path / "absent-workspace"), json_output=True, _state=tmp_path / "state"
+    )
+
+    err = capsys.readouterr().err
+    assert code == 20
+    assert "invalid_policy" not in err
+    assert "policy_not_configured" not in err

@@ -81,7 +81,7 @@ pytestmark = pytest.mark.anyio
 
 _DIGEST = "sha256:" + "7" * 64
 _WORKSPACE = "hmac-sha256:" + "8" * 64
-_POLICY_PACKS = ("research-evidence/0.1.0", "work-integrity/0.1.0")
+_POLICY_PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 _FIXTURES = Path(__file__).resolve().parents[3] / "fixtures" / "receipts"
 
 
@@ -276,6 +276,7 @@ async def _semantic_disabled(
     findings: object,
     runtime: object | None = None,
     lineage_evaluation: object | None = None,
+    require_complete_specification: bool = False,
 ) -> object:
     del frozen, findings, runtime, lineage_evaluation
     raise AssertionError("semantic_evaluator_called_in_deterministic_mode")
@@ -601,10 +602,20 @@ async def test_receipt_wording_is_weaker_than_document() -> None:
     assert text_receipt.human_text is not None
     assert text_receipt.conclusion == json_receipt.conclusion
 
-    forbidden = ("fully verified", "all work is complete", "proof of correctness", "passed")
+    forbidden = ("fully verified", "all work is complete", "passed")
     lowered = text_receipt.human_text.lower()
     for phrase in forbidden:
         assert phrase not in lowered
+    # "proof of correctness" may appear only as the honest negation ("... is not proof of
+    # correctness"), the rule of tests/conformance/honesty/test_receipt_wording.py. A receipt with
+    # no declared gap now reaches that sentence (#1041: a local-only check by request on a route
+    # that requires no review discloses no missing review).
+    phrase = "proof of correctness"
+    start = lowered.find(phrase)
+    while start != -1:
+        context = lowered[max(0, start - 60) : start + 40]
+        assert "not " in lowered[max(0, start - 16) : start], context
+        start = lowered.find(phrase, start + 1)
     # The wording never claims a stronger conclusion than the canonical document: an
     # ``unresolved_findings_remain`` receipt must say so, not "clear" or "resolved".
     assert "unresolved" in lowered

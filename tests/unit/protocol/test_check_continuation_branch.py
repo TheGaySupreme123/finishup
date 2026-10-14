@@ -16,6 +16,7 @@ from typing import Any, Final, cast
 import pytest
 from pydantic import ValidationError
 
+from yoetz.cli.render import render_human_awaiting_human
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.errors import ProtocolValueError
 from yoetz.protocol.models import (
@@ -112,6 +113,33 @@ def test_the_awaiting_branch_validates_and_discriminates_on_state() -> None:
     assert result.root.continuation.pending_id == _PENDING
 
 
+def test_the_awaiting_input_branch_validates_and_discriminates_on_state() -> None:
+    result = CheckResultModel.model_validate(
+        _awaiting(
+            state="awaiting_input",
+            semantic_status="awaiting_input",
+            semantic_reason="review_input_required",
+            continuation={
+                "kind": "review_input_required",
+                "command": ["yoetz", "publish-work", "--input", "PATH"],
+                "replay_request_id": _REQUEST,
+                "instruction": "Supply the statement, then replay this exact request.",
+            },
+        )
+    )
+
+    assert type(result.root) is CheckAwaitingHumanModel
+    assert result.root.state == "awaiting_input"
+    assert result.root.semantic_reason == "review_input_required"
+    assert result.root.continuation.kind == "review_input_required"
+
+    rendered = render_human_awaiting_human(result.root)
+    assert "awaiting_input (review_input_required)" in rendered
+    assert "complete review input" in rendered
+    assert "yoetz publish-work --input PATH" in rendered
+    assert "awaiting_human (human_approval_required)" not in rendered
+
+
 def test_the_branch_carries_the_exact_command_the_user_must_run() -> None:
     result = CheckResultModel.model_validate(_awaiting())
     assert type(result.root) is CheckAwaitingHumanModel
@@ -122,6 +150,36 @@ def test_the_branch_carries_the_exact_command_the_user_must_run() -> None:
         "decide-disclosure",
         _PENDING,
     )
+
+
+def test_completed_check_operation_page_carries_withheld_item_identity() -> None:
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "complete",
+            "operation_kind": "check",
+            "semantic_withheld_items": [
+                {"item_id": "excerpt-heuristic", "reason": "never_send_heuristic"}
+            ],
+        }
+    )
+    items = page.semantic_withheld_items
+    assert items is not None
+    assert items[0].item_id == "excerpt-heuristic"
+    assert items[0].reason == "never_send_heuristic"
+
+
+def test_old_completed_check_operation_page_omits_withheld_items() -> None:
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "complete",
+            "operation_kind": "check",
+        }
+    )
+    assert page.semantic_withheld_items is None
 
 
 def test_missing_repository_grant_carries_standing_setup_without_one_use_fields() -> None:
@@ -230,6 +288,65 @@ def test_a_terminal_check_still_validates_and_declares_complete() -> None:
     result = CheckResultModel.model_validate(_check_result_wire())
     assert type(result.root) is CheckSuccessModel
     assert result.root.state == "complete"
+
+
+_REDACTED_WIRE: Final = [
+    {
+        "disposition": "value_replaced",
+        "item_id": "excerpt-a",
+        "lines": [3, 7],
+        "source_ref": "evd_10000000-0000-4000-8000-000000000021",
+    },
+    {"disposition": "item_withheld", "item_id": "excerpt-heuristic", "lines": [2]},
+]
+
+
+def test_check_result_and_operation_page_accept_redacted_value_refs_and_lines() -> None:
+    """PL2-1 (issue #982): bounded structural entries validate on both public shapes."""
+
+    from unit.protocol.test_models_and_schemas import (  # pyright: ignore[reportMissingImports]
+        _check_result_wire,
+    )
+
+    result = CheckResultModel.model_validate(
+        {**_check_result_wire(), "semantic_redacted_values": _REDACTED_WIRE}
+    )
+    assert type(result.root) is CheckSuccessModel
+    assert result.root.semantic_redacted_values[0].lines == (3, 7)
+    page = StatusOperationPageModel.model_validate(
+        {
+            "operation_request_id": _REQUEST,
+            "found": True,
+            "state": "complete",
+            "operation_kind": "check",
+            "semantic_redacted_values": _REDACTED_WIRE,
+        }
+    )
+    assert page.semantic_redacted_values is not None
+    assert page.semantic_redacted_values[1].source_ref is None
+
+
+@pytest.mark.parametrize(
+    "entry",
+    (
+        {"disposition": "value_replaced", "item_id": "x", "lines": [3, 1]},
+        {"disposition": "value_replaced", "item_id": "x", "lines": [0]},
+        {"disposition": "value_replaced", "item_id": "x", "lines": [1], "value": "s3cr3t"},
+        {"disposition": "value_replaced", "item_id": "x", "lines": [1], "source_ref": "a/b"},
+        {"disposition": "other", "item_id": "x", "lines": [1]},
+    ),
+)
+def test_redacted_value_entries_reject_anything_but_bounded_structure(
+    entry: dict[str, Any],
+) -> None:
+    from unit.protocol.test_models_and_schemas import (  # pyright: ignore[reportMissingImports]
+        _check_result_wire,
+    )
+
+    with pytest.raises(ValidationError):
+        CheckResultModel.model_validate(
+            {**_check_result_wire(), "semantic_redacted_values": [entry]}
+        )
 
 
 def test_operation_status_returns_the_same_continuation_for_a_pending_check() -> None:

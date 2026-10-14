@@ -77,11 +77,11 @@ __all__ = [
 ]
 
 BUNDLE_UPGRADE_SOURCE_VERSION: Final = 12
-BUNDLE_UPGRADE_TARGET_VERSION: Final = 15
-# 0.3 development bundles already at v14 take only 0015 (semantic progress, issue #571 A2).
-BUNDLE_UPGRADE_SOURCE_VERSIONS: Final = (12, 13, 14)
+BUNDLE_UPGRADE_TARGET_VERSION: Final = 16
+# 0.3 development bundles already at v15 take only 0016 (review-input suspension, issue #951).
+BUNDLE_UPGRADE_SOURCE_VERSIONS: Final = (12, 13, 14, 15)
 _MAX_SAFE_INTEGER: Final = 2**53 - 1
-_REQUIRED_MIGRATION_IDS: Final[tuple[str, ...]] = ("0013", "0014", "0015")
+_REQUIRED_MIGRATION_IDS: Final[tuple[str, ...]] = ("0013", "0014", "0015", "0016")
 _LEASE_SECONDS: Final = 60
 _MIGRATION_PHASE_ORDER: Final[tuple[str, ...]] = (
     "reserved",
@@ -1674,7 +1674,7 @@ class BundleUpgradeCoordinator:
         self,
         targets: Sequence[BundleUpgradeTarget],
     ) -> BundleUpgradeReport:
-        """Migrate stale v12/v13 targets during startup, before any READY work is admitted."""
+        """Migrate stale v12-v15 targets before any READY work is admitted."""
 
         if type(targets) not in (tuple, list):
             raise TypeError("bundle_upgrade_targets_invalid")

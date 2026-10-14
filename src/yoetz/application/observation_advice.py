@@ -135,6 +135,9 @@ _RULE_SUMMARIES: Final[Mapping[str, str]] = {
     "semantic_sign_in_required": "AI-powered review needs the user to sign in to Codex again",
     "semantic_provider_attention": "AI-powered review needs the user to fix its provider",
     "semantic_claim_without_attempt": "AI-powered review claim lacks a recorded attempt",
+    "install_into_yoetz_runtime": "A package install went into Yoetz's own runtime, not the task's",
+    "install_into_private_env": "A package install went into an environment other than the task's interpreter",
+    "write_outside_workspace": "A write landed outside the workspace",
 }
 
 _RULE_DETAILS: Final[Mapping[str, str]] = {
@@ -152,6 +155,20 @@ _RULE_DETAILS: Final[Mapping[str, str]] = {
     "semantic_sign_in_required": "The last review attempt found the Codex evaluator signed out or its login expired",
     "semantic_provider_attention": "The last review attempt stopped for a provider cause only the user can repair",
     "semantic_claim_without_attempt": "An AI-powered review claim was observed without a matching attempt receipt",
+    "install_into_yoetz_runtime": (
+        "The installer resolved to the interpreter that runs Yoetz, which the task's own runs and "
+        "its delivery do not use; install into the task's interpreter (or avoid the dependency) "
+        "and verify with that interpreter"
+    ),
+    "install_into_private_env": (
+        "The install went into another environment or a directory outside the workspace, not "
+        "the task's interpreter, so the deliverable will not see it; install into the task's "
+        "interpreter and verify with it"
+    ),
+    "write_outside_workspace": (
+        "A file outside the workspace is not part of the delivered change; keep requested "
+        "outputs in the workspace and do not let verification depend on files outside it"
+    ),
 }
 
 # Cause-specific reasons for the attempt-derived rules, keyed by the kernel's detail token (#819).

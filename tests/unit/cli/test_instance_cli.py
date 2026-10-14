@@ -339,13 +339,15 @@ def test_dispose_stops_only_the_holder_of_that_roots_lock(
         [
             sys.executable,
             "-c",
-            "import fcntl, os, signal, sys, time\n"
+            "import fcntl, os, signal, sys\n"
             "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
             "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
             "os.write(fd, sys.argv[2].encode())\n"
-            "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+            # Block SIGTERM before announcing the lock, then wait for it synchronously: a
+            # handler plus time.sleep loses a SIGTERM that lands before the sleep starts.
+            "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})\n"
             "print('held', flush=True)\n"
-            "time.sleep(60)\n",
+            "signal.sigtimedwait({signal.SIGTERM}, 60)\n",
             str(lock),
             "PLACEHOLDER",
         ],
@@ -472,7 +474,7 @@ def test_cli_service_run_names_an_instance_refusal(
 
     monkeypatch.setattr(paths, "state_dir", _ambient_state_dir(cell))
 
-    def refuse() -> None:
+    def refuse(**_kwargs: object) -> None:
         raise InstanceIdentityError("instance_expired")
 
     monkeypatch.setattr(daemon_module, "main", refuse)
@@ -491,7 +493,7 @@ def test_cli_service_run_names_a_pin_conflict(cell: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr(paths, "state_dir", _ambient_state_dir(cell))
 
-    def refuse() -> None:
+    def refuse(**_kwargs: object) -> None:
         raise PathSafetyError("isolation_root_conflict")
 
     monkeypatch.setattr(daemon_module, "main", refuse)

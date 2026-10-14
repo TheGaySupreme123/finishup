@@ -92,8 +92,7 @@ def test_agent_instructions_say_not_to_list_resources() -> None:
     assert (
         "Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance" in collapsed
     )
-    assert "A list failure is not a missing server" in collapsed
-    assert "not a reason to read product source" in collapsed
+    assert "a list failure is not a missing server or reason to read product source" in collapsed
     assert "call `read_guidance` with the same URI" in collapsed
     assert "Only if that result is also empty" in collapsed
     assert collapsed.index("# Guidance catalog") > collapsed.index(

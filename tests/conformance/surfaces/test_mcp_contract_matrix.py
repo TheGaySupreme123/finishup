@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
+from copy import deepcopy
 from typing import Any, cast
 
 import pytest
@@ -68,6 +70,7 @@ _EXPECTED_TOOL_NAMES = (
     "status",
     "receipt",
     "read_guidance",
+    "closure_prepare",
 )
 _WORKFLOW_TOOL_NAMES = (
     "start",
@@ -96,6 +99,7 @@ def test_fallback_error_object_is_admitted() -> None:
     for operation in _WORKFLOW_TOOL_NAMES:
         validate_schema_instance(f"{operation.replace('_', '-')}-result", "1.0.0", fallback)
     validate_schema_instance("read-guidance-result", "1.0.0", fallback)
+    validate_schema_instance("closure-prepare-result", "1.0.0", fallback)
 
 
 def test_public_error_and_validation_summaries_are_sanitized() -> None:
@@ -120,7 +124,9 @@ def test_public_error_and_validation_summaries_are_sanitized() -> None:
         },
     }
     summary = render_safe_compact_summary(result)
-    assert summary == f"Error INVALID_REQUEST; retryable: no; correlation: {correlation_id}."
+    assert summary == (
+        f"Error INVALID_REQUEST; retryable: no; correlation: {correlation_id}. Field: /request_id."
+    )
     all_locations = (
         {"field": "/request_id", "reason": "missing"},
         {"field": "/client", "reason": "extra_forbidden"},
@@ -298,8 +304,8 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert tuple(TOOL_DESCRIPTORS) == ("policy", "strict")
     assert tuple(TOOL_DESCRIPTOR_DIGESTS) == ("policy", "strict")
     assert TOOL_DESCRIPTOR_SET_DIGEST == {
-        "policy": "sha256:8b4e83ef0514c7beba506b4c53443eac681dca8dac4a2cd76b8ee2e22225b026",
-        "strict": "sha256:3075d77a13af76ad8c8e0ff3f62de849f99a22f8bba415f98ebd609618289dbd",
+        "policy": "sha256:6311e9b21741e5c0e9ef998e062198ecb6df6f24d51d88435d6aed94de3fe604",
+        "strict": "sha256:d5bf01594f41c378a8a0502ffb883b3915ebafb18ab3d3a5a1493ed96ac252c4",
     }
     for profile, descriptors in TOOL_DESCRIPTORS.items():
         assert tuple(item.name for item in descriptors) == _EXPECTED_TOOL_NAMES
@@ -325,7 +331,7 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
         assert "does not publish to GitHub" in local_description
         assert "run an AI-powered evaluation" in local_description
     assert descriptor_for("start").description.startswith(
-        "First read yoetz://guidance/workflow.md."
+        "First read yoetz://guidance/agent-instructions.md."
     )
     # The two argument conventions a first-time caller cannot infer from prose alone. Both cost a
     # rejected start call in the 2026-07-30 dogfood before the descriptor named them.
@@ -347,18 +353,25 @@ def test_descriptor_text_is_frozen_and_honest() -> None:
     assert "unsorted_set_field" in description
     publish_descriptor = descriptor_for("publish_work")
     assert publish_descriptor.input_schema_ref.endswith("publish-work-request-1.2.0.schema.json")
-    assert publish_descriptor.output_schema_ref.endswith("publish-work-result-1.0.0.schema.json")
+    assert publish_descriptor.output_schema_ref.endswith("publish-work-result-1.1.0.schema.json")
     check_descriptor = descriptor_for("check")
-    assert check_descriptor.output_schema_ref.endswith("check-result-1.3.0.schema.json")
+    assert check_descriptor.output_schema_ref.endswith("check-result-1.4.0.schema.json")
     status_descriptor = descriptor_for("status")
     assert status_descriptor.input_schema_ref.endswith("status-request-1.2.0.schema.json")
     assert status_descriptor.output_schema_ref.endswith("status-result-1.4.0.schema.json")
     receipt_descriptor = descriptor_for("receipt")
     assert receipt_descriptor.output_schema_ref.endswith("receipt-result-1.3.0.schema.json")
+    closure_descriptor = descriptor_for("closure_prepare")
+    assert closure_descriptor.input_schema_ref.endswith("closure-prepare-request-1.0.0.schema.json")
+    assert closure_descriptor.output_schema_ref.endswith("closure-prepare-result-1.0.0.schema.json")
+    assert "never writes the ledger, judges work, or claims completion" in (
+        closure_descriptor.description
+    )
     for descriptors in TOOL_DESCRIPTORS.values():
         assert {item.name for item in descriptors if item.annotations.read_only} == {
             "status",
             "read_guidance",
+            "closure_prepare",
         }
         assert all(not item.annotations.destructive for item in descriptors)
         assert all(item.annotations.idempotent for item in descriptors)
@@ -590,7 +603,7 @@ def _subscription_check_result() -> dict[str, Any]:
             "protocol_version": "0.1",
             "engine_version": "0.1.0",
             "projection_version": "0.1.0",
-            "policy_packs": ["work-integrity/0.1.0"],
+            "policy_packs": ["work-integrity/0.3.0"],
         },
         "privacy_projection": _subscription_privacy_projection(),
     }
@@ -780,8 +793,11 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     assert admitted == (
         "acknowledged",
         "acknowledged_not_done",
+        "duplicate_of",
         "provenance_disputed",
         "rejected",
+        "reopened",
+        "self_verified",
         "waived",
     )
     assert "allOf" not in schema
@@ -792,6 +808,19 @@ def test_respond_agent_surface_names_every_admitted_disposition() -> None:
     # The tool description is the first text a caller reads, and it is digest-pinned.
     assert "provenance dispute" in descriptor.description
     assert "provenance_disputed" in descriptor.description
+    # Issue #984: repair first, self-verify a Yoetz limit, acknowledge only as the last resort.
+    text = descriptor.description
+    assert text.index("repair it and check first") < text.index("respond self_verified")
+    assert text.index("respond self_verified") < text.index("acknowledged_not_done only if")
+    assert "never a yoetz-blocker" in text
+    # Issue #996: the link target is advertised with its rule, and the text says what it does.
+    target = cast(
+        dict[str, Any], cast(dict[str, Any], schema["properties"])["duplicate_of_finding_id"]
+    )
+    assert "earlier" in cast(str, target["description"])
+    assert "duplicate_of_finding_id" in rules
+    assert "respond duplicate_of" in text
+    assert "linking never resolves the new finding" in text
 
 
 def test_guidance_resources_are_exact_and_static() -> None:
@@ -831,6 +860,34 @@ def test_resource_uri_is_a_key_not_a_path(monkeypatch: pytest.MonkeyPatch) -> No
         with pytest.raises(GuidanceResourceError, match="guidance_resource_uri_unregistered"):
             read_resource(uri)
     assert reads == []
+
+
+@pytest.mark.parametrize("profile", ("policy", "strict"))
+@pytest.mark.parametrize("family", ("plan_published", "plan_revised"))
+def test_mcp_can_amend_review_input_without_replacing_the_session(
+    profile: McpRouteProfile, family: str
+) -> None:
+    descriptor = descriptor_for("publish_work", profile)
+    examples = cast(list[dict[str, Any]], descriptor.input_schema["examples"])
+    request = deepcopy(
+        next(
+            example
+            for example in examples
+            if any(draft["schema"]["name"] == family for draft in example["event_drafts"])
+        )
+    )
+    draft = next(item for item in request["event_drafts"] if item["schema"]["name"] == family)
+    draft["schema"]["version"] = "1.1.0"
+    draft["payload"]["task_statement"] = "Preserve the complete user request in this session."
+    validator = Draft202012Validator(cast(Any, descriptor.input_schema))
+    is_valid = cast(Callable[[Any], bool], getattr(validator, "is_valid"))
+    assert is_valid(request)
+    PublishWorkRequest.model_validate(request)
+    validate_schema_instance(family.replace("_", "-"), "1.1.0", draft["payload"])
+
+    # The new field must not accidentally become authorable under the frozen old wire version.
+    draft["schema"]["version"] = "1.0.0"
+    assert not is_valid(request)
 
 
 def test_advertised_input_schemas_honor_presentation_keyword_budgets() -> None:
@@ -1002,5 +1059,5 @@ def test_read_guidance_descriptor_is_read_only_and_names_a_guidance_uri() -> Non
     assert descriptor.annotations.destructive is False
     assert descriptor.annotations.open_world is False
     assert "yoetz://guidance/" in descriptor.description
-    assert "512-byte summary" in descriptor.description
+    assert "bounded 4096-byte summary" in descriptor.description
     assert "not a ledger operation" in descriptor.description

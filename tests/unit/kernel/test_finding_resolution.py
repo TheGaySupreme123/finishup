@@ -49,6 +49,7 @@ from yoetz.kernel.finding_resolution import (
     reopen_findings_resolved_by,
     resolved_finding_ids,
 )
+from yoetz.kernel.plan_drift import PLAN_DRIFT_GAPS
 from yoetz.kernel.projections import (
     MAX_CHECK_CHANGE_RAISING_CHECKS,
     FindingProjectionRecord,
@@ -317,6 +318,7 @@ def test_a_non_semantic_gap_weakens_every_proof_class(gap: str) -> None:
         "semantic_review_not_configured",
         "semantic_relevance_review_not_run",
         "optional_semantic_review_blocked_by_policy",
+        "semantic_review_skipped_insufficient_packet",
         # The check-time change is AI-powered review input only (ADR-031).
         *sorted(CHECK_TIME_CHANGE_GAPS),
     ),
@@ -325,6 +327,191 @@ def test_semantic_absence_does_not_weaken_a_deterministic_proof(gap: str) -> Non
     """A local finding is proven absent by the local pack, not by the reviewer."""
 
     assert _resolves(_finding(), _check(coverage=_coverage(gaps=(gap,)))) is True
+
+
+_TEST_EDIT_ACCOUNTING = (
+    "preexisting_test_baseline_unknown",
+    "preexisting_test_deleted",
+    "preexisting_test_modified",
+    "preexisting_test_renamed",
+    "preexisting_test_skip_unknown",
+    "preexisting_test_skipped",
+)
+
+
+def _test_edit_finding() -> Finding:
+    return replace(
+        _finding(kind=FindingKind.TASK_REQUIREMENT_UNMET, policy_id="research-evidence"),
+        summary="An existing test file was edited without a recorded justification.",
+    )
+
+
+def _statement_finding() -> Finding:
+    from yoetz.domain.task_statement import TASK_STATEMENT_UNMAPPED_SUMMARY
+
+    return replace(
+        _finding(
+            kind=FindingKind.TASK_REQUIREMENT_UNMET,
+            policy_id="research-evidence",
+            subject_refs=(evt(1),),
+        ),
+        summary=TASK_STATEMENT_UNMAPPED_SUMMARY,
+    )
+
+
+@pytest.mark.parametrize("gap", _TEST_EDIT_ACCOUNTING)
+def test_test_edit_accounting_limits_only_the_test_edit_finding_by_basis(gap: str) -> None:
+    """Structural test-edit accounting (ADR-032) bounds only the rule that reads it (TB4 D1).
+
+    Tolerance follows the finding's basis, not its kind. Only the unjustified test-edit finding
+    is bounded by an unknown edit baseline; its informational counts never hide an unjustified
+    edit. The statement-based requirement finding and an AI-powered requirement finding judge
+    material the accounting never touches, so a standing accounting limit must not make their
+    repair permanently unresolvable.
+    """
+
+    local = _coverage(gaps=("semantic_review_not_requested", gap))
+    assert _resolves(_finding(), _check(coverage=local)) is True
+    reviewed = _coverage(gaps=(gap,), semantic=True)
+    semantic = _finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    assert _resolves(semantic, _check(semantic=_SEMANTIC_OK, coverage=reviewed)) is True
+    test_edit_bounded = gap == "preexisting_test_baseline_unknown"
+    assert _resolves(_test_edit_finding(), _check(coverage=local)) is not test_edit_bounded
+    assert _resolves(_statement_finding(), _check(coverage=local)) is True
+    semantic_requirement = _finding(
+        kind=FindingKind.TASK_REQUIREMENT_UNMET,
+        origin=FindingOrigin.SEMANTIC_MODEL_DERIVED,
+        policy_id="research-evidence",
+    )
+    assert _resolves(semantic_requirement, _check(semantic=_SEMANTIC_OK, coverage=reviewed)) is True
+
+
+def test_an_unknown_requirement_summary_reads_as_the_strict_test_edit_basis() -> None:
+    """A summary that is not a statement wording fails closed to the test-edit basis."""
+
+    local = _coverage(gaps=("semantic_review_not_requested", "preexisting_test_baseline_unknown"))
+    unknown = _finding(kind=FindingKind.TASK_REQUIREMENT_UNMET, policy_id="research-evidence")
+    assert _resolves(unknown, _check(coverage=local)) is False
+
+
+def test_a_declared_empty_scope_never_traps_a_repaired_finding() -> None:
+    """A no-material-work task keeps its scope disclosure but can clear repaired findings."""
+
+    declared = _coverage(gaps=("completion_scope_declared_none", "semantic_review_not_requested"))
+    undeclared = _coverage(gaps=("completion_scope_undeclared", "semantic_review_not_requested"))
+    assert _resolves(_finding(), _check(coverage=declared)) is True
+    assert _resolves(_statement_finding(), _check(coverage=declared)) is True
+    reviewed = _coverage(gaps=("completion_scope_declared_none",), semantic=True)
+    semantic = _finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    assert _resolves(semantic, _check(semantic=_SEMANTIC_OK, coverage=reviewed)) is True
+    # An undeclared scope stays agent work for every row except the answered statement finding.
+    assert _resolves(_statement_finding(), _check(coverage=undeclared)) is True
+    assert _resolves(_finding(), _check(coverage=undeclared)) is False
+
+
+def test_a_still_unmapped_statement_blocks_the_statement_finding() -> None:
+    """Material that contradicts the repair keeps the statement finding open (TB4 D1)."""
+
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    gaps = ("instruction_requirement_unmapped", "semantic_review_not_requested")
+    check = _check(coverage=_coverage(gaps=gaps))
+    assert resolution_blockers(_statement_finding(), 4, check, frozenset()) == (
+        "coverage:instruction_requirement_unmapped",
+    )
+    # Plan drift stays a tolerated diagnostic for every other local finding.
+    assert _resolves(_finding(), check) is True
+
+
+@pytest.mark.parametrize("gap", ("command_attempt_uncorroborated", "command_attempt_mismatch"))
+def test_command_gaps_do_not_bound_findings_whose_basis_ignores_commands(gap: str) -> None:
+    """A requested-command corroboration gap bounds only rules that read commands (TB4 D1).
+
+    Hook observation records a keyed commitment instead of command text, so a requested command
+    item stays uncorroborated for the whole task. The statement and test-edit findings and the
+    other command-independent local rules must still resolve once repaired; rules that read
+    command attempts keep the strict treatment.
+    """
+
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    check = _check(coverage=_coverage(gaps=(gap, "semantic_review_not_requested")))
+    for finding in (
+        _statement_finding(),
+        _test_edit_finding(),
+        _finding(),
+        _finding(kind=FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE, subject_refs=(clm(1),)),
+    ):
+        assert resolution_blockers(finding, 4, check, frozenset()) == (), finding.kind
+    requested = _finding(kind=FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED)
+    assert resolution_blockers(requested, 4, check, frozenset()) == (
+        "command_relation_independence_unproven",
+        "coverage:" + gap,
+    )
+    # A requested-item finding whose obligation requests no command is not about commands; one
+    # whose obligation requests a command keeps the strict treatment.
+    state = _command_proof_state()
+    assert resolution_blockers(requested, 4, check, frozenset(), proof_state=state) == ()
+    command_requested = replace(requested, subject_refs=(obl(2),))
+    assert resolution_blockers(command_requested, 4, check, frozenset(), proof_state=state)
+
+
+def test_semantic_findings_tolerate_command_gaps_only_off_command_material() -> None:
+    from builders.policy_cases import record, res
+    from yoetz.domain.events import (
+        ActionKind,
+        ActionRecordedPayload,
+        ResultOutcome,
+        ResultRecordedPayload,
+    )
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    state = _command_proof_state()
+    coverage = _coverage(gaps=("command_attempt_uncorroborated",), semantic=True)
+    check = _assessed(_check(tested=100, semantic=_SEMANTIC_OK, coverage=coverage))
+    command_action = ActionRecordedPayload(act(2), ActionKind.COMMAND, "Ran tests", command="x")
+    state = replace(
+        state,
+        actions={**state.actions, act(2): record(command_action, 30)},
+        results={
+            **state.results,
+            res(2): record(ResultRecordedPayload(res(2), act(2), ResultOutcome.SUCCESS), 31),
+        },
+    )
+    off = replace(_finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED), subject_refs=(obl(1),))
+    on_obligation = replace(off, subject_refs=(obl(2),))
+    on_action = replace(off, subject_refs=(evt(30),))
+    on_result = replace(off, subject_refs=(evt(31),))
+    assert "coverage:command_attempt_uncorroborated" not in resolution_blockers(
+        off, 4, check, frozenset(), proof_state=state
+    )
+    for finding in (on_obligation, on_action, on_result):
+        assert "coverage:command_attempt_uncorroborated" in resolution_blockers(
+            finding, 4, check, frozenset(), proof_state=state
+        ), finding.subject_refs
+    # Without the pre-check projection nothing is proven.
+    assert "coverage:command_attempt_uncorroborated" in resolution_blockers(
+        off, 4, check, frozenset()
+    )
+
+
+def test_an_unjustified_test_edit_still_blocks_every_proof() -> None:
+    gap = "preexisting_test_edit_unjustified"
+    assert _resolves(_finding(), _check(coverage=_coverage(gaps=(gap,)))) is False
+    semantic = _finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    reviewed = _coverage(gaps=(gap,), semantic=True)
+    assert _resolves(semantic, _check(semantic=_SEMANTIC_OK, coverage=reviewed)) is False
+
+
+@pytest.mark.parametrize("gap", sorted(PLAN_DRIFT_GAPS))
+def test_advisory_plan_drift_never_vetoes_a_local_absence_proof(gap: str) -> None:
+    """Plan drift is a planning-trace diagnostic; it stays disclosed but proves nothing absent."""
+
+    coverage = _coverage(gaps=("semantic_review_not_requested", gap))
+    assert _resolves(_finding(), _check(coverage=coverage)) is True
+    reviewed = _coverage(gaps=(gap,), semantic=True)
+    semantic = _finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    assert _resolves(semantic, _check(semantic=_SEMANTIC_OK, coverage=reviewed)) is False
 
 
 def test_registration_drift_check_resolves_deterministic_never_semantic() -> None:
@@ -616,9 +803,23 @@ def test_snapshot_rejects_a_null_resolution_key() -> None:
         "unpaired_event",
         "semantic_case_content_over_item_limit",
         "semantic_case_finding_refs_over_limit",
+        "semantic_missing_non_convergent",
+        "semantic_provider_input_manifest_missing",
+        "semantic_provider_input_manifest_invalid",
+        "semantic_provider_input_manifest_parse_failed",
+        "semantic_provider_input_manifest_mismatch",
+        "semantic_provider_input_manifest_recovery_failed",
+        "semantic_review_refs_reduced",
+        "semantic_review_snippet_invalid",
     ],
 )
 def test_resolution_explains_only_disqualifying_semantic_gaps(gap: str) -> None:
+    """Without an explicit reviewer ruling these gaps block AI-powered proof.
+
+    ``semantic_review_refs_reduced`` stays here deliberately: only an explicit ``fixed`` ruling
+    tolerates it (issue #976 D4, ``test_a_fixed_ruling_resolves_despite_citations_the_fence_reduced``).
+    """
+
     from yoetz.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
@@ -848,7 +1049,7 @@ def test_command_partition_never_upgrades_weak_or_overlapping_proof(weakness: st
             origin=FindingOrigin.SEMANTIC_MODEL_DERIVED,
         )
     elif weakness == "other_kind":
-        finding = _finding()
+        finding = _finding(kind=FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED, subject_refs=(obl(2),))
     elif weakness == "refired":
         keys = frozenset({issue_key(finding)})
     elif weakness == "suppressed":
@@ -1071,7 +1272,6 @@ def test_completed_semantic_recheck_can_retain_original_readable_capture_limits(
         "semantic_review_context_withheld",
         "semantic_challenges_rejected",
         "truncated_payload",
-        "content_redacted",
         "event_payload_unavailable",
         "redacted_event",
         "missing_ref",
@@ -1472,6 +1672,187 @@ def test_silence_never_closes_an_ai_finding_over_excerpts_the_budget_cut() -> No
         assert blockers == (*extra, "coverage:content_unselected")
     # Local proof never depended on the reviewer or on what the packet carried.
     assert _resolves(_finding(), silent) is True
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        "write_outside_workspace",
+        "obligation_blocked_outside_agent_control",
+        # Issue #1046 (tb4n4): the environment family. A container task runs as root; the
+        # reviewer ruled the finding fixed and the agent answered self_verified anyway.
+        "verification_only_as_root",
+        "install_into_private_env",
+        "install_into_yoetz_runtime",
+        "planned_verification_agent_linked",
+        "planned_verification_matched_by_prefix",
+        "planned_verification_outcome_unknown",
+        "planned_verification_unobservable",
+    ],
+)
+def test_task_facts_about_the_work_never_bound_a_fixed_ruling(gap: str) -> None:
+    """Issue #1000 (tb4n1 interleaved-vigenere): the reviewer ruled its finding fixed, but the
+    later check carried ``write_outside_workspace``, a fact about where the agent wrote, not about
+    what the reviewer was shown, and the finding stayed open. Issue #1046 extends it to every
+    environment fact (tb4n4: ``verification_only_as_root``)."""
+
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    coverage = _coverage(gaps=(gap,), semantic=True, freshness=LedgerFreshness.PARTIAL)
+    check = _ruled(
+        _check(semantic=_SEMANTIC_OK, coverage=coverage),
+        (1, "fixed"),
+        conclusion="no_material_discrepancy",
+    )
+    assert (
+        resolution_blockers(finding, 4, check, frozenset(), proof_state=_changed_state(check)) == ()
+    )
+    assert _resolves(finding, check) is True
+    # Only an explicit ``fixed`` ruling tolerates them: a review silent on the finding, or one
+    # ruling it otherwise, keeps the task fact blocking its absence proof.
+    for rulings, extra in (
+        ((), ()),
+        (((1, "still_present"),), ("reviewer_verdict_still_present",)),
+    ):
+        check = _ruled(
+            _check(semantic=_SEMANTIC_OK, coverage=coverage),
+            *rulings,
+            conclusion="no_material_discrepancy",
+        )
+        assert resolution_blockers(
+            finding, 4, check, frozenset(), proof_state=_changed_state(check)
+        ) == (*extra, f"coverage:{gap}")
+        assert _resolves(finding, check) is False
+
+
+@pytest.mark.parametrize(
+    "gap",
+    [
+        # About the deliverable or what the reviewer was shown, never the environment.
+        "requested_output_unchanged",
+        "declared_output_not_reviewable",
+        "deliverable_references_undeclared_file",
+        # Agent-actionable: the agent removes it by its own action.
+        "edited_after_last_verification",
+        "planned_verification_failed",
+    ],
+)
+def test_facts_about_the_deliverable_still_bound_a_fixed_ruling(gap: str) -> None:
+    """Issue #1046 stops at the environment family: a fixed ruling never outranks a fact about the
+    deliverable, about what the reviewer could see, or about work the agent still owes."""
+
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    coverage = _coverage(gaps=(gap,), semantic=True, freshness=LedgerFreshness.PARTIAL)
+    check = _ruled(
+        _check(semantic=_SEMANTIC_OK, coverage=coverage),
+        (1, "fixed"),
+        conclusion="no_material_discrepancy",
+    )
+    assert resolution_blockers(
+        finding, 4, check, frozenset(), proof_state=_changed_state(check)
+    ) == (f"coverage:{gap}",)
+    assert _resolves(finding, check) is False
+
+
+def test_a_fixed_ruling_resolution_names_the_environment_facts_it_did_not_wait_for() -> None:
+    """Issue #1046: the resolved finding's explanation says the environment facts stay disclosed
+    on the receipt, so closing the finding never reads as Yoetz having verified them away."""
+
+    from types import SimpleNamespace
+
+    from yoetz.domain.events import LedgerRecord
+    from yoetz.kernel.finding_resolution import finding_resolution_explanation
+
+    finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    coverage = _coverage(
+        gaps=("content_unselected", "verification_only_as_root"),
+        semantic=True,
+        freshness=LedgerFreshness.PARTIAL,
+    )
+    check = _ruled(
+        _check(tested=9, semantic=_SEMANTIC_OK, coverage=coverage),
+        (1, "fixed"),
+        conclusion="no_material_discrepancy",
+    )
+    state = replace(
+        empty_projection_state(),
+        frontier=9,
+        head_digest=_DIGEST,
+        findings={fnd(1): finding_record(finding, 4, resolved_by_check_event_id=evt(9))},
+    )
+    records = (
+        SimpleNamespace(
+            event_id=evt(9),
+            schema=SimpleNamespace(name="check_recorded"),
+            ledger=SimpleNamespace(ingestion_sequence=9),
+            payload=check,
+        ),
+    )
+    explanation = finding_resolution_explanation(
+        state, fnd(1), cast(tuple[LedgerRecord, ...], records)
+    )
+    assert explanation == (
+        f"Resolved by qualifying check {evt(9)}: the reviewer ruled it fixed on material "
+        "recorded after the finding; retained as history. The environment facts that check "
+        "recorded (verification_only_as_root) did not hold it open; the receipt still "
+        "discloses them."
+    )
+
+
+def test_a_fixed_ruling_resolves_despite_citations_the_fence_reduced() -> None:
+    """TB4 tb4n1 music-harmony / interleaved-vigenere (issue #976, D4).
+
+    The reviewer ruled its own finding ``fixed`` on cited material recorded after it, but the same
+    review cited an unsent ref elsewhere, so the check carries ``semantic_review_refs_reduced``
+    (with the budget-cut excerpts every long session has). The gap says the reviewer cited more
+    than it was shown, not that it saw less: the explicit ruling resolves the finding. Without a
+    ``fixed`` ruling the gap still blocks (see the disqualifying-gap test above).
+    """
+
+    from yoetz.kernel.finding_resolution import resolution_blockers
+
+    finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
+    reduced = _coverage(
+        gaps=("content_unselected", "semantic_review_refs_reduced"),
+        semantic=True,
+        freshness=LedgerFreshness.PARTIAL,
+    )
+    for conclusion in ("no_material_discrepancy", "challenges_returned"):
+        check = _ruled(
+            _check(semantic=_SEMANTIC_OK, coverage=reduced), (1, "fixed"), conclusion=conclusion
+        )
+        state = _changed_state(check)
+        assert resolution_blockers(finding, 4, check, frozenset(), proof_state=state) == ()
+        assert _resolves(finding, check) is True
+    # Silence or any other ruling keeps the reduction disqualifying for AI-powered proof.
+    for rulings, extra in (
+        ((), ()),
+        (((1, "withdrawn"),), ()),
+        (((1, "still_present"),), ("reviewer_verdict_still_present",)),
+    ):
+        check = _ruled(
+            _check(semantic=_SEMANTIC_OK, coverage=reduced),
+            *rulings,
+            conclusion="no_material_discrepancy",
+        )
+        blockers = resolution_blockers(
+            finding, 4, check, frozenset(), proof_state=_changed_state(check)
+        )
+        assert blockers == (
+            *extra,
+            "coverage:content_unselected",
+            "coverage:semantic_review_refs_reduced",
+        )
+    # A fixed ruling never bypasses a re-raise or the material-change rule.
+    fixed = _ruled(
+        _check(semantic=_SEMANTIC_OK, coverage=reduced),
+        (1, "fixed"),
+        conclusion="no_material_discrepancy",
+    )
+    assert _resolves(finding, fixed, changed=False) is False
 
 
 @pytest.mark.parametrize(
@@ -2607,7 +2988,7 @@ _DRIZZLE_LATER_REVIEW = (
 
 @pytest.mark.parametrize(
     "beyond_baseline",
-    ["completion_plan_not_claimed", "content_redacted", "command_attempt_uncorroborated"],
+    ["completion_plan_not_claimed", "redacted_object", "missing_ref"],
 )
 def test_a_lapsed_limit_beyond_the_baseline_makes_the_baseline_readable(
     beyond_baseline: str,
@@ -2708,17 +3089,58 @@ def test_selection_and_capture_failure_classes_are_disjoint_and_closed() -> None
         "captured_object_unavailable": (False, True),
         "content_capture_unavailable": (True, True),
         "content_unselected": (False, True),
-        "content_redacted": (True, False),
+        # Capture-time redaction of a high-confidence secret shape (issue #982): local packs never
+        # read the bytes it replaced, so it never vetoes local proof; for AI-powered proof it is a
+        # recorded capture baseline like any other native capture limit.
+        "content_redacted": (False, True),
+        # Egress withholding of one item (issue #982): semantic-only, an AI-powered baseline.
+        "semantic_review_item_withheld": (False, True),
         "truncated_payload": (True, False),
         "semantic_case_finding_refs_over_limit": (False, False),
         SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP: (False, True),
         SEMANTIC_REFERENCE_SCOPE_REDUCED_GAP: (False, True),
     }
+    # Structural test-edit accounting (ADR-032, #961) is decided by kind rather than baseline: the
+    # standing accounting limits bound only ``task_requirement_unmet``, while the actionable
+    # unjustified-edit code blocks every proof until its decision is recorded.
+    test_edit_accounting = {
+        "preexisting_test_baseline_unknown",
+        "preexisting_test_deleted",
+        "preexisting_test_modified",
+        "preexisting_test_renamed",
+        "preexisting_test_skip_unknown",
+        "preexisting_test_skipped",
+    }
+    test_edit_actionable = {"preexisting_test_edit_unjustified"}
+    # In-place egress redaction of a credential-like value (issue #982, owner decision B2) bounds
+    # only what the external model saw, and only the value: it weakens neither proof class.
+    egress_value_redaction = {"semantic_review_value_redacted"}
     packet_codes = SEMANTIC_CASE_CONTENT_GAPS | {
         SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
         SEMANTIC_REFERENCE_SCOPE_REDUCED_GAP,
     }
-    assert packet_codes == set(decided)
+    assert packet_codes == (
+        set(decided) | test_edit_accounting | test_edit_actionable | egress_value_redaction
+    )
+    for code in sorted(egress_value_redaction):
+        later = _review_check(code)
+        assert _blockers(_finding(), later) == (), code
+        assert _blockers(_semantic_finding(), later) == (), code
+    requirement = replace(
+        _test_edit_finding(),
+        coverage=_coverage(semantic=True, freshness=LedgerFreshness.PARTIAL),
+    )
+    for code in sorted(test_edit_accounting):
+        later = _review_check(code)
+        assert _blockers(_finding(), later) == (), code
+        assert _blockers(_semantic_finding(), later) == (), code
+        # Only the test-edit finding is bounded, and only by an unknown edit baseline.
+        expected = ("coverage:" + code,) if code == "preexisting_test_baseline_unknown" else ()
+        assert _blockers(requirement, later) == expected, code
+    for code in sorted(test_edit_actionable):
+        later = _review_check(code)
+        assert _blockers(_finding(), later) == ("coverage:" + code,), code
+        assert _blockers(_semantic_finding(), later) == ("coverage:" + code,), code
     for code, (blocks_local, unchanged_tolerated) in decided.items():
         later = _review_check(code)
         assert bool(_blockers(_finding(), later)) is blocks_local, code
@@ -3161,3 +3583,121 @@ def test_the_explanation_reads_the_newest_check_that_could_resolve_the_finding()
     assert f"in check {evt(8)}" in explanation
     assert "subject_outside_checked_scope" in explanation
     assert "Later check" not in explanation
+
+
+_WORK_CURRENT = ("work-integrity", "0.3.0")
+_RESEARCH_CURRENT = ("research-evidence", "0.2.0")
+
+
+def _current_check(**overrides: object) -> CheckRecordedPayload:
+    """A check the upgraded build records: every execution at the current pack versions."""
+
+    check = _check(**overrides)  # type: ignore[arg-type]
+    return replace(
+        check,
+        policies=(PolicyVersion(*_RESEARCH_CURRENT), PolicyVersion(*_WORK_CURRENT)),
+        policy_executions=tuple(
+            _execution(
+                (
+                    execution.policy_id,
+                    _WORK_CURRENT[1]
+                    if execution.policy_id == _WORK_CURRENT[0]
+                    else _RESEARCH_CURRENT[1],
+                ),
+                execution.outcome,
+                execution.reason,
+            )
+            for execution in check.policy_executions
+        ),
+    )
+
+
+def test_a_finding_recorded_before_the_pack_upgrade_stays_resolvable() -> None:
+    """A 0.1.0 finding is resolved by a later check that ran the same pack at 0.2.0."""
+
+    assert _resolves(_finding(), _current_check()) is True
+
+
+def test_a_newer_finding_is_never_resolved_by_an_older_pack_version() -> None:
+    newer = replace(_finding(), policy_version="0.2.0")
+    assert _resolves(newer, _check()) is False
+    assert _resolves(newer, _current_check()) is True
+
+
+def test_an_issue_re_raised_by_the_upgraded_pack_is_the_same_issue() -> None:
+    """The issue key names the pack lineage, so a 0.2.0 re-raise refires the 0.1.0 row."""
+
+    legacy = _finding()
+    successor = replace(_finding(2), policy_version="0.2.0")
+    assert issue_key(successor) == issue_key(legacy)
+    keys = frozenset({issue_key(successor)})
+    check = _current_check(returned=(fnd(2),))
+    assert qualifying_check_resolves(legacy, 4, check, keys) is False
+
+
+def test_a_check_mixing_pack_generations_is_not_a_recorded_selection() -> None:
+    with pytest.raises(ValueError):
+        replace(
+            _check(),
+            policies=(PolicyVersion(*_RESEARCH), PolicyVersion(*_WORK_CURRENT)),
+            policy_executions=(
+                _execution(_RESEARCH, "run", "completed"),
+                _execution(_WORK_CURRENT, "run", "completed"),
+            ),
+        )
+
+
+def test_an_unknown_pack_version_is_not_decodable() -> None:
+    with pytest.raises(ValueError):
+        PolicyVersion("work-integrity", "0.9.0")
+    with pytest.raises(ValueError):
+        PolicyVersion("coordination", "0.2.0")
+    with pytest.raises(ValueError):
+        replace(_finding(), policy_version="0.9.0")
+
+
+def test_egress_item_withholding_bounds_only_the_ai_powered_review() -> None:
+    """Issue #982 (owner decision B2, regression from 860811ed).
+
+    Withholding one packet item from the external reviewer used to stamp ``content_redacted`` on
+    the whole check, which made every local finding on the task unresolvable. The review-scoped
+    code never vetoes local proof, and for AI-powered proof it is a recorded baseline only.
+    """
+
+    from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
+
+    later = _review_check(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP)
+    assert _blockers(_finding(), later) == ()
+    assert _blockers(_semantic_finding(), later) == (
+        "coverage:" + SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
+    )
+    assert _blockers(_semantic_finding(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP), later) == ()
+
+
+def test_a_retired_capture_handoff_never_vetoes_deterministic_proof() -> None:
+    """#1019 (tb4n2 N-4): the retirement disclosure stays on the check, the repair still proves.
+
+    For AI-powered findings it is a capture baseline like the other host-capture gaps: tolerated
+    only when the raising review ran under it too.
+    """
+
+    from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+    from yoetz.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
+    from yoetz.kernel.finding_resolution import (
+        DETERMINISTIC_PROOF_TOLERATED_GAPS,
+        SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
+    )
+
+    gap = "capture_handoff_retired"
+    assert GAP_CLASSIFICATION[gap] is GapClass.STANDING_LIMITATION
+    assert gap in DETERMINISTIC_PROOF_TOLERATED_GAPS
+    assert gap in CLEAN_COMPATIBLE_GAPS
+    assert gap in SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS
+    coverage = _coverage(gaps=(gap, "semantic_review_not_requested"))
+    assert _resolves(_finding(), _check(coverage=coverage)) is True
+    research_finding = _finding(
+        kind=FindingKind.MATERIAL_LIMITATION_OMITTED,
+        subject_refs=(clm(1),),
+        policy_id="research-evidence",
+    )
+    assert _resolves(research_finding, _check(coverage=coverage)) is True

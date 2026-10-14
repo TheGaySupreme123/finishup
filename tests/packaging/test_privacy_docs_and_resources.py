@@ -36,10 +36,13 @@ _SCHEMA_HOST: Final = "https://schemas.yoetz.dev/0.1/"
 
 _PRIVACY_SCHEMA_NAMES: Final = (
     "egress-receipt-1.0.0.schema.json",
+    "egress-receipt-1.1.0.schema.json",
     "outbound-case-1.0.0.schema.json",
     "outbound-case-1.1.0.schema.json",
+    "outbound-case-1.2.0.schema.json",
     "privacy-policy-1.0.0.schema.json",
     "privacy-policy-1.1.0.schema.json",
+    "privacy-policy-1.2.0.schema.json",
     "setup-wizard-contract-1.0.0.schema.json",
 )
 _PRIVACY_FIXTURE_NAMES: Final = (
@@ -163,18 +166,13 @@ def test_setup_wizard_doc_names_exactly_the_schema_thirteen_questions() -> None:
 
 
 def test_egress_receipt_vocabulary_excludes_pending_and_dispatched_states() -> None:
-    schema = _read_json(
-        _REPO_ROOT
-        / "src"
-        / "yoetz"
-        / "resources"
-        / "schemas"
-        / "privacy"
-        / "egress-receipt-1.0.0.schema.json"
-    )
-    encoded = json.dumps(schema)
-    for token in _FORBIDDEN_RECEIPT_TOKENS:
-        assert token not in encoded, token
+    for name in ("egress-receipt-1.0.0.schema.json", "egress-receipt-1.1.0.schema.json"):
+        schema = _read_json(
+            _REPO_ROOT / "src" / "yoetz" / "resources" / "schemas" / "privacy" / name
+        )
+        encoded = json.dumps(schema)
+        for token in _FORBIDDEN_RECEIPT_TOKENS:
+            assert token not in encoded, (name, token)
 
 
 # ---------------------------------------------------------------------------

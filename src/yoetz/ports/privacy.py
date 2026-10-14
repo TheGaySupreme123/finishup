@@ -10,6 +10,7 @@ from enum import Enum
 from typing import Final, Literal, Protocol, cast
 
 from yoetz.domain.privacy import (
+    MAX_WITHHELD_ITEM_IDS,
     AgentProjectionAuditSubject,
     ApprovedLocalDisclosureCase,
     ApprovedOutboundCase,
@@ -17,6 +18,7 @@ from yoetz.domain.privacy import (
     AuthorizationScopeKind,
     CandidateContext,
     ClassifiedContext,
+    CredentialHeuristic,
     DisclosureProposal,
     DisclosureProvenance,
     EgressAuthorization,
@@ -37,8 +39,9 @@ from yoetz.domain.values import format_rfc3339_millis, validate_commitment, vali
 from yoetz.ports.objects import ObjectKind, ObjectRef
 from yoetz.ports.semantic import Deadline, SemanticResult
 from yoetz.protocol.canonical import canonical_encode, strict_json_parse
-from yoetz.protocol.ids import IdKind, validate_id
+from yoetz.protocol.ids import IdKind, validate_id, validate_opaque_item_id
 from yoetz.protocol.models import DataCategory
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 
 # The largest prepared disclosure the privacy port carries, whatever a channel ceiling allows.
 MAX_MINIMIZED_DISCLOSURE_BYTES: Final = 262_144
@@ -110,6 +113,14 @@ _CURSOR = re.compile(
 
 def _invalid() -> ValueError:
     return ValueError("invalid_privacy_port_value")
+
+
+def _valid_opaque_item_id(value: object) -> bool:
+    try:
+        validate_opaque_item_id(value)
+    except ValueError:
+        return False
+    return True
 
 
 # Why a stored receipt, or the page built from stored receipts, could not be read. Each names the
@@ -224,8 +235,20 @@ class RepositoryPrivacyAuthority:
     grant_generation: int | None = None
     grant_policy_digest: str | None = None
     grant_policy: PrivacyPolicy | None = None
+    # The installation policy and every frontier a pending migration could carry forward into
+    # the first grant (issue #982), so readers can state the outcome the first check will create.
+    # Empty unless ``migration_state`` is ``legacy_route_available`` or
+    # ``first_repository_available``.
+    machine_policy: PrivacyPolicy | None = None
+    migration_frontiers: tuple[PrivacyPolicy, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.machine_policy is not None and type(self.machine_policy) is not PrivacyPolicy:
+            raise _invalid()
+        if type(self.migration_frontiers) is not tuple or any(
+            type(item) is not PrivacyPolicy for item in self.migration_frontiers
+        ):
+            raise _invalid()
         if (
             type(self.scope) is not AuthorizationScope
             or self.scope.kind is AuthorizationScopeKind.MACHINE
@@ -474,8 +497,24 @@ class MinimizedDisclosure:
     scanner_registry_version: str
     scanner_profile_digest: str
     forbidden_findings: tuple[ForbiddenDataKind, ...]
+    # Item ids omitted because only a low-confidence assignment heuristic matched. Item ids are
+    # already bounded opaque case identifiers; no matched bytes or user prose are retained.
+    withheld_item_ids: tuple[str, ...] = ()
+    # Heuristic findings that survive into the prepared bytes are a fail-closed backstop failure,
+    # not safe omissions. They are kept apart from concrete ``forbidden_findings`` for this check.
+    heuristic_findings: tuple[ForbiddenDataKind, ...] = ()
+    # Number of low-confidence spans replaced in the prepared bytes.  The count is structural;
+    # matched bytes and source prose never cross this boundary.
+    redacted_span_count: int = 0
+    # PL2-1 (issue #982): per item, the catalogued ref and the 1-based lines whose credential-like
+    # values were replaced or whose item was withheld. Line numbers only, never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
 
     def __post_init__(self) -> None:
+        try:
+            validate_semantic_redacted_values(self.redacted_values)
+        except ValueError as exc:
+            raise _invalid() from exc
         if (
             type(self.prepared_bytes) is not bytes
             or len(self.prepared_bytes) > MAX_MINIMIZED_DISCLOSURE_BYTES
@@ -484,17 +523,30 @@ class MinimizedDisclosure:
         for values in (self.included_item_ids, self.source_item_digests):
             if type(values) is not tuple or values != tuple(sorted(set(values), key=str.encode)):
                 raise _invalid()
+        if (
+            type(self.withheld_item_ids) is not tuple
+            or len(self.withheld_item_ids) > MAX_WITHHELD_ITEM_IDS
+            or self.withheld_item_ids != tuple(sorted(set(self.withheld_item_ids), key=str.encode))
+        ):
+            raise _invalid()
+        if any(not _valid_opaque_item_id(item_id) for item_id in self.withheld_item_ids):
+            raise _invalid()
         for digest in self.source_item_digests:
             validate_sha256_digest(digest)
         for values, enum_type in (
             (self.approved_categories, DataCategory),
             (self.blocked_categories, DataCategory),
             (self.forbidden_findings, ForbiddenDataKind),
+            (self.heuristic_findings, ForbiddenDataKind),
         ):
             if type(values) is not tuple or any(type(value) is not enum_type for value in values):
                 raise _invalid()
             if values != tuple(sorted(set(values), key=lambda value: value.value.encode())):
                 raise _invalid()
+        if set(self.forbidden_findings) & set(self.heuristic_findings):
+            raise _invalid()
+        if type(self.redacted_span_count) is not int or self.redacted_span_count < 0:
+            raise _invalid()
         if type(self.transformation_summary) is not tuple:
             raise _invalid()
         if self.transformation_summary != tuple(
@@ -511,6 +563,12 @@ class MinimizedDisclosure:
         if type(self.scanner_registry_version) is not str or not self.scanner_registry_version:
             raise _invalid()
         validate_sha256_digest(self.scanner_profile_digest)
+
+    @property
+    def heuristic_item_ids(self) -> tuple[str, ...]:
+        """Backward-compatible name for the bounded heuristic omission identities."""
+
+        return self.withheld_item_ids
 
 
 @dataclass(frozen=True, slots=True)
@@ -1071,6 +1129,8 @@ class PrivacyAuditPort(Protocol):
 
 
 class PrivacyClassifierPort(Protocol):
+    def scanner_identity(self) -> tuple[str, str]: ...
+
     def classify(
         self, candidate: CandidateContext, policy: EffectivePrivacyPolicy
     ) -> ClassifiedContext: ...
@@ -1079,7 +1139,14 @@ class PrivacyClassifierPort(Protocol):
         self, classified: ClassifiedContext, decision: PrivacyDecision
     ) -> MinimizedDisclosure: ...
 
-    def scan_exact_bytes(self, data: bytes) -> tuple[ForbiddenDataKind, ...]: ...
+    def scan_exact_bytes(
+        self,
+        data: bytes,
+        *,
+        credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+    ) -> tuple[ForbiddenDataKind, ...]:
+        """Final exact-byte scan; ``DISABLED`` (owner opt-out, #982) reports high-confidence only."""
+        ...
 
 
 class HumanPrivacyControlPort(Protocol):

@@ -18,7 +18,8 @@ from pydantic import BaseModel, FileUrl
 
 import yoetz.mcp.server as bridge
 from yoetz.config.models import LoggingConfig
-from yoetz.mcp.resources import read_resource
+from yoetz.domain.closure import PREPARATION_REMEDIATIONS
+from yoetz.mcp.resources import GuidancePageAssembler, read_resource
 from yoetz.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
 from yoetz.observability.logging import LogMode, configure_logging
 from yoetz.ports.control import ControlError, WorkspaceLocator
@@ -598,7 +599,7 @@ async def test_generic_host_profile_keeps_bounded_weaker_text(
 
 
 @pytest.mark.anyio
-async def test_read_guidance_returns_full_text_without_the_service_client(
+async def test_read_guidance_reconstructs_oversized_text_without_the_service_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _FakeClient()
@@ -611,16 +612,328 @@ async def test_read_guidance_returns_full_text_without_the_service_client(
     )
 
     expected = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
+    assembler = GuidancePageAssembler()
+    pages = 0
+    arguments: dict[str, object] = {"uri": "yoetz://guidance/workflow.md"}
+    page_count: int | None = None
+    while True:
+        assert result.isError is False
+        assert result.structuredContent is not None
+        wire = cast(dict[str, object], result.structuredContent)
+        block = result.content[0]
+        assert isinstance(block, types.TextContent)
+        if page_count is None:
+            page_count = int(cast(str, wire["page_count"]))
+            assert page_count > 1
+        assembler.add(wire, host_text=block.text)
+        pages += 1
+        if wire["complete"] is True:
+            break
+        assert pages < page_count
+        continuation = wire.get("continuation")
+        assert isinstance(continuation, dict)
+        arguments = dict(cast(dict[str, object], continuation))
+        result = await bridge.dispatch_read_guidance(arguments, runtime)
+
+    assert pages == page_count
+    assert assembler.assemble() == expected
+    assert client.calls == []
+    assert runtime._slot.client is None  # pyright: ignore[reportPrivateUsage]
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_closure_prepare_reuses_cli_helper_and_projects_structured_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def prepare(
+        _status: object,
+        session_id: str,
+        writer_id: str,
+        selection: object,
+        **kwargs: object,
+    ) -> dict[str, JsonValue]:
+        captured.update(
+            session_id=session_id,
+            writer_id=writer_id,
+            selection=selection,
+            **kwargs,
+        )
+        return {
+            "preparatory_only": True,
+            "frontier": {"sequence": "0", "head_digest": "genesis"},
+            "closure_readiness": {},
+            "inventory": {},
+            "request": None,
+            "notes": ["Nothing was published or judged."],
+        }
+
+    monkeypatch.setattr(bridge, "prepare_closure", prepare)
+    runtime = bridge.build_bridge_runtime()
+
+    result = await bridge.dispatch_closure_prepare(
+        {
+            "session_id": _id("session", 1),
+            "writer_id": _id("writer", 1),
+            "selection": {"phase": "inventory"},
+        },
+        runtime,
+    )
+
     assert result.isError is False
-    assert result.content
-    block = result.content[0]
-    assert isinstance(block, types.TextContent)
-    assert block.text == expected
     assert result.structuredContent is not None
     assert result.structuredContent["ok"] is True
-    assert result.structuredContent["uri"] == "yoetz://guidance/workflow.md"
-    assert result.structuredContent["text"] == expected
-    assert client.calls == []
+    assert result.structuredContent["preparatory_only"] is True
+    assert captured["session_id"] == _id("session", 1)
+    assert captured["writer_id"] == _id("writer", 1)
+    assert getattr(captured["selection"], "phase") == "inventory"
+    assert captured["client_kind"] == "cooperative_agent"
+    assert captured["integration"] == "cooperative_mcp"
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_closure_prepare_refuses_stale_inventory_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def prepare(*_args: object, **_kwargs: object) -> dict[str, JsonValue]:
+        raise ValueError("closure_snapshot_unavailable")
+
+    monkeypatch.setattr(bridge, "prepare_closure", prepare)
+    runtime = bridge.build_bridge_runtime()
+
+    result = await bridge.dispatch_closure_prepare(
+        {
+            "session_id": _id("session", 1),
+            "writer_id": _id("writer", 1),
+            "selection": {"phase": "claim"},
+        },
+        runtime,
+    )
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    assert result.structuredContent["error"]["code"] == "INVALID_REQUEST"
+    # tb4n3: a preparation read is not a write; mapping this to `frontier_changed` handed it the
+    # write's "set expected_frontier" instruction, which closure_prepare rejects.
+    assert result.structuredContent["error"]["safe_details"] == {
+        "reason_code": "closure_snapshot_unavailable"
+    }
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "reason",
+    sorted(
+        reason
+        for reason in PREPARATION_REMEDIATIONS
+        if reason
+        not in {
+            "closure_output_unwritable",
+            "closure_output_not_durable",
+            "closure_result_too_large",
+        }
+    ),
+)
+async def test_closure_prepare_names_its_refusal_and_the_remedy_on_the_text_channel(
+    monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    """tb4n3 formal-crypto S: `closure_attempt_selection_required` reached the agent as a bare
+    "Error INVALID_REQUEST" because the reason was not an admitted protocol reason code."""
+
+    async def prepare(*_args: object, **_kwargs: object) -> dict[str, JsonValue]:
+        raise ValueError(reason)
+
+    monkeypatch.setattr(bridge, "prepare_closure", prepare)
+    runtime = bridge.build_bridge_runtime("policy", host_profile="codex")
+
+    result = await bridge.dispatch_closure_prepare(
+        {
+            "session_id": _id("session", 1),
+            "writer_id": _id("writer", 1),
+            "selection": {"phase": "inventory"},
+        },
+        runtime,
+    )
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    error = cast(dict[str, Any], result.structuredContent["error"])
+    assert error["code"] == "INVALID_REQUEST"
+    assert error["safe_details"] == {"reason_code": reason}
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert f"Reason: {reason}." in text
+    assert f"Remedy: {PREPARATION_REMEDIATIONS[reason]}" in text
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_closure_prepare_scopes_a_draft_phase_to_the_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n3 formal-crypto S: the full-inventory echo (about 983 KB at frontier ~1,430) made the
+    follow-up draft LIMIT_EXCEEDED. The MCP route now asks for the scoped echo."""
+
+    seen: dict[str, object] = {}
+
+    async def prepare(*_args: object, **kwargs: object) -> dict[str, JsonValue]:
+        seen.update(kwargs)
+        return {
+            "preparatory_only": True,
+            "frontier": {"sequence": "0", "head_digest": "genesis"},
+            "closure_readiness": {},
+            "inventory": {"obligations": [], "scope": {"mode": "selected_rows"}},
+            "request": None,
+            "notes": ["Nothing was published or judged."],
+        }
+
+    monkeypatch.setattr(bridge, "prepare_closure", prepare)
+    runtime = bridge.build_bridge_runtime()
+    result = await bridge.dispatch_closure_prepare(
+        {
+            "session_id": _id("session", 1),
+            "writer_id": _id("writer", 1),
+            "selection": {"phase": "inventory"},
+        },
+        runtime,
+    )
+    assert result.isError is False
+    assert seen["scope_to_selection"] is True
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_an_unexpected_invoke_failure_is_a_typed_stage_with_a_remedy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n3 RC-2: no bare "The bridge could not complete the operation"; the agent is told whether
+    its write may be recorded and what to read first."""
+
+    reason = "bridge_invoke_failed"
+    _install_clients(monkeypatch, [_FakeClient(RuntimeError("must-not-reach-public-output"))])
+    runtime = bridge.build_bridge_runtime("policy", host_profile="codex")
+
+    result = await bridge.dispatch_publish_work(_requests()["publish_work"], runtime)
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    error = cast(dict[str, Any], result.structuredContent["error"])
+    assert error["code"] == "INTERNAL_ERROR"
+    assert error["safe_details"] == {
+        "reason_code": reason,
+        # #1025: a replay remedy travels with the continuation that authorizes it (write op).
+        "continuation": "write_timeout_same_identity",
+    }
+    assert "replay the same request_id (never a new one)" in error["message"]
+    assert "must-not-reach-public-output" not in json.dumps(result.structuredContent)
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert f"Reason: {reason}." in text
+    assert "Remedy:" in text and "replay the same request_id (never a new one)" in text
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_closure_prepare_refuses_an_unbounded_mcp_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def prepare(*_args: object, **_kwargs: object) -> dict[str, JsonValue]:
+        history_row: dict[str, JsonValue] = {"event_id": "evt_" + "a" * 40_000}
+        history: list[JsonValue] = [history_row] * 30
+        return {
+            "preparatory_only": True,
+            "frontier": {"sequence": "0", "head_digest": "genesis"},
+            "closure_readiness": {},
+            "inventory": {"history": history},
+            "request": None,
+            "notes": ["Nothing was published or judged."],
+        }
+
+    monkeypatch.setattr(bridge, "prepare_closure", prepare)
+    runtime = bridge.build_bridge_runtime()
+
+    result = await bridge.dispatch_closure_prepare(
+        {
+            "session_id": _id("session", 1),
+            "writer_id": _id("writer", 1),
+            "selection": {"phase": "inventory"},
+        },
+        runtime,
+    )
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    assert result.structuredContent["error"]["code"] == "LIMIT_EXCEEDED"
+    assert result.structuredContent["error"]["safe_details"] == {
+        "reason_code": "closure_result_too_large",
+    }
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_cursor_closure_prepare_refuses_projected_frame_with_escaped_content(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    escaped_detail = '"\\\n\r\t' * 60_000
+
+    async def prepare(*_args: object, **_kwargs: object) -> dict[str, JsonValue]:
+        return {
+            "preparatory_only": True,
+            "frontier": {"sequence": "0", "head_digest": "genesis"},
+            "closure_readiness": {},
+            "inventory": {"history": [{"description": escaped_detail}]},
+            "request": None,
+            "notes": ["Nothing was published or judged."],
+        }
+
+    monkeypatch.setattr(bridge, "prepare_closure", prepare)
+    # Bypass the inexpensive pre-projection guard so this regression exercises the actual
+    # JSON-RPC projection bound. Cursor carries the structured body and a canonical JSON copy.
+    monkeypatch.setattr(bridge, "_MAX_CLOSURE_RESULT_BYTES", 2_000_000)
+    runtime = bridge.build_bridge_runtime(
+        host_profile="cursor", workspace_locator=WorkspaceLocator(str(tmp_path))
+    )
+
+    result = await bridge.dispatch_closure_prepare(
+        {
+            "session_id": _id("session", 1),
+            "writer_id": _id("writer", 1),
+            "selection": {"phase": "inventory"},
+        },
+        runtime,
+        transport_request_id=1,
+    )
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    assert result.structuredContent["error"]["code"] == "LIMIT_EXCEEDED"
+    assert result.structuredContent["error"]["safe_details"] == {
+        "reason_code": "closure_result_too_large",
+    }
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_closure_prepare_replay_rejects_malformed_selection_in_one_turn() -> None:
+    runtime = bridge.build_bridge_runtime()
+    base = {
+        "session_id": _id("session", 1),
+        "writer_id": _id("writer", 1),
+    }
+    malformed = (
+        {**base},
+        {**base, "selection": {"phase": "inventory", "unexpected": True}},
+        {**base, "selection": {"phase": "attempt", "requested_item_indexes": [64]}},
+    )
+
+    for arguments in malformed:
+        result = await bridge.dispatch_closure_prepare(arguments, runtime)
+        assert result.isError is True
+        assert result.structuredContent is not None
+        assert result.structuredContent["error"]["code"] == "INVALID_REQUEST"
+        assert result.structuredContent["error"]["safe_details"] is not None
     assert runtime._slot.client is None  # pyright: ignore[reportPrivateUsage]
     await bridge.close_bridge_runtime(runtime)
 
@@ -1168,20 +1481,28 @@ async def test_service_post_commit_projection_failure_maps_to_the_same_retryable
     assert result.structuredContent["request_id"] == request_id
     assert "same request_id" in cast(str, error["message"])
     assert error.get("safe_details") == {"reason_code": "response_projection_failed"}
+    # The text channel names the committed state and when to stop replaying (tb4n3 RC-2).
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert "Remedy: The operation is recorded" in text
+    assert "if that replay also fails, stop replaying" in text
+    assert "status view=operation" in text
     await bridge.close_bridge_runtime(runtime)
 
 
-@pytest.mark.anyio
-async def test_post_commit_response_shaping_failure_is_retryable_with_same_request_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A durable invoke must not collapse into non-retryable INTERNAL_ERROR on shape failure."""
+class _CommittedCheckClient(_FakeClient):
+    """A service that answers every call with a successful, schema-valid check result."""
 
-    correlation_id = "err_00000000-0000-4000-8000-000000000097"
-    client = _FakeClient()
-    _install_clients(monkeypatch, [client])
-    request_id = cast(str, _requests()["publish_work"]["request_id"])
+    async def _call(  # pyright: ignore[reportIncompatibleMethodOverride]
+        self, name: str, request: Any, result_type: type[Any]
+    ) -> Any:
+        from tests.unit.protocol.test_models_and_schemas import (
+            _check_result_wire,  # pyright: ignore[reportPrivateUsage]
+        )
 
+        return result_type.model_validate(_check_result_wire())
+
+
+def _patch_wire_failure(monkeypatch: pytest.MonkeyPatch, correlation_id: str) -> None:
     def boom(_result: object) -> object:
         raise RuntimeError("post-commit-shape-failure")
 
@@ -1197,6 +1518,58 @@ async def test_post_commit_response_shaping_failure_is_retryable_with_same_reque
 
     monkeypatch.setattr(bridge, "public_model_to_wire", boom)
     monkeypatch.setattr(bridge, "record_unexpected_exception_without_raising", record)
+
+
+@pytest.mark.anyio
+async def test_post_commit_structural_shaping_failure_names_the_stage_and_does_not_advise_replay(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n3 RC-2: a successful call whose result cannot be built reads as recorded, not replayable.
+
+    Replaying the same request_id rebuilds the same result and fails the same way, so the error
+    names the stage, points at status view=operation and does not offer a replay.
+    """
+
+    correlation_id = "err_00000000-0000-4000-8000-000000000097"
+    _install_clients(monkeypatch, [_CommittedCheckClient()])
+    request_id = cast(str, _requests()["check"]["request_id"])
+    _patch_wire_failure(monkeypatch, correlation_id)
+    runtime = bridge.build_bridge_runtime()
+
+    result = await bridge.dispatch_check(_requests()["check"], runtime)
+
+    assert result.isError is True
+    assert result.structuredContent is not None
+    error = cast(dict[str, object], result.structuredContent["error"])
+    assert error["code"] == "INTERNAL_ERROR"
+    assert error["retryable"] is False
+    assert error["correlation_id"] == correlation_id
+    assert result.structuredContent["request_id"] == request_id
+    message = cast(str, error["message"])
+    assert "stage: wire" in message and "status view=operation" in message
+    assert "replaying its request_id fails the same way" in message
+    assert "A read or dry run changed nothing" in message
+    assert error.get("safe_details") == {
+        "reason_code": "bridge_result_wire_failed",
+        "continuation": "write_timeout_same_identity",
+    }
+    # The text channel carries the stage and the remedy too: a text-only host reads no message.
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert "Reason: bridge_result_wire_failed." in text
+    assert "Remedy:" in text and "status view=operation" in text
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_a_reported_failure_that_cannot_be_shaped_is_not_called_a_recorded_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A service-reported failure (here SESSION_CONFLICT before any write) is not a recorded
+    write: telling the agent never to resend it under a new request_id would be false."""
+
+    correlation_id = "err_00000000-0000-4000-8000-000000000096"
+    _install_clients(monkeypatch, [_FakeClient()])
+    _patch_wire_failure(monkeypatch, correlation_id)
     runtime = bridge.build_bridge_runtime()
 
     result = await bridge.dispatch_publish_work(_requests()["publish_work"], runtime)
@@ -1204,12 +1577,64 @@ async def test_post_commit_response_shaping_failure_is_retryable_with_same_reque
     assert result.isError is True
     assert result.structuredContent is not None
     error = cast(dict[str, object], result.structuredContent["error"])
-    assert error["code"] == "INTERNAL_ERROR"
-    assert error["retryable"] is True
-    assert error["correlation_id"] == correlation_id
-    assert result.structuredContent["request_id"] == request_id
-    assert "same request_id" in cast(str, error["message"])
-    assert error.get("safe_details") == {"reason_code": "response_projection_failed"}
+    assert error["safe_details"] == {
+        "reason_code": "bridge_error_mapping_failed",
+        "continuation": "write_timeout_same_identity",
+    }
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert "is recorded" not in text and "never resend" not in text
+    assert "Remedy:" in text and "status view=compact" in text
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_a_text_projection_failure_never_fails_a_committed_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tb4n3 RC-2 (N3-1): the check committed, so its text failing returns the real result.
+
+    The summary builder raising used to become INTERNAL_ERROR ``response_projection_failed`` with
+    "retry the same request_id"; the replay re-rendered the same text and failed identically, and
+    the agent never saw a verdict (10 of 13 deterministic runs).
+    """
+
+    from yoetz.mcp import summaries
+
+    client = _CommittedCheckClient()
+    _install_clients(monkeypatch, [client])
+    recorded: list[tuple[str, str | None]] = []
+
+    def explode(_envelope: object) -> str:
+        raise RuntimeError("summary-builder-defect")
+
+    def record(
+        exc: BaseException,
+        *,
+        component: str,
+        operation: str,
+        request_id: str | None = None,
+        phase: str | None = None,
+    ) -> str:
+        del exc, component, request_id
+        recorded.append((operation, phase))
+        return "err_00000000-0000-4000-8000-000000000098"
+
+    monkeypatch.setattr(summaries, "summary_for_check", explode)
+    monkeypatch.setattr(bridge, "record_unexpected_exception_without_raising", record)
+    runtime = bridge.build_bridge_runtime("policy", host_profile="codex")
+
+    result = await bridge.dispatch_check(_requests()["check"], runtime)
+
+    assert result.isError is False
+    assert result.structuredContent is not None
+    assert result.structuredContent["verdict"]
+    text = "".join(block.text for block in result.content if isinstance(block, types.TextContent))
+    assert "summary_render_failed:check" in text
+    assert "read status view=compact" in text
+    assert "frontier: " in text and "head_digest: sha256:" in text
+    assert "err_00000000-0000-4000-8000-000000000098" in text
+    assert "retry" not in text.lower()
+    assert recorded == [("check_summary_degraded", "check")]
     await bridge.close_bridge_runtime(runtime)
 
 
@@ -1438,6 +1863,56 @@ async def test_connect_absent_service_names_the_supervisor_repair(
     assert len(found) == 1
     assert found[0]["reason"] == "service_unavailable"
     assert found[0]["reason"] != "exception_control_error"
+    _assert_no_leakage(result.structuredContent, found)
+    await bridge.close_bridge_runtime(runtime)
+
+
+@pytest.mark.anyio
+async def test_a_spawned_service_that_failed_to_start_is_named_on_the_start_result(
+    monkeypatch: pytest.MonkeyPatch, diagnostic_root: Path
+) -> None:
+    """The conda-image ``start`` said only "not running; run it" after exit 70 (#1040)."""
+
+    from yoetz.service.startup_failure import record_startup_failure
+
+    try:
+        raise NotImplementedError("chmod: follow_symlinks unavailable on this platform")
+    except NotImplementedError as exc:
+        record_startup_failure(exc, stage="activation", correlation_id=_SERVICE_CORRELATION)
+    _install_connect_failure(
+        monkeypatch,
+        ControlError(
+            "service_unavailable",
+            retryable=False,
+            correlation_id=_SERVICE_CORRELATION,
+            phase="activation",
+        ),
+    )
+    runtime = bridge.build_bridge_runtime()
+    request = _requests()["start"]
+
+    result = await bridge.dispatch_start(request, runtime)
+
+    error = _start_error(result, cast(str, request["request_id"]))
+    assert error["code"] == PublicErrorCode.SERVICE_UNAVAILABLE.value
+    assert error["retryable"] is False
+    assert error["correlation_id"] == _SERVICE_CORRELATION
+    details = cast(dict[str, object], error["safe_details"])
+    assert details["reason_code"] == "service_start_failed"
+    assert details["phase"] == "activation"
+    message = cast(str, error["message"])
+    assert message.startswith(
+        "The local Yoetz service exited while starting "
+        "(stage: activation; exception_not_implemented_error)"
+    )
+    assert message != _ABSENT_SERVICE_MESSAGE
+    text = cast(types.TextContent, result.content[0]).text
+    assert "Reason: service_start_failed (stage: activation)." in text
+    assert "Remedy: The local Yoetz service exited while starting" in text
+    assert _SERVICE_CORRELATION in text
+    # One failure, one id: the bridge reuses the spawned service's record and adds none.
+    (found,) = lookup_diagnostic_records(_SERVICE_CORRELATION, root=diagnostic_root)
+    assert found["operation"] == "service_startup_failed"
     _assert_no_leakage(result.structuredContent, found)
     await bridge.close_bridge_runtime(runtime)
 

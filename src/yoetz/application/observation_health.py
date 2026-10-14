@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Final
 
 from yoetz.domain.observation import (
-    ObservationGapCode,
+    MATERIAL_OBSERVATION_GAPS,
     ObservationLifecycle,
     ObservationSource,
 )
@@ -19,19 +19,6 @@ __all__ = [
     "compute_observation_lifecycle",
     "qualifying_progress_monotonic",
 ]
-
-# ``unpaired_event`` is deliberately absent (#917): a lost pairing is a standing,
-# disclosed coverage record, not current acquisition health, so it never keeps
-# the lifecycle DEGRADED after drain and reconcile are healthy.
-_MATERIAL_GAPS: Final = frozenset(
-    {
-        ObservationGapCode.SERVICE_UNAVAILABLE.value,
-        ObservationGapCode.VAULT_LOCKED.value,
-        ObservationGapCode.UNSUPPORTED_EVENT.value,
-        ObservationGapCode.SOURCE_LAG.value,
-        ObservationGapCode.CURSOR_STALE.value,
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +110,7 @@ def compute_observation_lifecycle(
         return ObservationLifecycle.STALE
 
     has_source = any(signals.source_coverage.values())
-    material_gap = any(gap in _MATERIAL_GAPS for gap in signals.gaps) or bool(
+    material_gap = any(gap in MATERIAL_OBSERVATION_GAPS for gap in signals.gaps) or bool(
         signals.unsupported_events
     )
     drain_stale = False
@@ -132,13 +119,7 @@ def compute_observation_lifecycle(
         if drain is None or (now_monotonic - drain) > thresholds.drain_freshness_seconds:
             drain_stale = True
 
-    if (
-        not signals.mapping_available
-        or not has_source
-        or material_gap
-        or drain_stale
-        or signals.pending_outbox_count > 0
-    ):
+    if not signals.mapping_available or not has_source or material_gap or drain_stale:
         return ObservationLifecycle.DEGRADED
 
     return ObservationLifecycle.ACTIVE

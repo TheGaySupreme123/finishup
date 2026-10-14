@@ -92,7 +92,8 @@ def test_observation_limitation_findings_never_block_and_need_no_wait() -> None:
         "workflow.md",
         "request-templates.md",
         "publication-policy.md",
-        "agent-instructions.md",
+        # The mandatory core defers the closure order to the focused receipt topic (#961).
+        "receipt.md",
     ),
 )
 def test_no_guidance_requires_the_exact_check_result_frontier(name: str) -> None:
@@ -101,6 +102,12 @@ def test_no_guidance_requires_the_exact_check_result_frontier(name: str) -> None
     assert "at the result frontier of the check that returned it" not in text
     assert "The response frontier is the result frontier" not in text
     assert "current status frontier" in text
+
+
+def test_the_mandatory_core_never_sends_an_agent_on_a_frontier_hunt() -> None:
+    text = _collapsed(_GUIDANCE / "agent-instructions.md")
+    assert "result frontier" not in text
+    assert "`receipt.md`" in text
 
 
 def test_respond_template_names_the_frontier_to_use() -> None:
@@ -114,22 +121,34 @@ def test_respond_template_names_the_frontier_to_use() -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ("coverage-and-receipts.md", "workflow.md", "agent-instructions.md")
+    "name", ("coverage-and-receipts.md", "workflow.md", "agent-instructions.md", "receipt.md")
 )
 def test_insufficient_packet_goes_to_the_receipt_not_a_deterministic_fallback(name: str) -> None:
     text = _collapsed(_GUIDANCE / name)
     assert "insufficient_packet" in text
-    assert "deterministic_only` fallback" in text
     assert "go to the receipt" in text
+    # The condensed core and receipt topic word the same rule without the index's phrase.
+    assert any(
+        phrase in text
+        for phrase in (
+            "deterministic_only` fallback",
+            "never use `deterministic_only` merely to shorten closure",
+            "go to the receipt rather than a deterministic fallback",
+        )
+    )
 
 
 def test_the_initialize_safety_floor_carries_the_closure_order() -> None:
-    text = _collapsed(_GUIDANCE / "agent-instructions.md")
-    assert "- `respond` — once per finding; `finding_frontier` may be the current status" in text
-    assert "Answer each unanswered finding before the final check." in text
-    assert "answer its still-unanswered findings" in text
-    assert "Only a repair or other material record needs a recheck; those answers and " in text
-    assert "`work_closed` do not." in text
+    core = _collapsed(_GUIDANCE / "agent-instructions.md")
+    assert "Publish claim/evidence before the final check; answer findings, check, and " in core
+    assert "Recheck only after repair/material record." in core
+    # The full closure order lives in the focused receipt topic the core names (#961).
+    text = _collapsed(_GUIDANCE / "receipt.md")
+    assert "Answer each finding once; its `finding_frontier` may be the current status" in text
+    assert "answer each unanswered finding" in text
+    assert "answer only the findings it returned that remain unanswered" in text
+    assert "a material repair needs a qualifying recheck" in text
+    assert "and `work_closed` do not need a recheck" in text
     assert "Non-actionable observation-authored findings need no answer." in text
 
 
@@ -138,6 +157,10 @@ def test_every_host_skill_carries_the_same_closure_order(path: Path) -> None:
     text = _collapsed(path)
     assert "at its result frontier" not in text
     assert "at the result frontier" not in text
-    assert "current status frontier" in text
-    assert "`work_closed`" in text
-    assert "need no answer" in text
+    # The budgeted skills (8 KiB with the core) keep one closure line; the frontier and no-answer
+    # rules ride in the receipt topic every host carries as a reference (#961).
+    assert (
+        "For closure, publish evidence before `check`, answer findings, and request `receipt` last."
+        in text
+    )
+    assert "A `respond` does not clear a finding." in text

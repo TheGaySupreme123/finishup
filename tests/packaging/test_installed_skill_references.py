@@ -23,6 +23,7 @@ from yoetz.adapters.integrations.cursor_integration import render_cursor_plugin
 from yoetz.adapters.integrations.portable_plugin import build_portable_plugin_plan
 from yoetz.mcp.resources import GUIDANCE_RESOURCES, read_resource
 from yoetz.ports.plugin_artifacts import PluginFormatProfile
+from yoetz.protocol.guidance_uris import ALL_GUIDANCE_URIS
 
 _PACKAGED_ROOT: Final = Path(__file__).resolve().parents[2] / "src" / "yoetz" / "resources"
 _PACKAGED_SKILL: Final = _PACKAGED_ROOT / "skills" / "codex" / "yoetz" / "SKILL.md"
@@ -49,44 +50,47 @@ def test_the_skill_is_packaged_at_all() -> None:
 
 
 def test_step_zero_stops_on_an_empty_guidance_read() -> None:
-    """An empty resources/read is a silent miss, not a successful Step 0 (issue #203)."""
+    """A missing or clipped guidance body must enter the bounded recovery route."""
 
     text = _skill_text()
     collapsed = " ".join(text.split())
-    assert "resolve without any repository checkout" not in collapsed
-    assert "If a `resources/read` result has no text, call `read_guidance`" in collapsed
-    assert "with the same URI" in collapsed
-    assert "`references/<name>.md`" in collapsed
-    assert "Do not call `start` on an empty guidance body" in collapsed
-    # #300 trimmed the inlined set to agent-instructions.md. The skill must not tell the agent it
-    # already has workflow.md or coverage-and-receipts.md in context — a false pre-delivery claim
-    # licenses skipping the fetch, which is strictly worse than the #203 empty read it replaced.
-    # Since #918 the Codex host receives a compact summary, so the same rule now covers
-    # agent-instructions.md itself: the skill says to read it before the first `start`.
-    assert "Initialize `instructions` already include `agent-instructions.md`" not in collapsed
-    assert (
-        "Initialize `instructions` carry a compact summary of `agent-instructions.md`, not the "
-        "document; read it before the first `start`" in collapsed
+    safety_floor = " ".join(
+        (_PACKAGED_ROOT / "guidance" / "agent-instructions.md").read_text(encoding="utf-8").split()
     )
-    assert "`workflow.md`, and `coverage-and-receipts.md`" not in collapsed
+    combined = f"{collapsed} {safety_floor}"
+    assert "resolve without any repository checkout" not in collapsed
+    # Compaction (#984 budgets) folded the long recovery prose into one sentence: an empty or
+    # clipped body is re-read through ``read_guidance`` (same URI, verified text and byte counts),
+    # then the installed reference, and the skill itself says to page and verify before ``start``.
+    assert "If a body is empty or clipped, call `read_guidance` with the same URI" in combined
+    assert "verify the text and byte counts" in combined
+    assert "`page_size` is 4 to 16,384 UTF-8 bytes" in combined
+    assert "use installed `references/<name>.md`" in combined
+    assert "page and verify empty or clipped guidance" in collapsed
+    assert "The first workflow operation is `start`" in collapsed
+    assert "do not work without a task" in collapsed
+    # The skill routes to the compact core; it does not claim that any full document is already in
+    # the host context. Other procedures remain addressable through the topic catalog.
+    assert "yoetz://guidance/agent-instructions.md" in collapsed
+    assert "yoetz://guidance/workflow.md#start-and-resume" in collapsed
+    assert "already include `agent-instructions.md`" not in collapsed
     assert "Both are already in initialize `instructions`" not in collapsed
-    assert "Coverage and setup details are not prerequisites" in collapsed
-    assert "Before the first `check`" in collapsed
 
 
 def test_step_zero_does_not_use_resources_list_for_discovery() -> None:
     """A failed resources/list is not a missing server (issue #173)."""
 
-    text = _skill_text()
+    text = _skill_text() + (_PACKAGED_ROOT / "guidance" / "agent-instructions.md").read_text(
+        encoding="utf-8"
+    )
     collapsed = " ".join(text.split())
     assert "Do not call `resources/list` or `list_mcp_resources`" in collapsed
-    assert "The five URIs below are the complete catalog" in collapsed
-    assert "A list failure is not a missing server" in collapsed
-    assert "not a reason to read product source" in collapsed
+    assert "The five index URIs are the complete legacy catalog" in collapsed
+    assert "a list failure is not a missing server or reason to read product source" in collapsed
 
 
 def test_every_yoetz_uri_the_skill_names_is_a_registered_readable_resource() -> None:
-    registered = {resource.uri for resource in GUIDANCE_RESOURCES}
+    registered = set(ALL_GUIDANCE_URIS)
     named = set(_YOETZ_URI.findall(_skill_text()))
     assert named, "the skill names no guidance resources"
     unregistered = sorted(named - registered)
@@ -154,14 +158,22 @@ def test_skill_routes_to_the_readable_cadence_owner() -> None:
     """The entrypoint routes to one maintained cadence, rather than copying its whole table."""
 
     skill = _skill_text()
+    safety_floor = (_PACKAGED_ROOT / "guidance" / "agent-instructions.md").read_text(
+        encoding="utf-8"
+    )
+    # The compact skill names the operations it directs (`start`, `check`, `receipt`) and routes to
+    # the safety floor plus the workflow owner; the one-line cadence naming `publish_work` lives in
+    # the floor the skill tells the agent to read first.
     assert "yoetz://guidance/workflow.md" in skill
+    assert "yoetz://guidance/agent-instructions.md" in skill
     workflow = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
-    for operation in ("start", "publish_work", "status", "check", "respond", "receipt"):
-        assert f"`{operation}`" in skill
+    combined = f"{skill} {safety_floor}"
+    for operation in ("start", "publish_work", "check", "receipt"):
+        assert f"`{operation}`" in combined
         assert _cadence_row(workflow, operation)
     cadence = _cadence_row(workflow, "check")
     assert "A check with no new events since the last one adds nothing" in cadence
-    assert "not the finding's `subject_frontier`" in _cadence_row(workflow, "respond")
+    assert "never use the finding's `subject_frontier`" in _cadence_row(workflow, "respond")
 
 
 def test_the_skill_does_not_promise_that_responding_clears_a_finding() -> None:
@@ -169,7 +181,7 @@ def test_the_skill_does_not_promise_that_responding_clears_a_finding() -> None:
 
     text = _skill_text()
     assert "unresolved_findings_remain" in text
-    assert "it does not clear the finding" in text
+    assert "A `respond` does not clear a finding" in text
 
 
 def test_start_is_authorable_from_guidance_without_reading_product_source() -> None:

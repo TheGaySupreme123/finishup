@@ -7,11 +7,12 @@ from enum import Enum
 from typing import Final
 
 from yoetz.domain.findings import (
-    FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
     FindingOrigin,
     RankedFindings,
+    finding_demands_work,
+    is_limitation_request,
     rank_key,
 )
 from yoetz.domain.receipts import (
@@ -36,6 +37,10 @@ _COMPLETION_SCOPE_GAPS: Final = frozenset(
 
 class CheckCompleteness(str, Enum):  # noqa: UP042 - exact internal contract token
     COMPLETE = "complete"
+    # Deterministic-only checks may have the standing absence-of-semantic-review limitation while
+    # still reporting a bounded local result.  This is an internal ranking state; the public
+    # coverage vector continues to carry every gap and the receipt remains coverage-bounded.
+    SCOPED_COMPLETE = "scoped_complete"
     COVERAGE_INCOMPLETE = "coverage_incomplete"
     REQUIRED_INCOMPLETE = "required_incomplete"
 
@@ -134,10 +139,19 @@ def _verdict(
         return CheckVerdict.INSUFFICIENT_COVERAGE
     if context.completeness is CheckCompleteness.REQUIRED_INCOMPLETE:
         return CheckVerdict.INCOMPLETE_CHECK
-    if any(FINDING_KIND_TRAITS[finding.kind][1] for finding in selected):
+    if any(finding_demands_work(finding) for finding in selected):
         return CheckVerdict.ACTION_REQUIRED
-    if context.completeness is CheckCompleteness.COVERAGE_INCOMPLETE:
+    if context.completeness is CheckCompleteness.COVERAGE_INCOMPLETE or any(
+        is_limitation_request(finding) for finding in selected
+    ):
+        # A reviewer's limitation request asks the agent to state a limit, not to do work: it can
+        # never read as clean and never demands repair (ADR-046, owner decision Q4).
         return CheckVerdict.INSUFFICIENT_COVERAGE
+    if context.completeness is CheckCompleteness.SCOPED_COMPLETE:
+        # A non-actionable coverage finding can remain visible beside a scoped result.  It does
+        # not make the local work actionable, but the selected row is still returned rather than
+        # tripping the complete-context invariant below.
+        return CheckVerdict.NO_ISSUE_DETECTED
     if selected:
         raise ProtocolValueError("invalid_ranked_findings")
     return CheckVerdict.NO_ISSUE_DETECTED

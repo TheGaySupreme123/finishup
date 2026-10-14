@@ -77,6 +77,14 @@ def _resources() -> _Resources:
         "guidance/publication-policy.md": b"# Publication policy\n",
         "guidance/request-templates.md": b"# Request templates\n",
         "guidance/workflow.md": b"# Workflow\n",
+        "guidance/startup.md": b"# Startup\n",
+        "guidance/recovery.md": b"# Recovery\n",
+        "guidance/publication.md": b"# Publication\n",
+        "guidance/review.md": b"# Review\n",
+        "guidance/receipt.md": b"# Receipt\n",
+        "guidance/delegation.md": b"# Delegation\n",
+        "guidance/consent.md": b"# Consent\n",
+        "guidance/page-delivery.md": b"# Page delivery\n",
     }
     installed_paths = {
         "SKILL.md": "skills/codex/yoetz/SKILL.md",
@@ -85,6 +93,14 @@ def _resources() -> _Resources:
         "references/publication-policy.md": "guidance/publication-policy.md",
         "references/request-templates.md": "guidance/request-templates.md",
         "references/workflow.md": "guidance/workflow.md",
+        "references/startup.md": "guidance/startup.md",
+        "references/recovery.md": "guidance/recovery.md",
+        "references/publication.md": "guidance/publication.md",
+        "references/review.md": "guidance/review.md",
+        "references/receipt.md": "guidance/receipt.md",
+        "references/delegation.md": "guidance/delegation.md",
+        "references/consent.md": "guidance/consent.md",
+        "references/page-delivery.md": "guidance/page-delivery.md",
     }
     managed_members: list[JsonValue] = []
     for logical_name, package_path in installed_paths.items():
@@ -163,9 +179,17 @@ def test_injected_source_is_manifest_verified_and_marker_is_path_free() -> None:
         "SKILL.md",
         "manifest.json",
         "references/agent-instructions.md",
+        "references/consent.md",
         "references/coverage-and-receipts.md",
+        "references/delegation.md",
+        "references/page-delivery.md",
         "references/publication-policy.md",
+        "references/publication.md",
+        "references/receipt.md",
+        "references/recovery.md",
         "references/request-templates.md",
+        "references/review.md",
+        "references/startup.md",
         "references/workflow.md",
     )
     marker = build_managed_marker(source, IntegrationScope.TRUSTED_PROJECT)

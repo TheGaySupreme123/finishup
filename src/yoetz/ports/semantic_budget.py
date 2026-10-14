@@ -1,8 +1,9 @@
 """Per-check AI-powered review budget profile (issue #571, ADR-006 amendment).
 
 A check's semantic review runs under exactly one closed budget profile. ``final`` covers a
-frontier that carries an effective completion claim; every other check is a ``routine``
-checkpoint. The profile is a pure function of the frozen case, is frozen into the durable
+frontier that carries an effective completion claim, and the closing review a check requests with
+``final_review`` (issue #976); every other check is a ``routine`` checkpoint. The profile is a pure
+function of the frozen case and the check request, is frozen into the durable
 execution snapshot, and is exposed to the provider adapter only for the duration of one physical
 dispatch. Adapters map it to their own configured effort and output limit; the profile itself
 never widens disclosure, retention, provider authority, deadlines, or retry policy.
@@ -49,12 +50,21 @@ _current_profile: ContextVar[SemanticBudgetProfile | None] = ContextVar(
 _background: ContextVar[bool] = ContextVar("semantic_budget_background", default=False)
 
 
-def select_semantic_budget_profile(projection: ProjectionState) -> SemanticBudgetProfile:
-    """Select the closed budget profile for one check from its frozen projection."""
+def select_semantic_budget_profile(
+    projection: ProjectionState, *, final_review: bool = False
+) -> SemanticBudgetProfile:
+    """Select the closed budget profile for one check from its frozen projection.
 
-    if type(projection) is not ProjectionState:
+    ``final_review`` is the check request's closing-review choice (issue #976). The closing review
+    is the final phase whether or not a completion claim is in effect: an agent that stops
+    without claiming completion is still judged for completeness before it closes. The request
+    is part of the check's idempotent request digest, so a recovered check selects the same
+    profile.
+    """
+
+    if type(projection) is not ProjectionState or type(final_review) is not bool:
         raise TypeError("semantic_budget_projection_invalid")
-    return "final" if completion_claim_present(projection) else "routine"
+    return "final" if final_review or completion_claim_present(projection) else "routine"
 
 
 def parse_semantic_budget_profile(value: object) -> SemanticBudgetProfile:

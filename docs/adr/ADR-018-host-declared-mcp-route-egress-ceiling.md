@@ -52,7 +52,8 @@ AI-powered review would be dishonest.
 5. **Descriptor sets are frozen per profile.** The policy profile advertises
    `check.openWorldHint=true`. The strict profile advertises `false` and says that the route will not
    request external AI-powered review. Both exact descriptor sets (six workflow tools plus
-   read-only `read_guidance`) and their set digests are conformance-tested. Annotations remain
+   read-only `read_guidance` and `closure_prepare` support tools) and their set digests are
+   conformance-tested. Annotations remain
    untrusted hints; enforcement is owned by the application route constraint.
 
 6. **Initialize and versions status disclose the active profile.** Initialize instructions name

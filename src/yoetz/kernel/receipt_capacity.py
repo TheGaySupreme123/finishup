@@ -9,19 +9,17 @@ from yoetz.domain.events import CheckRecordedPayload, LedgerRecord
 from yoetz.domain.findings import Finding, rank_key
 from yoetz.domain.receipts import (
     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
-    semantic_coverage_gap_code,
+    recorded_semantic_outcome_gap_code,
 )
+from yoetz.kernel.check_standing import check_standing
 from yoetz.kernel.deterministic_checks import (
     build_deterministic_case,
     healthy_storage_availability,
 )
 from yoetz.kernel.finding_resolution import finding_is_resolved, issue_key
-from yoetz.kernel.finding_todo import finding_blocks_receipt
-from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
+from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.reducers import (
     ReplayIndex,
-    invalidates_recorded_check,
-    is_material_event_family,
 )
 from yoetz.protocol.coverage import MAX_KNOWN_GAPS
 
@@ -68,20 +66,30 @@ def current_receipt_findings(projection: ProjectionState) -> tuple[Finding, ...]
     return tuple(sorted((item[1] for item in newest.values()), key=rank_key))
 
 
-def receipt_blocking_finding_count(projection: ProjectionState) -> int:
-    """Count current actionable findings that prevent a clean receipt conclusion.
+def receipt_blocking_finding_count(
+    projection: ProjectionState, records: tuple[LedgerRecord, ...] = ()
+) -> int:
+    """Count the findings that hold a receipt at ``unresolved_findings_remain``.
 
-    Responses record a disposition but never resolve a finding for receipt purposes; only a later
-    qualifying check does (``kernel/finding_resolution.py``), and a resolved row stays visible as
-    history without counting here. Non-actionable findings remain visible and can contribute
-    coverage gaps, but they do not by themselves select ``unresolved_findings_remain``. A
-    terminal ``rejection_accepted`` row stops counting but stays disclosed; an
-    ``acknowledged_not_done`` row keeps counting (issue #905, ``kernel/finding_todo.py``).
+    This is the wire value ``receipt_blocking_finding_count``: findings to do plus acknowledged
+    requirements (``kernel.closure_class``, ADR-046). Responses record a disposition but never
+    resolve a finding; only a later qualifying check does, and a resolved row stays visible as
+    history. A non-actionable finding, a limitation the reviewer asked the agent to state, a
+    ``rejection_accepted``, ``self_verified`` or ``disputed_after_rebuttal`` row and an
+    acknowledged bookkeeping finding do not count: they stay disclosed and cap the conclusion at
+    ``insufficient_coverage``. A linked ``duplicate_of`` group counts once, as its most severe member
+    (``counted_findings``). ``records`` (the prefix the projection replays) lets the classifier know whether
+    the route can still rule on a rejection.
     """
 
+    from yoetz.kernel.closure_class import ReceiptEffect, counted_findings, finding_closures
+
     return sum(
-        finding_blocks_receipt(projection, finding.finding_id)
-        for finding in current_receipt_findings(projection)
+        1
+        for closure in counted_findings(
+            finding_closures(projection, records=records, with_self_verify=False).values()
+        ).values()
+        if closure.receipt_effect is ReceiptEffect.UNRESOLVED_FINDINGS_REMAIN
     )
 
 
@@ -141,25 +149,11 @@ def _receipt_gap_codes(
     for coverage in case.coverage_by_ref.values():
         codes.update(coverage.known_gaps)
 
-    latest = projection.latest_tested_state
-    check_record = None
-    if latest is not None:
-        check_record = next(
-            (record for record in records if record.event_id == latest.source_check_event_id),
-            None,
-        )
-    limitations = observation_limitation_finding_ids(projection, records)
-    if latest is None:
+    standing = check_standing(projection, records)
+    check_record = standing.check_record
+    if standing.latest is None:
         codes.add(_CHECK_NOT_RECORDED)
-    elif check_record is not None and any(
-        invalidates_recorded_check(
-            record,
-            check_record.ledger.ingestion_sequence,
-            latest.returned_finding_ids,
-            limitation_finding_ids=limitations,
-        )
-        for record in records
-    ):
+    elif check_record is not None and standing.superseded:
         codes.add(_CHECK_NOT_APPLICABLE)
     elif check_record is not None and type(check_record.payload) is CheckRecordedPayload:
         codes.update(check_record.payload.coverage.known_gaps)
@@ -167,16 +161,14 @@ def _receipt_gap_codes(
         # recorded coverage. A legacy payload can carry a terminal AI-powered review status whose code is
         # absent from ``known_gaps``; omitting it here would admit a state at exactly the bound
         # that receipt construction then pushes one code over.
-        semantic_gap = semantic_coverage_gap_code(
-            check_record.payload.semantic_status, check_record.payload.semantic_reason
+        semantic_gap = recorded_semantic_outcome_gap_code(
+            check_record.payload.semantic_status,
+            check_record.payload.semantic_reason,
+            route_required=check_record.payload.semantic_route_required,
         )
         if semantic_gap is not None:
             codes.add(semantic_gap)
-        if any(
-            is_material_event_family(record.schema.name)
-            and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
-            for record in records
-        ):
+        if standing.counted:
             codes.add(CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP)
     else:
         codes.add(_CHECK_PAYLOAD_UNAVAILABLE)

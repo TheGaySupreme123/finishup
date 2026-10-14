@@ -41,9 +41,14 @@ from yoetz.ports.plugin_artifacts import (
     PluginProofFacet,
 )
 from yoetz.protocol.canonical import JsonValue, canonical_encode
+from yoetz.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
 from yoetz.version import read_verified_resource
 
 _REQUEST = request_id("req_10000000-0000-4000-8000-000000000001")
+_GUIDANCE_NAMES = tuple(
+    uri.removeprefix("yoetz://guidance/")
+    for uri in (*GUIDANCE_DOCUMENT_URIS, *FOCUSED_GUIDANCE_URIS)
+)
 
 
 def test_required_startup_install_inspect_and_reverse(tmp_path: Path) -> None:
@@ -322,16 +327,11 @@ def test_native_projection_uses_claude_skill_and_shared_guidance_components() ->
     assert external.members["skills/yoetz/SKILL.md"] == read_verified_resource(
         "skills/claude-code/yoetz/SKILL.md"
     )
-    for name in (
-        "agent-instructions.md",
-        "coverage-and-receipts.md",
-        "publication-policy.md",
-        "request-templates.md",
-        "workflow.md",
-    ):
+    for name in _GUIDANCE_NAMES:
         assert external.members[f"skills/yoetz/references/{name}"] == read_verified_resource(
             f"guidance/{name}"
         )
+        assert f"guidance/{name}" in external.plan.source_refs
     assert ".mcp.json" not in external.members
     # The plugin-owned MCP entry and every hook launch the exact bound installation, never a
     # bare PATH lookup: the 2026-08-27 dogfood's bridge/service split-brain came from PATH.
@@ -348,16 +348,7 @@ def test_native_projection_uses_claude_skill_and_shared_guidance_components() ->
         ".mcp.json",
         "hooks/hooks.json",
         "skills/yoetz/SKILL.md",
-        *{
-            f"skills/yoetz/references/{name}"
-            for name in (
-                "agent-instructions.md",
-                "coverage-and-receipts.md",
-                "publication-policy.md",
-                "request-templates.md",
-                "workflow.md",
-            )
-        },
+        *{f"skills/yoetz/references/{name}" for name in _GUIDANCE_NAMES},
     }
     manifest = json.loads(managed.members[".claude-plugin/plugin.json"])
     marketplace = json.loads(managed.marketplace_manifest)

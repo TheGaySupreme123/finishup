@@ -43,6 +43,7 @@ from yoetz.application.observation_advice_semantic import (
     ObservationAdviceSemanticWorker,
 )
 from yoetz.domain.privacy import (
+    MAX_WITHHELD_ITEM_IDS,
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -64,6 +65,7 @@ from yoetz.domain.privacy import (
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
+    ReceiptSecretScanStage,
     ReceiptTransformations,
     RequestCommitment,
     ReviewContextProfile,
@@ -295,6 +297,21 @@ def _receipt() -> LocalDisclosureReceipt:
         ReceiptSecretScan("scanner-v1", _DIGEST, 0, True),
         None,
         1,
+    )
+
+
+def _legacy_receipt_view(
+    receipt: LocalDisclosureReceipt | EgressReceipt,
+) -> LocalDisclosureReceipt | EgressReceipt:
+    """Memory and SQLite expose the same uncertainty for released 1.0 receipt bytes."""
+
+    return replace(
+        receipt,
+        secret_scan=replace(
+            receipt.secret_scan,
+            stage=ReceiptSecretScanStage.LEGACY_UNKNOWN,
+            not_run_reason=None,
+        ),
     )
 
 
@@ -638,6 +655,9 @@ def test_memory_and_sqlite_projection_replay_and_cursor_behavior_match() -> None
             PrivacyReceiptQuery(limit=1, cursor=memory_first.next_cursor),
             PrivacyReceiptAudience.TRUSTED_LOCAL_CONTROL,
         )
+        assert tuple(
+            view.receipt for view in sqlite_first.receipts + sqlite_second.receipts
+        ) == tuple(view.receipt for view in memory_first.receipts + memory_second.receipts)
         return (
             tuple(
                 view.receipt.receipt_id for view in sqlite_first.receipts + sqlite_second.receipts
@@ -761,6 +781,8 @@ def test_memory_and_sqlite_content_proposal_root_sets_match() -> None:
         results: list[tuple[object, ...]] = []
         for audit in (sqlite, memory):
             reserved = await audit.prepare_disclosure_proposal(request)
+            assert reserved.proposal.scanner_registry_version == minimized.scanner_registry_version
+            assert reserved.proposal.scanner_profile_digest == minimized.scanner_profile_digest
             roots = await audit.live_object_roots(_TASK, _ROUTE_DIGEST)
             results.append(
                 (
@@ -776,6 +798,14 @@ def test_memory_and_sqlite_content_proposal_root_sets_match() -> None:
 
     assert sqlite_result == memory_result
     assert sqlite_result[3] == (_OBJECT,)
+
+
+def test_minimized_disclosure_rejects_an_oversized_opaque_omission_set() -> None:
+    minimized = _external_disclosure_request().minimized
+    too_many = tuple(f"item-{index:03d}" for index in range(MAX_WITHHELD_ITEM_IDS + 1))
+
+    with pytest.raises(ValueError, match="invalid_privacy_port_value"):
+        replace(minimized, withheld_item_ids=too_many)
 
 
 def test_memory_and_sqlite_agree_on_which_disclosures_are_still_decidable() -> None:
@@ -953,6 +983,49 @@ def test_catalog_resume_finds_disclosure_by_case_digest() -> None:
     assert isinstance(result, SemanticEgressAwaitingHuman)
     assert result.request_id == _REQUEST
     assert result.privacy_proposal_id == _PROPOSAL
+
+
+def test_catalog_resume_rejects_replaced_active_route() -> None:
+    db = _database()
+    _insert_task_route(db)
+    objects = _StoredObjects()
+    audit = CatalogPrivacyAudit(db, objects, _Key(), _Clock())  # type: ignore[arg-type]
+
+    async def run() -> None:
+        prepared = await audit.prepare_disclosure_proposal(_external_disclosure_request())
+        assert prepared.proposal.route_identity_digest == _ROUTE_DIGEST
+        assert prepared.proposal.included_item_ids == ("item-1",)
+        db.execute(
+            "UPDATE task_routes SET active_route_identity_digest = ? WHERE task_id = ?",
+            (f"sha256:{'9' * 64}", _TASK),
+        )
+        assert await audit.load_disclosure_proposal(prepared.proposal.privacy_proposal_id) is None
+
+    asyncio.run(run())
+
+
+def test_catalog_proposal_persists_redacted_value_lines_for_resume() -> None:
+    """PL2-1 (issue #982): refs and lines survive the proposal round trip; absent stays absent."""
+
+    from yoetz.protocol.redacted_values import SemanticRedactedValue
+
+    db = _database()
+    _insert_task_route(db)
+    objects = _StoredObjects()
+    audit = CatalogPrivacyAudit(db, objects, _Key(), _Clock())  # type: ignore[arg-type]
+    values = (SemanticRedactedValue("item-1", "value_replaced", (2, 5), "evd_ref-1"),)
+
+    async def run() -> None:
+        request = _external_disclosure_request()
+        prepared = await audit.prepare_disclosure_proposal(
+            replace(request, minimized=replace(request.minimized, redacted_values=values))
+        )
+        assert prepared.proposal.redacted_values == values
+        loaded = await audit.load_disclosure_proposal(prepared.proposal.privacy_proposal_id)
+        assert loaded is not None
+        assert loaded.redacted_values == values
+
+    asyncio.run(run())
 
 
 def test_catalog_disclosure_attempt_rejects_tampered_lookup_identity() -> None:
@@ -1529,7 +1602,8 @@ def test_completed_network_egress_receipt_is_retrievable_and_listable() -> None:
 
     receipt, fetched, by_provider, other_provider = asyncio.run(run())
 
-    assert fetched == NetworkEgressReceiptView("network_egress", receipt)
+    expected = cast(EgressReceipt, _legacy_receipt_view(receipt))
+    assert fetched == NetworkEgressReceiptView("network_egress", expected)
     assert by_provider.receipts == (fetched,)
     assert other_provider.receipts == ()
 
@@ -1629,9 +1703,12 @@ def test_an_unreadable_row_is_skipped_counted_and_named_not_fatal_to_the_page(
         )
     )
 
-    assert [view.receipt for view in first.receipts] == [stored[0], stored[2]]
+    assert [view.receipt for view in first.receipts] == [
+        _legacy_receipt_view(stored[0]),
+        _legacy_receipt_view(stored[2]),
+    ]
     assert (first.undecodable_count, first.undecodable_receipt_ids) == (1, (garbled.receipt_id,))
-    assert [view.receipt for view in second.receipts] == [stored[5]]
+    assert [view.receipt for view in second.receipts] == [_legacy_receipt_view(stored[5])]
     assert (second.undecodable_count, second.undecodable_receipt_ids) == (
         2,
         (older.receipt_id, moved.receipt_id),
@@ -1830,3 +1907,27 @@ def test_a_cursor_this_store_minted_with_a_non_text_position_is_a_store_fault() 
         )
 
     assert raised.value.reason == "privacy_audit_page_invariant_violated"
+
+
+def test_sqlite_status_reports_the_grant_a_pending_carry_forward_will_create() -> None:
+    """Issue #982 review: the derivation matches what carry-forward then writes."""
+
+    from yoetz.application.privacy_policy import credential_heuristic_state
+    from yoetz.domain.privacy import CredentialHeuristic
+
+    db = _database()
+    store = CatalogPrivacyPolicyStore(db, _Clock())
+    machine = replace(minimal_external_policy(), credential_heuristic=CredentialHeuristic.DISABLED)
+    repository = AuthorizationScope(
+        AuthorizationScopeKind.WORKSPACE, _INSTALLATION, "hmac-sha256:" + "1" * 64
+    )
+
+    async def run() -> tuple[object, object]:
+        await store.seed_if_absent(machine)
+        before = credential_heuristic_state(await store.repository_authority(repository))
+        carried = await store.carry_forward_repository_authority(repository)
+        return before, credential_heuristic_state(carried)
+
+    before, after = asyncio.run(run())
+    assert (before.repository, before.machine_default) == ("disabled", "disabled")  # type: ignore[attr-defined]
+    assert after.repository == before.repository  # type: ignore[attr-defined]

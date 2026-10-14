@@ -20,6 +20,7 @@ from typing import cast
 import pytest
 
 import integration.service.test_semantic_non_dispatch as non_dispatch
+import yoetz.application.check as check_module
 import yoetz.observability.diagnostics as diagnostics_module
 import yoetz.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import (
@@ -70,7 +71,6 @@ from yoetz.domain.privacy import (
     PrivacyReason,
     ProviderBinding,
     ReviewContextProfile,
-    ReviewSelectionPolicy,
 )
 from yoetz.domain.receipts import (
     CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP,
@@ -106,6 +106,7 @@ _durable_semantic_case = getattr(non_dispatch, "_durable_semantic_case")
 _PolicyApplication = getattr(non_dispatch, "_PolicyApplication")
 _test_effective_policy = getattr(non_dispatch, "_test_effective_policy")
 _SECRET = "ghp_" + "Q" * 36
+_packet_limits = getattr(check_module, "_packet_limits")
 
 
 def _git(repository: Path, *arguments: str) -> None:
@@ -194,6 +195,18 @@ def _change_text(candidate: CandidateContext) -> str:
     ]
     assert parts, "the packet carries no check-time change"
     return "".join(parts)
+
+
+def _packet_gaps(candidate: CandidateContext) -> list[str]:
+    """The known gaps the review packet the privacy gateway was offered carries."""
+
+    envelope = strict_json_parse(
+        next(item.plaintext for item in candidate.items if item.item_id == REVIEW_PACKET_ITEM_ID)
+    )
+    assert isinstance(envelope, dict)
+    packet = cast(dict[str, object], envelope["review_packet"])
+    coverage = cast(dict[str, object], packet["coverage"])
+    return cast(list[str], coverage["known_gaps"])
 
 
 @pytest.fixture(autouse=True)
@@ -299,6 +312,9 @@ async def test_shell_rewrites_and_commits_reach_the_packet_and_survive_replay(
     assert all(scan_exact_bytes(item.plaintext) == () for item in candidate.items)
     assert CHECK_TIME_CHANGE_REDACTED_GAP in waiting.case_content_gaps
     assert CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP not in waiting.case_content_gaps
+    # The change text itself was redacted: a reviewer's diff request is Yoetz's packet limit.
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in waiting.case_content_gaps
+    assert _packet_limits(waiting, ())["change_clipped"]
     # Keyed commitments to the files the packet carried: the rewritten file whole, the test file
     # with its redacted fixture token only in part (ADR-031 resolution rule).
     shown = waiting.check_change_files
@@ -367,16 +383,6 @@ async def test_task_without_a_recorded_base_pins_its_first_check_and_discloses_i
     assert await getattr(runtime.ledger, "load_task_change_base")() is not None
 
 
-def _all_parts(capture: CheckChangeCapture) -> int:
-    from yoetz.application import semantic_case as module
-
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
-    chunks = getattr(module, "_check_time_change_chunks")(
-        capture.text, getattr(module, "_check_time_change_part_limit")(selection)
-    )
-    return len(cast(tuple[bytes, ...], chunks))
-
-
 @pytest.mark.anyio
 async def test_legacy_task_keeps_its_pinned_base_across_a_repair_commit(tmp_path: Path) -> None:
     """ADR-031: a task with no start base must not re-base on HEAD at every check."""
@@ -385,7 +391,6 @@ async def test_legacy_task_keeps_its_pinned_base_across_a_repair_commit(tmp_path
     _, runtime = await _durable_semantic_case(memory_adapter(append_command()))
     port = GitChangeCaptureAdapter()
     source = CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
 
     async def check(suffix: str) -> tuple[CheckChangeCapture, CheckChangeShownFiles]:
         outcome = await capture_check_time_change(
@@ -398,9 +403,7 @@ async def test_legacy_task_keeps_its_pinned_base_across_a_repair_commit(tmp_path
         )
         assert outcome.change is not None
         capture = outcome.change.capture
-        files = await check_change_shown_files(
-            runtime, outcome.change, selection, _all_parts(capture)
-        )
+        files = await check_change_shown_files(runtime, outcome.change, len(capture.text))
         return capture, files
 
     _python_rewrite(repository, "String(key)", "`${typeof key}:${String(key)}`")
@@ -555,7 +558,6 @@ async def test_shown_file_commitments_are_keyed_to_the_task_and_bound_to_the_bas
             datetime(2026, 9, 29, tzinfo=UTC),
         ),
     )
-    selection = ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED)
 
     async def commitments(base_commit: str) -> tuple[str, ...]:
         capture = CheckChangeCapture(
@@ -567,9 +569,7 @@ async def test_shown_file_commitments_are_keyed_to_the_task_and_bound_to_the_bas
             truncated=False,
             base_commit=base_commit,
         )
-        files = await check_change_shown_files(
-            runtime, CheckTimeChange(stored, capture), selection, 1
-        )
+        files = await check_change_shown_files(runtime, CheckTimeChange(stored, capture), len(text))
         assert files.complete and not files.partially_shown
         return files.fully_shown
 
@@ -615,8 +615,7 @@ async def _files_for(runtime: TaskRuntime, repository: Path, suffix: str) -> Che
     return await check_change_shown_files(
         runtime,
         outcome.change,
-        ReviewSelectionPolicy.for_profile(ReviewContextProfile.EXPANDED),
-        _all_parts(outcome.change.capture),
+        len(outcome.change.capture.text),
     )
 
 
@@ -657,3 +656,237 @@ async def test_a_file_whose_change_kind_changed_never_matches_itself(
 
     assert raised.fully_shown  # the file was shown whole to the raising review
     assert repair.covers(raised) is covered
+
+
+@pytest.mark.anyio
+async def test_nested_repository_task_input_and_deliverables_reach_the_recorded_packet(
+    tmp_path: Path,
+) -> None:
+    """Issue #1045: live-database-cutover's nested ``api`` repository, vba-userform-port's input
+    file and the declared deliverables all reach the packet the privacy gateway is offered."""
+
+    from builders.policy_cases import evt, plan_record
+    from yoetz.domain.events import (
+        PlanPublishedPayload,
+        RequestedItem,
+        RequestedItemKind,
+        RequestedItemRole,
+    )
+    from yoetz.domain.task_statement import RecordedTaskStatement
+
+    repository = _repository(tmp_path)
+    (repository / "spec").mkdir()
+    (repository / "spec" / "RULES.md").write_text(
+        "# Cutover rules\nRULES_INPUT_MARKER: never drop the legacy table first.\n",
+        encoding="utf-8",
+    )
+    _git(repository, "add", "--", "spec/RULES.md")
+    _git(repository, "commit", "--quiet", "-m", "rules")
+    (repository / "index.json").write_text('{"PREEXISTING_MARKER": 1}\n', encoding="utf-8")
+    nested = repository / "api"
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet")
+    (nested / "server.py").write_text("DATABASE = 'legacy'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _git(nested, "commit", "--quiet", "-m", "api baseline")
+
+    adapter = memory_adapter(append_command())
+    frozen, runtime = await _kea_case(adapter, repository)
+    (nested / "server.py").write_text("DATABASE = 'NESTED_CUTOVER_MARKER'\n", encoding="utf-8")
+
+    obligation = obligation_record(
+        ObligationPublishedPayload(
+            obl(1),
+            "Cut the API over",
+            "api/server.py uses the new database",
+            ObligationStatus.OPEN,
+            requested_items=(
+                RequestedItem(RequestedItemKind.FILE, "api/server.py", RequestedItemRole.OUTPUT),
+            ),
+        ),
+        1,
+    )
+    claim = record(
+        ClaimRecordedPayload(
+            clm(1), ClaimKind.COMPLETION, "Cut over", (), obligation_refs=(obl(1),)
+        ),
+        1,
+    )
+    case = make_case(
+        plans={1: plan_record(PlanPublishedPayload(1, "Cut over", (obl(1),)), 1)},
+        obligations={obl(1): obligation},
+        claims={clm(1): claim},
+        extra_refs=(clm(1), obl(1), evt(1)),
+    )
+    lease_frontier = frozen.lease.frontier
+    case = replace(
+        case,
+        projection=replace(
+            case.projection,
+            frontier=lease_frontier.sequence,
+            head_digest=lease_frontier.head_digest,
+        ),
+        frontier=lease_frontier,
+        task_statement=RecordedTaskStatement(
+            text="Cut the API over to the new database; follow spec/RULES.md exactly.",
+            source_event_id=evt(1),
+            source_family="session_opened",
+            ingestion_sequence=1,
+        ),
+    )
+    frozen = FrozenCase(case, frozen.lease)
+
+    privacy = _Privacy(task_id=runtime.task_id, profile=ReviewContextProfile.EXPANDED)
+    with check_workspace_source_scope(CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)):
+        waiting = await _evaluator(privacy, runtime)(frozen, (), runtime)
+
+    assert waiting.status is SemanticStatus.AWAITING_HUMAN
+    candidate = privacy.candidates[0]
+    change = _change_text(candidate)
+    # The nested repository's own diff, under its directory, from its task-start commit.
+    assert "Nested repository api/: its own change is shown under that directory" in change
+    assert "+DATABASE = 'NESTED_CUTOVER_MARKER'" in change
+    # The untracked file that predates the task is baseline, not an addition.
+    assert "PREEXISTING_MARKER" not in change and "index.json" not in change
+    items = {item.item_id: item for item in candidate.items}
+    task_input = items["task-input-01"]
+    assert task_input.category is DataCategory.REPOSITORY_EXCERPT
+    assert b"RULES_INPUT_MARKER" in task_input.plaintext
+    deliverables = items["declared-deliverables"]
+    assert deliverables.category is DataCategory.OBLIGATION_TEXT
+    body = strict_json_parse(deliverables.plaintext)
+    assert isinstance(body, dict)
+    rows = cast(list[dict[str, object]], body["deliverables"])
+    assert [row["in_check_time_change"] for row in rows] == ["modified"]
+    # Recorded and egress-counted like every other item: the composed manifest lists the input.
+    envelope = strict_json_parse(items[REVIEW_PACKET_ITEM_ID].plaintext)
+    assert isinstance(envelope, dict)
+    packet = cast(dict[str, object], envelope["review_packet"])
+    manifest = cast(dict[str, object], packet["review_input_manifest"])
+    caller = cast(dict[str, object], manifest["caller_evidence"])
+    assert "task-input-01" in cast(list[str], caller["item_ids"])
+    assert "declared-deliverables" in cast(list[str], packet["obligation_item_ids"])
+    assert all(scan_exact_bytes(item.plaintext) == () for item in candidate.items)
+
+
+@pytest.mark.anyio
+async def test_changed_submodule_whose_own_change_is_not_read_is_disclosed_as_truncated(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a submodule checkout is never opened, so the check's coverage must say
+    its change was cut even though the gitlink's commit-id lines are shown."""
+
+    repository = _repository(tmp_path)
+    nested = repository / "api"
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet", f"--separate-git-dir={tmp_path / 'api.git'}")
+    (nested / "server.py").write_text("DATABASE = 'legacy'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _git(nested, "commit", "--quiet", "-m", "api baseline")
+    _git(repository, "add", "--", "api")
+    _git(repository, "commit", "--quiet", "-m", "track api")
+    frozen, runtime = await _kea_case(memory_adapter(append_command()), repository)
+    (nested / "server.py").write_text("DATABASE = 'SUBMODULE_CANARY'\n", encoding="utf-8")
+    _git(nested, "commit", "--quiet", "-am", "cut over")
+    privacy = _Privacy(task_id=runtime.task_id, profile=ReviewContextProfile.EXPANDED)
+
+    with check_workspace_source_scope(CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)):
+        waiting = await _evaluator(privacy, runtime)(frozen, (), runtime)
+
+    text = _change_text(privacy.candidates[0])
+    assert "SUBMODULE_CANARY" not in text
+    assert "Nested repository api/: its own change is not shown" in text
+    assert "Not shown: 1." in text
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in _packet_gaps(privacy.candidates[0])
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP in waiting.case_content_gaps
+
+
+@pytest.mark.anyio
+async def test_a_nested_repository_never_sends_what_predates_the_task_as_its_change(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: a gitlinked repository's commit made before the task (never recorded by
+    the outer gitlink) and a developer's untracked note inside it reached the packet as the
+    agent's change. The recorded task-start base now carries the repository's own HEAD and its
+    untracked listing: the note is its starting state, while the agent's new file is shown."""
+
+    repository = _repository(tmp_path)
+    nested = repository / "api"
+    nested.mkdir(mode=0o700)
+    _git(nested, "init", "--quiet")
+    (nested / "server.py").write_text("DATABASE = 'legacy'\n", encoding="utf-8")
+    _git(nested, "add", "--", "server.py")
+    _git(nested, "commit", "--quiet", "-m", "api baseline")
+    _git(repository, "add", "--", "api")
+    _git(repository, "commit", "--quiet", "-m", "track api")
+    (nested / "private.py").write_text("PRE_TASK_COMMIT_MARKER = 1\n", encoding="utf-8")
+    _git(nested, "add", "--", "private.py")
+    _git(nested, "commit", "--quiet", "-m", "committed inside api only, before the task")
+    (nested / "notes.md").write_text("NESTED_NOTE_MARKER\n", encoding="utf-8")
+    frozen, runtime = await _kea_case(memory_adapter(append_command()), repository)
+    (nested / "server.py").write_text("DATABASE = 'NESTED_CUTOVER_MARKER'\n", encoding="utf-8")
+    (nested / "migrate.py").write_text("NESTED_MIGRATION_MARKER = 1\n", encoding="utf-8")
+    privacy = _Privacy(task_id=runtime.task_id, profile=ReviewContextProfile.EXPANDED)
+
+    with check_workspace_source_scope(CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)):
+        waiting = await _evaluator(privacy, runtime)(frozen, (), runtime)
+
+    candidate = privacy.candidates[0]
+    text = _change_text(candidate)
+    assert "+DATABASE = 'NESTED_CUTOVER_MARKER'" in text
+    assert "+NESTED_MIGRATION_MARKER = 1" in text  # the agent's new file inside the repository
+    assert "PRE_TASK_COMMIT_MARKER" not in text and "api/private.py" not in text
+    assert "NESTED_NOTE_MARKER" not in text and "api/notes.md" not in text
+    assert "from the commit it held when the task started.\n" in text
+    assert all(b"NESTED_NOTE_MARKER" not in item.plaintext for item in candidate.items)
+    assert all(b"PRE_TASK_COMMIT_MARKER" not in item.plaintext for item in candidate.items)
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in _packet_gaps(candidate)
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in waiting.case_content_gaps
+
+
+@pytest.mark.anyio
+async def test_a_redacted_task_input_is_disclosed_even_when_the_change_is_clean(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: redacting only a task input file still reports the redaction."""
+
+    from builders.policy_cases import evt
+    from yoetz.domain.task_statement import RecordedTaskStatement
+
+    repository = _repository(tmp_path)
+    (repository / "spec").mkdir()
+    (repository / "spec" / "RULES.md").write_text(
+        f"# Rules\nRULES_INPUT_MARKER\ndeploy_token = '{_SECRET}'\n", encoding="utf-8"
+    )
+    _git(repository, "add", "--", "spec/RULES.md")
+    _git(repository, "commit", "--quiet", "-m", "rules")
+    frozen, runtime = await _kea_case(memory_adapter(append_command()), repository)
+    _python_rewrite(repository, "String(key)", "`${typeof key}:${String(key)}`")
+    frozen = FrozenCase(
+        replace(
+            frozen.case,
+            task_statement=RecordedTaskStatement(
+                text="Keep numeric and string keys apart; follow spec/RULES.md exactly.",
+                source_event_id=evt(1),
+                source_family="session_opened",
+                ingestion_sequence=1,
+            ),
+        ),
+        frozen.lease,
+    )
+    privacy = _Privacy(task_id=runtime.task_id, profile=ReviewContextProfile.EXPANDED)
+
+    with check_workspace_source_scope(CheckWorkspaceSource(os.fspath(repository), _REPOSITORY)):
+        waiting = await _evaluator(privacy, runtime)(frozen, (), runtime)
+
+    candidate = privacy.candidates[0]
+    assert "[REDACTED]" not in _change_text(candidate)  # the change itself needed nothing
+    task_input = next(item for item in candidate.items if item.item_id == "task-input-01")
+    assert b"RULES_INPUT_MARKER" in task_input.plaintext
+    assert _SECRET.encode() not in task_input.plaintext and b"[REDACTED]" in task_input.plaintext
+    assert CHECK_TIME_CHANGE_REDACTED_GAP in _packet_gaps(candidate)
+    assert CHECK_TIME_CHANGE_REDACTED_GAP in waiting.case_content_gaps
+    # Only the input was redacted; the change the packet carried is whole, so a reviewer's diff
+    # request stays the agent's to answer.
+    assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in waiting.case_content_gaps
+    assert not _packet_limits(waiting, ())["change_clipped"]

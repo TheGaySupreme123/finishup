@@ -27,6 +27,7 @@ from yoetz.adapters.integrations.codex_skill import (
     CODEX_HARNESS_PROFILE,
     CodexSkillIntegration,
     build_managed_marker,
+    expected_skill_member_paths,
     load_packaged_skill_source,
 )
 from yoetz.domain.values import request_id
@@ -78,23 +79,22 @@ def _injectable_skill_resources() -> _Resources:
         "skill_version": "0.1.0",
     }
     skill_manifest_body["member_digest"] = canonical_digest(skill_manifest_body)
-    files = {
+    # Derived from the adapter's own expected inventory so the fixture cannot go stale.
+    installed_paths = {
+        logical: "skills/codex/yoetz/SKILL.md"
+        if logical == "SKILL.md"
+        else logical.replace("references/", "guidance/", 1)
+        for logical in expected_skill_member_paths()
+        if logical != "manifest.json"
+    }
+    files: dict[str, bytes] = {
         "skills/codex/yoetz/SKILL.md": skill,
         "skills/codex/yoetz/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
-        "guidance/agent-instructions.md": b"# Agent instructions\n",
-        "guidance/coverage-and-receipts.md": b"# Coverage and receipts\n",
-        "guidance/publication-policy.md": b"# Publication policy\n",
-        "guidance/request-templates.md": b"# Request templates\n",
-        "guidance/workflow.md": b"# Workflow\n",
     }
-    installed_paths = {
-        "SKILL.md": "skills/codex/yoetz/SKILL.md",
-        "references/agent-instructions.md": "guidance/agent-instructions.md",
-        "references/coverage-and-receipts.md": "guidance/coverage-and-receipts.md",
-        "references/publication-policy.md": "guidance/publication-policy.md",
-        "references/request-templates.md": "guidance/request-templates.md",
-        "references/workflow.md": "guidance/workflow.md",
-    }
+    for package_path in installed_paths.values():
+        if package_path not in files:
+            title = Path(package_path).stem.replace("-", " ").capitalize()
+            files[package_path] = f"# {title}\n".encode()
     managed_members: list[JsonValue] = []
     for logical_name, package_path in installed_paths.items():
         data = files[package_path]

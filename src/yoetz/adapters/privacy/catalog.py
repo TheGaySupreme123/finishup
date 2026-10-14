@@ -20,11 +20,13 @@ from yoetz.domain.privacy import (
     AuthorizationScopeKind,
     ChannelPolicy,
     ConsentSource,
+    CredentialHeuristic,
     DataCategory,
     DataClass,
     DisclosureProposal,
     EgressAuthorization,
     EgressChannel,
+    EgressOriginOperation,
     EgressReceipt,
     ForbiddenDataKind,
     HumanPrivacyDecision,
@@ -41,6 +43,7 @@ from yoetz.domain.privacy import (
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
+    ReceiptSecretScanStage,
     ReceiptTransformations,
     RequestCommitment,
     ReviewContextProfile,
@@ -92,6 +95,7 @@ from yoetz.protocol.canonical import (
     strict_json_parse,
 )
 from yoetz.protocol.ids import IdKind, new_id, validate_id
+from yoetz.protocol.redacted_values import semantic_redacted_values_from_wire
 
 __all__ = [
     "CatalogPrivacyAudit",
@@ -139,10 +143,30 @@ def _json(value: object) -> JsonValue:
     if type(value) is tuple:
         return [_json(item) for item in cast(tuple[object, ...], value)]
     if is_dataclass(value) and not isinstance(value, type):
-        return {field.name: _json(getattr(value, field.name)) for field in fields(value)}
+        return {
+            field.name: _json(getattr(value, field.name))
+            for field in fields(value)
+            # The credential-heuristic default is never written (issue #982): every policy,
+            # case and receipt from before the field existed keeps its exact canonical bytes.
+            if getattr(value, field.name) is not CredentialHeuristic.ENFORCED
+        }
     if type(value) is dict:
         return {str(key): _json(item) for key, item in cast(dict[object, object], value).items()}
     raise TypeError("privacy_catalog_canonical_value_invalid")
+
+
+def _credential_heuristic_from_json(
+    value: JsonValue | None, *, allow_enforced: bool = True
+) -> CredentialHeuristic:
+    """Absent means ``enforced``; only the closed values decode (issue #982)."""
+
+    if value is None:
+        return CredentialHeuristic.ENFORCED
+    if value == CredentialHeuristic.DISABLED.value:
+        return CredentialHeuristic.DISABLED
+    if allow_enforced and value == CredentialHeuristic.ENFORCED.value:
+        return CredentialHeuristic.ENFORCED
+    raise ValueError("privacy_audit_row_corrupt")
 
 
 def _scope_json(scope: AuthorizationScope) -> dict[str, JsonValue]:
@@ -161,7 +185,25 @@ def _mac(key: MacKeyHandle, domain: bytes, data: bytes) -> str:
 
 
 def _receipt_bytes(receipt: LocalDisclosureReceipt | EgressReceipt) -> bytes:
-    return canonical_encode(_json(receipt))
+    raw_encoded = _json(receipt)
+    if type(raw_encoded) is not dict:
+        raise TypeError("privacy_receipt_canonical_value_invalid")
+    encoded = cast(dict[str, JsonValue], raw_encoded)
+    if encoded.get("schema_version") == "1.0.0":
+        # Keep the released 1.0 durable shape byte-compatible.  The domain rejects withheld
+        # identities for this version, while the stage fields are safely represented by the
+        # legacy match_count/passed pair when they are omitted here.
+        raw_scan = encoded.get("secret_scan")
+        scan = cast(dict[str, JsonValue], raw_scan) if type(raw_scan) is dict else None
+        if type(scan) is dict:
+            scan.pop("stage", None)
+            scan.pop("not_run_reason", None)
+        encoded.pop("withheld_item_ids", None)
+        encoded.pop("withheld_item_reason", None)
+    if encoded.get("origin_operation", "") is None:
+        # Absent unless named (tb4n2 N-5), so every row written before the field keeps its bytes.
+        encoded.pop("origin_operation")
+    return canonical_encode(cast(JsonValue, encoded))
 
 
 def _mapping(value: JsonValue) -> dict[str, JsonValue]:
@@ -207,7 +249,7 @@ def _string_values(items: tuple[str, ...]) -> list[JsonValue]:
 
 
 class _ReceiptCommon(TypedDict):
-    schema_version: Literal["1.0.0"]
+    schema_version: Literal["1.0.0", "1.1.0"]
     receipt_id: str
     request_id: str
     privacy_proposal_id: str
@@ -222,6 +264,8 @@ class _ReceiptCommon(TypedDict):
     counts: ReceiptCounts
     transformations: ReceiptTransformations
     secret_scan: ReceiptSecretScan
+    withheld_item_ids: tuple[str, ...]
+    withheld_item_reason: Literal["never_send_heuristic"] | None
     safe_failure_reason: PrivacyReason | None
     audit_store_version: Literal[1]
 
@@ -237,14 +281,26 @@ def _receipt_common_from_json(source: dict[str, JsonValue]) -> _ReceiptCommon:
     counts = _mapping(source["counts"])
     transforms = _mapping(source["transformations"])
     scan = _mapping(source["secret_scan"])
-    if source["schema_version"] != "1.0.0" or source["audit_store_version"] != 1:
+    outcome = PrivacyOutcome(cast(str, source["outcome"]))
+    scan_match_count = _integer(scan["match_count"])
+    scan_passed = cast(bool, scan["passed"])
+    # Rows written before the explicit scan-stage extension did not distinguish a prepared
+    # clean scan from a blocked or unrun operation.  Preserve that uncertainty for every
+    # stage-less row, including historical ``completed`` rows with ``passed=true``.
+    scan_stage = (
+        ReceiptSecretScanStage.LEGACY_UNKNOWN
+        if "stage" not in scan
+        else ReceiptSecretScanStage(cast(str, scan["stage"]))
+    )
+    if source["schema_version"] not in {"1.0.0", "1.1.0"} or source["audit_store_version"] != 1:
         raise ValueError("privacy_audit_row_corrupt")
+    schema_version = cast(Literal["1.0.0", "1.1.0"], source["schema_version"])
     return {
-        "schema_version": "1.0.0",
+        "schema_version": schema_version,
         "receipt_id": cast(str, source["receipt_id"]),
         "request_id": cast(str, source["request_id"]),
         "privacy_proposal_id": cast(str, source["privacy_proposal_id"]),
-        "outcome": PrivacyOutcome(cast(str, source["outcome"])),
+        "outcome": outcome,
         "finished_at": parse_rfc3339_millis(source["finished_at"]),
         "scope": _scope_from_json(source["scope"]),
         "purpose": cast(str, source["purpose"]),
@@ -280,8 +336,23 @@ def _receipt_common_from_json(source: dict[str, JsonValue]) -> _ReceiptCommon:
         "secret_scan": ReceiptSecretScan(
             cast(str, scan["registry_version"]),
             cast(str, scan["scanner_profile_digest"]),
-            _integer(scan["match_count"]),
-            cast(bool, scan["passed"]),
+            scan_match_count,
+            scan_passed,
+            scan_stage,
+            (
+                None
+                if scan.get("not_run_reason") is None
+                else PrivacyReason(cast(str, scan["not_run_reason"]))
+            ),
+            _credential_heuristic_from_json(scan.get("credential_heuristic"), allow_enforced=False),
+        ),
+        "withheld_item_ids": tuple(
+            sorted(_strings(source.get("withheld_item_ids") or []), key=str.encode)
+        ),
+        "withheld_item_reason": (
+            None
+            if source.get("withheld_item_reason") is None
+            else cast(Literal["never_send_heuristic"], source["withheld_item_reason"])
         ),
         "safe_failure_reason": (
             None
@@ -344,6 +415,11 @@ def _network_receipt_from_bytes(data: bytes) -> EgressReceipt:
         dispatch_id=cast(str | None, source.get("dispatch_id")),
         dispatch_started_at=None if started is None else parse_rfc3339_millis(started),
         request_commitment=request_commitment,
+        origin_operation=(
+            None
+            if source.get("origin_operation") is None
+            else EgressOriginOperation(cast(str, source["origin_operation"]))
+        ),
     )
 
 
@@ -563,7 +639,15 @@ def _policy_from_domain_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         tuple(DataClass(item) for item in _strings(source["trusted_human_control_data_classes"])),
         parse_rfc3339_millis(source["created_at"]),
         cast(str | None, source.get("supersedes_policy_digest")),
+        _policy_credential_heuristic(source),
     )
+
+
+def _policy_credential_heuristic(source: dict[str, JsonValue]) -> CredentialHeuristic:
+    try:
+        return _credential_heuristic_from_json(source.get("credential_heuristic"))
+    except ValueError:
+        raise ValueError("privacy_policy_row_corrupt") from None
 
 
 def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
@@ -578,6 +662,9 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
     if source.get("schema_version") == "1.0.0" and any(
         "fallback_provider_binding" in _mapping(channel) for channel in channels
     ):
+        raise ValueError("privacy_policy_row_corrupt")
+    if source.get("schema_version") in {"1.0.0", "1.1.0"} and "credential_heuristic" in source:
+        # The credential-heuristic opt-out exists from wire 1.2.0 on (issue #982).
         raise ValueError("privacy_policy_row_corrupt")
     review_selection = _review_from_json(source["review_selection"])
     if source.get("schema_version") in {"1.0.0", "1.1.0"} and (
@@ -615,6 +702,7 @@ def _policy_from_wire_mapping(source: dict[str, JsonValue]) -> PrivacyPolicy:
         trusted_classes,
         parse_rfc3339_millis(source["created_at"]),
         cast(str | None, source.get("supersedes_policy_digest")),
+        _policy_credential_heuristic(source),
     )
 
 
@@ -643,7 +731,7 @@ def encode_privacy_policy_json(policy: PrivacyPolicy) -> dict[str, JsonValue]:
     if set(by_channel) != set(EgressChannel):
         raise ValueError("privacy_policy_channel_set_invalid")
     encoded: dict[str, JsonValue] = {
-        "schema_version": review_selection_policy_schema_version(policy.review_selection),
+        "schema_version": _privacy_policy_wire_version(policy),
         "policy_id": policy.policy_id,
         "version": str(policy.version),
         "policy_digest": policy.policy_digest,
@@ -678,7 +766,22 @@ def encode_privacy_policy_json(policy: PrivacyPolicy) -> dict[str, JsonValue]:
         encoded["local_model_binding"] = _json(policy.local_model_binding)
     if policy.supersedes_policy_digest is not None:
         encoded["supersedes_policy_digest"] = policy.supersedes_policy_digest
+    if not policy.credential_heuristic_enforced:
+        encoded["credential_heuristic"] = policy.credential_heuristic.value
     return cast(dict[str, JsonValue], _omit_json_nulls(encoded))
+
+
+def _privacy_policy_wire_version(policy: PrivacyPolicy) -> str:
+    """The oldest wire version that expresses ``policy`` exactly.
+
+    The credential-heuristic opt-out exists only from 1.2.0 on (issue #982); a policy that keeps
+    the default is still written at the version its review selection needs.
+    """
+
+    version = review_selection_policy_schema_version(policy.review_selection)
+    if not policy.credential_heuristic_enforced:
+        return "1.2.0"
+    return version
 
 
 def _omit_json_nulls(value: JsonValue) -> JsonValue:
@@ -1023,7 +1126,30 @@ class CatalogPrivacyPolicyStore:
             None if exact is None else exact[1],
             None if exact is None else exact[0].policy_digest,
             None if exact is None else exact[0],
+            machine_policy,
+            self._migration_frontiers(migration_state, migration_policy),
         )
+
+    def _migration_frontiers(
+        self, migration_state: str, first_repository_frontier: PrivacyPolicy
+    ) -> tuple[PrivacyPolicy, ...]:
+        """Every frontier the pending migration could carry into the first grant (#982)."""
+
+        if migration_state == "first_repository_available":
+            return (first_repository_frontier,)
+        if migration_state != "legacy_route_available":
+            return ()
+        rows = self._db.execute(
+            "SELECT migration_policy_canonical, migration_policy_digest "
+            "FROM privacy_legacy_route_entitlements WHERE entitlement_state = 'available'"
+        ).fetchall()
+        frontiers: list[PrivacyPolicy] = []
+        for canonical, digest in rows:
+            frontier = _policy_from_bytes(cast(bytes, canonical))
+            if frontier.policy_digest != digest:
+                raise ValueError("privacy_authority_state_corrupt")
+            frontiers.append(frontier)
+        return tuple(frontiers)
 
     async def carry_forward_repository_authority(
         self,
@@ -1887,6 +2013,13 @@ class CatalogPrivacyAudit:
         self, request: DisclosureProposalRequest
     ) -> PreparedDisclosureReservation:
         now = self._clock.now_utc()
+        route_row = self._db.execute(
+            "SELECT active_route_identity_digest FROM task_routes WHERE task_id = ? AND state = 'active'",
+            (request.task_id,),
+        ).fetchone()
+        if route_row is None or type(route_row[0]) is not str:
+            raise ValueError("privacy_audit_route_unavailable")
+        route_identity = cast(str, route_row[0])
         proposal_value = {
             "approved_categories": [item.value for item in request.minimized.approved_categories],
             "blocked_categories": [item.value for item in request.minimized.blocked_categories],
@@ -1902,9 +2035,25 @@ class CatalogPrivacyAudit:
             "schema": "yoetz.disclosure-proposal/1",
             "scope": _scope_json(request.scope),
             "source_item_digests": list(request.minimized.source_item_digests),
+            "included_item_ids": list(request.minimized.included_item_ids),
             "transformation_summary": [
                 list(item) for item in request.minimized.transformation_summary
             ],
+            "withheld_item_ids": list(request.minimized.withheld_item_ids),
+            "scanner_registry_version": request.minimized.scanner_registry_version,
+            "scanner_profile_digest": request.minimized.scanner_profile_digest,
+            "route_identity_digest": route_identity,
+            # PL2-1: written only when present, so older proposals keep their exact bytes.
+            **(
+                {
+                    "redacted_values": [
+                        cast(JsonValue, entry.as_wire())
+                        for entry in request.minimized.redacted_values
+                    ]
+                }
+                if request.minimized.redacted_values
+                else {}
+            ),
         }
         proposal_bytes = canonical_encode(cast(JsonValue, proposal_value))
         proposal_commitment = _mac(self._key, _PROPOSAL_DOMAIN, proposal_bytes)
@@ -1916,13 +2065,6 @@ class CatalogPrivacyAudit:
         )
         staged = await self._objects.stage(ObjectSource(data=proposal_bytes), metadata)
         ref = await self._objects.finalize(staged)
-        route_row = self._db.execute(
-            "SELECT active_route_identity_digest FROM task_routes WHERE task_id = ? AND state = 'active'",
-            (request.task_id,),
-        ).fetchone()
-        if route_row is None or type(route_row[0]) is not str:
-            raise ValueError("privacy_audit_route_unavailable")
-        route_identity = cast(str, route_row[0])
         proposal = DisclosureProposal(
             request.privacy_proposal_id,
             request.request_id,
@@ -1943,6 +2085,12 @@ class CatalogPrivacyAudit:
             request.max_tokens,
             request.expires_at,
             proposal_commitment,
+            request.minimized.withheld_item_ids,
+            request.minimized.scanner_registry_version,
+            request.minimized.scanner_profile_digest,
+            request.minimized.included_item_ids,
+            route_identity,
+            request.minimized.redacted_values,
         )
         structural = canonical_encode(
             {
@@ -1952,6 +2100,7 @@ class CatalogPrivacyAudit:
                 "prepared_case_digest": request.minimized.case_digest,
                 "proposal_commitment": proposal_commitment,
                 "request_id": request.request_id,
+                "route_identity_digest": route_identity,
                 "scope": _scope_json(request.scope),
             }
         )
@@ -2246,12 +2395,28 @@ class CatalogPrivacyAudit:
                       content_media_type, content_created_at, task_id,
                       provider_id, model_id, endpoint_profile_id, endpoint_profile_version,
                       local_sink, destination_kind, policy_version,
-                      subject_structural_canonical, expires_at
+                      subject_structural_canonical, expires_at, route_identity_digest
                FROM privacy_audit_records
                WHERE proposal_id = ? AND subject_kind = 'disclosure'""",
             (proposal_id,),
         ).fetchone()
-        if row is None or type(row[0]) is not str or type(row[8]) is not str:
+        if (
+            row is None
+            or type(row[0]) is not str
+            or type(row[8]) is not str
+            or type(row[18]) is not str
+        ):
+            return None
+        stored_route = cast(str, row[18])
+        current_route = self._db.execute(
+            "SELECT active_route_identity_digest FROM task_routes WHERE task_id = ? AND state = 'active'",
+            (cast(str, row[8]),),
+        ).fetchone()
+        if (
+            current_route is None
+            or type(current_route[0]) is not str
+            or current_route[0] != stored_route
+        ):
             return None
         structural = _mapping(strict_json_parse(cast(bytes, row[16])))
         task = cast(str, row[8])
@@ -2275,6 +2440,13 @@ class CatalogPrivacyAudit:
         except Exception:
             return None
         if parsed.get("schema") != "yoetz.disclosure-proposal/1":
+            return None
+        proposal_commitment = structural.get("proposal_commitment")
+        if type(proposal_commitment) is not str or not hmac.compare_digest(
+            _mac(self._key, _PROPOSAL_DOMAIN, body), proposal_commitment
+        ):
+            return None
+        if parsed.get("route_identity_digest") != stored_route:
             return None
         prepared_b64 = parsed.get("prepared_bytes_base64")
         if type(prepared_b64) is not str:
@@ -2351,6 +2523,15 @@ class CatalogPrivacyAudit:
                 max_tokens,
                 parse_rfc3339_millis(parsed["expires_at"]),
                 commitment,
+                tuple(sorted(_strings(parsed.get("withheld_item_ids") or []), key=str.encode)),
+                cast(str, parsed.get("scanner_registry_version") or "unknown"),
+                cast(
+                    str,
+                    parsed.get("scanner_profile_digest") or "sha256:" + "0" * 64,
+                ),
+                tuple(sorted(_strings(parsed.get("included_item_ids") or []), key=str.encode)),
+                stored_route,
+                semantic_redacted_values_from_wire(parsed.get("redacted_values") or []),
             )
         except Exception:
             return None

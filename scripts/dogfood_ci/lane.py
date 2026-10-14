@@ -101,6 +101,13 @@ PROMPT_PRIVACY_RECOMMENDED: Final = r"Use this recommended privacy policy\? \[Y/
 PROMPT_PRIVACY_CHOICE: Final = r"Choose a privacy option \[\d\]: "
 PROMPT_PRIVACY_CREATE: Final = r"Create this exact privacy proposal .*\? \[y/N\]: "
 PROMPT_PAM_PASSWORD: Final = r"Password for .*: "
+_LEDGER_TASK_STATEMENT: Final = (
+    "Exercise one isolated Yoetz workflow: attach to the host-mapped task or create the "
+    "probe task, publish a plan and an obligation for one ledger round trip, run the "
+    "configured check, retain its exact result and coverage limitations, and request a "
+    "receipt. This is a mechanics probe; do not claim the obligation is satisfied or "
+    "that the check proves product correctness."
+)
 _PROMPT_TEMPLATE: Final = (
     "You are a small integration probe. Use the MCP server/namespace containing '{tool_hint}': "
     "its functions include start, publish_work, and receipt. A function name may omit the "
@@ -108,10 +115,12 @@ _PROMPT_TEMPLATE: Final = (
     "or resource-template lists do not mean these callable tools are unavailable. "
     "You may use host tool discovery/search and execution wrappers solely "
     "to discover and invoke these tools. If they are deferred, discover them before deciding "
-    "they are unavailable. Do exactly these steps and nothing else. "
+    "they are unavailable. Read and verify the packaged guidance required for each "
+    "operation, recovering incomplete pages before continuing. Then do these steps. "
     "1) Call the start tool with protocol_version '0.1', schema_version '1.0.0', a fresh "
     "request_id of the form req_<random uuid4>, mode 'create', task_title 'dogfood native probe', "
     "workspace_ref '{workspace}', external_ref '{external_ref}', requested_view 'compact', "
+    "task_statement set to this entire user message verbatim (not just its title), "
     "actor {{actor_id: 'harness:dogfood-native', actor_type: 'harness'}}, and client "
     "{{kind: 'cooperative_agent', version: '0.1.0', integration: 'cooperative_mcp'}}. "
     "2) Call publish_work once with the session_id, writer_id and frontier that start returned "
@@ -120,10 +129,233 @@ _PROMPT_TEMPLATE: Final = (
     "millisecond precision, causal_parents [], artifact_refs [], evidence_refs [], payload "
     "{{plan_version: 1, summary: 'native probe', obligation_refs: [], "
     "no_obligations_reason: 'single_atomic_change'}}. "
-    "3) Call receipt with task_id, session_id, writer_id, the frontier returned by publish_work "
+    "3) Call check with the same session_id and writer_id, the publish result frontier as "
+    "expected_frontier, and mode 'semantic_required'. Preserve the returned coverage limits. "
+    "A pending approval is not a completed check; follow its exact continuation. "
+    "4) Read status view 'compact' to obtain the current frontier. Call receipt with "
+    "task_id, session_id, writer_id, that status frontier "
     "as expected_frontier, format 'markdown', include 'standard', redaction_profile "
-    "'default_local_export'. Then answer with the single word DONE. Do not create or edit files."
+    "'default_local_export'. For Claude or Cursor only, before the final answer emit exactly one "
+    "physical line with the prefix YOETZ_NATIVE_BINDING followed by one compact JSON object with "
+    "exactly these keys: task_id, session_id, writer_id, frontier. Copy all four values from the "
+    "start result, including frontier.sequence and frontier.head_digest; this line is only a "
+    "locator and never replaces the MCP calls. Then answer with the single word DONE on its own "
+    "line. Codex is checked from its structured JSONL and does not need this marker. Do not create "
+    "or edit files."
 )
+
+_NATIVE_BINDING_PREFIX: Final = "YOETZ_NATIVE_BINDING "
+_NATIVE_MAX_SEQUENCE: Final = 2**63 - 1
+_NATIVE_ID_RE: Final = re.compile(
+    r"^(?:tsk|ses|wri)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
+_NATIVE_DIGEST_RE: Final = re.compile(r"^sha256:[0-9a-f]{64}$")
+_NATIVE_ITEM_ID_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
+
+
+def _native_final_response(host: str, output: str) -> str | None:
+    """Return only the host's successful final response text."""
+
+    final: str | None = None
+    if host == "codex":
+        completed = False
+        for line in output.split("\n"):
+            if not line.strip(" \t\r"):
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                return None
+            if not isinstance(event, dict):
+                return None
+            event = cast(dict[str, Any], event)
+            if event.get("type") in ("error", "turn.failed"):
+                return None
+            if event.get("type") == "turn.started":
+                final = None
+                completed = False
+            if event.get("type") == "turn.completed":
+                completed = True
+            item = event.get("item")
+            if (
+                event.get("type") == "item.completed"
+                and isinstance(item, dict)
+                and cast(dict[str, Any], item).get("type") == "agent_message"
+            ):
+                value = cast(dict[str, Any], item).get("text")
+                final = value if isinstance(value, str) else None
+        return final if completed else None
+    if host not in {"claude", "cursor"}:
+        return None
+    try:
+        result = json.loads(output)
+    except ValueError:
+        return None
+    if not isinstance(result, dict):
+        return None
+    result = cast(dict[str, Any], result)
+    if (
+        result.get("type") != "result"
+        or result.get("subtype") != "success"
+        or result.get("is_error") is not False
+    ):
+        return None
+    value = result.get("result")
+    return value if isinstance(value, str) else None
+
+
+def _validated_native_binding(value: object, *, source: str) -> dict[str, Any] | None:
+    """Validate a native locator regardless of whether it came from output or observation."""
+
+    if not isinstance(value, dict):
+        return None
+    binding = cast(dict[str, Any], value)
+    if set(binding) - {"task_id", "session_id", "writer_id", "frontier", "source"}:
+        return None
+    for key, prefix in (("task_id", "tsk_"), ("session_id", "ses_"), ("writer_id", "wri_")):
+        item = binding.get(key)
+        if (
+            not isinstance(item, str)
+            or _NATIVE_ID_RE.fullmatch(item) is None
+            or not item.startswith(prefix)
+        ):
+            return None
+    frontier_value = binding.get("frontier")
+    if not isinstance(frontier_value, dict):
+        return None
+    frontier = cast(dict[str, Any], frontier_value)
+    if set(frontier) != {"sequence", "head_digest"}:
+        return None
+    sequence = frontier.get("sequence")
+    head_digest = frontier.get("head_digest")
+    if (
+        not isinstance(sequence, str)
+        or not sequence.isdigit()
+        or (sequence != "0" and sequence.startswith("0"))
+        or int(sequence) > _NATIVE_MAX_SEQUENCE
+        or not isinstance(head_digest, str)
+        or (head_digest != "genesis" and _NATIVE_DIGEST_RE.fullmatch(head_digest) is None)
+    ):
+        return None
+    return {
+        "task_id": binding["task_id"],
+        "session_id": binding["session_id"],
+        "writer_id": binding["writer_id"],
+        "frontier": {"sequence": sequence, "head_digest": head_digest},
+        "source": source,
+    }
+
+
+def _native_binding_marker(host: str, output: str) -> dict[str, Any] | None:
+    """Parse one strict Claude/Cursor locator marker from the successful final response."""
+
+    final = _native_final_response(host, output)
+    if final is None or host == "codex":
+        return None
+    markers = [line for line in final.splitlines() if line.startswith(_NATIVE_BINDING_PREFIX)]
+    if len(markers) != 1:
+        return None
+    payload = markers[0][len(_NATIVE_BINDING_PREFIX) :]
+    if not payload or payload.strip() != payload:
+        return None
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate_native_binding_key")
+            result[key] = value
+        return result
+
+    try:
+        parsed = json.loads(payload, object_pairs_hook=reject_duplicate_keys)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    parsed = cast(dict[str, Any], parsed)
+    if set(parsed) != {
+        "task_id",
+        "session_id",
+        "writer_id",
+        "frontier",
+    }:
+        return None
+    return _validated_native_binding(parsed, source="final_marker")
+
+
+def _native_binding_from_observation(
+    value: object,
+    *,
+    external_ref: str | None = None,
+    workspace: str | None = None,
+) -> dict[str, Any] | None:
+    """Use an observation locator only when its native scope is explicit.
+
+    Observation contains earlier ledger and hook probes, so a blind recursive search can bind a
+    later native process to the wrong task. An adapter must carry the native external reference,
+    or explicitly mark a native workspace scope, before its IDs are eligible here.
+    """
+
+    if external_ref is None and workspace is None:
+        return None
+
+    allowed_binding_keys = frozenset({"task_id", "session_id", "writer_id", "frontier", "source"})
+
+    def visit(node: object, scoped: bool = False) -> dict[str, Any] | None:
+        if isinstance(node, dict):
+            mapping = cast(dict[str, Any], node)
+            node_external = mapping.get("external_ref")
+            if node_external is None:
+                node_external = mapping.get("native_external_ref")
+            node_workspace = mapping.get("workspace")
+            if node_workspace is None:
+                node_workspace = mapping.get("workspace_ref")
+            if node_workspace is None:
+                node_workspace = mapping.get("native_workspace")
+            external_match = external_ref is not None and node_external == external_ref
+            workspace_match = (
+                workspace is not None
+                and node_workspace == workspace
+                and (
+                    mapping.get("native") is True
+                    or mapping.get("native_scope") is True
+                    or "native_workspace" in mapping
+                )
+            )
+            scoped_here = scoped or external_match or workspace_match
+            binding_payload = {
+                key: child for key, child in mapping.items() if key in allowed_binding_keys
+            }
+            scope_keys = {
+                "external_ref",
+                "native_external_ref",
+                "workspace",
+                "workspace_ref",
+                "native_workspace",
+                "native",
+                "native_scope",
+            }
+            if scoped_here and not (set(mapping) - allowed_binding_keys - scope_keys):
+                candidate = _validated_native_binding(binding_payload, source="observation")
+                if candidate is not None:
+                    return candidate
+            for key, child in mapping.items():
+                child_scoped = scoped_here or (
+                    key in {"native_binding", "native_locator"}
+                    and (external_match or workspace_match)
+                )
+                found = visit(child, child_scoped)
+                if found is not None:
+                    return found
+        elif isinstance(node, list):
+            for child in cast(list[Any], node):
+                found = visit(child, scoped)
+                if found is not None:
+                    return found
+        return None
+
+    return visit(value)
 
 
 def _native_done(host: str, output: str) -> bool:
@@ -134,7 +366,9 @@ def _native_done(host: str, output: str) -> bool:
         # Codex --json is JSONL. The last completed assistant message is authoritative;
         # a later refusal or turn failure must not inherit an earlier DONE.
         completed = False
-        for line in output.splitlines():
+        for line in output.split("\n"):
+            if not line.strip(" \t\r"):
+                continue
             try:
                 event = json.loads(line)
             except ValueError:
@@ -184,14 +418,73 @@ def _native_done(host: str, output: str) -> bool:
     )
 
 
-def _codex_workflow_completed(output: str) -> bool:
+def _specification_manifest_matches(result: dict[str, Any], statement: str) -> bool:
+    """Require the provider-bound statement identity, not just successful prompt delivery."""
+
+    manifest = result.get("review_input_manifest")
+    if not isinstance(manifest, dict):
+        return False
+    manifest = cast(dict[str, Any], manifest)
+    if (
+        manifest.get("schema") != "yoetz.review-input-manifest/1"
+        or manifest.get("phase") != "provider_bound"
+    ):
+        return False
+    specification = manifest.get("specification")
+    if not isinstance(specification, dict):
+        return False
+    specification = cast(dict[str, Any], specification)
+    content = statement.encode("utf-8")
+    revision = specification.get("revision")
+    selected = specification.get("item_ids")
+    if not isinstance(selected, list):
+        return False
+    selected = cast(list[object], selected)
+    if len(selected) > 64 or len(selected) != len(
+        {item for item in selected if isinstance(item, str)}
+    ):
+        return False
+    return bool(
+        specification.get("status") == "complete"
+        and specification.get("content_digest") == "sha256:" + hashlib.sha256(content).hexdigest()
+        and specification.get("content_bytes") == len(content)
+        and type(revision) is int
+        and revision > 0
+        and len(selected) > 0
+        and all(
+            type(item) is str
+            and 1 <= len(item) <= 128
+            and _NATIVE_ITEM_ID_RE.fullmatch(item) is not None
+            for item in selected
+        )
+    )
+
+
+def _history_provider_bound_manifest_matches(item: dict[str, Any], statement: str) -> bool:
+    """Match one public history row's first provider-bound check to the exact statement."""
+
+    if item.get("schema_name") != "check_recorded":
+        return False
+    manifest_value = item.get("review_input_manifest")
+    if not isinstance(manifest_value, dict):
+        return False
+    manifest = cast(dict[str, Any], manifest_value)
+    if manifest.get("phase") != "provider_bound":
+        return False
+    return _specification_manifest_matches({"review_input_manifest": manifest}, statement)
+
+
+def _codex_workflow_completed(output: str, expected_statement: str | None = None) -> bool:
     """Correlate native MCP successes; later hook disclosures do not undo recorded work."""
 
     started: set[tuple[str, str, str]] = set()
     published: set[tuple[str, str, str]] = set()
+    checked: set[tuple[str, str, str]] = set()
     receipted = False
     completed = False
-    for line in output.splitlines():
+    for line in output.split("\n"):
+        if not line.strip(" \t\r"):
+            continue
         try:
             raw = json.loads(line)
         except ValueError:
@@ -237,7 +530,8 @@ def _codex_workflow_completed(output: str) -> bool:
             continue
         binding = cast(tuple[str, str, str], ids)
         if tool == "start":
-            started.add(binding)
+            if expected_statement is None or args.get("task_statement") == expected_statement:
+                started.add(binding)
         elif args.get("session_id") == binding[1]:
             if (
                 tool == "publish_work"
@@ -255,8 +549,19 @@ def _codex_workflow_completed(output: str) -> bool:
                             ):
                                 published.add(binding)
             elif (
-                tool == "receipt"
+                tool == "check"
                 and binding in published
+                and result.get("semantic_status") != "awaiting_human"
+                and result.get("outcome") != "awaiting_human"
+                and (
+                    expected_statement is None
+                    or _specification_manifest_matches(result, expected_statement)
+                )
+            ):
+                checked.add(binding)
+            elif (
+                tool == "receipt"
+                and binding in checked
                 and args.get("task_id") == binding[0]
                 and isinstance(result.get("receipt_id"), str)
                 and result["receipt_id"].startswith("rcp_")
@@ -312,6 +617,19 @@ def _find_key(value: object, key: str) -> object | None:
     return None
 
 
+def _semantic_provenance_provider(value: object) -> str | None:
+    """Read the provider identity across the semantic-provenance wire versions."""
+
+    provider_id = _find_key(value, "provider_id")
+    if isinstance(provider_id, str) and provider_id:
+        return provider_id
+    if isinstance(value, dict):
+        provider = cast(dict[str, object], value).get("provider")
+        if isinstance(provider, str) and provider:
+            return provider
+    return None
+
+
 def _find_frontier(value: object) -> dict[str, str] | None:
     """Return the first ``{sequence, head_digest}`` object found in a result."""
 
@@ -347,7 +665,7 @@ def _parse_json(text: str) -> dict[str, Any] | None:
         parsed = json.loads(stripped)
     except ValueError:
         # Some commands print a human line before the JSON; try the last JSON-looking line.
-        for line in reversed(stripped.splitlines()):
+        for line in reversed(stripped.split("\n")):
             line = line.strip()
             if line.startswith("{"):
                 try:
@@ -430,6 +748,8 @@ class Lane:
         self.identity: dict[str, Any] = {}
         self.semantic: dict[str, Any] = {"configured": bool(self.fireworks_key)}
         self.agent: dict[str, Any] = {"ran": False}
+        self.native_prompt: str | None = None
+        self.native_provider_verification: dict[str, Any] = {}
         self.observation: dict[str, Any] = {}
         self.ledger: dict[str, Any] = {}
         self.plugin_dir: Path | None = None
@@ -575,6 +895,7 @@ class Lane:
         args: list[str],
         *,
         cwd: Path | None = None,
+        env: dict[str, str] | None = None,
         stdin: str | None = None,
         fatal: bool = False,
         expect_zero: bool = True,
@@ -588,6 +909,7 @@ class Lane:
         rc, out, err, ms = self._run(
             [str(self.launcher), *args],
             cwd=self.project if cwd is None else cwd,
+            env=env,
             stdin=stdin,
             timeout=timeout,
         )
@@ -1060,6 +1382,15 @@ class Lane:
             if self.host_path:
                 mcp_status[4:4] = ["--codex-path", self.host_path]
             self._yoetz("codex_mcp_status", phase, mcp_status, expect_zero=False)
+            if self.fireworks_key:
+                self._grant_codex_check_admission(phase)
+            else:
+                self._record(
+                    "codex_admission",
+                    phase,
+                    status="skip",
+                    reason="FIREWORKS_API_KEY_unset",
+                )
         elif self.host == "claude":
             status_argv = [
                 "integrate",
@@ -1095,6 +1426,146 @@ class Lane:
                 ],
                 expect_zero=False,
             )
+
+    def _grant_codex_check_admission(self, phase: str) -> None:
+        """Admit only the policy-route ``check`` in this disposable project.
+
+        Codex's non-interactive process uses ``approval_policy = \"never\"`` in the evaluator
+        home.  That is compatible with a per-tool ``approval_mode = \"approve\"`` entry, but it
+        cannot answer a remaining MCP prompt.  Use Yoetz's previewed, digest-bound host-admission
+        command so the privacy grant, observed route owner, and exact project file stay under the
+        product's existing authority.  The subsequent native invocation is a fresh Codex process
+        and is the final project-trust check.
+        """
+
+        project = str(self.project)
+        _, preview = self._yoetz(
+            "codex_admission_preview",
+            phase,
+            [
+                "integrate",
+                "codex",
+                "admission",
+                "preview",
+                "--project-root",
+                project,
+                "--json",
+            ],
+            env={"CODEX_HOME": str(self.host_config_root)},
+            fatal=True,
+        )
+        preview_body = preview if isinstance(preview, dict) else {}
+        preview_digest = preview_body.get("preview_digest")
+        route = preview_body.get("route")
+        route_body = cast(dict[str, Any], route) if isinstance(route, dict) else {}
+        if (
+            not isinstance(preview_digest, str)
+            or _NATIVE_DIGEST_RE.fullmatch(preview_digest) is None
+            or route_body.get("observed") is not True
+            or route_body.get("owner") != "external"
+            or route_body.get("route_profile") != "policy"
+        ):
+            self._record(
+                "codex_admission_preview_validation",
+                phase,
+                status="fail",
+                reason="codex_admission_preview_unusable",
+                summary={
+                    "digest_valid": isinstance(preview_digest, str)
+                    and _NATIVE_DIGEST_RE.fullmatch(preview_digest) is not None,
+                    "route_observed": route_body.get("observed") is True,
+                    "route_owner": route_body.get("owner"),
+                    "route_profile": route_body.get("route_profile"),
+                },
+                fatal=True,
+            )
+            return
+
+        self.identity["codex_admission_preview_digest"] = preview_digest
+        _, grant = self._yoetz(
+            "codex_admission_grant",
+            phase,
+            [
+                "integrate",
+                "codex",
+                "admission",
+                "grant",
+                "--project-root",
+                project,
+                "--accept",
+                "--preview-digest",
+                preview_digest,
+                "--json",
+            ],
+            env={"CODEX_HOME": str(self.host_config_root)},
+            fatal=True,
+        )
+        grant_body = grant if isinstance(grant, dict) else {}
+        if (
+            grant_body.get("host") != "codex"
+            or grant_body.get("state_after") != "present"
+            or grant_body.get("action") not in {"grant", "noop"}
+        ):
+            self._record(
+                "codex_admission_grant_validation",
+                phase,
+                status="fail",
+                reason="codex_admission_grant_unconfirmed",
+                summary={
+                    "host": grant_body.get("host"),
+                    "action": grant_body.get("action"),
+                    "state_after": grant_body.get("state_after"),
+                },
+                fatal=True,
+            )
+            return
+
+        _, status = self._yoetz(
+            "codex_admission_status",
+            phase,
+            [
+                "integrate",
+                "codex",
+                "admission",
+                "status",
+                "--project-root",
+                project,
+                "--json",
+            ],
+            env={"CODEX_HOME": str(self.host_config_root)},
+            fatal=True,
+        )
+        status_body = status if isinstance(status, dict) else {}
+        admission = status_body.get("admission")
+        admission_body = cast(dict[str, Any], admission) if isinstance(admission, dict) else {}
+        entries = admission_body.get("entries")
+        details: set[str] = set()
+        if isinstance(entries, list):
+            for entry in cast(list[object], entries):
+                if not isinstance(entry, dict):
+                    continue
+                detail = cast(dict[str, Any], entry).get("detail")
+                if isinstance(detail, str):
+                    details.add(detail)
+        if admission_body.get("state") != "present" or "external" not in details:
+            self._record(
+                "codex_admission_status_validation",
+                phase,
+                status="fail",
+                reason="codex_admission_status_unconfirmed",
+                summary={
+                    "state": admission_body.get("state"),
+                    "external_entry_present": "external" in details,
+                },
+                fatal=True,
+            )
+            return
+        self.identity["codex_admission"] = {
+            "owner": "external",
+            "route_profile": "policy",
+            "state": "present",
+            "tool": "check",
+        }
 
     def _connect_plugin_dir(self, phase: str) -> None:
         if self.host != "claude":
@@ -1323,6 +1794,7 @@ class Lane:
                 "external_ref": f"dogfood-ci-{self.host}-{self.stamp}",
                 "requested_view": "compact",
             }
+        start_body["task_statement"] = _LEDGER_TASK_STATEMENT
         _, started = self._yoetz(
             "ledger_start",
             phase,
@@ -1454,9 +1926,7 @@ class Lane:
                     "status": checked.get("semantic_status"),
                     "reason": checked.get("semantic_reason"),
                     "provenance_present": provenance is not None,
-                    "provenance_provider": _find_key(provenance, "provider_id")
-                    if provenance is not None
-                    else None,
+                    "provenance_provider": _semantic_provenance_provider(provenance),
                     "verdict": checked.get("verdict"),
                     "findings": len(cast(list[Any], checked.get("findings") or [])),
                 }
@@ -1470,6 +1940,20 @@ class Lane:
                 expect_zero=False,
             )
             if self.fireworks_key:
+                input_matches = _specification_manifest_matches(checked, _LEDGER_TASK_STATEMENT)
+                self.semantic["specification_manifest_matches"] = input_matches
+                self.semantic["review_input_manifest"] = checked.get("review_input_manifest")
+                self._record(
+                    "semantic_specification_input",
+                    phase,
+                    status="pass" if input_matches else "fail",
+                    reason=None if input_matches else "provider_bound_specification_not_proven",
+                    summary={
+                        "expected_statement_digest": "sha256:"
+                        + hashlib.sha256(_LEDGER_TASK_STATEMENT.encode("utf-8")).hexdigest()
+                    },
+                    fatal=False,
+                )
                 # docs/runbooks/semantic-dogfood.md §3: these rows prove a provider attempt was
                 # made; every other status/reason pair is a pre-dispatch refusal or indeterminate.
                 status = checked.get("semantic_status")
@@ -1699,7 +2183,7 @@ class Lane:
         found: list[str] = []
         for path in self.root.rglob("service.diagnostics.jsonl"):
             try:
-                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+                lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
             except OSError:
                 continue
             for line in lines:
@@ -1710,12 +2194,18 @@ class Lane:
 
     # ---- native agent
 
+    def _native_external_ref(self) -> str:
+        """Return the exact pair used by the native prompt's start request."""
+
+        return f"native-{self.host}-{self.stamp}"
+
     def _agent_command(self) -> tuple[list[str] | None, dict[str, str], str | None]:
         prompt = _PROMPT_TEMPLATE.format(
             tool_hint=self.mcp_tool_hint,
             workspace=str(self.project),
-            external_ref=f"native-{self.host}-{self.stamp}",
+            external_ref=self._native_external_ref(),
         )
+        self.native_prompt = prompt
         assert self.launcher is not None
         # setup run supplies this launch PATH because packaged hooks invoke bare yoetz.
         # The first executable is the disposable instance-pinned launcher (ADR-028).
@@ -1805,6 +2295,297 @@ class Lane:
         ]
         return argv, env, None
 
+    def _verify_native_provider_statement(
+        self,
+        phase: str,
+        statement: str,
+        binding: dict[str, Any] | None = None,
+    ) -> bool:
+        """Verify Claude/Cursor's native workflow through the session's public history.
+
+        The host output supplies only a locator. It is never accepted as proof, and the verifier
+        deliberately performs no post-run ``start mode=attach`` because that rotates the task
+        session and hides the native rows from the session-scoped history view.
+        """
+
+        expected_digest = _digest(statement)
+        expected_bytes = len(statement.encode("utf-8"))
+        details: dict[str, Any] = {
+            "host": self.host,
+            "workspace": str(self.project),
+            "external_ref": self._native_external_ref(),
+            "statement_digest": expected_digest,
+            "statement_bytes": expected_bytes,
+            "operator_attach_mutation": False,
+            "history_pages": 0,
+            "history_items": 0,
+            "provider_bound_checks": 0,
+            "matched": False,
+        }
+
+        def fail(reason: str, **extra: Any) -> bool:
+            details.update({"reason": reason, **extra})
+            self.native_provider_verification = details
+            self._record(
+                "native_provider_input",
+                phase,
+                status="info",
+                reason=reason,
+                summary=details,
+                fatal=False,
+            )
+            return False
+
+        binding_source = "binding"
+        if isinstance(binding, dict) and isinstance(binding.get("source"), str):
+            binding_source = cast(str, binding["source"])
+        checked_binding = _validated_native_binding(binding, source=binding_source)
+        if checked_binding is None:
+            return fail("native_binding_marker_missing")
+        task_id = cast(str, checked_binding["task_id"])
+        session_id = cast(str, checked_binding["session_id"])
+        writer_id = cast(str, checked_binding["writer_id"])
+        marker_frontier = cast(dict[str, str], checked_binding["frontier"])
+        details.update(
+            {
+                "binding_source": checked_binding.get("source"),
+                "task_id": task_id,
+                "session_id": session_id,
+                "writer_id": writer_id,
+                "native_start_frontier": dict(marker_frontier),
+            }
+        )
+        ids = {"task_id": task_id, "session_id": session_id, "writer_id": writer_id}
+
+        def valid_frontier(value: object) -> dict[str, str] | None:
+            if not isinstance(value, dict):
+                return None
+            frontier = cast(dict[str, Any], value)
+            sequence = frontier.get("sequence")
+            head_digest = frontier.get("head_digest")
+            if (
+                not isinstance(sequence, str)
+                or not sequence.isdigit()
+                or (sequence != "0" and sequence.startswith("0"))
+                or int(sequence) > _NATIVE_MAX_SEQUENCE
+                or not isinstance(head_digest, str)
+                or (head_digest != "genesis" and _NATIVE_DIGEST_RE.fullmatch(head_digest) is None)
+            ):
+                return None
+            return {"sequence": sequence, "head_digest": head_digest}
+
+        def status_page(
+            name: str, query: dict[str, Any]
+        ) -> tuple[dict[str, str] | None, list[dict[str, Any]] | None, str | None]:
+            _, status = self._yoetz(
+                name,
+                phase,
+                ["status", "--input", "-", "--json"],
+                cwd=self.project,
+                stdin=self._request(query),
+                expect_zero=False,
+            )
+            if not isinstance(status, dict) or status.get("ok") is not True:
+                fail("native_history_unavailable")
+                return None, None, None
+            for key, expected in ids.items():
+                if status.get(key) != expected:
+                    fail("native_history_binding_mismatch")
+                    return None, None, None
+            requested = valid_frontier(status.get("requested_frontier"))
+            if requested is None:
+                fail("native_history_frontier_invalid")
+                return None, None, None
+            page_value = status.get("page")
+            if not isinstance(page_value, dict):
+                fail("native_history_page_invalid")
+                return None, None, None
+            page = cast(dict[str, Any], page_value)
+            items_value = page.get("items")
+            if "next_cursor" not in page or not isinstance(items_value, list):
+                fail("native_history_page_invalid")
+                return None, None, None
+            raw_items = cast(list[Any], items_value)
+            if any(not isinstance(item, dict) for item in raw_items):
+                fail("native_history_item_invalid")
+                return None, None, None
+            next_cursor = page.get("next_cursor")
+            if next_cursor is not None and not isinstance(next_cursor, str):
+                fail("native_history_cursor_invalid")
+                return None, None, None
+            return (
+                requested,
+                [cast(dict[str, Any], item) for item in raw_items],
+                next_cursor,
+            )
+
+        # The marker's frontier is checked through the same session/writer before reading the
+        # later history. This proves that the locator names a real native route; it does not
+        # claim that the marker itself proves any workflow event.
+        marker_query = {
+            **ids,
+            "view": "history",
+            "limit": "100",
+            "at_frontier": marker_frontier["sequence"],
+        }
+        marker_requested, _, _ = status_page("native_history_marker_frontier", marker_query)
+        if marker_requested is None:
+            return False
+        if marker_requested != marker_frontier:
+            return fail("native_start_frontier_mismatch")
+
+        cursor: str | None = None
+        current_frontier: dict[str, str] | None = None
+        history_items: list[dict[str, Any]] = []
+        seen_sequences: set[int] = set()
+        seen_events: set[str] = set()
+        for page_number in range(1, 65):
+            query: dict[str, Any] = {
+                **ids,
+                "view": "history",
+                "limit": "100",
+            }
+            if cursor is not None:
+                query["cursor"] = cursor
+            requested, items, next_cursor_value = status_page(
+                f"native_history_{page_number}", query
+            )
+            if requested is None or items is None:
+                return False
+            if current_frontier is None:
+                current_frontier = requested
+                if int(requested["sequence"]) < int(marker_frontier["sequence"]):
+                    return fail("native_history_before_start_frontier")
+                if (
+                    requested["sequence"] == marker_frontier["sequence"]
+                    and requested["head_digest"] != marker_frontier["head_digest"]
+                ):
+                    return fail("native_start_frontier_mismatch")
+            elif requested != current_frontier:
+                return fail("native_history_frontier_changed")
+            for item in items:
+                required = {
+                    "event_id",
+                    "schema_name",
+                    "schema_version",
+                    "publication_channel",
+                    "ingestion_sequence",
+                    "projection_status",
+                    "summary_code",
+                }
+                if not required <= set(item):
+                    return fail("native_history_item_invalid")
+                event_id = item.get("event_id")
+                if (
+                    not isinstance(event_id, str)
+                    or re.fullmatch(
+                        r"evt_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
+                        event_id,
+                    )
+                    is None
+                ):
+                    return fail("native_history_event_invalid")
+                if event_id in seen_events:
+                    return fail("native_history_duplicate")
+                seen_events.add(event_id)
+                sequence = item.get("ingestion_sequence")
+                if (
+                    not isinstance(sequence, str)
+                    or not sequence.isdigit()
+                    or (sequence != "0" and sequence.startswith("0"))
+                    or int(sequence) <= 0
+                    or int(sequence) > _NATIVE_MAX_SEQUENCE
+                ):
+                    return fail("native_history_sequence_invalid")
+                sequence_number = int(sequence)
+                if sequence_number > int(current_frontier["sequence"]):
+                    return fail("native_history_not_pinned")
+                if sequence_number in seen_sequences:
+                    return fail("native_history_duplicate")
+                seen_sequences.add(sequence_number)
+                if item.get("summary_code") != item.get("schema_name"):
+                    return fail("native_history_item_invalid")
+                if item.get("projection_status") != "projected":
+                    return fail("native_history_unprojected")
+                if not isinstance(item.get("schema_name"), str) or not isinstance(
+                    item.get("schema_version"), str
+                ):
+                    return fail("native_history_item_invalid")
+                if item.get("schema_name") == "check_recorded":
+                    manifest_value = item.get("review_input_manifest")
+                    if manifest_value is not None and not isinstance(manifest_value, dict):
+                        return fail("native_history_manifest_invalid")
+                # The marker frontier is the native session's start boundary.  Public history
+                # also includes earlier rows from the same task/session, so they must not be
+                # allowed to satisfy this run's plan/check/receipt proof.
+                if sequence_number <= int(marker_frontier["sequence"]):
+                    continue
+                history_items.append(item)
+            if next_cursor_value is None:
+                break
+            if not next_cursor_value or next_cursor_value == cursor:
+                return fail("native_history_cursor_invalid")
+            cursor = next_cursor_value
+        else:
+            return fail("native_history_paging_exceeded")
+
+        history_items.sort(key=lambda item: int(cast(str, item["ingestion_sequence"])))
+        details["history_pages"] = page_number
+        details["history_items"] = len(history_items)
+        plans = [item for item in history_items if item.get("schema_name") == "plan_published"]
+        checks = [item for item in history_items if item.get("schema_name") == "check_recorded"]
+        receipts = [item for item in history_items if item.get("schema_name") == "receipt_recorded"]
+        if not plans:
+            return fail("native_plan_absent")
+        plan = plans[0]
+        if plan.get("publication_channel") != "cooperative_mcp":
+            return fail("native_plan_channel_mismatch")
+        if not checks:
+            return fail("native_provider_bound_manifest_absent")
+        check = checks[0]
+        if check.get("publication_channel") != "engine_derived":
+            return fail("native_check_channel_mismatch")
+        if check.get("schema_version") != "1.3.0":
+            return fail("native_provider_bound_schema_invalid")
+        provider_bound = [
+            item
+            for item in checks
+            if isinstance(item.get("review_input_manifest"), dict)
+            and cast(dict[str, Any], item["review_input_manifest"]).get("phase") == "provider_bound"
+        ]
+        details["provider_bound_checks"] = len(provider_bound)
+        details["first_provider_bound_event_id"] = check.get("event_id")
+        details["first_provider_bound_sequence"] = check.get("ingestion_sequence")
+        if not _history_provider_bound_manifest_matches(check, statement):
+            return fail(
+                "native_provider_bound_manifest_absent"
+                if check.get("review_input_manifest") is None
+                else "native_provider_bound_manifest_mismatch"
+            )
+        if not receipts:
+            return fail("native_receipt_absent")
+        receipt = receipts[0]
+        if receipt.get("publication_channel") != "engine_derived":
+            return fail("native_receipt_channel_mismatch")
+        plan_sequence = int(cast(str, plan["ingestion_sequence"]))
+        check_sequence = int(cast(str, check["ingestion_sequence"]))
+        receipt_sequence = int(cast(str, receipt["ingestion_sequence"]))
+        if not plan_sequence < check_sequence < receipt_sequence:
+            return fail("native_workflow_order_invalid")
+        details["plan_sequence"] = plan["ingestion_sequence"]
+        details["receipt_sequence"] = receipt["ingestion_sequence"]
+        details["matched"] = True
+        details["reason"] = None
+        self.native_provider_verification = details
+        self._record(
+            "native_provider_input",
+            phase,
+            status="pass",
+            summary=details,
+            fatal=False,
+        )
+        return True
+
     def phase_native_agent(self) -> None:
         phase = "native"
         if self.skip_agent:
@@ -1821,8 +2602,50 @@ class Lane:
         output_file = self._save("agent-output", out or "", ".txt")
         stderr_file = self._save("agent-stderr", err or "", ".txt")
         done = _native_done(self.host, out)
-        native_mcp_completed = _codex_workflow_completed(out) if self.host == "codex" else None
-        completion_confirmed = native_mcp_completed if self.host == "codex" else done
+        native_binding = None
+        if self.host != "codex":
+            # The final response is the native process's own locator. An observation adapter is
+            # only a fallback, and only when it carries the exact native external reference or an
+            # explicit native workspace scope.
+            native_binding = _native_binding_marker(self.host, out)
+            if native_binding is None:
+                native_binding = _native_binding_from_observation(
+                    self.observation,
+                    external_ref=self._native_external_ref(),
+                    workspace=str(self.project),
+                )
+        # Freeze the native process evidence before the read-only public history verification.
+        # A host's marker and DONE line are retained as metadata only; neither is workflow proof.
+        self._record(
+            "native_process_result",
+            phase,
+            status="pass" if rc == 0 else "info",
+            exit_code=rc,
+            duration_ms=ms,
+            reason=None if rc == 0 else f"agent_exit_{rc}",
+            summary={
+                "done_marker": done,
+                "output_digest": _digest(out),
+                "output_bytes": len(out.encode("utf-8")),
+                "output_file": output_file,
+                "stderr_file": stderr_file,
+                "receipt_or_frontier_proof": "host_output_not_authoritative",
+                "binding_marker_present": native_binding is not None,
+            },
+            stderr=err,
+        )
+        native_mcp_completed = (
+            _codex_workflow_completed(out, self.native_prompt)
+            if self.host == "codex"
+            else self._verify_native_provider_statement(
+                phase, self.native_prompt or "", native_binding
+            )
+        )
+        # Claude/Cursor require both a successful terminal response and the native session's
+        # ordered public history. Codex keeps its direct structured MCP collector unchanged.
+        completion_confirmed = (
+            native_mcp_completed if self.host == "codex" else done and native_mcp_completed
+        )
         self.agent = {
             "ran": True,
             "exit_code": rc,
@@ -1832,6 +2655,13 @@ class Lane:
             "output_bytes": len(out.encode("utf-8")),
             "done_marker": done,
             "native_mcp_completed": native_mcp_completed,
+            "native_binding_source": None
+            if native_binding is None
+            else native_binding.get("source"),
+            "native_provider_verification": self.native_provider_verification or None,
+            "expected_statement_digest": _digest(self.native_prompt)
+            if self.native_prompt is not None
+            else None,
             "completion_confirmed": completion_confirmed,
             "output_file": output_file,
             "stderr_file": stderr_file,

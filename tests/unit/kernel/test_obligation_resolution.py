@@ -270,13 +270,19 @@ def test_resolved_to_resolved_mutation_is_rejected() -> None:
     assert caught.value.differing_fields == ("status",)
 
 
-def test_resolved_to_open_is_rejected() -> None:
+def test_resolved_to_open_reopens_it() -> None:
+    """tb4n2 R2 (#1022, ADR-041): a resolution whose work no longer holds can be reopened."""
+
     open_payload = _open_payload()
     resolved = _resolved_payload()
     reopen = _open_payload()
+    record = replay(_chain(open_payload, resolved, reopen)).obligations[_OBL_ID]
+    assert record.payload is not None
+    assert record.payload.status is ObligationStatus.OPEN
+    # Meaning fields must still repeat when reopening.
     with pytest.raises(ObligationResolutionMismatch) as caught:
-        replay(_chain(open_payload, resolved, reopen))
-    assert caught.value.invariant == "open_to_resolved_only"
+        replay(_chain(open_payload, resolved, _open_payload(description="other prose")))
+    assert caught.value.invariant == "meaning_fields_must_repeat"
 
 
 def test_public_error_never_embeds_field_values() -> None:

@@ -148,8 +148,11 @@ def _hooks_json(*, codex_version: str | None = None) -> bytes:
     # Handlers that return additionalContext (SessionStart advice/attach,
     # PostToolUse advice) or a Stop ``decision: block`` stay synchronous with a
     # timeout the handler can actually meet; Codex's own default would be 600s,
-    # so 10s here is still a deliberate bound, not a relaxation. SessionEnd is
-    # host-clamped to 3s max, discards stdout, and is downgraded to sync (with
+    # so 10s here is still a deliberate bound, not a relaxation. PreToolUse is
+    # synchronous as well: its pairing identity must be committed before Codex
+    # can deliver the matching PostToolUse, otherwise built-in MCP-resource calls
+    # can be recorded as orphaned despite healthy observation (#974). SessionEnd
+    # is host-clamped to 3s max, discards stdout, and is downgraded to sync (with
     # a per-session warning) if declared async, so it keeps its own explicit 3.
     observe = "yoetz hooks observe --workspace . --event"
     legacy_spool = "yoetz hooks spool --workspace . --event"
@@ -217,7 +220,6 @@ def _hooks_json(*, codex_version: str | None = None) -> bytes:
                     command=f"{ingress} PreToolUse",
                     timeout=observe_timeout,
                     status="Yoetz observe PreToolUse",
-                    run_async=True,
                 )
             ],
             "PostToolUse": [

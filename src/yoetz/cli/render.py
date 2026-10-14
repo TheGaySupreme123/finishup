@@ -6,20 +6,40 @@ from collections.abc import Iterable, Mapping, Sequence
 from enum import Enum
 from typing import Final, cast
 
-from yoetz.domain.receipts import check_time_change_gap_sentence
+from yoetz.domain.check_totals import render_check_totals
+from yoetz.domain.findings import SELF_VERIFIED_GUIDANCE
+from yoetz.domain.receipts import (
+    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+    check_time_change_gap_sentence,
+    historical_gaps_from_wire,
+    semantic_redacted_value_text,
+)
+from yoetz.domain.review_input_render import (
+    has_agent_suppliable_missing,
+    render_missing_for_assessment_lines,
+    render_review_input_manifest_compat_line,
+    render_review_input_manifest_lines,
+)
+from yoetz.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.errors import normalize_safe_details
+from yoetz.protocol.ids import validate_opaque_item_id
+from yoetz.protocol.inspection_text import inspection_text
 from yoetz.protocol.models import (
     CheckAwaitingHumanModel,
     CheckFindingChecklistModel,
+    CheckInspectionModel,
+    CheckOverallNextModel,
     CheckProjectedFindingModel,
     CheckSuccessModel,
     OmittedContentModel,
     PublicErrorModel,
     ReceiptSuccessModel,
+    SemanticRedactedValueModel,
     StatusAdvicePageModel,
     StatusCheckAdmissionModel,
     StatusClosureReadinessModel,
+    StatusCompactPageModel,
     StatusEvidencePageModel,
     StatusFindingsPageModel,
     StatusLineagePageModel,
@@ -30,7 +50,15 @@ from yoetz.protocol.models import (
     StatusSemanticProgressModel,
     StatusSuccessModel,
 )
-from yoetz.protocol.readiness_text import readiness_directive
+from yoetz.protocol.readiness_text import (
+    awaiting_ruling_variants,
+    check_cause_sentence,
+    closure_counts_variants,
+    obligation_resolve_recipe_variants,
+    predicted_receipt_variants,
+    readiness_directive,
+    recheck_note,
+)
 from yoetz.protocol.recovery import (
     RecoveryDirective,
     TimeoutOperationKind,
@@ -40,6 +68,7 @@ from yoetz.protocol.recovery import (
     correction_for_invariant,
     directive_for,
 )
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 __all__ = [
     "bounded_failure_line",
@@ -47,6 +76,8 @@ __all__ = [
     "error_recovery_json",
     "local_recovery_json",
     "recovery_directive_json",
+    "credential_heuristic_line",
+    "lineage_lines",
     "render_closure_readiness_lines",
     "render_error_recovery_lines",
     "render_hook_recovery_suffix",
@@ -54,6 +85,7 @@ __all__ = [
     "render_human_check",
     "render_human_error",
     "render_human_findings",
+    "render_human_inspection",
     "render_human_receipt",
     "render_human_status",
     "render_local_recovery_lines",
@@ -174,14 +206,32 @@ _CHECKBOX: Final = {
     "verified_resolved": "[x]",
     "acknowledged_not_done": "[~]",
     "rejection_accepted": "[-]",
+    # Issue #984: final, disclosed, not resolved by Yoetz.
+    "self_verified": "[s]",
+    # Issue #1020: final, disclosed standing disagreement; not agent work.
+    "disputed_after_rebuttal": "[d]",
 }
 _CHECKLIST_NEXT_TEXT: Final = {
-    "work_open_findings": "Repair or answer the open findings, then check again.",
+    "work_open_findings": (
+        "Repair the open findings (or answer the reviewer's questions), then check again."
+    ),
     "decide_at_budget": (
-        "An open finding reached the review-round budget: repair it with new evidence, or "
-        "respond acknowledged_not_done with a reason. Checks are never throttled."
+        "An open finding reached the review-round budget: repair it with new evidence, then "
+        "check. "
+        + SELF_VERIFIED_GUIDANCE
+        + " Respond acknowledged_not_done with a reason only if you truly will not or cannot "
+        "do it. Checks are never throttled."
+    ),
+    "disclose_limitations": (
+        "Disclose the named limitation requests: respond acknowledged with the reason if the "
+        "requirement may be met but cannot be verified here; respond acknowledged_not_done only "
+        "when you know it is not met. No repair is needed."
     ),
     "request_receipt": "No open findings remain on the list; request the receipt.",
+    "request_ruling": (
+        "You rejected finding(s) and the reviewer has not ruled yet: run check with "
+        "final_review: true so the reviewer rules. Do not acknowledge a finding you dispute."
+    ),
 }
 
 
@@ -197,7 +247,9 @@ def render_checklist_line(
     return line
 
 
-def _render_checklist(checklist: CheckFindingChecklistModel) -> list[str]:
+def _render_checklist(
+    checklist: CheckFindingChecklistModel, *, input_action_required: bool = False
+) -> list[str]:
     lines = [f"To-do list (review-round budget {checklist.attempt_budget}):"]
     for index, item in enumerate(checklist.items, start=1):
         lines.append(
@@ -212,11 +264,31 @@ def _render_checklist(checklist: CheckFindingChecklistModel) -> list[str]:
         )
     counts = checklist.counts
     at_budget = int(counts.open_at_budget)
+    if counts.to_do is not None and counts.awaiting_ruling is not None:
+        # ADR-046: the same finding counters status prints.
+        sentence = closure_counts_variants(
+            {
+                "to_do": counts.to_do,
+                "awaiting_ruling": counts.awaiting_ruling,
+                "unmet": counts.unmet,
+                "disclosed": counts.disclosed,
+                "to_disclose": counts.to_disclose,
+                "self_verify_eligible": "0",
+            },
+            None,
+        )
+        lines.extend(sentence[:1])
     lines.append(
         f"Counts: open {counts.open}"
         + (f" ({at_budget} at budget)" if at_budget else "")
         + f", verified {counts.verified_resolved}, not done {counts.acknowledged_not_done}, "
         f"rejection accepted {counts.rejection_accepted}"
+        + (f", self-verified {counts.self_verified}" if int(counts.self_verified) else "")
+        + (
+            f", disputed after rebuttal {counts.disputed_after_rebuttal}"
+            if counts.disputed_after_rebuttal is not None and int(counts.disputed_after_rebuttal)
+            else ""
+        )
     )
     total = sum(
         int(value)
@@ -225,12 +297,102 @@ def _render_checklist(checklist: CheckFindingChecklistModel) -> list[str]:
             counts.verified_resolved,
             counts.acknowledged_not_done,
             counts.rejection_accepted,
+            counts.self_verified,
+            counts.disputed_after_rebuttal or "0",
         )
     )
     if total > len(checklist.items):
         lines.append(f"Not listed: {total - len(checklist.items)}")
-    lines.append(f"Next: {_CHECKLIST_NEXT_TEXT[checklist.next]}")
+    label = "Finding checklist next" if input_action_required else "Next"
+    next_text = _CHECKLIST_NEXT_TEXT[checklist.next]
+    if checklist.next == "work_open_findings":
+        next_text = _open_findings_next_text(checklist, next_text)
+    lines.append(f"{label}: {next_text}")
     return lines
+
+
+# tb4n3 RC-1 (ADR-046, owner decisions Q4 and 2026-10-12): a reviewer's limitation request is a
+# disclosure to make, never repair work. Alone it is the ``disclose_limitations`` continuation;
+# beside real work it rides in ``work_open_findings`` and the text names how it is answered. The
+# agent's answer decides what it means: ``acknowledged`` says the requirement may be met but
+# cannot be verified here, ``acknowledged_not_done`` says it is not met. The agent's own criterion
+# (``agent_criterion_unmet``, issue #1043) reads the same closure basis but its probe fails here:
+# it is always work (fix it, or narrow it), never the disclosure-only continuation. The checklist
+# rows carry no kind, so the text names both answers.
+_LIMITATION_REQUEST_ALSO: Final = (
+    " For a reviewer's request to state a limit, respond acknowledged with the reason if the "
+    "requirement may be met but cannot be verified here (acknowledged_not_done only when you "
+    "know it is not met) instead of repairing it. An agent_criterion_unmet is your own "
+    "criterion: fix it, or narrow it with acknowledged and a reason."
+)
+
+
+def _open_limitation_requests(checklist: CheckFindingChecklistModel | None) -> bool:
+    """Whether some open (agent work) checklist item is a limitation request still to disclose."""
+
+    if checklist is None:
+        return False
+    # ADR-046: agent work is the closure class, not the to-do state (a disclosed limitation keeps
+    # an ``open`` to-do state but is settled).
+    return any(
+        item.closure_class == "agent_work" and item.closure_basis == "limitation_requested"
+        for item in checklist.items
+    )
+
+
+def _open_findings_next_text(checklist: CheckFindingChecklistModel, default: str) -> str:
+    return default + _LIMITATION_REQUEST_ALSO if _open_limitation_requests(checklist) else default
+
+
+def _render_overall_next(
+    next_step: CheckOverallNextModel, checklist: CheckFindingChecklistModel | None = None
+) -> str:
+    if next_step.action == "supply_missing_input":
+        action = (
+            "Supply the named review input as new records tied to the named refs "
+            "(never change your work to fit the reviewer)"
+        )
+    elif next_step.action == "disclose_limitations":
+        action = (
+            "Disclose the named limitation requests (respond acknowledged with the reason if the "
+            "requirement may be met but cannot be verified here; acknowledged_not_done only when "
+            "you know it is not met; no repair is needed)"
+        )
+    elif next_step.action == "work_open_findings":
+        if _open_limitation_requests(checklist):
+            action = (
+                "Repair or answer the named open findings (a limitation request among them needs "
+                "only a response: acknowledged with the reason if it may be met but cannot be "
+                "verified here, acknowledged_not_done only when you know it is not met; an "
+                "agent_criterion_unmet is your own criterion: fix it, or narrow it with "
+                "acknowledged and a reason)"
+            )
+        else:
+            action = "Repair or answer the named open findings"
+    elif next_step.action == "request_ruling":
+        action = "Run check with final_review: true so the reviewer rules on the rejected findings"
+    elif next_step.action == "review_recorded_work":
+        action = "Review the recorded work for open obligations or undisclosed failures"
+    else:
+        action = (
+            "Disclose the limitation at the receipt endpoint"
+            if next_step.status == "ready_with_limitations"
+            else "Request the receipt"
+        )
+    targets = ""
+    if next_step.target_refs:
+        targets = " (targets: " + ", ".join(next_step.target_refs) + ")"
+    endpoint = ""
+    if next_step.acknowledged_incomplete_endpoint is not None:
+        endpoint = "; acknowledged incomplete endpoint: receipt"
+    predicted = ""
+    if next_step.predicted_conclusion is not None:
+        sentence = predicted_receipt_variants(
+            {"conclusion": next_step.predicted_conclusion, "reasons": ()},
+            state="action_required" if next_step.status == "action_required" else "ready",
+        )
+        predicted = f" {sentence[-1]}" if sentence else ""
+    return f"Overall next [{next_step.status}]: {action}{targets}{endpoint}.{predicted}"
 
 
 def render_human_check(result: CheckSuccessModel) -> str:
@@ -238,11 +400,54 @@ def render_human_check(result: CheckSuccessModel) -> str:
 
     if type(result) is not CheckSuccessModel:
         raise TypeError("check_result_invalid")
+    scoped_local_verdict = (
+        result.verdict == "no_issue_detected"
+        and result.semantic_status == "not_requested"
+        and result.semantic_reason == "deterministic_mode"
+    )
+    verdict_line = (
+        "Verdict: no issue detected within deterministic coverage"
+        if scoped_local_verdict
+        else f"Verdict: {result.verdict}"
+    )
+    review_line = (
+        f"AI-powered review: {_token(result.semantic_status)} ({_token(result.semantic_reason)})"
+    )
+    if result.semantic_status == "not_requested" and result.semantic_route_required is False:
+        # Issue #986 (owner decision E2): disclosed, never a receipt blocker on such a route.
+        review_line += "; the route did not require it, so it does not block a clean receipt"
     lines = [
-        f"Verdict: {result.verdict}",
-        f"AI-powered review: {_token(result.semantic_status)} ({_token(result.semantic_reason)})",
+        verdict_line,
+        review_line,
         render_human_findings(result.findings),
     ]
+    if result.totals is not None:
+        lines.insert(2, render_check_totals(result.totals.model_dump(mode="json")))
+    if result.observations_awaited is not None:
+        # Issue #1012: the optional pre-check wait for this task's hook rows.
+        awaited = result.observations_awaited
+        lines.insert(
+            2,
+            "Hook observations awaited: complete"
+            if awaited.state == "complete"
+            else (
+                f"Hook observations awaited: bounded_timeout ({int(awaited.pending_count)} "
+                "still pending; the check used the record as it stood)"
+                if awaited.state == "bounded_timeout"
+                else "Hook observations awaited: unavailable (local outbox not readable)"
+            ),
+        )
+    if result.review_input_manifest is not None:
+        compat_line = render_review_input_manifest_compat_line(
+            result.review_input_manifest.model_dump(mode="json", by_alias=True)
+        )
+        if compat_line:
+            lines.append(compat_line)
+        lines.extend(
+            render_review_input_manifest_lines(
+                result.review_input_manifest.model_dump(mode="json", by_alias=True)
+            )
+        )
     recovery = _semantic_outcome_recovery_lines(
         status=result.semantic_status,
         reason=result.semantic_reason,
@@ -253,8 +458,15 @@ def render_human_check(result: CheckSuccessModel) -> str:
     suppressed = int(result.suppressed_count)
     if suppressed:
         lines.append(f"Suppressed findings: {suppressed}")
+    if result.overall_next is not None:
+        lines.append(_render_overall_next(result.overall_next, result.finding_checklist))
     if result.finding_checklist is not None:
-        lines.extend(_render_checklist(result.finding_checklist))
+        lines.extend(
+            _render_checklist(
+                result.finding_checklist,
+                input_action_required=has_agent_suppliable_missing(result.missing_for_assessment),
+            )
+        )
     if result.children is not None:
         children = result.children
         lines.append(f"Child dependencies ({children.label}):")
@@ -284,13 +496,30 @@ def render_human_check(result: CheckSuccessModel) -> str:
     if result.missing_for_assessment:
         # Issue #907: a check limitation, never a finding. Recheck only after supplying an
         # agent-suppliable item; otherwise report the limitation.
-        lines.append("Missing for assessment (the reviewer could not assess the packet):")
-        for item in result.missing_for_assessment:
-            refs = ", ".join(item.target_refs) if item.target_refs else "no packet ref"
-            lines.append(f"- {_token(item.kind)} ({refs}): {_token(item.availability)}")
+        lines.extend(render_missing_for_assessment_lines(result.missing_for_assessment))
+    if result.semantic_withheld_items:
+        lines.append("Withheld review items (the reviewer continued without them):")
+        for item in result.semantic_withheld_items:
+            lines.append(f"- {item.item_id}: {_token(item.reason)}")
+    lines.extend(_semantic_redacted_value_lines(result.semantic_redacted_values))
+    if "semantic_review_deferred_before_first_edit" in tuple(result.coverage.known_gaps):
+        # Issue #1046: a pre-work check runs the local plan checks only.
+        lines.append(
+            "AI-powered review deferred: no material edit is recorded yet, so this check ran the "
+            "local plan checks only and sent nothing. The next check after your first edit "
+            "reviews as configured; the closing review is never deferred."
+        )
+    if "semantic_review_skipped_insufficient_packet" in tuple(result.coverage.known_gaps):
+        lines.append(
+            "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
+            "assessed review) "
+            "could not assess the packet. This is a Yoetz limit, not a blocker: verify the work "
+            "yourself; a real repair re-arms the review until that cap."
+        )
     if result.coverage.known_gaps:
         lines.append("Coverage gaps: " + ", ".join(result.coverage.known_gaps))
         lines.extend(_check_time_change_sentences(result.coverage.known_gaps))
+        lines.extend(lineage_lines(result.fact_lineage))
         # The strict ceiling blocked this process while the last install applied the policy
         # route (issue #537). A ceiling with no applied-policy record keeps today's terminal
         # wording with no recovery line.
@@ -381,10 +610,62 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
             acknowledged=readiness.acknowledged_not_done_count,
         ),
     ]
+    if readiness.state != "unknown":
+        # ADR-046: the receipt conclusion this frontier would carry, appended after the
+        # owner-approved sentence, and the one set of counters every surface prints.
+        lines.extend(
+            predicted_receipt_variants(readiness.predicted_receipt, state=readiness.state)[:1]
+            if readiness.predicted_receipt is not None
+            else ()
+        )
+        lines.extend(
+            closure_counts_variants(readiness.finding_counts, readiness.obligation_counts)[:1]
+        )
+        # The rejected findings that wait for a reviewer ruling and the re-reads a Stop will ask
+        # once (tb4n3 RC-8), so "nothing further to do" is never followed by a surprise gate.
+        lines.extend(awaiting_ruling_variants(readiness)[:1])
+        announced = recheck_note(readiness)
+        if announced is not None:
+            lines.append(announced)
     if readiness.agent_actionable and readiness.state != "unknown":
         lines.append("Agent-actionable: " + ", ".join(readiness.agent_actionable))
+    if readiness.check_cause is not None and readiness.state != "unknown":
+        # tb4n3 RC-6 (owner lineage rule): the record the check's standing rests on.
+        cause = readiness.check_cause
+        lines.append(
+            check_cause_sentence(
+                effect=cause.effect,
+                event_id=cause.event_id,
+                ledger_sequence=cause.ledger_sequence,
+                check_subject_frontier=cause.check_subject_frontier,
+                family=cause.family,
+                material_class=cause.material_class,
+                rule=cause.rule,
+                tool=cause.tool,
+            )
+        )
     if readiness.standing_limitations:
         lines.append("Standing limitations: " + ", ".join(readiness.standing_limitations))
+    lines.extend(lineage_lines(readiness.fact_lineage))
+    if readiness.blocked_obligations:
+        # Recorded yoetz-blocker claims (#977): ids and the closed kind; Yoetz did not verify them.
+        lines.append(
+            "Recorded blockers (agent-declared, unverified): "
+            + ", ".join(
+                f"{item.obligation_id} ({item.blocker_kind})"
+                for item in readiness.blocked_obligations
+            )
+        )
+    if readiness.limitation_refs_required and readiness.limitation_refs_required_count:
+        # F3: ids only; what a whole-task completion claim must name in limitation_refs.
+        hidden = int(readiness.limitation_refs_required_count) - len(
+            readiness.limitation_refs_required
+        )
+        lines.append(
+            "A whole-task completion claim must name in limitation_refs: "
+            + ", ".join(readiness.limitation_refs_required)
+            + (f" (+{hidden} more)" if hidden > 0 else "")
+        )
     if readiness.acknowledged_not_done:
         listed = ", ".join(readiness.acknowledged_not_done)
         hidden = int(readiness.acknowledged_not_done_count) - len(readiness.acknowledged_not_done)
@@ -392,6 +673,46 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
             "Acknowledged, not done: " + listed + (f" (+{hidden} more)" if hidden > 0 else "")
         )
     return tuple(lines)
+
+
+_FILTER_WORDS: Final = {"enforced": "on", "disabled": "off", "unknown": "unknown"}
+
+
+def credential_heuristic_line(repository: object, machine_default: object) -> str:
+    """One sentence for the external reviewer's possible-credential filter (issue #982).
+
+    Every human surface (``yoetz status``, provider status, the terminal interface) uses this
+    text for the same ``repository``/``machine_default`` pair, so they cannot disagree, and each
+    names the command that changes what it reports.
+    """
+
+    repo = repository if type(repository) is str and repository in _FILTER_WORDS else "unknown"
+    default = (
+        machine_default
+        if type(machine_default) is str and machine_default in _FILTER_WORDS
+        else "unknown"
+    )
+    line = (
+        "Possible-credential filter (external reviewer): "
+        f"{_FILTER_WORDS[repo]} for this repository; installation default {_FILTER_WORDS[default]}"
+    )
+    if repo == "disabled":
+        line += ". Turn it back on here with 'yoetz privacy credential-heuristic enable'"
+    if default == "disabled":
+        line += (
+            ". New repository grants start with it off; restore the default with "
+            "'yoetz privacy credential-heuristic enable --machine-default'"
+        )
+    return line
+
+
+def _credential_heuristic_lines(result: StatusSuccessModel) -> tuple[str, ...]:
+    """The possible-credential filter for the external reviewer (issue #982)."""
+
+    state = result.credential_heuristic
+    if state is None:
+        return ()
+    return (credential_heuristic_line(state.repository, state.machine_default),)
 
 
 def render_human_status(result: StatusSuccessModel) -> str:
@@ -403,13 +724,37 @@ def render_human_status(result: StatusSuccessModel) -> str:
         f"Frontier: {result.head_frontier.sequence}",
         f"Freshness: {_token(result.coverage.ledger_freshness)}",
         f"Open obligations: {_count(result.closure_readiness.open_obligation_count)}",
-        f"Unanswered findings: {_count(result.closure_readiness.unanswered_finding_count)}",
-        (
-            "Receipt-blocking findings: "
-            f"{_count(result.closure_readiness.receipt_blocking_finding_count)}"
+        *(
+            # #997: counted apart, never in the open count.
+            (
+                "Obligations acknowledged as not done: "
+                f"{_count(result.closure_readiness.acknowledged_obligation_count)}",
+            )
+            if result.closure_readiness.acknowledged_obligation_count not in {None, "0"}
+            else ()
         ),
+        f"Unanswered findings: {_count(result.closure_readiness.unanswered_finding_count)}",
         *render_closure_readiness_lines(result.closure_readiness),
+        *_credential_heuristic_lines(result),
     ]
+    if isinstance(result.page, StatusCompactPageModel):
+        for item in result.page.items:
+            latest_check = item.latest_check
+            if latest_check is not None:
+                lines.append(
+                    f"Latest check: {latest_check.verdict}; checked frontier "
+                    f"{latest_check.checked_frontier.sequence}; event {latest_check.check_event_id}"
+                )
+            edits = item.latest_check_test_edits
+            if edits is not None:
+                lines.append(
+                    "Latest check test edits: "
+                    f"{edits.read_availability}; checked frontier {edits.checked_frontier.sequence}; "
+                    f"{edits.modified} modified, {edits.renamed} renamed, "
+                    f"{edits.deleted} deleted, {edits.skipped} skipped, "
+                    f"{edits.unjustified} unjustified, {edits.unknown} unknown "
+                    f"(baseline known {edits.baseline_known})"
+                )
     if isinstance(result.page, StatusOperationPageModel):
         lines.extend((f"Operation: {result.page.operation_request_id} ({result.page.state})",))
         if result.page.continuation is not None:
@@ -422,6 +767,13 @@ def render_human_status(result: StatusSuccessModel) -> str:
             )
         if result.page.semantic_progress is not None:
             lines.extend(render_semantic_progress_lines(result.page.semantic_progress))
+        if result.page.semantic_withheld_items:
+            lines.append("Withheld review items (the reviewer continued without them):")
+            lines.extend(
+                f"- {item.item_id}: {_token(item.reason)}"
+                for item in result.page.semantic_withheld_items
+            )
+        lines.extend(_semantic_redacted_value_lines(result.page.semantic_redacted_values or ()))
         if result.page.admission is not None:
             lines.extend(render_check_admission_lines(result.page.admission))
     elif isinstance(result.page, StatusLineagePageModel):
@@ -522,6 +874,9 @@ def render_human_status(result: StatusSuccessModel) -> str:
                     f"  finding_frontier: {finding.finding_frontier.sequence} "
                     f"({finding.finding_frontier.head_digest})"
                 )
+            if finding.duplicate_of_finding_id is not None:
+                # Issue #996: the to-do state above is the earlier finding's while this holds.
+                lines.append(f"  duplicate of: {finding.duplicate_of_finding_id}")
     if isinstance(result.page, StatusResultsPageModel):
         lines.extend(_render_result_items(result.page))
     if isinstance(result.page, StatusObligationsPageModel):
@@ -535,6 +890,10 @@ def render_human_status(result: StatusSuccessModel) -> str:
                 lines.append(
                     f"{obligation.obligation_id}: {remaining} more command attempts; use JSON status for all items"
                 )
+        # tb4n4 (#1049): the same resolution recipe the MCP status text states, field included.
+        recipe = obligation_resolve_recipe_variants(result.page.items)
+        if recipe:
+            lines.append(recipe[0])
     gaps = tuple(result.gaps) + tuple(result.coverage.known_gaps)
     lines.append("Gaps: " + (", ".join(dict.fromkeys(gaps)) if gaps else "none"))
     lines.extend(_check_time_change_sentences(tuple(dict.fromkeys(gaps))))
@@ -562,6 +921,31 @@ def _render_result_items(page: StatusResultsPageModel) -> list[str]:
         lines.append(line)
     if page.next_cursor is not None:
         lines.append(f"Next page: {page.next_cursor}")
+    return lines
+
+
+_MAX_LINEAGE_LINES: Final = 6
+
+
+def lineage_lines(lineage: Iterable[object] | None) -> list[str]:
+    """One ``Why:`` sentence per derived fact's provenance (ADR-045); the same text everywhere.
+
+    ``lineage`` holds ``FactLineageModel`` rows (status, check result); a row that does not parse
+    is skipped, never guessed. At most ``_MAX_LINEAGE_LINES`` are shown, the rest counted.
+    """
+
+    items: list[FactLineage] = []
+    for entry in lineage or ():
+        try:
+            items.append(lineage_from_wire(entry))
+        except TypeError, ValueError:
+            continue
+    texts = lineage_texts(items)
+    lines = list(texts[:_MAX_LINEAGE_LINES])
+    if len(texts) > _MAX_LINEAGE_LINES:
+        lines.append(
+            f"(+{len(texts) - _MAX_LINEAGE_LINES} more facts with provenance in JSON status)"
+        )
     return lines
 
 
@@ -600,10 +984,24 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     lines = [f"Conclusion: {result.conclusion}"]
     if result.human_text is not None:
         lines.append(_projected_text(result.human_text))
+    # The result's coverage names live gaps only (issue #1017); a JSON receipt also lists the
+    # gaps a later check cleared, apart, and markdown/text carry them in ``human_text``.
     limitations = tuple(result.coverage.known_gaps)
     lines.append("Limitations: " + (", ".join(limitations) if limitations else "none declared"))
     document = result.document
     if isinstance(document, Mapping):
+        historical = historical_gaps_from_wire(document)
+        if historical:
+            lines.append(
+                "Cleared earlier (historical, not a current limitation): "
+                + ", ".join(f"{code} (cleared at frontier {seq})" for code, seq in historical)
+            )
+        withheld = _semantic_withheld_item_lines(document)
+        if withheld:
+            lines.extend(withheld)
+        raw_redacted = document.get("semantic_redacted_values")
+        if isinstance(raw_redacted, (list, tuple)):
+            lines.extend(_semantic_redacted_value_lines(cast(Sequence[object], raw_redacted)))
         provenance = document.get("semantic_provenance")
         if isinstance(provenance, Mapping):
             lines.extend(
@@ -618,12 +1016,64 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     return "\n".join(lines)
 
 
+def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
+    """PL2-1: item refs and line numbers, then the fixed agent line once; never a value."""
+
+    values: list[SemanticRedactedValue] = []
+    for item in items:
+        try:
+            if isinstance(item, SemanticRedactedValueModel):
+                values.append(
+                    SemanticRedactedValue(
+                        item.item_id, item.disposition, tuple(item.lines), item.source_ref
+                    )
+                )
+            else:
+                values.append(SemanticRedactedValue.from_wire(item))
+        except TypeError, ValueError:
+            continue
+    if not values:
+        return []
+    return [
+        "Withheld from external review (refs and lines only; no value is shown):",
+        *(f"- {semantic_redacted_value_text(value)}" for value in values),
+        SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+    ]
+
+
+def _semantic_withheld_item_lines(document: Mapping[str, JsonValue]) -> list[str]:
+    """Render only the closed opaque identity and reason from a receipt document."""
+
+    raw_items = document.get("semantic_withheld_items")
+    if not isinstance(raw_items, (list, tuple)):
+        return []
+    items: list[tuple[str, str]] = []
+    for raw in raw_items:
+        if not isinstance(raw, Mapping):
+            continue
+        item_id = raw.get("item_id")
+        reason = raw.get("reason")
+        if type(reason) is not str or reason != "never_send_heuristic":
+            continue
+        try:
+            validate_opaque_item_id(item_id)
+        except TypeError, ValueError:
+            continue
+        items.append((cast(str, item_id), reason))
+    if not items:
+        return []
+    return [
+        "Withheld review items (the reviewer continued without them):",
+        *(f"- {item_id}: {reason}" for item_id, reason in items),
+    ]
+
+
 def render_recovery_directive_lines(
     directive: RecoveryDirective, *, commands: Sequence[str] = ()
 ) -> list[str]:
     """Render one frozen directive the way every CLI error surface shows it.
 
-    The CLI has no 512-byte ceiling, so unlike the MCP text projection it renders the whole
+    The CLI has no text ceiling, so unlike the MCP text projection it renders the whole
     directive, any carried commands, its guidance pointer, and its nudge on separate lines.
     """
 
@@ -731,7 +1181,7 @@ def render_error_recovery_lines(safe_details: object) -> list[str]:
 
     The directive is reconstructed locally from the continuation token (issue #739); nothing is
     read from the error message, and no line is rendered for a token the protocol normalizer does
-    not admit. The CLI has no 512-byte ceiling, so unlike the MCP text projection it renders the
+    not admit. The CLI has no text ceiling, so unlike the MCP text projection it renders the
     whole directive, its guidance pointer, and its nudge on separate lines.
     """
 
@@ -819,17 +1269,33 @@ def render_human_awaiting_human(result: CheckAwaitingHumanModel) -> str:
     if type(result) is not CheckAwaitingHumanModel:
         raise TypeError("check_result_invalid")
     continuation = result.continuation
-    lines = [
-        "AI-powered review: awaiting_human (human_approval_required)",
-        "",
-        "This check is paused for trusted local privacy authority. No verdict yet.",
-        "",
-        f"  {' '.join(continuation.command)}",
-        "",
-    ]
+    if result.state == "awaiting_input":
+        heading = "AI-powered review: awaiting_input (review_input_required)"
+        explanation = (
+            "This check is paused until the complete review input is supplied. No verdict yet."
+        )
+    else:
+        heading = "AI-powered review: awaiting_human (human_approval_required)"
+        explanation = "This check is paused for trusted local privacy authority. No verdict yet."
+    lines = [heading, "", explanation, "", f"  {' '.join(continuation.command)}", ""]
     if continuation.pending_id is not None:
         lines.append(f"Pending decision: {continuation.pending_id}")
     if continuation.expires_at is not None:
         lines.append(f"Expires at: {continuation.expires_at}")
     lines.append(f"Then replay the same check with request_id {continuation.replay_request_id}.")
     return "\n".join(lines)
+
+
+def render_human_inspection(result: CheckInspectionModel) -> str:
+    """Render a ``mode: inspect`` check (ADR-047): what is left, what hooks saw, where evidence came from.
+
+    The same lines as the MCP text channel (``yoetz.protocol.inspection_text``). No verdict or
+    coverage appears: an inspection is a read, not a check result.
+    """
+
+    if type(result) is not CheckInspectionModel:
+        raise TypeError("check_result_invalid")
+    text = inspection_text(
+        cast(Mapping[str, JsonValue], result.model_dump(mode="json", exclude_unset=True))
+    )
+    return "\n".join((*text.lead, *text.details))

@@ -50,9 +50,11 @@ from yoetz.domain.privacy import (
     ApprovedProviderCase,
     AuthorizationScope,
     ConsentSource,
+    CredentialHeuristic,
     EgressAuthorization,
     EgressChannel,
     EgressReceipt,
+    ForbiddenDataKind,
     LocalDisclosureSink,
     PrivacyOutcome,
     PrivacyPolicy,
@@ -62,8 +64,10 @@ from yoetz.domain.privacy import (
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
+    ReceiptSecretScanStage,
     ReceiptTransformations,
     RequestCommitment,
+    egress_origin_operation,
 )
 from yoetz.domain.values import validate_commitment, validate_sha256_digest
 from yoetz.observability.logging import (
@@ -110,6 +114,20 @@ __all__ = [
 
 _ZERO_DIGEST = "sha256:" + "0" * 64
 _SCAN = SecretScanRuleset()
+
+
+def _final_scan(
+    classifier: PrivacyClassifierPort, data: bytes, credential_heuristic: CredentialHeuristic
+) -> tuple[ForbiddenDataKind, ...]:
+    """Run the final exact-byte scan under the setting the case was prepared with (#982).
+
+    The default keeps the historical call shape; only an owner opt-out names the setting.
+    """
+
+    if credential_heuristic is CredentialHeuristic.ENFORCED:
+        return classifier.scan_exact_bytes(data)
+    return classifier.scan_exact_bytes(data, credential_heuristic=credential_heuristic)
+
 
 _NO_AUTHORIZATION_ID_OUTCOMES = frozenset(
     {
@@ -651,9 +669,14 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 case, authorization, PrivacyReason.PROVIDER_UNAVAILABLE
             )
 
-        if self._classifier.scan_exact_bytes(body):
+        final_findings = _final_scan(self._classifier, body, case.credential_heuristic)
+        if final_findings:
             return await self._preconsume_failure(
-                case, authorization, PrivacyReason.NEVER_SEND_DETECTED
+                case,
+                authorization,
+                PrivacyReason.NEVER_SEND_DETECTED,
+                scan_stage=ReceiptSecretScanStage.RENDERED_BODY,
+                scan_match_count=len(final_findings),
             )
 
         body_digest = "sha256:" + hashlib.sha256(body).hexdigest()
@@ -886,7 +909,13 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
         return authority_epoch if current is True else None
 
     async def _preconsume_failure(
-        self, case: ApprovedOutboundCase, authorization: EgressAuthorization, reason: PrivacyReason
+        self,
+        case: ApprovedOutboundCase,
+        authorization: EgressAuthorization,
+        reason: PrivacyReason,
+        *,
+        scan_stage: ReceiptSecretScanStage = ReceiptSecretScanStage.NOT_RUN,
+        scan_match_count: int = 0,
     ) -> SemanticResult:
         outcome = _PRECONSUME_OUTCOME[reason]
         now = self._clock.now_utc()
@@ -894,7 +923,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
             None if outcome in _NO_AUTHORIZATION_ID_OUTCOMES else authorization.authorization_id
         )
         receipt = EgressReceipt(
-            "1.0.0",
+            "1.1.0",
             self._ids.new(IdKind.EGRESS_RECEIPT),
             case.request_id,
             authorization.privacy_proposal_id,
@@ -919,11 +948,25 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 None,
                 None,
             ),
-            ReceiptTransformations(0, 0, len(case.included_item_ids)),
-            ReceiptSecretScan(_SCAN.version, _SCAN.profile_digest, 0, True),
+            ReceiptTransformations(
+                0,
+                case.redacted_span_count,
+                len(case.included_item_ids),
+            ),
+            ReceiptSecretScan(
+                _SCAN.version,
+                _SCAN.profile_digest,
+                scan_match_count,
+                scan_stage is not ReceiptSecretScanStage.NOT_RUN and scan_match_count == 0,
+                scan_stage,
+                reason if scan_stage is ReceiptSecretScanStage.NOT_RUN else None,
+                case.credential_heuristic,
+            ),
             reason,
             1,
             authorization_id=authorization_id,
+            withheld_item_ids=case.withheld_item_ids,
+            origin_operation=egress_origin_operation(case.purpose, case.included_item_ids),
         )
         # Every pre-dispatch refusal returns the same public shape (`unavailable`, no receipt id,
         # so the composition reports `receipt_persistence_unknown`). The exact closed reason is
@@ -947,19 +990,16 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
         return _preconsume_result(case, reason)
 
     async def _park_attempt_reconciliation(self, dispatch_id: str, receipt: EgressReceipt) -> None:
-        """Best-effort durable recovery material for one admitted physical attempt."""
+        """Persist recovery material before an admitted physical attempt can dispatch."""
 
         park = getattr(self._audit, "park_attempt_reconciliation", None)
         if not callable(park):
-            return
+            raise RuntimeError("privacy_audit_reconciliation_parking_unavailable")
         typed_park = cast(
             Callable[[str, EgressReceipt], Awaitable[None]],
             park,
         )
-        try:
-            await typed_park(dispatch_id, receipt)
-        except Exception:  # noqa: BLE001 - parking is recovery material, never the attempt itself
-            pass
+        await typed_park(dispatch_id, receipt)
 
     async def _shielded_receipt(self, dispatch_id: str, receipt: EgressReceipt) -> None:
         """Keep ownership of the local receipt write through repeated cancellation."""
@@ -1006,7 +1046,7 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
         included_items = len(case.included_item_ids) if disclosed else 0
         final_bytes = case.byte_count if disclosed else 0
         return EgressReceipt(
-            "1.0.0",
+            "1.1.0",
             self._ids.new(IdKind.EGRESS_RECEIPT),
             case.request_id,
             authorization.privacy_proposal_id,
@@ -1036,14 +1076,27 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
                 case.token_count,
                 len(body) if disclosed else 0,
             ),
-            ReceiptTransformations(0, 0, len(case.included_item_ids) - included_items),
-            ReceiptSecretScan(_SCAN.version, _SCAN.profile_digest, 0, True),
+            ReceiptTransformations(
+                0,
+                case.redacted_span_count,
+                len(case.included_item_ids) - included_items,
+            ),
+            ReceiptSecretScan(
+                _SCAN.version,
+                _SCAN.profile_digest,
+                0,
+                True,
+                ReceiptSecretScanStage.RENDERED_BODY,
+                credential_heuristic=case.credential_heuristic,
+            ),
             reason,
             1,
             authorization_id=authorization.authorization_id,
             dispatch_id=dispatch_id,
             dispatch_started_at=dispatch_started_at,
             request_commitment=RequestCommitment(PRIVACY_REQUEST_COMMITMENT_ALGORITHM, commitment),
+            withheld_item_ids=case.withheld_item_ids,
+            origin_operation=egress_origin_operation(case.purpose, case.included_item_ids),
         )
 
     # -- local dispatch -------------------------------------------------------------------------
@@ -1065,8 +1118,10 @@ class PolicyEnforcingOutboundGateway(OutboundGatewayPort):
         binding, evaluator = registry.local_model
         if case.binding != binding or case.policy_digest != registry.policy_digest:
             return _local_unavailable_result(case)
-        if self._classifier.scan_exact_bytes(case.payload):
-            return _local_unavailable_result(case)
+        if _final_scan(self._classifier, case.payload, case.credential_heuristic):
+            return _local_unavailable_result(
+                case, failure_class=SemanticFailureClass.RESPONSE_CONTENT
+            )
 
         now = self._clock.now_utc()
         try:
@@ -1215,11 +1270,15 @@ def _result_outcome(result: SemanticResult) -> tuple[PrivacyOutcome, PrivacyReas
 
 
 def _preconsume_result(case: ApprovedOutboundCase, reason: PrivacyReason) -> SemanticResult:
-    failure_class = (
-        SemanticFailureClass.TIMEOUT
-        if reason is PrivacyReason.DEADLINE_EXPIRED
-        else SemanticFailureClass.UNSUPPORTED_PROFILE
-    )
+    if reason is PrivacyReason.DEADLINE_EXPIRED:
+        failure_class = SemanticFailureClass.TIMEOUT
+    elif reason is PrivacyReason.NEVER_SEND_DETECTED:
+        # The rendered-body scan is a privacy refusal, not an endpoint/profile failure. Carry a
+        # closed response-content marker so ready composition maps it to BLOCKED_FORBIDDEN_DATA /
+        # NEVER_SEND_DETECTED (and therefore semantic_privacy_blocked) instead of transport loss.
+        failure_class = SemanticFailureClass.RESPONSE_CONTENT
+    else:
+        failure_class = SemanticFailureClass.UNSUPPORTED_PROFILE
     return SemanticResultUnavailable(
         ProviderAttemptProvenance(
             provider=case.provider_binding.provider_id,
@@ -1261,7 +1320,11 @@ def _unknown_outcome_result(
     )
 
 
-def _local_unavailable_result(case: ApprovedLocalDisclosureCase) -> SemanticResult:
+def _local_unavailable_result(
+    case: ApprovedLocalDisclosureCase,
+    *,
+    failure_class: SemanticFailureClass = SemanticFailureClass.UNSUPPORTED_PROFILE,
+) -> SemanticResult:
     binding = case.binding
     provider = "local-model" if binding is None else binding.provider_id
     endpoint = "unavailable" if binding is None else binding.endpoint_profile_id
@@ -1281,7 +1344,7 @@ def _local_unavailable_result(case: ApprovedLocalDisclosureCase) -> SemanticResu
             sampling_params=SamplingParams(1),
             latency_ms=0,
             status=SemanticStatus.UNAVAILABLE,
-            failure_class=SemanticFailureClass.UNSUPPORTED_PROFILE,
+            failure_class=failure_class,
         )
     )
 

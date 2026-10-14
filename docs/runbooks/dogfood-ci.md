@@ -28,15 +28,18 @@ It does **not** mean Yoetz is correct or useful. A native model that ignores the
 times out, or exits nonzero is recorded in the lane report (`agent_ok: false`) and the lane stays
 green unless the `strict_agent` input is set, because model compliance with a one-paragraph prompt
 is not what this lane certifies. `agent_ok: true` requires zero exit, an observation mapping,
-and confirmed completion. For Codex, the native JSONL must record successful Yoetz MCP `start`,
-an accepted/projected plan publication, and a receipt for the same task/session/writer, followed
+and confirmed completion. For Codex, the native JSONL must record successful Yoetz MCP `start`
+with the exact full probe statement, an accepted/projected plan publication, a terminal check,
+and a receipt for the same task/session/writer, followed
 by a completed turn. Model text cannot replace those calls; later hook disclosures do not undo
 them. `native_mcp_completed` records this proof separately from the informational `done_marker`.
-Claude and Cursor's result-only output confirms completion through a `DONE` marker in the
-successful final response (a standalone line, or a terminal token after a disclosure). Tool
-outputs, prompt echoes, malformed output, and error results cannot supply that marker. Those
-hosts' marker remains a model assertion, not independent proof of every MCP step. The mapping
-can predate the native run. None of these checks establishes semantic usefulness. Read
+Claude and Cursor return a `YOETZ_NATIVE_BINDING` locator in their successful final response.
+The lane uses it to read the original native session through the public status API, verifies its
+frontier, and exhausts pinned history pages. Completion requires an ordered MCP plan publication,
+engine-recorded check with the exact provider-bound statement, and engine-recorded receipt.
+The locator and `DONE` marker alone prove none of these steps. A scoped observation binding may
+supply the locator when it names this native run. The verifier never attaches again after the run,
+because attach creates a new session. None of these checks establishes semantic usefulness. Read
 `lane-report.json` and the native transcript before quoting any cell.
 
 ## Matrix and connection modes
@@ -88,12 +91,20 @@ trusted-console ceremonies from a pseudo-terminal. Phases, in order, each record
    `provider status` until a restart (a lock/unlock does not refresh it either); then
    `privacy setup` (recipe 3, Assisted review, when a credential exists; Private otherwise),
    `provider status`, `setup status`.
-2. **connect** — the host connection per the table, then `observe grant --workspace <project>`
-   and `observe status`.
+2. **connect** — the host connection per the table. In a Codex cell with the reviewed Fireworks
+   credential, the lane then uses the product-owned admission preview→grant flow for the
+   disposable project's trusted `.codex/config.toml`, accepting the exact preview digest and
+   re-reading admission status. The generated rule is only
+   `[mcp_servers.yoetz.tools.check] approval_mode = "approve"`; no server-wide default or
+   approval/sandbox bypass is used. A fresh `codex exec -C <project>` is still required by the
+   native phase, so project trust and the active per-tool policy are exercised by the host itself.
+   Credential-free lanes keep the private recipe and skip this external-review admission. The
+   lane then runs `observe grant --workspace <project>` and `observe status`.
 3. **ledger** — the host's session-start carrier first (`hooks observe`,
    `hooks claude-observe`, or `hooks cursor-observe`), whose auto-attach creates the
    workspace's task and names the session to attach to, exactly as a native host does; then
-   `start` (attach to that session), `publish-work` (dry run, then real: one plan and one
+   `start` (attach to that session with the full bounded probe specification as
+   `task_statement`), `publish-work` (dry run, then real: one plan and one
    obligation), `status`, `check` (`semantic_required` with a credential),
    `service diagnostics --request-id <check>` plus every correlation id in the instance's
    diagnostics ring, `privacy receipts list`, `receipt` (markdown), the host's post-event
@@ -102,8 +113,11 @@ trusted-console ceremonies from a pseudo-terminal. Phases, in order, each record
    `create_or_attach` refuse with `workspace_task_exists`, which is the product's rule against
    accidental sibling tasks, not a lane defect.
 4. **native** — one headless agent session in the probe project (`codex exec`, `claude -p`,
-   `cursor-agent -p`) asked to call `start`, `publish_work`, and `receipt` and answer `DONE`;
-   the prompt identifies the MCP namespace separately from its function names. Host discovery
+   `cursor-agent -p`) asked to call `start`, `publish_work`, `check`, and `receipt` and answer `DONE`;
+   the prompt identifies the MCP namespace separately from its function names, requires the
+   operation's packaged guidance, and asks the host to copy the full probe request into
+   `start.task_statement`. A prompt instruction alone does not prove reviewer delivery; inspect
+   the recorded check's input manifest before claiming that coverage. Host discovery
    and execution wrappers are allowed solely to reach deferred Yoetz tools; empty resource lists
    do not prove tool absence. Every native child receives the disposable pinned runtime first
    on `PATH`, so packaged hooks and recovery commands resolve that instance. Then
@@ -227,3 +241,13 @@ because hosted macOS can refuse renaming an already read-only directory. The man
 held, payloads are sealed before rename, and the root is sealed before any runtime is returned or
 leased. A failed root seal removes only the newly created generation, allowing a later retry;
 existing generations, live application state and vault contents are never that cleanup target.
+
+
+Tracker #961 adds a specification admission assertion to the configured ledger probe. Its check
+must return a `review_input_manifest` in `provider_bound` phase with the exact UTF-8 digest and
+byte length of the supplied statement, a current revision, and a complete selected specification.
+A composed manifest, start-call argument, or model prompt alone does not satisfy this assertion.
+The Codex native workflow collector and the Claude/Cursor public-history verifier apply the same
+assertion to the full probe request before counting a check/receipt sequence as complete.
+This establishes bounded input delivery; useful
+findings and successful repairs still require separate defect-focused evidence.

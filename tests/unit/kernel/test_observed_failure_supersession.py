@@ -22,6 +22,7 @@ from builders.observed_runs import (
 )
 from yoetz.domain.events import ActionKind, ClaimRevisionMismatch, ResultOutcome
 from yoetz.domain.findings import FindingKind
+from yoetz.domain.values import ResultId, SubjectStateRef
 from yoetz.kernel.claims import effective_claim_ids
 from yoetz.kernel.observed_failures import (
     ObservedFailureState,
@@ -44,7 +45,7 @@ _A = "hmac-sha256:" + "a" * 64
 _B = "hmac-sha256:" + "b" * 64
 
 
-def test_classification_is_one_backward_pass_over_identity_and_edits() -> None:
+def test_classification_is_one_backward_pass_over_command_identity() -> None:
     states = classify_observed_runs(
         (
             _run(1, ResultOutcome.FAILURE, _A),  # later passed by the same identity
@@ -72,8 +73,10 @@ def test_classification_is_one_backward_pass_over_identity_and_edits() -> None:
     )
     # r6 reruns r1's command, so r1 is judged through that later run, not the edit.
     assert edited["r1"] is ObservedFailureState.RERUN
-    assert edited["r2"] is ObservedFailureState.HISTORICAL
-    assert edited["r4"] is ObservedFailureState.HISTORICAL
+    # A successful edit changes the state under test but proves no covering rerun. Both unrelated
+    # failures remain live until an exact command rerun or explicit acknowledgement.
+    assert edited["r2"] is ObservedFailureState.LIVE
+    assert edited["r4"] is ObservedFailureState.LIVE
     assert edited["r6"] is ObservedFailureState.LIVE
 
 
@@ -159,20 +162,33 @@ def test_any_later_success_of_another_command_never_supersedes() -> None:
     assert omitted_results(ledger) == (failed,)
 
 
-# --- acceptance: the state-scoped rule (option (a)) ---------------------------------------------
+# --- acceptance: edits do not retire required verification (#909) ------------------------------
 
 
-def test_failure_then_edit_then_claim_is_disclosed_history_not_a_finding() -> None:
+def test_failure_then_unrelated_edit_stays_outstanding_until_acknowledged() -> None:
     ledger = ObservedLedger()
     failed = ledger.fail("cargo test -p pest_meta")
     ledger.edit()
-    ledger.claim(versioned=True)
+    ledger.claim(versioned=True, limitations=(failed,))
     assert omissions(ledger) == ()
     limitations = receipt_limitations(ledger)
-    assert "1 preceded a later observed workspace edit" in limitations
-    assert "It is recorded history, not findings." in limitations
+    assert "1 hook-observed failing run is disclosed as a limitation" in limitations
+    assert "observed workspace edit" not in limitations
     assert limitations.count(failed) == 1
     assert "cargo" not in limitations
+
+
+def test_differing_subject_states_do_not_turn_an_edit_into_a_covering_rerun() -> None:
+    ledger = ObservedLedger()
+    failed = ledger.run(
+        "pytest -q tests/x.py",
+        ResultOutcome.FAILURE,
+        subject_state=SubjectStateRef(tree_digest="sha256:" + "1" * 64),
+    )
+    ledger.edit(subject_state=SubjectStateRef(tree_digest="sha256:" + "2" * 64))
+    ledger.claim(versioned=True, limitations=(failed,))
+    assert omissions(ledger) == ()
+    assert "observed workspace edit" not in receipt_limitations(ledger)
 
 
 def test_failure_then_claim_without_an_edit_is_a_finding() -> None:
@@ -236,10 +252,10 @@ def test_cooperative_failures_keep_their_exact_disclosure_duty() -> None:
     assert omitted_results(ledger) == (failed,)
 
 
-# --- lifecycles: legacy rows without an identity fall back to the state-scoped rule -------------
+# --- lifecycles: legacy rows without an identity never retire on edits -------------------------
 
 
-def test_legacy_structural_rows_never_supersede_each_other_but_edits_still_apply() -> None:
+def test_legacy_structural_rows_never_supersede_each_other_or_edits() -> None:
     legacy = ObservedLedger()
     failed = legacy.fail(None)
     legacy.passes(None)
@@ -247,15 +263,15 @@ def test_legacy_structural_rows_never_supersede_each_other_but_edits_still_apply
     assert omitted_results(legacy) == (failed,)
 
     upgraded = ObservedLedger()
-    upgraded.fail(None)
+    legacy_failed = upgraded.fail(None)
     upgraded.edit()
-    upgraded.claim(versioned=True)
+    upgraded.claim(versioned=True, limitations=(legacy_failed,))
     assert omissions(upgraded) == ()
     records = upgraded.prefix
     states = observed_failure_states(
         replay(records), observed_event_ids_from_records(records), through=len(records)
     )
-    assert set(states.values()) == {ObservedFailureState.HISTORICAL}
+    assert set(states.values()) == {ObservedFailureState.LIVE}
 
 
 def test_replay_index_names_only_service_stamped_observed_runs() -> None:
@@ -281,62 +297,66 @@ _PEST_QUIET = (
 _PEST_DEFAULT = "cargo test --offline -q -p pest_meta -p pest_generator -p pest_vm -p pest_derive"
 
 
-def test_pest_b_replay_flags_only_the_red_latest_default_feature_run() -> None:
+def test_pest_b_replay_keeps_uncovered_validation_failures_until_acknowledged() -> None:
     ledger = ObservedLedger()
     ledger.fail("rg -n PUSH_LITERAL pest/src")  # a non-test failure early in the session
     ledger.fail(_PEST_FULL, exit_status=101)  # L123
     ledger.edit()
-    ledger.fail(_PEST_FULL, exit_status=101)  # L127
+    full_latest = ledger.fail(_PEST_FULL, exit_status=101)  # L127
     ledger.edit()
     ledger.passes(_PEST_QUIET)  # L133
     red_latest = ledger.fail(_PEST_DEFAULT, exit_status=101)  # L135
-    ledger.claim()  # L186, disclosed in prose and through an agent-published result only
-    assert omitted_results(ledger) == (red_latest,)
-    assert "cargo" not in omissions(ledger)[0].candidate.detail
+    ledger.claim(
+        versioned=True, limitations=(full_latest, red_latest)
+    )  # L186, disclosed through exact result ids
+    assert omissions(ledger) == ()
+    assert "hook-observed failing" in receipt_limitations(ledger)
 
 
 def test_pest_l127_edit_then_quiet_l133_leaves_no_finding() -> None:
     ledger = ObservedLedger()
-    ledger.fail(_PEST_FULL, exit_status=101)  # L127
+    failed = ledger.fail(_PEST_FULL, exit_status=101)  # L127
     ledger.edit()
     ledger.passes(_PEST_QUIET)  # L133 adds -q: a different identity
-    ledger.claim(versioned=True)
+    ledger.claim(versioned=True, limitations=(failed,))
     assert omissions(ledger) == ()
 
 
 def test_dynamodb_b_replay_red_green_tdd_cycle_is_clean() -> None:
     ledger = ObservedLedger()
+    failures: list[ResultId] = []
     for index in range(4):
-        ledger.fail(f"npx vitest run src/schema/attributes/required{index}.unit.test.ts")
-    ledger.fail("test -f src/schema/actions/dto/getSchemaDTO/any.ts")
-    ledger.fail("npm run test-type", exit_status=2)  # L89, TS2322 on the new requiredIf DTO
-    ledger.fail("npx vitest run src/schema")
-    ledger.fail("npm run test-type", exit_status=2)
-    ledger.fail("npx vitest run src/schema --reporter dot")
+        failures.append(
+            ledger.fail(f"npx vitest run src/schema/attributes/required{index}.unit.test.ts")
+        )
+    failures.append(ledger.fail("test -f src/schema/actions/dto/getSchemaDTO/any.ts"))
+    failures.append(ledger.fail("npm run test-type", exit_status=2))  # L89, TS2322
+    failures.append(ledger.fail("npx vitest run src/schema"))
+    failures.append(ledger.fail("npm run test-type", exit_status=2))
+    failures.append(ledger.fail("npx vitest run src/schema --reporter dot"))
     ledger.edit()  # the repair
     ledger.passes("npm run test-type")
     ledger.passes("npx vitest run src/schema")
-    ledger.claim(versioned=True)
+    ledger.claim(versioned=True, limitations=tuple(failures))
     assert omissions(ledger) == ()
     limitations = receipt_limitations(ledger)
-    assert "of the hook-observed failing runs before the completion claim, 3 were" in limitations
-    assert "6 preceded a later observed workspace edit" in limitations
+    assert "hook-observed failing" in limitations
 
 
 def test_ink_c_replay_keeps_the_final_full_suite_failure_visible_exactly_once() -> None:
     ledger = ObservedLedger()
-    ledger.fail("npx ava test/grid.tsx && npm test")  # L109
+    initial = ledger.fail("npx ava test/grid.tsx && npm test")  # L109
     ledger.passes(
         "npx prettier --write src/grid-layout.ts && npx ava test/grid.tsx && npm run typecheck"
     )  # L128
     full_suite = ledger.fail("FORCE_COLOR=true npx ava")  # L131, a pre-existing fixture timeout
     ledger.edit()
     ledger.passes("npx ava test/grid.tsx")
-    ledger.claim()  # L240, disclosed in prose only
+    ledger.claim(versioned=True, limitations=(initial, full_suite))  # L240, disclosed structurally
     assert omissions(ledger) == ()
     limitations = receipt_limitations(ledger)
     assert limitations.count(full_suite) == 1
-    assert "2 preceded a later observed workspace edit" in limitations
+    assert "hook-observed failing" in limitations
     assert "ava" not in limitations and "FORCE_COLOR" not in limitations
 
 
@@ -369,7 +389,12 @@ def test_results_view_names_tool_occurrence_commitment_and_exit_status() -> None
     assert run.tool_name == "exec_command"
     assert run.exit_status == 2
     assert run.command_commitment is not None
-    assert "omitted:" + run.command_commitment == command_identity_for("pytest -q tests/y.py")
+    # The action's command field also carries the segment and canonical commitments (ADR-045); the
+    # results view names only the whole-command commitment.
+    assert (
+        "omitted:" + run.command_commitment
+        == command_identity_for("pytest -q tests/y.py").split(" ", 1)[0]
+    )
     # A cooperative result carries no observed run, even when it republishes the commitment.
     assert by_id[cooperative].observed_run is None
     assert "observed_run" not in by_id[cooperative].model_dump(mode="json", exclude_unset=True)
@@ -418,17 +443,22 @@ def test_repeated_red_runs_then_green_are_clean() -> None:
     assert "2 were later passed by the same command" in receipt_limitations(ledger)
 
 
-def test_a_later_rerun_without_a_stated_outcome_is_the_run_that_is_judged() -> None:
+def test_a_later_unknown_outcome_keeps_the_failed_run_outstanding() -> None:
     ledger = ObservedLedger()
     failed = ledger.fail("pytest -q tests/x.py")
     ledger.run("pytest -q tests/x.py", ResultOutcome.UNKNOWN)
+    ledger.claim()
+    assert omitted_results(ledger) == (failed,)
+
+
+def test_a_successful_rerun_stays_superseded_after_a_later_unknown_outcome() -> None:
+    ledger = ObservedLedger()
+    failed = ledger.fail("pytest -q tests/x.py")
+    ledger.passes("pytest -q tests/x.py")
+    ledger.run("pytest -q tests/x.py", ResultOutcome.UNKNOWN)
     ledger.claim(versioned=True)
     assert omissions(ledger) == ()
-    assert limitations_name_once(receipt_limitations(ledger), failed)
-
-
-def limitations_name_once(limitations: str, ref: str) -> bool:
-    return limitations.count(ref) == 1 and "rerun later by the same command" in limitations
+    assert failed not in omitted_results(ledger)
 
 
 def test_a_failure_without_command_identity_never_promises_a_rerun_clears_it() -> None:
@@ -437,16 +467,13 @@ def test_a_failure_without_command_identity_never_promises_a_rerun_clears_it() -
     ledger.claim()
     (finding,) = omissions(ledger)
     detail = finding.candidate.detail
-    assert "a run without a command commitment is retired only by the edit" in detail
+    assert "A run without a command commitment keeps its disclosure duty" in detail
     assert "until it passes" not in detail and "is the latest" not in detail
 
 
 @pytest.mark.parametrize("outcome", [ResultOutcome.UNKNOWN, ResultOutcome.PARTIAL])
-def test_only_an_edit_with_a_stated_success_retires_a_failure(outcome: ResultOutcome) -> None:
-    """An edit whose outcome is unknown or partial is not proof the workspace changed as intended.
-
-    Retiring a failure on it would hide the failure; keeping it live only over-discloses.
-    """
+def test_an_edit_never_retires_a_failure(outcome: ResultOutcome) -> None:
+    """An edit does not prove that a failed validation was covered, whatever its outcome."""
 
     states = classify_observed_runs(
         (
@@ -461,3 +488,21 @@ def test_only_an_edit_with_a_stated_success_retires_a_failure(outcome: ResultOut
     ledger.claim()
     expected = (failed, edit) if outcome is ResultOutcome.PARTIAL else (failed,)
     assert omitted_results(ledger) == expected
+
+
+def test_a_stream_corrected_unknown_hook_result_is_not_a_claim_limitation() -> None:
+    """#1001: the unknown hook copy of a corrected Codex call never mints its own limitation."""
+
+    for outcome, exit_status, expected_limiting in (
+        (ResultOutcome.SUCCESS, 0, 0),
+        (ResultOutcome.FAILURE, 2, 1),
+    ):
+        ledger = ObservedLedger()
+        unknown = ledger.run("pytest -q tests/test_soc.py", ResultOutcome.UNKNOWN)
+        corrected = ledger.correct_outcome(unknown, outcome, exit_status=exit_status)
+        ledger.claim()
+        limiting = omitted_results(ledger)
+        assert unknown not in limiting
+        assert len(limiting) == expected_limiting
+        if expected_limiting:
+            assert limiting == (corrected,)

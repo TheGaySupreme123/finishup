@@ -27,7 +27,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
-from typing import Concatenate, Final, TypeVar, cast
+from typing import Concatenate, Final, Literal, TypeVar, cast
 
 from yoetz.adapters.integrations.observation_admission import (
     ROUTINE_SUMMARY_INVALID_GAP,
@@ -74,11 +74,13 @@ from yoetz.domain.observation_budget import (
     BUDGET_VALIDATION_STATUS,
     LARGEST_SUPPORTED_QUEUE_COUNT,
     STATE_DOCUMENT_CEILING_BYTES,
+    AdmissionLossCause,
     BudgetLimits,
     BudgetUsage,
     CapacityProfile,
     ObservationCapacity,
     ObservationMode,
+    PressureDimension,
     PressureEvaluation,
     PressureSnapshot,
     PressureState,
@@ -258,6 +260,14 @@ _MAX_SESSION_GAP_CODES: Final = 8
 # lane is drained on the first refusal, so this bound is never reached by a
 # repeating failure, only by many distinct ones.
 _MAX_SUMMARY_REFUSALS: Final = 16
+# A loss lane names at most this many lost pre/post pairing commitments. A lane
+# that loses more paired inputs than this falls back to the conservative
+# route-wide inheritance (every later input of the lane carries the loss).
+_MAX_LOSS_PAIRINGS: Final = 16
+# Structural ids that name a host call. The first three identify the call an
+# input belongs to; ``parent_tool_call_id`` names the call that spawned it.
+_LOSS_CALL_KEYS: Final = ("tool_use_id", "tool_call_id", "correlation_id")
+_LOSS_RELATED_CALL_KEYS: Final = (*_LOSS_CALL_KEYS, "parent_tool_call_id")
 # Retired native capture handoffs are named, not counted anonymously: each
 # entry records the retirement stage, the ticket state, and why its structural
 # row could no longer consume it (#836). Older entries roll off; the total
@@ -1077,6 +1087,9 @@ class LocalConsentTransition(StrEnum):
     UNCHANGED = "unchanged"  # already effective; the content fence did not advance
 
 
+_ADMISSION_LOSS_CAUSES: Final = frozenset(item.value for item in AdmissionLossCause)
+
+
 @dataclass(frozen=True, slots=True)
 class LocalConsentGrant:
     """The consent a grant left in force and how it got there."""
@@ -1267,11 +1280,20 @@ class _CodeModeCell:
     before a complete stream pass that still did not see the output (see
     ``_ToolHookSession.settled``); the decision, once made, is replayed
     unchanged.
+
+    ``session`` and ``nested`` (#1038) record what the rollout wrote while the cell
+    was open: ``yoetz`` when every nested tool item read so far was one of Yoetz's
+    own MCP calls read while it was the session's only open cell, ``other`` once any
+    other tool item, an uninterpretable row, or an unattributable Yoetz item was read.
+    A Yoetz-only cell is Yoetz's own call, so its output also stays local. Cells
+    stored before this field have neither and keep the rule above.
     """
 
     hook_clock_at_start: int
     output_local: bool | None
     touched: int
+    session: str | None = None
+    nested: Literal["yoetz", "other"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1534,7 +1556,16 @@ def _code_mode_cells_from_json(raw: object) -> dict[str, _CodeModeCell]:
             start = touched
         if type(start) is not int or not 0 <= start <= _MAX_SAFE_INTEGER:
             continue
-        cells[key] = _CodeModeCell(start, local, touched)
+        # #1038: an unreadable session or nested mark reads as absent, which keeps the #917 rule.
+        session = entry.get("session")
+        nested = entry.get("nested")
+        cells[key] = _CodeModeCell(
+            start,
+            local,
+            touched,
+            session=cast(str, session) if _pending_rollout_item_token(session) else None,
+            nested=nested if nested in ("yoetz", "other") else None,
+        )
     return dict(
         sorted(cells.items(), key=lambda item: item[1].touched)[-_MAX_CODEX_TOOL_HOOK_ENTRIES:]
     )
@@ -1549,6 +1580,11 @@ class _OpenPre:
     receipt and a wall-clock deadline.  Pairing scope is copied from the
     envelope so a restart or a reused host correlation id cannot extend the
     wrong pending attempt.
+
+    ``pre_only`` (#1041) marks a call whose host never sends a post: a Codex
+    shell ``apply_patch <<EOF`` that Codex intercepts. The session stream's
+    observed file change closes it (``close_pre_only_attempt``); one nothing
+    closes still expires with ``pending_attempt_expired``.
     """
 
     event_kind: str
@@ -1558,6 +1594,7 @@ class _OpenPre:
     correlation_id: str
     receipt_time: Timestamp | None
     deadline: Timestamp | None
+    pre_only: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -1628,6 +1665,7 @@ def _open_pre_to_json(value: _OpenPre) -> JsonObject:
             "correlation_id": value.correlation_id,
             "receipt_time": None if value.receipt_time is None else value.receipt_time.wire,
             "deadline": None if value.deadline is None else value.deadline.wire,
+            **({"pre_only": True} if value.pre_only else {}),
         }
     )
 
@@ -1701,6 +1739,7 @@ def _open_pre_from_json(
             correlation_id=correlation_id,
             receipt_time=receipt_time,
             deadline=deadline,
+            pre_only=row.get("pre_only") is True,
         )
     except ProtocolValueError, TypeError, ValueError:
         return None
@@ -1732,6 +1771,26 @@ def _open_pre_map_from_json(
         if len(result) >= _MAX_OPEN_PRE:
             break
     return result
+
+
+def _session_hook_call(state: _WorkspaceState, session_commitment: str, call_id: str) -> bool:
+    """Whether a Codex hook of this session reported ``call_id`` (#1041).
+
+    Its pre may still be open, or its hook rows retained in the local envelope ring; a call
+    the ring and the open-pre map both dropped reads as unreported.
+    """
+
+    if any(
+        entry.session_commitment == session_commitment and entry.correlation_id == call_id
+        for entry in (state.open_pre or {}).values()
+    ):
+        return True
+    return any(
+        envelope.source is ObservationSource.CODEX_HOOK
+        and envelope.session_commitment == session_commitment
+        and envelope.structural_payload.get("tool_call_id") == call_id
+        for envelope in state.envelopes or ()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1965,6 +2024,11 @@ class _WorkspaceState:
     selection_last_loss_notice_ms: int | None = None
     selection_loss_notice_pending: bool = False
     selection_reported_loss_lanes: tuple[str, ...] = ()
+    # Per-lane loss detail kept beside ``selection_loss_ranges`` (whose exact
+    # shape is a wire contract): the closed refusal causes and the bounded
+    # pairing commitments that bound which later inputs inherit the loss
+    # (tb4n1 B3). A lane without a valid detail keeps route-wide inheritance.
+    selection_loss_details: tuple[JsonObject, ...] = ()
     # Bounded, deduplicated account of every buffered lane whose routine-read
     # summary the builder refused. The members were admitted individually with
     # a `routine_summary_invalid` gap, so this names the cause once instead of
@@ -2247,6 +2311,126 @@ def _is_post_only_profile(envelope: ObservationEnvelope) -> bool:
 
     mode, _correlation = _envelope_pairing_contract(envelope)
     return mode == "post_only"
+
+
+def _loss_pairing_keys(envelope: ObservationEnvelope, keys: tuple[str, ...]) -> frozenset[str]:
+    """Commit the host call ids named by ``keys`` to lane-scoped pairing digests."""
+
+    structural = envelope.structural_payload
+    result: set[str] = set()
+    for key in keys:
+        value = structural.get(key)
+        if type(value) is str and value:
+            result.add(
+                _pairing_key(
+                    source=envelope.source,
+                    session_commitment=envelope.session_commitment,
+                    source_generation=envelope.cursor.source_generation,
+                    correlation_id=value,
+                )
+            )
+    return frozenset(result)
+
+
+def _loss_own_pairing_keys(envelope: ObservationEnvelope) -> frozenset[str]:
+    """The calls a lost input belonged to: its pre/post partner shares one."""
+
+    return _loss_pairing_keys(envelope, _LOSS_CALL_KEYS)
+
+
+def _loss_related_pairing_keys(envelope: ObservationEnvelope) -> frozenset[str]:
+    """The calls a later input belongs to or was spawned by."""
+
+    return _loss_pairing_keys(envelope, _LOSS_RELATED_CALL_KEYS)
+
+
+def _loss_details_by_lane(state: _WorkspaceState) -> dict[str, JsonObject]:
+    return {cast(str, item["lane"]): item for item in state.selection_loss_details}
+
+
+def _bounded_loss_pairings(entry: JsonObject, detail: JsonObject | None) -> frozenset[str] | None:
+    """Return the pairings a lane's loss is bounded to, or None for route-wide."""
+
+    if detail is None or detail.get("scope") != "paired_inputs":
+        return None
+    if detail.get("count") != entry.get("count"):
+        return None
+    return frozenset(cast(tuple[str, ...], detail["pairings"]))
+
+
+def _loss_details_from_json(raw: object, lanes: set[str]) -> tuple[JsonObject, ...]:
+    """Decode per-lane loss detail strictly; anything invalid is dropped.
+
+    A dropped detail is never a weaker claim: its lane falls back to the
+    route-wide inheritance that predates the detail.
+    """
+
+    if not isinstance(raw, (list, tuple)):
+        return ()
+    result: dict[str, JsonObject] = {}
+    for item in cast(Sequence[object], raw)[:64]:
+        if not isinstance(item, Mapping):
+            continue
+        row = cast(Mapping[str, object], item)
+        lane = row.get("lane")
+        count = row.get("count")
+        cause = row.get("cause")
+        causes = row.get("causes")
+        scope = row.get("scope")
+        pairings = row.get("pairings")
+        if (
+            type(lane) is not str
+            or lane not in lanes
+            or lane in result
+            or type(count) is not int
+            or not 1 <= count <= _MAX_SAFE_INTEGER
+            or type(cause) is not str
+            or cause not in _ADMISSION_LOSS_CAUSES
+            or not isinstance(causes, Mapping)
+            or scope not in {"paired_inputs", "route"}
+            or not isinstance(pairings, (list, tuple))
+        ):
+            continue
+        cause_map = cast(Mapping[object, object], causes)
+        if len(cause_map) > len(_ADMISSION_LOSS_CAUSES) or not all(
+            type(key) is str
+            and key in _ADMISSION_LOSS_CAUSES
+            and type(value) is int
+            and 1 <= value <= _MAX_SAFE_INTEGER
+            for key, value in cause_map.items()
+        ):
+            continue
+        pairing_items = tuple(cast(Sequence[object], pairings))
+        if len(pairing_items) > _MAX_LOSS_PAIRINGS or len(set(pairing_items)) != len(pairing_items):
+            continue
+        valid_pairings: list[str] = []
+        for pairing in pairing_items:
+            if type(pairing) is not str:
+                break
+            try:
+                validate_sha256_digest(pairing)
+            except ProtocolValueError, TypeError, ValueError:
+                break
+            valid_pairings.append(pairing)
+        else:
+            result[lane] = JsonObject(
+                {
+                    "lane": lane,
+                    "count": count,
+                    "cause": cause,
+                    "causes": JsonObject(
+                        {
+                            cast(str, key): cast(int, value)
+                            for key, value in sorted(
+                                cause_map.items(), key=lambda kv: cast(str, kv[0])
+                            )
+                        }
+                    ),
+                    "scope": scope,
+                    "pairings": tuple(valid_pairings) if scope == "paired_inputs" else (),
+                }
+            )
+    return tuple(result[key] for key in sorted(result, key=str.encode))
 
 
 def _load_session_advice(raw: object) -> dict[str, AdviceSnapshot]:
@@ -4984,12 +5168,14 @@ class LocalObservationStore:
         session_commitment: str | None = None,
         source_generation: int | None = None,
         receipt_time: Timestamp | None = None,
+        pre_only: bool = False,
     ) -> bool:
         """Record an open Pre event awaiting its Post.
 
         New hook callers provide the complete source/session/generation scope.
         The unscoped form remains readable for pre-#607 local state and tests,
-        but it is never used by the shared ingress.
+        but it is never used by the shared ingress. ``pre_only`` marks a call
+        whose host sends no post (#1041, ``_OpenPre.pre_only``).
         """
 
         with self._lock:
@@ -5048,7 +5234,54 @@ class LocalObservationStore:
                 correlation_id=correlation_id,
                 receipt_time=stamp,
                 deadline=_open_pre_deadline(stamp),
+                pre_only=pre_only and session_commitment is not None and source is not None,
             )
+            self._save(workspace, state)
+            return True
+
+    def close_pre_only_attempt(
+        self, workspace: str, session_commitment: str, correlation_id: str | None = None
+    ) -> bool:
+        """Close one pre-only pending attempt of a session with an observed file change (#1041).
+
+        Codex intercepts a shell ``apply_patch <<EOF`` and fires only its
+        ``PreToolUse``; the session stream's ``FileChange`` item is the observed
+        result of that patch. The attempt whose call id the item names is closed.
+        An item naming another call the session's hooks reported (a direct call's
+        own id, such as a native ``apply_patch``) is that call's change and closes
+        nothing; only an id no hook reported (code mode's ``exec-<uuid>``) closes
+        the session's oldest pre-only attempt. Nothing else is closed: an attempt
+        no file change closes still expires with ``pending_attempt_expired``.
+        Returns whether an attempt was closed.
+        """
+
+        with self._lock:
+            state = self._load(workspace)
+            assert state.open_pre is not None
+            candidates = [
+                (key, entry)
+                for key, entry in state.open_pre.items()
+                if entry.pre_only and entry.session_commitment == session_commitment
+            ]
+            if not candidates:
+                return False
+            chosen = next(
+                (key for key, entry in candidates if entry.correlation_id == correlation_id),
+                None,
+            )
+            if chosen is None:
+                if correlation_id is not None and _session_hook_call(
+                    state, session_commitment, correlation_id
+                ):
+                    return False
+                chosen = min(
+                    candidates,
+                    key=lambda item: (
+                        "" if item[1].receipt_time is None else item[1].receipt_time.wire,
+                        item[0],
+                    ),
+                )[0]
+            del state.open_pre[chosen]
             self._save(workspace, state)
             return True
 
@@ -6023,18 +6256,57 @@ class LocalObservationStore:
             if key in state.code_mode_cells:
                 return True
             self._remember_code_mode_cell(
-                state, key, _CodeModeCell(state.codex_tool_hook_clock, None, 0)
+                state,
+                key,
+                _CodeModeCell(state.codex_tool_hook_clock, None, 0, session=session_commitment),
             )
             self._save(workspace, state)
             return True
 
-    def finish_code_mode_cell(self, workspace: str, session_commitment: str, call_id: str) -> bool:
-        """Return whether a code-mode cell's output stays local (#917).
+    def note_code_mode_nested_item(
+        self, workspace: str, session_commitment: str, *, yoetz_owned: bool
+    ) -> None:
+        """Mark the open code-mode cells of a session with one nested rollout row (#1038).
 
-        It stays local only when a Codex tool hook of this session was ingested
+        The stream reads a cell's nested tool items between its call and its output.
+        A Yoetz MCP item keeps the session's only open cell ``yoetz`` (unless it is
+        already ``other``). Any other tool item, a row the reader could not interpret,
+        or a Yoetz item read while more than one cell is open (parallel cells, or a
+        cell interrupted before its output) makes every open cell of the session
+        ``other``: a row that cannot be attributed only ever removes the mark, so no
+        cell borrows another cell's Yoetz calls.
+        """
+
+        with self._lock:
+            state = self._load(workspace)
+            assert state.code_mode_cells is not None
+            open_cells = [
+                (key, cell)
+                for key, cell in state.code_mode_cells.items()
+                if cell.session == session_commitment and cell.output_local is None
+            ]
+            mark: Literal["yoetz", "other"] = (
+                "yoetz" if yoetz_owned and len(open_cells) == 1 else "other"
+            )
+            changed = False
+            for key, cell in open_cells:
+                nested = "other" if cell.nested == "other" else mark
+                if nested != cell.nested:
+                    state.code_mode_cells[key] = dataclasses.replace(cell, nested=nested)
+                    changed = True
+            if changed:
+                self._save(workspace, state)
+
+    def finish_code_mode_cell(self, workspace: str, session_commitment: str, call_id: str) -> bool:
+        """Return whether a code-mode cell's output stays local (#917, #1038).
+
+        It stays local when a Codex tool hook of this session was ingested
         after the stream read the cell's call and has since been settled by a
         complete stream pass that did not see the output: that hook fired while
-        the cell ran, so the nested hook rows are the cell's record. Otherwise
+        the cell ran, so the nested hook rows are the cell's record. It also
+        stays local when every nested tool item the rollout wrote inside the
+        cell was one of Yoetz's own MCP calls (#1038): such a cell is Yoetz's
+        own call, recorded by those calls whatever the hook timing. Otherwise
         the output is delivered and records the cell; a hook that may belong to
         a later cell never removes this cell's record. An output whose call was
         never noted is delivered.
@@ -6050,7 +6322,9 @@ class LocalObservationStore:
             if current.output_local is not None:
                 return current.output_local
             entry = (state.codex_tool_hooks or {}).get(session_commitment)
-            local = entry is not None and entry.settled > current.hook_clock_at_start
+            local = current.nested == "yoetz" or (
+                entry is not None and entry.settled > current.hook_clock_at_start
+            )
             self._remember_code_mode_cell(
                 state, key, dataclasses.replace(current, output_local=local)
             )
@@ -6435,7 +6709,31 @@ class LocalObservationStore:
         *,
         accepted_transfer: bool = False,
     ) -> bool:
-        """Check count, bytes, reserves, and per-session admission.
+        """Check count, bytes, reserves, and per-session admission."""
+
+        return (
+            self._admission_refusal(
+                workspace,
+                state,
+                envelope,
+                candidate_queue_bytes,
+                candidate_session_bytes,
+                accepted_transfer=accepted_transfer,
+            )
+            is None
+        )
+
+    def _admission_refusal(
+        self,
+        workspace: str,
+        state: _WorkspaceState,
+        envelope: ObservationEnvelope,
+        candidate_queue_bytes: int,
+        candidate_session_bytes: int,
+        *,
+        accepted_transfer: bool = False,
+    ) -> AdmissionLossCause | None:
+        """Return the first refusing admission dimension, or None when admitted.
 
         ``accepted_transfer`` is used only while flushing a previously
         accepted admission-buffer input.  Such a transfer may be over a newly
@@ -6478,28 +6776,30 @@ class LocalObservationStore:
         projected_count = usage.queue_count + 1
         projected_bytes = usage.queue_bytes + candidate_queue_bytes
         protected = _outbox_row_is_protected(envelope)
-        if projected_count > aggregate_limit or projected_bytes > limits.queue_bytes:
-            return False
+        if projected_count > aggregate_limit:
+            return AdmissionLossCause.QUEUE_COUNT
+        if projected_bytes > limits.queue_bytes:
+            return AdmissionLossCause.QUEUE_BYTES
         if not accepted_transfer:
             if usage.session_queue_count + 1 > session_limit:
-                return False
+                return AdmissionLossCause.SESSION_QUEUE_COUNT
             if usage.session_queue_bytes + candidate_session_bytes > session_limits.queue_bytes:
-                return False
+                return AdmissionLossCause.SESSION_QUEUE_BYTES
             if not protected:
                 count_remaining = max(0, limits.protected_count - usage.protected_count)
                 bytes_remaining = max(0, limits.protected_bytes - usage.protected_bytes)
                 if projected_count > aggregate_limit - count_remaining:
-                    return False
+                    return AdmissionLossCause.PROTECTED_RESERVE
                 if projected_bytes > limits.queue_bytes - bytes_remaining:
-                    return False
+                    return AdmissionLossCause.PROTECTED_RESERVE
                 if usage.session_queue_count + 1 > limits.session_fair_share:
-                    return False
+                    return AdmissionLossCause.SESSION_FAIR_SHARE
                 if (
                     usage.session_queue_bytes + candidate_session_bytes
                     > limits.session_fair_share_bytes
                 ):
-                    return False
-        return True
+                    return AdmissionLossCause.SESSION_FAIR_SHARE
+        return None
 
     def _outbox_admission_allowed(
         self,
@@ -6512,7 +6812,27 @@ class LocalObservationStore:
     ) -> bool:
         """Check one pending outbox row against the active budget."""
 
-        return self._admission_allowed(
+        return (
+            self._outbox_admission_refusal(
+                workspace,
+                state,
+                codex_session_id,
+                envelope,
+                accepted_transfer=accepted_transfer,
+            )
+            is None
+        )
+
+    def _outbox_admission_refusal(
+        self,
+        workspace: str,
+        state: _WorkspaceState,
+        codex_session_id: str,
+        envelope: ObservationEnvelope,
+        *,
+        accepted_transfer: bool = False,
+    ) -> AdmissionLossCause | None:
+        return self._admission_refusal(
             workspace,
             state,
             envelope,
@@ -6521,16 +6841,16 @@ class LocalObservationStore:
             accepted_transfer=accepted_transfer,
         )
 
-    def _buffer_admission_allowed(
+    def _buffer_admission_refusal(
         self,
         workspace: str,
         state: _WorkspaceState,
         envelope: ObservationEnvelope,
-    ) -> bool:
+    ) -> AdmissionLossCause | None:
         """Check one newly buffered input before it becomes durable state."""
 
         envelope_bytes = _envelope_bytes(envelope)
-        return self._admission_allowed(
+        return self._admission_refusal(
             workspace,
             state,
             envelope,
@@ -6639,7 +6959,13 @@ class LocalObservationStore:
         with self._reading():
             return self._load(workspace).selection_epoch
 
-    def record_admission_loss(self, workspace: str, envelope: ObservationEnvelope) -> bool:
+    def record_admission_loss(
+        self,
+        workspace: str,
+        envelope: ObservationEnvelope,
+        *,
+        cause: AdmissionLossCause = AdmissionLossCause.UNKNOWN,
+    ) -> bool:
         """Record a non-replayable rejection and aggregate its notice cadence.
 
         Exact endpoints and a rolling commitment survive recovery. A bounded
@@ -6647,6 +6973,10 @@ class LocalObservationStore:
         lanes are already represented, only the aggregate commitment grows.
         The return value requests one notice, then at most one per minute of
         continuing loss. It makes no claim that the host displayed a notice.
+
+        ``cause`` is the closed admission dimension that refused the input.
+        It and the lost input's pairing commitments are kept in a separate
+        per-lane detail so the wire-shaped range stays unchanged.
         """
 
         with self._lock:
@@ -6702,11 +7032,16 @@ class LocalObservationStore:
                     "identity_extent": "bounded_range",
                 }
             )
+            stored = True
             if index is not None:
                 entries[index] = entry
             elif len(entries) < 64:
                 entries.append(entry)
+            else:
+                stored = False
             state.selection_loss_ranges = tuple(entries)
+            if stored:
+                self._record_loss_detail(state, entry, envelope, cause)
             now_ms = int(self._wall_now() * 1000)
             previous_notice = state.selection_last_loss_notice_ms
             notice = (
@@ -6752,14 +7087,152 @@ class LocalObservationStore:
             return ()
         with self._reading():
             state = self._load(workspace)
-            matched = any(
-                entry.get("source") == envelope.source.value
-                and entry.get("session") == envelope.session_commitment
-                and entry.get("source_generation") == envelope.cursor.source_generation
-                and entry.get("route") == route
-                for entry in state.selection_loss_ranges
-            )
-            return (ObservationGapCode.OBSERVATION_INPUT_LOSS.value,) if matched else ()
+            details = _loss_details_by_lane(state)
+            related: frozenset[str] | None = None
+            for entry in state.selection_loss_ranges:
+                if not (
+                    entry.get("source") == envelope.source.value
+                    and entry.get("session") == envelope.session_commitment
+                    and entry.get("source_generation") == envelope.cursor.source_generation
+                    and entry.get("route") == route
+                ):
+                    continue
+                detail = details.get(cast(str, entry.get("lane")))
+                pairings = _bounded_loss_pairings(entry, detail)
+                if pairings is None:
+                    # Legacy or overflowed lane: which later inputs the loss
+                    # affected is unknown, so keep route-wide inheritance.
+                    return (ObservationGapCode.OBSERVATION_INPUT_LOSS.value,)
+                if related is None:
+                    related = _loss_related_pairing_keys(envelope)
+                if related & pairings:
+                    return (ObservationGapCode.OBSERVATION_INPUT_LOSS.value,)
+            return ()
+
+    @staticmethod
+    def _record_loss_detail(
+        state: _WorkspaceState,
+        entry: JsonObject,
+        envelope: ObservationEnvelope,
+        cause: AdmissionLossCause,
+    ) -> None:
+        """Update one lane's cause tally and bounded pairing commitments.
+
+        Only closed cause codes and pairing digests are stored; never a host
+        call id, path, command, or content.  The detail ``count`` must equal the
+        range count to be trusted, so a range advanced by an older writer that
+        dropped this detail falls back to route-wide inheritance.
+        """
+
+        lane = cast(str, entry["lane"])
+        details = _loss_details_by_lane(state)
+        previous = details.get(lane)
+        count = cast(int, entry["count"])
+        if previous is None and count != 1:
+            # The lane existed before this detail did: its earlier losses have
+            # no recorded pairing, so the lane stays route-wide.
+            scope = "route"
+            pairings: list[str] = []
+            causes: dict[str, int] = {AdmissionLossCause.UNKNOWN.value: count - 1}
+        elif previous is None:
+            scope = "paired_inputs"
+            pairings = []
+            causes = {}
+        else:
+            scope = cast(str, previous["scope"])
+            pairings = list(cast(tuple[str, ...], previous["pairings"]))
+            causes = dict(cast(Mapping[str, int], previous["causes"]))
+            if cast(int, previous["count"]) + 1 != count:
+                scope = "route"
+        causes[cause.value] = min(_MAX_SAFE_INTEGER, causes.get(cause.value, 0) + 1)
+        own_keys = _loss_own_pairing_keys(envelope) or _loss_related_pairing_keys(envelope)
+        if scope == "paired_inputs" and not own_keys:
+            # A lost input that names no host call (a prompt, a session or subagent lifecycle
+            # event) cannot be bounded to a pairing: every later input of the lane may depend
+            # on it, so the lane stays route-wide (review of #998).
+            scope = "route"
+        if scope == "paired_inputs":
+            for key in sorted(own_keys, key=str.encode):
+                if key in pairings:
+                    continue
+                if len(pairings) >= _MAX_LOSS_PAIRINGS:
+                    scope = "route"
+                    break
+                pairings.append(key)
+        if scope == "route":
+            pairings = []
+        details[lane] = JsonObject(
+            {
+                "lane": lane,
+                "count": count,
+                "cause": cause.value,
+                "causes": JsonObject(dict(sorted(causes.items()))),
+                "scope": scope,
+                "pairings": tuple(pairings),
+            }
+        )
+        live = {item.get("lane") for item in state.selection_loss_ranges}
+        state.selection_loss_details = tuple(
+            details[key] for key in sorted(details, key=str.encode) if key in live
+        )
+
+    @_read_mostly
+    def selection_loss_causes(self, workspace: str) -> tuple[JsonObject, ...]:
+        """Return each retained loss lane's closed refusal causes, content-free."""
+
+        with self._reading():
+            state = self._load(workspace)
+            details = _loss_details_by_lane(state)
+            result: list[JsonObject] = []
+            for entry in state.selection_loss_ranges:
+                lane = entry.get("lane")
+                if type(lane) is not str:
+                    continue
+                detail = details.get(lane)
+                if detail is None or detail.get("count") != entry.get("count"):
+                    result.append(
+                        JsonObject(
+                            {
+                                "lane": lane,
+                                "cause": AdmissionLossCause.UNKNOWN.value,
+                                "inherit_scope": "route",
+                            }
+                        )
+                    )
+                    continue
+                result.append(
+                    JsonObject(
+                        {
+                            "lane": lane,
+                            "cause": detail["cause"],
+                            "causes": detail["causes"],
+                            "inherit_scope": detail["scope"],
+                        }
+                    )
+                )
+            return tuple(result)
+
+    @_read_mostly
+    def admission_loss_cause(
+        self, workspace: str, envelope: ObservationEnvelope
+    ) -> AdmissionLossCause | None:
+        """Return the recorded cause when ``envelope`` is its lane's latest loss."""
+
+        with self._reading():
+            state = self._load(workspace)
+            details = _loss_details_by_lane(state)
+            for entry in state.selection_loss_ranges:
+                if entry.get("last_identity") != envelope.source_identity:
+                    continue
+                if entry.get("source") != envelope.source.value:
+                    continue
+                if entry.get("session") != envelope.session_commitment:
+                    continue
+                detail = details.get(cast(str, entry.get("lane")))
+                if detail is None or detail.get("count") != entry.get("count"):
+                    return AdmissionLossCause.UNKNOWN
+                return AdmissionLossCause(cast(str, detail["cause"]))
+            return None
 
     @_read_mostly
     def pending_selection_losses(self, workspace: str) -> tuple[JsonObject, ...]:
@@ -6776,6 +7249,7 @@ class LocalObservationStore:
     @staticmethod
     def _pending_selection_losses(state: _WorkspaceState) -> tuple[JsonObject, ...]:
         result: list[JsonObject] = []
+        details = _loss_details_by_lane(state)
         for item in state.selection_loss_ranges:
             try:
                 loss = ObservationSelectionLoss.from_local_range_for_recovery(item)
@@ -6786,7 +7260,15 @@ class LocalObservationStore:
                 or loss.lane in state.selection_reported_loss_lanes
             ):
                 continue
-            result.append(item)
+            # The closed refusal causes travel with the report so the durable lane marker
+            # discloses them (tb4n1 B3, #998); a lane without valid detail reports `unknown`.
+            detail = details.get(cast(str, item.get("lane")))
+            causes: tuple[str, ...] = (
+                tuple(sorted(cast(Mapping[str, int], detail["causes"])))
+                if detail is not None and detail.get("count") == item.get("count")
+                else (AdmissionLossCause.UNKNOWN.value,)
+            )
+            result.append(JsonObject({**item, "loss_causes": causes}))
         return tuple(result)
 
     def acknowledge_selection_loss(self, workspace: str, lane: str) -> None:
@@ -6960,20 +7442,20 @@ class LocalObservationStore:
             )
         return envelope.source_identity in prior_ids
 
-    def _selected_admission_plan_allowed(
+    def _selected_admission_plan_refusal(
         self,
         workspace: str,
         state: _WorkspaceState,
         plan: AdmissionPlan,
         incoming: ObservationEnvelope | None,
-    ) -> bool:
+    ) -> AdmissionLossCause | None:
         """Preflight a buffer transition without mutating the held state.
 
         The candidate starts with the old accepted inputs, removes inputs that
         the plan is about to deliver, and then admits only genuinely new buffer
         entries and deliveries.  This catches a full queue even when a plan has
         no delivery yet, while allowing accepted buffered inputs to drain after
-        a selection is lowered.
+        a selection is lowered.  Returns the refusing dimension, or None.
         """
 
         if incoming is not None:
@@ -6994,10 +7476,11 @@ class LocalObservationStore:
                 # carry already-accepted replay work.
                 state_bytes=0,
             )
-            if not evaluate_pressure(
+            evaluation = evaluate_pressure(
                 usage, ObservationMode.from_value(resolved.selection.detail.value), limits=limits
-            ).admission_allowed:
-                return False
+            )
+            if not evaluation.admission_allowed:
+                return self._pressure_refusal_cause(state, evaluation)
 
         candidate = _copy_state(state)
         previous_buffer = candidate.admission_buffer
@@ -7016,14 +7499,15 @@ class LocalObservationStore:
             if prior_index is not None:
                 current_inputs[prior_index] = item
                 continue
-            if not self._buffer_admission_allowed(workspace, candidate, item.envelope):
-                return False
+            refusal = self._buffer_admission_refusal(workspace, candidate, item.envelope)
+            if refusal is not None:
+                return refusal
             current_inputs.append(item)
             candidate.admission_buffer = AdmissionBuffer(tuple(current_inputs))
         candidate.admission_buffer = AdmissionBuffer(tuple(plan.buffer.inputs))
         for codex_session_id, envelope in plan.deliveries:
             if candidate.pending_outbox is None:
-                return False
+                return AdmissionLossCause.STATE_BYTES
             if any(
                 self._pending_row_matches(row, codex_session_id, envelope)
                 for row in candidate.pending_outbox
@@ -7034,19 +7518,35 @@ class LocalObservationStore:
                 previous_buffer,
                 incoming,
             )
-            if not self._outbox_admission_allowed(
+            refusal = self._outbox_admission_refusal(
                 workspace,
                 candidate,
                 codex_session_id,
                 envelope,
                 accepted_transfer=transfer,
-            ):
-                return False
+            )
+            if refusal is not None:
+                return refusal
             candidate.pending_outbox.append(
                 ObservationOutboxRow(codex_session_id=codex_session_id, envelope=envelope)
             )
         encoded_size = len(self._encode_state(workspace, candidate))
-        return encoded_size <= self._state_byte_limit(workspace, candidate, required=encoded_size)
+        if encoded_size > self._state_byte_limit(workspace, candidate, required=encoded_size):
+            return AdmissionLossCause.STATE_BYTES
+        return None
+
+    def _pressure_refusal_cause(
+        self, state: _WorkspaceState, evaluation: PressureEvaluation
+    ) -> AdmissionLossCause:
+        """Name the hard pressure dimension that refused one native input."""
+
+        if evaluation.dimension is PressureDimension.CAPTURE_BACKLOG:
+            if self._capture_pressure_scope_unknown(state):
+                return AdmissionLossCause.CAPTURE_SCOPE_UNKNOWN
+            return AdmissionLossCause.PRESSURE_CAPTURE_BACKLOG
+        if evaluation.dimension is PressureDimension.BYTES:
+            return AdmissionLossCause.PRESSURE_BYTES
+        return AdmissionLossCause.PRESSURE_COUNT
 
     def commit_selected_admission(
         self,
@@ -7067,14 +7567,15 @@ class LocalObservationStore:
         with self.batched(workspace):
             state = self._load(workspace)
             assert state.pending_outbox is not None
-            if not self._selected_admission_plan_allowed(
+            refusal = self._selected_admission_plan_refusal(
                 workspace,
                 state,
                 plan,
                 incoming,
-            ):
+            )
+            if refusal is not None:
                 if incoming is not None and not replayable and newly_observed:
-                    self.record_admission_loss(workspace, incoming)
+                    self.record_admission_loss(workspace, incoming, cause=refusal)
                 self._note_gap_state(state, _LOCAL_OUTBOX_OVERFLOW_GAP)
                 self._save(workspace, state)
                 return False
@@ -7777,6 +8278,26 @@ class LocalObservationStore:
         return True
 
     @staticmethod
+    def _capture_pressure_scope_unknown(state: _WorkspaceState) -> bool:
+        """Whether admission pressure must treat the capture backlog as unknown.
+
+        A reservation is created unconfirmed and confirmed only after its
+        staging ticket commits, outside the store lock.  Under a proven
+        inventory its reserved byte bound is already charged above, so that
+        in-flight window is a known occupancy, not unknown scope.  Treating it
+        as unknown drove every native input in the window to a hard refusal
+        and a permanent loss (tb4n1 B3).  Reservation and recovery keep their
+        stricter view: a new reservation still waits for confirmation and the
+        unconfirmed reservation stays recovery demand.
+        """
+
+        if state.capture_backlog_scope_unknown:
+            return True
+        if state.capture_reservation_bootstrap is not None:
+            return False
+        return any(item.needs_reconcile for item in (state.capture_reservations or {}).values())
+
+    @staticmethod
     def _capture_inventory_recovery_pending(state: _WorkspaceState) -> bool:
         """Use the same unknown dimensions as capture pressure, without summing occupancy."""
 
@@ -8347,11 +8868,11 @@ class LocalObservationStore:
             capture_tickets,
             capture_bytes,
             capture_oldest,
-            capture_scope_unknown,
+            _capture_scope_unknown,
         ) = self._capture_backlog_usage(state)
         if capture_oldest is not None and (oldest is None or capture_oldest < oldest):
             oldest = capture_oldest
-        if capture_scope_unknown:
+        if self._capture_pressure_scope_unknown(state):
             # Missing capture routes are an unknown backlog, never a clean
             # zero.  Drive the capture dimension to its hard ceiling.
             capture_tickets = limits.capture_tickets
@@ -8797,6 +9318,17 @@ class LocalObservationStore:
             return False
 
     @_read_mostly
+    def buffered_admission_host_sessions(self, workspace: str) -> tuple[str, ...]:
+        """Return the host sessions with inputs still held in the admission buffer (#1012)."""
+
+        with self._reading():
+            state = self._load(workspace)
+            return tuple(
+                sorted(
+                    {item.host_session for item in state.admission_buffer.inputs}, key=str.encode
+                )
+            )
+
     def pending_workspaces(self) -> tuple[str, ...]:
         """Return opaque commitments with delivery, lifecycle, or capture recovery work."""
 
@@ -10012,12 +10544,14 @@ class LocalObservationStore:
         source_generation: int,
         is_pre_event: bool,
         is_post_event: bool,
+        pre_only: bool = False,
     ) -> tuple[ObservationIngestResult, ObservationEnvelope]:
         """Atomically admit one hook envelope and update its pairing state.
 
         The batch is owned here when a direct caller has not already opened
         one. Hook ingress opens an outer batch so its outbox enqueue remains in
         the same local transaction; nested use keeps that transaction intact.
+        ``pre_only`` marks a pre-event whose host never sends a post (#1041).
         """
 
         if type(envelope) is not ObservationEnvelope:
@@ -10077,6 +10611,7 @@ class LocalObservationStore:
                 source_generation=envelope.cursor.source_generation,
                 is_pre_event=expected_pre,
                 is_post_event=expected_post,
+                pre_only=pre_only is True and expected_pre,
             )
 
     def _ingest_with_pairing(
@@ -10091,6 +10626,7 @@ class LocalObservationStore:
         source_generation: int,
         is_pre_event: bool,
         is_post_event: bool,
+        pre_only: bool = False,
     ) -> tuple[ObservationIngestResult, ObservationEnvelope]:
         """Admit one hook envelope and update its pairing state atomically.
 
@@ -10226,6 +10762,7 @@ class LocalObservationStore:
                     session_commitment=session_commitment,
                     source_generation=source_generation,
                     receipt_time=envelope.receipt_time,
+                    pre_only=pre_only,
                 )
             elif paired and is_post_event and envelope.event_kind == "PostToolUse":
                 if correlation_id is None:
@@ -11350,6 +11887,9 @@ class LocalObservationStore:
             "selection_loss_commitment": state.selection_loss_commitment,
             "selection_loss_ranges": state.selection_loss_ranges,
             "selection_reported_loss_lanes": state.selection_reported_loss_lanes,
+            # Optional since /15: older readers ignore it and older writers
+            # drop it, which leaves every lane route-wide (tb4n1 B3).
+            "selection_loss_details": state.selection_loss_details,
             "selection_last_loss_notice_ms": state.selection_last_loss_notice_ms,
             "selection_loss_notice_pending": state.selection_loss_notice_pending,
             "selection_summary_refusals": state.selection_summary_refusals,
@@ -11557,6 +12097,8 @@ class LocalObservationStore:
                             "hook_clock_at_start": cell.hook_clock_at_start,
                             "output_local": cell.output_local,
                             "touched": cell.touched,
+                            **({} if cell.session is None else {"session": cell.session}),
+                            **({} if cell.nested is None else {"nested": cell.nested}),
                         }
                     )
                     for key, cell in sorted(
@@ -12510,6 +13052,14 @@ class LocalObservationStore:
             selection_loss_commitment=cast(str | None, raw.get("selection_loss_commitment")),
             selection_loss_ranges=selection_loss_ranges,
             selection_reported_loss_lanes=selection_reported_loss_lanes,
+            selection_loss_details=_loss_details_from_json(
+                raw.get("selection_loss_details"),
+                {
+                    cast(str, item.get("lane"))
+                    for item in selection_loss_ranges
+                    if type(item.get("lane")) is str
+                },
+            ),
             selection_last_loss_notice_ms=cast(
                 int | None, raw.get("selection_last_loss_notice_ms")
             ),

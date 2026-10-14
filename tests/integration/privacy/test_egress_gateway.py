@@ -223,6 +223,16 @@ class _ForbiddenBodyFactory(_FakeExternalFactory):
         return body
 
 
+class _HeuristicBodyFactory(_FakeExternalFactory):
+    """Renders a body with an ambiguous dotted assignment that remains never-send."""
+
+    def render(self, case: ApprovedOutboundCase) -> bytes:
+        self.render_calls += 1
+        body = b'{"payload":' + case.payload + b',"lookalike":"TOKEN=opaque.value"}'
+        self.rendered_bodies.append(body)
+        return body
+
+
 class _RaisingEvaluatorFactory(_FakeExternalFactory):
     """A factory whose transport raises an ambiguous, native-text-bearing failure."""
 
@@ -1143,6 +1153,7 @@ def test_final_body_scan_blocks_before_credential_mint() -> None:
     result, authorization = asyncio.run(run())
 
     assert type(result) is SemanticResultUnavailable
+    assert result.provenance.failure_class is SemanticFailureClass.RESPONSE_CONTENT
     assert minter.mint_calls == []  # never reached credential minting
     assert factory.render_calls == 1
     assert audit.egress_receipts == []
@@ -1154,6 +1165,48 @@ def test_final_body_scan_blocks_before_credential_mint() -> None:
     assert receipt.dispatch_id is None
     assert receipt.consent_source is ConsentSource.NONE
     assert audit.authorization_state(authorization.authorization_id) == "authorized"
+
+
+def test_final_body_scan_keeps_generic_dotted_assignment_blocked() -> None:
+    clock = _Clock()
+    audit = _FullPrivacyAudit()
+    minter = _CredentialMinter()
+    factory = _HeuristicBodyFactory(_script_factory)
+    gateway = _gateway(audit=audit, clock=clock, credential_minter=minter, external_factory=factory)
+    policy = _policy(external_enabled=True, local_enabled=False)
+    effective = EffectivePrivacyPolicy(policy, 1, policy.policy_digest)
+    human = _human_authority(available=True)
+
+    async def run() -> SemanticResult:
+        await _reconcile_repository(gateway, effective, human)
+        authorization = _authorization(
+            authorization_id="aut_60000000-0000-4000-8000-000000000032",
+            policy_digest=policy.policy_digest,
+            service_generation=human.service_generation,
+        )
+        audit.seed_authorized(authorization)
+        payload = canonical_encode({"note": "hello"})
+        return await gateway.dispatch_external_semantic(
+            _case(
+                case_id="cas_60000000-0000-4000-8000-000000000033",
+                authorization=authorization,
+                payload=payload,
+            ),
+            authorization,
+            _deadline(clock),
+        )
+
+    result = asyncio.run(run())
+
+    assert type(result) is SemanticResultUnavailable
+    assert result.provenance.failure_class is SemanticFailureClass.RESPONSE_CONTENT
+    assert minter.mint_calls == []
+    assert factory.render_calls == 1
+    assert audit.egress_receipts == []
+    assert len(audit.decision_receipts) == 1
+    _, receipt = audit.decision_receipts[0]
+    assert receipt.outcome is PrivacyOutcome.BLOCKED_FORBIDDEN_DATA
+    assert receipt.safe_failure_reason is PrivacyReason.NEVER_SEND_DETECTED
 
 
 def test_expired_authorization_is_rejected_before_dispatch() -> None:
@@ -1432,6 +1485,8 @@ def test_local_model_dispatch_consumes_reservation_and_calls_evaluator_once() ->
         canonical_encode(
             {
                 "conclusion": "no_material_discrepancy",
+                "review_summary": "No review summary recorded.",
+                "verified": [],
                 "reviewer_challenges": [],
                 "prior_finding_verdicts": [],
             }
@@ -1762,7 +1817,7 @@ def test_unregistered_endpoint_profile_reports_factory_unavailable_not_a_silent_
     ]
 
 
-@pytest.mark.parametrize("phase", ["parking", "provider", "receipt"])
+@pytest.mark.parametrize("phase", ["parking", "parking_failure", "provider", "receipt"])
 @pytest.mark.parametrize("clock_delta", [30, -30])
 def test_cancellation_at_each_admitted_await_terminalizes_without_redispatch(
     phase: str, clock_delta: int, monkeypatch: pytest.MonkeyPatch
@@ -1789,6 +1844,8 @@ def test_cancellation_at_each_admitted_await_terminalizes_without_redispatch(
     build = factory.build_evaluator
 
     async def parking(dispatch_id: str, receipt: EgressReceipt) -> None:
+        if phase == "parking_failure":
+            raise RuntimeError("reconciliation_store_unavailable")
         if phase == "parking":
             await pause_once()
         await park(dispatch_id, receipt)
@@ -1831,11 +1888,15 @@ def test_cancellation_at_each_admitted_await_terminalizes_without_redispatch(
         pending = asyncio.create_task(
             gateway.dispatch_external_semantic(case, authorization, _deadline(clock))
         )
-        await asyncio.wait_for(entered.wait(), 5)
-        clock.utc += timedelta(seconds=clock_delta)
-        pending.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(pending, 5)
+        if phase == "parking_failure":
+            with pytest.raises(RuntimeError, match="reconciliation_store_unavailable"):
+                await asyncio.wait_for(pending, 5)
+        else:
+            await asyncio.wait_for(entered.wait(), 5)
+            clock.utc += timedelta(seconds=clock_delta)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(pending, 5)
         assert audit.authorization_state(authorization.authorization_id) == "consumed"
 
     asyncio.run(run())
@@ -1844,8 +1905,13 @@ def test_cancellation_at_each_admitted_await_terminalizes_without_redispatch(
     if phase != "receipt":
         assert receipt.outcome is PrivacyOutcome.TRANSPORT_FAILED
         assert receipt.safe_failure_reason is PrivacyReason.OUTCOME_UNKNOWN
-        assert receipt.finished_at == _NOW + timedelta(seconds=max(0, clock_delta))
+        expected_finished_at = (
+            _NOW if phase == "parking_failure" else _NOW + timedelta(seconds=max(0, clock_delta))
+        )
+        assert receipt.finished_at == expected_finished_at
     else:
         # The provider result already existed; cancellation preserves it instead of replacing it.
         assert receipt.outcome is not PrivacyOutcome.TRANSPORT_FAILED
-    assert sum(item.evaluate_calls for item in factory.built) <= 1
+    assert sum(item.evaluate_calls for item in factory.built) <= (
+        0 if phase == "parking_failure" else 1
+    )

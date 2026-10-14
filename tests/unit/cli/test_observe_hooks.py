@@ -28,7 +28,7 @@ from yoetz.adapters.integrations.hook_spool import HookSpool
 from yoetz.adapters.integrations.observation_local import LocalObservationStore
 from yoetz.application.recommendations import RecommendationState, store_recommendation_state
 from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.hook_io import MAX_HOOK_STDIN_BYTES
+from yoetz.cli.hook_io import MAX_HOOK_SKIM_BYTES, MAX_HOOK_STDIN_BYTES
 from yoetz.cli.observe_hooks import (
     SUPPORTED_HOOK_EVENTS,
     handle_claude_observe,
@@ -531,6 +531,31 @@ def test_visible_unknown_content_is_redacted_and_hidden_fields_are_ignored(tmp_p
     assert b"SYSTEM_PROMPT_CANARY" not in chunks[0].content
 
 
+def test_visible_heuristic_only_content_is_kept_and_not_marked_redacted(tmp_path: Path) -> None:
+    """Issue #982: capture keeps heuristic-only matches; only egress redacts them."""
+
+    store = LocalObservationStore(_state=tmp_path)
+    session = store.session_commitment("sess-heuristic")
+    envelope = map_hook_payload_to_envelope(
+        "FutureHostEvent",
+        {"session_id": "sess-heuristic"},
+        session_commitment=session,
+        event_ordinal=1,
+        key_material=_KEY,
+    )
+    content = 'self.bot_token = "<|tool_call_start|>"\napi_token = "a8F3kL9qZ2xV7mN4"\n'
+    chunks, truncated = observe_hooks_module._visible_content_chunks(  # pyright: ignore[reportPrivateUsage]
+        "FutureHostEvent",
+        {"visibility": "task", "visible_content": content},
+        envelope=envelope,
+        workspace_locator=None,
+    )
+    assert truncated is False
+    assert len(chunks) == 1
+    assert chunks[0].redacted is False
+    assert chunks[0].content == content.encode("utf-8")
+
+
 def test_content_cap_sets_truncated_flag(tmp_path: Path) -> None:
     store = LocalObservationStore(_state=tmp_path)
     session = store.session_commitment("sess-trunc")
@@ -745,14 +770,12 @@ def test_post_tool_hook_never_delivers_observation_only_frontier_motion(tmp_path
             )
             == 0
         )
-        # Only #917's one-time orphan-scope notice may ride the lone post; no motion notice.
+        # Observation-health and orphan plumbing stay out of hook context; no motion notice.
         emitted = stdout.getvalue()
         assert b"frontier moved" not in emitted and b"run status" not in emitted
         document = json.loads(emitted)
         context = document.get("hookSpecificOutput", {}).get("additionalContext")
-        assert context is None or context.startswith(
-            "Yoetz notice (no response needed): pairing was lost"
-        )
+        assert context in (None, "")
 
 
 @pytest.mark.parametrize("tool_name", ["start", "mcp__yoetz__publish_work"])
@@ -3076,7 +3099,7 @@ async def test_drain_preflight_failure_skips_rows_and_records_diagnostic(tmp_pat
     )
     assert store.list_pending_outbox_rows(workspace)[0].attempts == 0
     diagnostics = (tmp_path / "observation/hook-diagnostics.jsonl").read_text()
-    assert '"reason":"drain_preflight_failed"' in diagnostics
+    assert '"reason":"drain_connect_failed"' in diagnostics
 
 
 @pytest.mark.anyio
@@ -3868,10 +3891,14 @@ async def test_drain_service_unavailable_retires_its_session_but_not_the_workspa
 
 
 @pytest.mark.anyio
-async def test_slow_connect_consumes_the_shared_drain_budget(
+async def test_drain_budget_starts_after_a_slow_connect(
     tmp_path: Path,
 ) -> None:
-    """#689: a successful connect cannot reset an exhausted elapsed budget."""
+    """tb4n1 B4: the connect has its own preflight bound; delivery gets its whole budget.
+
+    Before, a 0.9 s connect consumed the shared clock, so 94% of hooks recorded
+    ``drain_budget_exhausted`` without delivering a single row.
+    """
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -3894,10 +3921,46 @@ async def test_slow_connect_consumes_the_shared_drain_budget(
         budget_seconds=0.75,
         monotonic=lambda: clock["now"],
     )
-    assert store.pending_outbox_count(workspace) == 1
+    assert store.pending_outbox_count(workspace) == 0
     diagnostics_path = tmp_path / "observation/hook-diagnostics.jsonl"
     if diagnostics_path.exists():
-        assert '"reason":"drain_budget_exhausted"' in diagnostics_path.read_text()
+        assert '"reason":"drain_budget_exhausted"' not in diagnostics_path.read_text()
+
+
+@pytest.mark.anyio
+async def test_absolute_deadline_clamps_the_connect_and_the_delivery(
+    tmp_path: Path,
+) -> None:
+    """A pass deadline (the Stop pass keeps the closure gate's reserve) bounds both stages."""
+
+    store = LocalObservationStore(_state=tmp_path)
+    workspace = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(workspace)
+    store.bind_codex_session(workspace, "deadline")
+    store.enqueue_outbox(workspace, "deadline", _drain_envelope(store, "deadline", "x", 1))
+    clock = {"now": 0.0}
+    connects = 0
+
+    async def connect(_kind: object):
+        nonlocal connects
+        connects += 1
+        return _InstantAckClient()
+
+    owned = await observe_hooks_module._drain_outbox(  # pyright: ignore[reportPrivateUsage]
+        store,
+        workspace_commitment=workspace,
+        codex_session_id="deadline",
+        connect=connect,  # type: ignore[arg-type]
+        _state=tmp_path,
+        budget_seconds=2.5,
+        monotonic=lambda: clock["now"],
+        deadline=0.0,
+    )
+    assert owned is True
+    assert connects == 0, "an expired deadline never opens a connection"
+    assert store.pending_outbox_count(workspace) == 1
+    diagnostic = (tmp_path / "observation/hook-diagnostics.jsonl").read_text()
+    assert '"reason":"drain_budget_exhausted"' in diagnostic
 
 
 @pytest.mark.anyio
@@ -5933,19 +5996,15 @@ def test_hook_invocation_writes_the_state_file_once_not_fourteen_times(
         cast(dict[str, Any], emitted.get("hookSpecificOutput") or {}).get("additionalContext")
         or "",
     )
-    notice = "Yoetz notice (no response needed)"
-    noticed = notice in context
-    delivered = bool(context.split(notice)[0].strip())
+    delivered = bool(context.strip())
     # Exact accounting, so a regression cannot hide inside a loose ceiling:
     #   1 local-pass batch flush
-    # + 1 per drained outbox row, bounded by _HOOK_DRAIN_ROW_LIMIT (4 here)
+    # + 1 per drained outbox row, bounded by _HOOK_DRAIN_ROW_LIMIT (8 here)
     # + 1 advice-snapshot persistence now that oversized advice projects safely
     # + 1 advice-delivery commit, and only when advice actually reached stdout.
-    # + 1 orphan-scope notice commit, once per new orphan scope (#917); this
-    #   post has no pre, so its scope is new.
     # Seventeen were measured before the write batch. Nothing else writes: the
     # advice sidecar and the async-pair sample are gone.
-    assert _suffix_counts(written) == {".json": 6 + int(delivered) + int(noticed)}, written
+    assert _suffix_counts(written) == {".json": 10 + int(delivered)}, written
 
 
 def test_refresh_advice_does_not_rewrite_state_when_the_snapshot_is_unchanged(
@@ -6549,7 +6608,7 @@ async def test_control_failure_stops_batch_without_fabricating_other_row_refusal
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("hydration_seconds", [0.0, 1.1, 1.3])
-async def test_preflight_uses_remaining_combined_allowance(
+async def test_preflight_and_delivery_budgets_ignore_local_hydration(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hydration_seconds: float
 ) -> None:
     store = LocalObservationStore(_state=tmp_path)
@@ -6588,13 +6647,14 @@ async def test_preflight_uses_remaining_combined_allowance(
         budget_seconds=0.2,
         monotonic=lambda: clock["now"],
     )
-    if hydration_seconds >= 1.2:
-        assert timeouts == []
-    else:
-        assert timeouts == [pytest.approx(min(1.0, 1.2 - hydration_seconds))]
-    assert store.pending_outbox_count(workspace) == 1
-    diagnostic = (tmp_path / "observation/hook-diagnostics.jsonl").read_text()
-    assert '"reason":"drain_budget_exhausted"' in diagnostic
+    # tb4n1 B4: local hydration and the connect no longer spend the delivery budget. The
+    # connect keeps its own one-second preflight bound and the row gets the full 0.2 s.
+    assert timeouts[0] == pytest.approx(1.0)
+    assert timeouts[1:] == [pytest.approx(0.2)]
+    assert store.pending_outbox_count(workspace) == 0
+    diagnostics_path = tmp_path / "observation/hook-diagnostics.jsonl"
+    diagnostic = diagnostics_path.read_text() if diagnostics_path.exists() else ""
+    assert '"reason":"drain_budget_exhausted"' not in diagnostic
     assert "drain_preflight_failed" not in diagnostic
 
 
@@ -6680,16 +6740,20 @@ def test_session_start_update_advice_without_observation_consent(
 
 
 def _oversize_hook_body(session_id: str) -> bytes:
-    """Return a valid hook object one byte past the shared stdin cap."""
+    """Return a valid hook object past the skim cap, so no host can keep a row for it.
+
+    A body between the trusted cap and the skim cap keeps a structural row since tb4n1 (B5);
+    ``tests/unit/cli/test_hook_oversize_skim.py`` owns that range.
+    """
 
     body = (
         b'{"session_id":"'
         + session_id.encode()
         + b'","tool_name":"shell","command":"COMMAND_CANARY '
-        + b"x" * MAX_HOOK_STDIN_BYTES
+        + b"x" * MAX_HOOK_SKIM_BYTES
         + b'"}'
     )
-    assert len(body) > MAX_HOOK_STDIN_BYTES
+    assert len(body) > MAX_HOOK_SKIM_BYTES > MAX_HOOK_STDIN_BYTES
     return body
 
 

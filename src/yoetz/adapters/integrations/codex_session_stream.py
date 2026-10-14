@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import os
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +38,7 @@ from yoetz.adapters.integrations.observation_local import (
     PendingRolloutItem,
     self_observation_deliverable,
 )
+from yoetz.domain.command_segments import command_segment_commitments
 from yoetz.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
@@ -53,8 +54,17 @@ from yoetz.domain.observation_selection import (
     ObservationClassification,
     ObservationContentRole,
     classify_observation,
+    command_runner_class,
+    compound_verification_gap_required,
 )
+from yoetz.domain.shell_writes import shell_write_scope
 from yoetz.domain.values import JsonObject, JsonValue, Timestamp, timestamp_from_datetime
+from yoetz.domain.write_scope import (
+    NON_COUNTING_WRITE_SCOPES,
+    classify_write_path,
+    edit_write_scope,
+)
+from yoetz.domain.yoetz_tools import yoetz_tool_spelling
 from yoetz.ports.importer import ImportLineStatus
 from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
 from yoetz.protocol.errors import ProtocolValueError
@@ -152,12 +162,16 @@ _SUBAGENT_THREAD_SOURCE: Final = "subagent"
 # shape in ``observations/codex-post-tool-outcomes-0.157.1.case.json``). ``status`` and
 # ``exit_code`` on that item are the host's closed outcome facts. A command or patch item names no
 # tool, so it is recorded under its item family in the ``codex exec --json`` spelling; an MCP item
-# keeps its own ``tool`` name.
+# keeps its ``server`` and is named as its hook names it, ``mcp__<server>__<tool>`` (#1038).
 _STREAM_COMPLETED_PAYLOAD: Final = "item_completed"
 _STREAM_TOOL_ITEM_NAMES: Final[Mapping[str, str]] = MappingProxyType(
     {"CommandExecution": "command_execution", "FileChange": "file_change"}
 )
 _STREAM_COMPLETED_TOOL_ITEMS: Final = frozenset({"CommandExecution", "FileChange", "McpToolCall"})
+# The response-item rows that pair a call with its output on their shared ``call_id`` (#1038).
+_STREAM_CALL_PAIR_ITEMS: Final = frozenset(
+    {"function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"}
+)
 
 
 _JSONL_SUFFIXES: Final = (".jsonl", ".jsonl.zst")
@@ -633,6 +647,37 @@ def _normalize_tool_name(value: object) -> str | None:
     if token in YOETZ_TOOL_NAMES:
         return token
     return token
+
+
+def _file_change_paths(changes: object) -> Iterator[str]:
+    """Paths one Codex ``FileChange`` names: rollout mapping form or ``exec --json`` list form."""
+
+    if isinstance(changes, Mapping):
+        for path, change in cast(Mapping[object, object], changes).items():
+            if type(path) is str:
+                yield path
+            if isinstance(change, Mapping):
+                moved = cast(Mapping[str, object], change).get("move_path")
+                if type(moved) is str:
+                    yield moved
+    elif isinstance(changes, list):
+        for change in cast(list[object], changes):
+            if isinstance(change, Mapping):
+                path = cast(Mapping[str, object], change).get("path")
+                if type(path) is str:
+                    yield path
+
+
+def _file_change_write_scope(changes: object) -> str | None:
+    """The ``write_scope`` of a ``FileChange`` only when every path is scratch or Yoetz-owned."""
+
+    paths = tuple(_file_change_paths(changes))
+    if not paths:
+        return None
+    scope = edit_write_scope(
+        classify_write_path(path, workspace=None, inside=None) for path in paths
+    )
+    return scope if scope in NON_COUNTING_WRITE_SCOPES else None
 
 
 def _completed_tool_item(record: CodexParsedRecord) -> bool:
@@ -1139,6 +1184,20 @@ def structural_from_stream_record(
             # item family, spelled as ``codex exec --json`` spells it, so the call keeps its
             # command/edit family instead of an anonymous one (#910).
             tool = _STREAM_TOOL_ITEM_NAMES.get(item_type)
+        named_server = body.get("server") if item_type == "McpToolCall" else None
+        if tool is not None and named_server is not None and not tool.startswith("mcp__"):
+            # Keep the MCP server: ``mcp__<server>__<tool>`` is how the call's own hook names it,
+            # so Yoetz's own call is told from another server's tool of the same name (#1038).
+            server = _token(named_server)
+            scoped = _token(f"mcp__{server}__{tool}") if server and "__" not in server else None
+            if scoped is not None:
+                tool = scoped
+            elif yoetz_tool_spelling(tool) is not None:
+                # A server that cannot be folded into that spelling (it contains ``__`` or is no
+                # plain token) is still a named server: only an item naming no server keeps a
+                # Yoetz tool's bare name, which reads as Yoetz's own call. Such an item names no
+                # tool, as for any unreadable tool name; any other name keeps its name rules.
+                tool = None
         if tool is not None:
             fields["tool_name"] = tool
         status = _token(body.get("status")) or _token(body.get("result_status"))
@@ -1156,6 +1215,13 @@ def structural_from_stream_record(
                 fields["exit_status"] = exit_code
             else:
                 gaps.add(ObservationGapCode.UNSUPPORTED_EVENT.value)
+        if item_type == "FileChange":
+            # Name a patch whose every path is scratch or Yoetz-owned (ADR-042, tb4n2 R4) so it
+            # never makes an earlier verification stale. The stream knows no workspace root, so it
+            # never claims ``outside_workspace``; only the closed class token crosses.
+            scope = _file_change_write_scope(body.get("changes"))
+            if scope is not None:
+                fields["write_scope"] = scope
         # ``SubAgentActivity.id`` identifies the rollout item itself, not the
         # parent tool call.  Keep it out of the parent correlation family; only
         # an explicit call alias may identify that parent.
@@ -1166,8 +1232,45 @@ def structural_from_stream_record(
             normalized = normalize_observed_command(body.get("command"))
             if normalized is not None:
                 fields["command_commitment"] = observed_command_commitment(key_material, normalized)
+                segments = command_segment_commitments(key_material, normalized)
+                if segments is not None:
+                    fields["command_segment_commitments"] = segments[0]
+                    fields["command_composition"] = segments[1]
+        if item_type == "CommandExecution":
+            command_payload = JsonObject(
+                {
+                    "tool_name": tool or "shell",
+                    "command": body.get("command"),
+                }
+            )
+            runner = command_runner_class(command_payload)
+            if runner is not None:
+                fields["runner_class"] = runner
+            raw_command = body.get("command")
+            if type(raw_command) is str and "write_scope" not in fields:
+                # ADR-045: the stream knows no workspace root, so it claims only a relative write
+                # (a working directory makes it certain); an absolute path is left to the hook.
+                scope = shell_write_scope(
+                    raw_command, workspace=None, inside=lambda _path: False, relative_only=True
+                )
+                if scope is not None:
+                    # The closed token as the hook would send it (workspace, or the non-counting
+                    # notes / yoetz_owned scope a declared output of that kind overrides).
+                    fields["write_scope"] = scope
+                if compound_verification_gap_required(command_payload):
+                    # Preserve the host's outer result. The bounded gap records that a
+                    # masking-capable composition does not expose each nested outcome (#968).
+                    gaps.add(ObservationGapCode.COMPOUND_OUTCOME_UNAVAILABLE.value)
         if item_type != "SubAgentActivity":
-            call_id = _token(body.get("id")) or _token(body.get("call_id"))
+            # A response-item call and its output share ``call_id``; since Codex 0.150.1 each row
+            # also carries an ``id`` naming the row itself (``fc_``/``fco_``, ``ctc_``/``ctco_``),
+            # which never joins a call to its output (#1038). Any other record keeps its own ``id``
+            # first: a completed tool item's id (``exec-<uuid>``, or the call id on a direct call)
+            # is the one ADR-022 decision 15 compares with a hook's call id.
+            first, second = (
+                ("call_id", "id") if item_type in _STREAM_CALL_PAIR_ITEMS else ("id", "call_id")
+            )
+            call_id = _token(body.get(first)) or _token(body.get(second))
             if call_id is not None:
                 fields["tool_call_id"] = call_id
         # Codex rollout records use the same child identifiers as its native
@@ -1702,9 +1805,10 @@ class SessionStreamReader:
         hold = b""
         for index, line in enumerate(parsed.lines):
             if not line.terminated:
+                # A tail Codex is still writing is held and re-read once its newline lands; it
+                # lost nothing, so it is no ``truncated_payload`` (#1041). Oversize lines and
+                # unreadable chunks above keep the gap.
                 hold = line.content
-                if "truncated_final_line" in parsed.stream_gaps:
-                    gaps.add(ObservationGapCode.TRUNCATED_PAYLOAD.value)
                 break
             consumed = line.byte_end
             last_commitment = stream_line_commitment(self.key_material, line.content)
@@ -1791,11 +1895,9 @@ class SessionStreamReader:
             mapping_version=STREAM_MAPPING_VERSION,
         )
         self.cursor = cursor
-        for gap in parsed.stream_gaps:
-            if gap in {"truncated_final_line", "final_newline_absent"}:
-                gaps.add(ObservationGapCode.TRUNCATED_PAYLOAD.value)
-            elif gap == "unsupported_codex_profile":
-                gaps.add(ObservationGapCode.UNSUPPORTED_FORMAT.value)
+        # ``truncated_final_line``/``final_newline_absent`` name the held tail: not a loss.
+        if "unsupported_codex_profile" in parsed.stream_gaps:
+            gaps.add(ObservationGapCode.UNSUPPORTED_FORMAT.value)
         return SessionStreamAdvance(
             tuple(envelopes),
             cursor,
@@ -2264,6 +2366,75 @@ def _code_mode_cell_held(
         return decide(workspace_commitment, session_commitment, call_id) is True
     except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
         return False
+
+
+def _note_code_mode_nested_item(
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    session_commitment: str,
+    envelope: ObservationEnvelope,
+) -> bool:
+    """Mark the session's open code-mode cells with one nested rollout row (#1038).
+
+    A completed tool item is the rollout's record of a call a cell made: a Yoetz MCP item keeps
+    an open cell Yoetz-only, any other tool item or an uninterpretable row does not. "Yoetz MCP
+    item" is the later-material rule's reading (``yoetz_tool_spelling``): ``mcp__<Yoetz
+    server>__<tool>``, or the bare Yoetz tool name only an item without a ``server`` keeps;
+    another server's tool of the same name is ``mcp__<server>__<tool>``, or names no tool when
+    that server cannot be spelled so, and is not Yoetz's. Returns
+    ``False`` only when the mark could not persist, so the cursor never passes a row whose mark
+    a later output decision would miss.
+    """
+
+    if envelope.event_kind == "unsupported_event":
+        yoetz_owned = False
+    elif _hooked_tool_item(envelope):
+        structural = envelope.structural_payload
+        yoetz_owned = (
+            structural.get("action") == "McpToolCall"
+            and yoetz_tool_spelling(structural.get("tool_name")) is not None
+        )
+    else:
+        return True
+    note = getattr(store, "note_code_mode_nested_item", None)
+    if not callable(note):
+        return True
+    try:
+        note(workspace_commitment, session_commitment, yoetz_owned=yoetz_owned)
+    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+        return False
+    return True
+
+
+def _close_pre_only_attempt(
+    store: LocalObservationStore,
+    workspace_commitment: str,
+    session_commitment: str,
+    envelope: ObservationEnvelope,
+) -> None:
+    """Let a newly read ``FileChange`` item close a pre-only shell patch attempt (#1041).
+
+    Codex intercepts a shell ``apply_patch <<EOF`` and fires only its ``PreToolUse``; the patch
+    item the rollout writes is the observed change that closes that pending attempt. A failed
+    write only leaves the attempt to expire with ``pending_attempt_expired``, as before.
+    """
+
+    if not (
+        envelope.event_kind == "item_completed"
+        and envelope.structural_payload.get("action") == "FileChange"
+    ):
+        return
+    close = getattr(store, "close_pre_only_attempt", None)
+    if not callable(close):
+        return
+    try:
+        close(
+            workspace_commitment,
+            session_commitment,
+            _token(envelope.structural_payload.get("tool_call_id")),
+        )
+    except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+        return
 
 
 def _code_mode_pass_snapshot(
@@ -2758,9 +2929,17 @@ def _reconcile_session_stream_path(
         # hooks. When the cell's nested calls are hook-observed, those hook rows
         # are the ledger's record of the cell, so the wrapper stays in the local
         # store only instead of adding an independent action; a cell whose tools
-        # fire no hook keeps its own record (#917). A completed command, MCP or
-        # patch item follows the same rule unless it is the only carrier of a
-        # hooked call's outcome (#910).
+        # fire no hook keeps its own record (#917), unless every tool item the
+        # rollout wrote inside it was Yoetz's own MCP call (#1038). A completed
+        # command, MCP or patch item follows the same rule unless it is the only
+        # carrier of a hooked call's outcome (#910).
+        if not _note_code_mode_nested_item(
+            store, workspace_commitment, session_commitment, envelope
+        ):
+            delivery_blocked = True
+            break
+        if result.disposition.value == "accepted":
+            _close_pre_only_attempt(store, workspace_commitment, session_commitment, envelope)
         item_decision = _hooked_tool_item_decision(
             store, workspace_commitment, session_commitment, envelope
         )

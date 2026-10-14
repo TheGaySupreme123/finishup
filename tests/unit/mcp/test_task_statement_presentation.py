@@ -1,8 +1,9 @@
-"""The advertised publish_work draft stays within budget; the catalog still admits the plans.
+"""The advertised publish_work draft stays within budget and admits statement-bearing plans.
 
-Issue #908: the statement-bearing plan_published/plan_revised 1.1.0 branches live in the unreleased
-event-draft 1.2.0, but the MCP presentation leaves them out so the reviewed surface budgets hold.
-An MCP agent revises the statement through a reattaching ``start`` instead.
+The MCP presentation exposes the statement-bearing plan_published/plan_revised 1.1.0 branches so a
+parked review can receive its missing specification without replacing the session and writer that
+own the original check request. An MCP agent can also provide the initial statement through
+``start``.
 """
 
 from __future__ import annotations
@@ -39,13 +40,13 @@ def _schema_identities(node: JsonValue) -> Iterator[tuple[str, str]]:
             yield from _schema_identities(value)
 
 
-def test_statement_plans_are_not_advertised_but_the_start_field_is() -> None:
+def test_statement_plans_and_the_start_field_are_advertised() -> None:
     publish = cast(JsonValue, dict(descriptor_for("publish_work").input_schema))
     identities = set(_schema_identities(publish))
     assert ("plan_published", "1.0.0") in identities
     assert ("plan_revised", "1.0.0") in identities
-    assert ("plan_published", "1.1.0") not in identities
-    assert ("plan_revised", "1.1.0") not in identities
+    assert ("plan_published", "1.1.0") in identities
+    assert ("plan_revised", "1.1.0") in identities
     start = descriptor_for("start")
     assert "task_statement" in cast(dict[str, JsonValue], start.input_schema["properties"])
     assert "task_statement is the user's request verbatim" in start.description

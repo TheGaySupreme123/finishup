@@ -49,8 +49,14 @@ from yoetz.protocol.canonical import (
     canonical_encode,
     strict_json_parse,
 )
+from yoetz.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
 from yoetz.service.elevated_bootstrap import catalog_payload, load_pending
 from yoetz.version import read_verified_resource
+
+_GUIDANCE_NAMES = tuple(
+    uri.removeprefix("yoetz://guidance/")
+    for uri in (*GUIDANCE_DOCUMENT_URIS, *FOCUSED_GUIDANCE_URIS)
+)
 
 
 def _request(number: int) -> str:
@@ -219,16 +225,11 @@ def test_portable_tree_is_skills_only_and_guidance_is_byte_identical() -> None:
     assert rendered.plan.mcp_ownership is McpOwnership.EXTERNAL_REGISTRATION
     assert rendered.plan.mcp_route_profile is None
     skill = tree["skills/yoetz/SKILL.md"].decode("utf-8")
-    assert "`external_registration` omits `mcp.json`" in skill
-    assert "existing host registration remains the sole owner" in skill
-    for name in (
-        "agent-instructions.md",
-        "coverage-and-receipts.md",
-        "publication-policy.md",
-        "request-templates.md",
-        "workflow.md",
-    ):
+    assert "The first workflow operation is `start`." in skill
+    assert "Carrier has no authority." in skill
+    for name in _GUIDANCE_NAMES:
         assert tree[f"skills/yoetz/references/{name}"] == read_verified_resource(f"guidance/{name}")
+        assert f"guidance/{name}" in rendered.plan.source_refs
 
 
 def test_portable_builder_defaults_to_the_neutral_skill() -> None:
@@ -262,9 +263,12 @@ def test_plugin_managed_mcp_variants_are_exact_and_offline_valid(
         mcp_route_profile=cast(Any, route_profile),
     )
     mcp_raw = rendered.members["mcp.json"]
-    skill = rendered.members["skills/yoetz/SKILL.md"].decode("utf-8")
-    assert "`plugin_managed` includes the selected `mcp.json` route" in skill
-    assert "this plugin is the sole owner" in skill
+    # The condensed skill defers setup to the carried consent topic, which states ownership.
+    consent = " ".join(
+        rendered.members["skills/yoetz/references/consent.md"].decode("utf-8").split()
+    )
+    assert "`plugin_managed` includes the selected `mcp.json` route" in consent
+    assert "this plugin is the sole owner" in consent
     mcp = strict_json_parse(mcp_raw)
     assert mcp == {
         "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",

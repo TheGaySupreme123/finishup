@@ -29,7 +29,7 @@ def test_development_manifest_is_truthful_and_complete() -> None:
         "development_unverified",
         "mcp_capability_unverified",
     )
-    assert len(manifest.request_result_schema_versions) == 51
+    assert len(manifest.request_result_schema_versions) == 53
     assert dict(manifest.request_result_schema_versions)["setup-readiness"] == "1.0.0"
     assert dict(manifest.request_result_schema_versions)["setup-status"] == "2.0.0"
     assert dict(manifest.request_result_schema_versions)["isolation-report"] == "1.0.0"
@@ -37,8 +37,8 @@ def test_development_manifest_is_truthful_and_complete() -> None:
         request_result_schema_versions(load_schema_catalog())
     )
     assert len(manifest.event_schema_versions) == 29
-    assert dict(manifest.event_schema_versions)["check_recorded"] == "1.3.0"
-    assert dict(manifest.event_schema_versions)["finding_recorded"] == "1.3.0"
+    assert dict(manifest.event_schema_versions)["check_recorded"] == "1.4.0"
+    assert dict(manifest.event_schema_versions)["finding_recorded"] == "1.4.0"
     counts = dict(manifest.resource_counts)
     assert len(manifest.resources) == REVIEWED_RESOURCE_COUNT == int(counts["total"])
     assert set(counts) == {

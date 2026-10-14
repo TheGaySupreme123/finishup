@@ -46,6 +46,7 @@ from yoetz.domain.privacy import (
     LocalDisclosureSink,
     PrivacyPolicy,
     PrivacyProfile,
+    ReceiptSecretScanStage,
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
@@ -451,6 +452,31 @@ def test_canaries_absent_from_structural_surfaces(tmp_path: Path) -> None:
 
     manifest = build_diagnostic_manifest(RedactionProfile.SUPPORT, {"message": canary.decode()})
     assert canary.decode() not in repr(manifest)
+
+
+def test_local_policy_denial_records_candidate_scan_without_false_not_run(tmp_path: Path) -> None:
+    """Classification runs before local policy denial, so the receipt names its candidate scan."""
+
+    env = _Env(tmp_path)
+
+    async def run() -> object:
+        await env.policies.seed_if_absent(_policy())
+        return await env.coordinator.prepare_local_disclosure(
+            _candidate(
+                _REQUEST,
+                "item-denied",
+                DataCategory.FINDING_SUMMARY,
+                "note:ordinary",
+                b"ordinary content",
+            )
+        )
+
+    result = asyncio.run(run())
+    assert type(result) is LocalDisclosureBlocked
+    assert result.receipt.secret_scan.stage is ReceiptSecretScanStage.CANDIDATE
+    assert result.receipt.secret_scan.passed is True
+    assert result.receipt.secret_scan.match_count == 0
+    assert result.receipt.secret_scan.not_run_reason is None
 
 
 @pytest.mark.anyio

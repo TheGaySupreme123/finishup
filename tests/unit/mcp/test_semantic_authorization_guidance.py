@@ -32,10 +32,22 @@ def _flat(path: Path) -> str:
 
 
 def _review_guidance(entrypoint: Path) -> str:
-    # Procedures are conditional, but each entrypoint must make their owner reachable.
+    # Procedures are conditional, but each entrypoint must make their owners reachable. Since the
+    # progressive-guidance split (#961) the budgeted skills name only the mandatory core, and the
+    # core names the review owner (coverage-and-receipts) and the closure owner (workflow).
     text = _flat(entrypoint)
+    if entrypoint != _AGENT_INSTRUCTIONS:
+        assert "yoetz://guidance/agent-instructions.md" in text
+        text += " " + _flat(_AGENT_INSTRUCTIONS)
     assert "yoetz://guidance/coverage-and-receipts.md" in text
-    return text + " " + _flat(_REPO_ROOT / "guidance/coverage-and-receipts.md")
+    assert "yoetz://guidance/workflow.md" in text
+    return " ".join(
+        (
+            text,
+            _flat(_REPO_ROOT / "guidance/coverage-and-receipts.md"),
+            _flat(_REPO_ROOT / "guidance/workflow.md"),
+        )
+    )
 
 
 def _skill() -> str:
@@ -179,7 +191,7 @@ def test_closure_descriptors_require_the_recorded_resolution_and_receipt_counts(
 def test_check_descriptor_gives_the_continuation_procedure() -> None:
     description = descriptor_for("check").description
 
-    assert "awaiting_human is the one nonterminal result" in description
+    assert "awaiting_human and awaiting_input are the nonterminal check results" in description
     assert "do not create a new check request" in description
     assert "same request_id" in description
 

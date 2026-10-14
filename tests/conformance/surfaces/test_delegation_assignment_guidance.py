@@ -116,11 +116,6 @@ def test_safety_floor_routes_delegation_to_the_workflow_rules() -> None:
 @pytest.mark.parametrize("skill", _SKILLS, ids=lambda path: path.parts[-3])
 def test_every_skill_names_the_assignment_and_child_closure(skill: Path) -> None:
     text = _collapsed(skill)
-    for phrase in (
-        "A native subagent learns its role only from its assignment",
-        "give each child its one selector, a distinct actor id, and its own closure duties "
-        "(plan, evidence and completion claim, `check`, `respond`, `receipt`, then "
-        "`work_closed`)",
-        "Tell a helper given neither a handle nor a parent session to make no Yoetz call.",
-    ):
-        assert phrase in text, (skill.parts[-3], phrase)
+    assert "yoetz://guidance/workflow.md#start-and-resume" in text
+    assert "delegation" in text
+    assert "closure" in text

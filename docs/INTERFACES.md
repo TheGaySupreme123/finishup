@@ -15,7 +15,7 @@ change; the product words are their human names.
 |---|---|
 | local check / local finding / local-check case | `FindingOrigin.deterministic`, `CheckType` `deterministic`, `CheckMode` `deterministic_only`, `SemanticReason` `deterministic_mode`, gap `no_unresolved_deterministic_findings`, `DeterministicCase`, `DETERMINISTIC_RESULT`, `kernel/deterministic_checks.py` |
 | AI-powered review / AI-powered finding / AI-powered review case | `FindingOrigin.semantic_model_derived`, `CheckMode` `semantic_if_configured` / `semantic_required`, `semantic_status` / `semantic_reason`, `semantic_provenance`, `semantic_attempts`, `semantic_job`, `yoetz.semantic-case/2`, `ports/semantic.py`, `--semantic off` |
-| local-only check (no AI-powered review) | `deterministic_only`, gap `semantic_review_not_requested` |
+| local-only check (no AI-powered review) | `deterministic_only`, gap `semantic_review_not_requested` (recorded only where the route required review, #1041) |
 
 "Deterministic" elsewhere in this registry keeps its ordinary meaning — reproducible ordering,
 replay, digests, and equality — and is not a check kind.
@@ -171,7 +171,33 @@ unknown or hostile property names are never echoed. Closed reason tokens are:
 
 These object-rule tokens are projected only from checked-in schema metadata and validator kind —
 never from caller-controlled keys or free-form exception text. Unrecognized object rules degrade
-to a bounded generic `INVALID_REQUEST` without inventing field pointers.
+to a bounded generic `INVALID_REQUEST` without inventing field pointers. A root `if`/`then`
+`not required` rule (for example `status` `filter` beside a `view` that admits none) is reported
+as `extra_forbidden` at the forbidden field, which is read from the schema rule and named only when
+the request carries it.
+
+Authoring hints are hint text only; they never add `safe_details` keys. For a value rejected inside
+a draft payload, the hint follows the draft's own catalogued family and version (several families
+share a field name with different admitted shapes), names the admitted shape of an array member
+(`each limitation_refs entry admits values matching ^res_…`), states a payload array item's own
+`allOf` peer rule (`each obligation_changes entry with change superseded or waived requires
+reason`), names the absent keys of a payload `required` list before reciting it, and lists enums of
+up to 16 members. Checked-in sentences in the MCP error module cover contract facts a pattern only
+implies (which id kind a reference list names, `status` `limit`, `at_frontier`, and `filter`). The
+`obligation_published` `resolution_evidence_refs` sentence also answers a rejection located at the
+list itself, so a resolution that omits the list or sends it empty is told what it holds: one or
+more evidence (`evd_`) or result (`res_`) ids, with every other field repeated (tb4n4, #1049).
+
+Two request shapes are read instead of refused (tb4n4, #1049). Both are normalized by the protocol
+request model before the schema check, so every surface that validates a request (MCP bridge, CLI,
+service) reads them alike, and the validated request, its request digest and anything recorded are
+byte-identical to the canonical spelling. A `status` `limit` sent as a JSON integer from 1 to 100 is
+read as its canonical decimal string (`bool`, `0`, `101`, a float or any other value keeps the
+refusal). A `decision_id` key in a `decision_recorded` draft payload is accepted and ignored: a
+decision has no id of its own (it is addressed by its `event_id`), so the key is dropped before the
+drafts are prepared, a retry of the same `request_id` with or without it is a replay of one request,
+and the recorded event never holds it. Every other unadmitted key, in every family, keeps its
+`extra_forbidden` refusal. The advertised schemas keep the one canonical spelling (ADR-002).
 
 For an `extra_forbidden` payload rejection whose unknown key is a known field with exactly one
 legal owning event family among the ordinary `publish_work` families, `safe_details` additionally
@@ -264,9 +290,9 @@ directives are bounded at 232 ASCII bytes, and several remedy sentences are byte
 tests. The remedy names which condition was hit and its exact local command; the directive names
 the recovery rule for that shape. Both render, remedy first.
 
-On the 512-byte MCP text channel the directive is budgeted after the identity and reason clauses,
-and optional parts are dropped from the least load-bearing end — nudge, then guidance pointer, then
-carried commands. The error identity is never dropped to fit advice. The CLI has no such ceiling
+On the 4,096-byte MCP text channel (512 until tb4n3, ADR-043) the directive is budgeted after the
+identity and reason clauses, and optional parts are dropped from the least load-bearing end — nudge,
+then guidance pointer, then carried commands. The error identity is never dropped to fit advice. The CLI has no such ceiling
 and renders `Continuation:`, `Next:`, `Commands:`, `Guidance:`, and the nudge on separate lines
 beneath the existing `CODE: message` line, and appends the same lines to a bounded lifecycle,
 instance, or ceremony refusal line whose local reason has a registered directive. Every
@@ -301,7 +327,10 @@ For `claim_revision_mismatch`, `safe_details` carries an allowlisted `invariant`
 domain rule that rejected the draft, and both the MCP text projection and the CLI render an
 `Invariant:` plus `Correction:` clause from it. The corrective phrases live in the shared recovery
 registry beside the continuation directives (ADR-030), so the same rejection reads the same way on
-both surfaces; the CLI previously rendered no correction at all.
+both surfaces; the CLI previously rendered no correction at all. For `limitation_refs_complete` the
+rejection also names the missing live result ids: `safe_details.count` is their number and the
+message lists up to 32 of them in ascending order (structural ledger ids, never caller content),
+so an author can disclose hook-observed failures it never published without reading every result.
 
 The invariant vocabulary is closed and gated twice: `yoetz.protocol.errors` holds
 `ADMITTED_CLAIM_REVISION_INVARIANTS` literally because it is a dependency root, `yoetz.domain.events`
@@ -331,7 +360,7 @@ Predispatch configuration and policy outcomes (`not_configured`, `credential_una
 are admitted continuation tokens and live in the same registry. They are not new public
 `SemanticReason` values and do not change frozen check-result schemas. CLI check rendering and the
 MCP check text summary project the resolved directive (the MCP channel drops the sentence when the
-512-byte budget cannot hold it, keeping the token). Hook advisories never carry a provider-outcome
+bounded budget cannot hold it, keeping the token). Hook advisories never carry a provider-outcome
 token: a hook token is resolved from the hook's own exact reason (`render_hook_recovery_suffix`),
 and today only SessionStart's vault-locked advisory has one (`vault_unlock_required`). Hook contexts
 shared by several reasons (the status-read retry class), the service's retryable `storage_unsafe`
@@ -342,8 +371,17 @@ stay frozen. Advice and status `semantic_state` is the recorded attempt status (
 `ready`, and `disabled` means no attempt was requested or configured. The state does not widen
 coverage: only validated AI-powered finding ids add `semantic_model_derived` to advice coverage.
 
-Every MCP result also carries a bounded ASCII text projection (at most 512 bytes) for hosts that
-drop `structuredContent`. A successful projection includes the first valid returned frontier's
+Every MCP result also carries a bounded ASCII text projection (the compact summary is at most 4,096
+bytes; 512 until tb4n3, ADR-043; the check-totals line, manifest line, reviewer output and publish
+blocker notices follow it under their own bounds) for hosts that drop `structuredContent`. The projection is composed, not
+concatenated: the verdict or state, the task continuation, the frontier with its head digest and the
+review status/reason are reserved first and optional clauses are granted room by priority, so it
+never raises and no data-only change can turn a committed operation into an error. A clause that
+fails to render is omitted and named as `summary_render_failed:<builder>.<clause>`; a builder whose
+core fails falls back to the verdict or state token, the frontier and "read status view=compact".
+Each such failure is a service diagnostic (operation `<builder>_summary_degraded`, phase
+`<builder>.<clause>`), never an error result. Id and token lists are capped at 1,024 characters each
+with an exact `+N more`. A successful projection includes the first valid returned frontier's
 `sequence` and canonical `head_digest` when both are present. Generic successful operations also
 include any returned, kind-valid `task_id`, `session_id`, and `writer_id`; in particular, the
 `start` text alone carries the identifiers and frontier needed to author the next request. A
@@ -382,6 +420,46 @@ registered URI and byte count alone. `structuredContent`, and so the `read-guida
 is identical for every host. This item is revertible: it stays only while Codex dogfood shows no
 additional guidance re-read turns.
 
+The current `read_guidance` input/output route is `1.1.0` and keeps the frozen `1.0.0` schema
+available for older clients. A URI-only request returns a whole document up to 64 KiB; a larger
+document automatically selects page zero with continuation metadata. The document and offset
+bound is 1 MiB, while legacy body and individual-page limits stay unchanged. A request carrying
+canonical string `page` and bounded `page_size` explicitly selects the page route. Its
+success body adds stable `document_id`, source-byte `revision` and `digest`, total and page byte
+counts, page offsets/counts, `complete`, and (until the final page) an exact `continuation` that
+repeats the URI, next page, page size, revision, and digest. Pages never split a UTF-8 scalar.
+The Codex text channel remains a bounded pointer to `structuredContent.text`; generic, Claude, and
+Cursor paged text carries explicit begin/end markers. A final page's `complete: true` is a service
+emission fact, not proof that the host delivered the page. A consumer must reject clipped markers,
+missing or duplicate pages, changed revision/digest, byte-count or offset mismatches, and a final
+assembled digest mismatch before exposing the document or claiming guidance is loaded. The
+supported bounded consumer is `GuidancePageAssembler`; a rejected page has a bounded retry path,
+and a revision change restarts at page zero. Callers assemble all pages when they need a source
+document larger than the legacy full-response bound.
+
+The five legacy document URIs remain the stable `resources/list` entries. `read_guidance` also
+accepts exact registered focused topic URIs and heading topics: a topic is the document URI plus a
+lowercase hyphen heading anchor (for example, `yoetz://guidance/workflow.md#start-and-resume`;
+repeated headings use a numeric suffix). The service resolves that anchor to the complete Markdown
+section, keeps the anchored URI in `document_id` and every continuation, and bounds the section
+before paging. Runtime admission uses the closed topic catalog while the advertised schema uses a
+compact URI pattern so the full heading catalog is not repeated in every host tool declaration. A
+parent document remains available for fallback and full archival reads; a topic read is the normal
+continuation when one procedure is named. A `read_guidance` call whose anchor on one of the five
+documents is not catalogued but names exactly one catalogued topic of that document reads that topic,
+and the result's `uri` is the catalogued one (tb4n4, #1049; `mcp.resources.resolve_guidance_topic_uri`).
+The anchor names a topic when it is the topic's anchor once case, `_` and punctuation fold the shared
+slug way (`publish_work-decision`), an explicit `<a id>` target the document writes under that
+topic's heading (`publication-policy.md#attempt-accounting`), or words that all appear in that
+topic's anchor and in no other anchor of the document (`request-templates.md#decision`). Two or more
+candidates never resolve; `resources/read` keeps exact URIs. Any other anchor outside the catalog
+on a registered document is
+rejected as `INVALID_REQUEST` with `safe_details.field = "/uri"` and a message listing that
+document's registered anchors plus the whole-document retry; an unregistered document lists the
+registered document and focused-topic URIs. Only catalog constants appear; the caller's URI is
+never echoed. `resources/list` omits `annotations.priority`, because Codex's rmcp client cannot
+decode a fractional number in that result (see the Codex integration runbook).
+
 Protocol reason
 `expected_frontier_required` marks a state-sensitive `publish_work` batch that omitted
 `expected_frontier`. It names that field and is retryable because validation wrote no durable
@@ -397,8 +475,15 @@ the exact service-derived predicate; the batch appends at the real head and repo
 
 `response_projection_failed` marks a post-commit shaping failure for non-`publish_work` writes (and
 for the genuinely impossible case where even the minimal publish envelope cannot be built): the
-write may already be durable, so the public error is retryable and same-`request_id` resume is the
-recovery path. For `publish_work`, a post-commit projection failure after a successful append is
+write may already be durable, so the public error is retryable and one same-`request_id` replay
+loads the stored result; if that replay also fails the failure is deterministic and the caller reads
+`status view=operation` for the committed outcome and never repeats the work under a new
+`request_id`. The remedy renders on the MCP text channel as well as in the message. A failure to build the MCP *text* of a committed result is not an error at all
+(ADR-043): the structured result is returned and the failure is a diagnostic. The bridge's own
+structural failure after a commit (the result cannot be serialized, or does not match its response
+schema) is `INTERNAL_ERROR` with reason `bridge_result_wire_failed` or
+`bridge_result_validate_failed`, non-retryable; for a write it names `status view=operation` rather
+than a replay that would rebuild the same result, and for a read or dry run it says nothing changed. For `publish_work`, a post-commit projection failure after a successful append is
 not reported as an error at all. The daemon returns a reduced total-acceptance success branch
 with `ok: true`, `response_completeness: "accepted_projection_unavailable"`,
 `reason_code: "response_projection_failed"`, a `correlation_id` for operator diagnostics, the
@@ -546,20 +631,47 @@ free text from input. CLI exit classes (0/2/10/11/20/30/40/70/130) map from code
   on either refusal without a reply and records an owner-only diagnostic
   (`service.daemon`/`control_frame_read`); a client whose response frame stalls reports the
   retryable `service_unavailable`. Neither reason is a new wire token.
-- Host hook ingress (`cli/hook_io.py`): `MAX_HOOK_STDIN_BYTES = 262_144` (256 KiB) is the trusted
-  full-parse cap for every host's hook stdin body and is shared by `cli/hooks.py`. A body at or
-  under that cap is parsed in full. Codex, Claude Code, and Cursor's pure
-  `read_cursor_hook_payload` replay raise `payload_too_large` before the NUL scan, the UTF-8
-  decode, and the JSON parse when the body is over that cap; an empty body still raises
-  `invalid_event_value_type`. Cursor observation (`read_cursor_hook_ingress`) may read a complete
-  body up to `MAX_HOOK_SKIM_BYTES = 1_048_576` (1 MiB), the ordinary local-control frame cap. Inside
-  that skim cap the same safety rules parse the document and the handler keeps a closed identity
-  view: session, tool, call id, bounded path text used only for a path commitment, scalar
-  outcome fields, and whether an `error` value was set (never its text). A `workspace_roots`
-  value the view cannot keep becomes `null`, so the workspace resolver refuses it exactly as it
-  does at full size. File contents, edits, prompts, and command text are not retained. A body over
-  the skim cap raises `payload_too_large` before any parse. A complete oversized body that fails
-  the NUL, UTF-8, duplicate-key, or JSON checks yields no identity view (issue #667).
+- Host hook ingress (`cli/hook_io.py`): `MAX_HOOK_STDIN_BYTES = 1_048_576` (1 MiB) is the trusted
+  full-parse cap for every host's hook stdin body and is shared by `cli/hooks.py`. It was 256 KiB
+  until tb4n1 (B5), when Yoetz's own `closure_prepare` replies, image views, and large command
+  outputs outgrew it and lost their PostToolUse rows. A body at or under that cap is parsed in
+  full; captured content stays bounded by the separate content budget, so a large output becomes
+  truncated content (`truncated_payload`), not a dropped event. The pure readers
+  (`read_hook_payload`, used by the start-correlation, session-start and prompt entry points, and
+  Cursor's `read_cursor_hook_payload` replay) raise `payload_too_large` before the NUL scan, the
+  UTF-8 decode, and the JSON parse when the body is over that cap; an empty body still raises
+  `invalid_event_value_type`. The observation readers for all three hosts (`read_hook_ingress`
+  for Codex and Claude Code, `read_cursor_hook_ingress` for Cursor) read a complete body up to
+  `MAX_HOOK_SKIM_BYTES = 8_388_608` (8 MiB). Inside that skim cap the same safety rules parse the
+  document (a nested fractional number becomes `null`; nothing else is relaxed), and inline image,
+  audio, and video bytes are replaced with a fixed placeholder (`strip_hook_media`: MCP and Claude
+  `image` blocks, Responses `input_image`, any object declaring an `image/`, `audio/` or `video/`
+  media type, and any such `data:` URL). If that brings the body under the trusted cap it is
+  admitted whole, with no gap. Otherwise the handler keeps a closed identity view: session, turn,
+  transcript and lineage locators, tool, call id, bounded path text used only for a path
+  commitment, scalar outcome fields, and whether an `error` value was set (never its text). A
+  `workspace_roots` value the view cannot keep becomes `null`, so the workspace resolver refuses it
+  exactly as it does at full size. File contents, edits, prompts, and command text are not
+  retained. That row records `payload_content_omitted` and `<host>_payload_content_omitted`,
+  except for Yoetz's own MCP tools in any host spelling (`closure_prepare` included), whose
+  content is never captured, so the identity row is complete and records no gap. A body over the
+  skim cap raises `payload_too_large` before any parse, and so does one whose JSON structure
+  (`{`, `[` and `,` outside strings) exceeds 262,144 tokens, which bounds the skim's parse time
+  and memory (a real 1 MB `closure_prepare` reply carries about 30,000). A complete oversized body that fails the
+  NUL, UTF-8, duplicate-key, or JSON checks yields no identity view (issue #667).
+- Observed images (`cli/hook_io.py` `observed_image_facts`, P3-2, issue #1013): before media
+  bytes are dropped, every host ingress records at most `MAX_OBSERVED_IMAGES = 8` images per
+  event as the reserved structural member `observed_images` of a `PostToolUse` envelope (any host
+  value under that name is discarded). Each item is exactly `content_digest` (`sha256:` of the
+  decoded bytes), `byte_count`, `media_type` (sniffed from the bytes: `image/png`, `image/jpeg`,
+  `image/gif`, `image/webp`, or `image/unknown`), and optionally both `width` and `height` from
+  the header alone (never for `image/unknown`). Control-request 2.9.0 (unreleased, additive in
+  place) and `domain/observation.validate_observed_images` admit exactly that shape. The service
+  materializes one `evidence_recorded` 1.2.0 per item (`artifact`, `content_digest`,
+  `digest_binding {artifact_bytes, digest_only, byte_count, observation_captured}`, stable id from
+  source identity and image index, description `Observed image tool result <media_type> <w>x<h>
+  (<n> bytes); pixels were not captured or sent`) and lists it in the call's
+  `result_recorded.evidence_refs`. No pixel is captured, stored, or sent.
 - Digests render as `sha256:<64 lowercase hex>`; commitments as `hmac-sha256:<64 lowercase hex>`.
 - Writer/ledger sequences and frontier sequences cross the wire as canonical base-10 integer
   strings (`"0" | [1-9][0-9]*`, with writer/ledger sequences positive). This is not a blanket
@@ -758,7 +870,29 @@ Key payload fields (minimum; full shapes in `src/yoetz/domain/events.py`):
   restatement only when its version is exactly the current version plus one; it replaces the
   effective refs and empty-scope reason. A duplicate root or version gap makes scope unreadable.
 - `obligation_published`: `obligation_id`, `description`, `evidence_expectation`, optional
-  `acceptance_criteria`, `requested_items`, `source_refs`.
+  `acceptance_criteria`, `requested_items`, `source_refs`. Each requested item is
+  `{item_kind, value}` with `item_kind` `url|file|command|change|source`.
+- `obligation_published/1.1.0` (issue #1002, ADR-033 decision 2): the same fields; a requested
+  item is `{item_kind, value, role?}`, `item_kind` adds `directory`, and the optional closed
+  `role` is `input|output` (`RequestedItemRole`), admitted only on `file` and `directory` items.
+  Absent `role` keeps the 1.0.0 meaning (a `file` item may be an input or an output). `status`
+  adds `acknowledged_not_done` (`ObligationStatus.ACKNOWLEDGED_NOT_DONE`) with
+  `acknowledged_not_done_reason` (1..4096 UTF-8 bytes, non-blank), required for that status and
+  forbidden otherwise; `resolution_evidence_refs` stays reserved to `resolved`. One rule
+  (`domain.events.obligation_schema_admits`, ADR-041): 1.0.0 refuses a role, a `directory` item
+  and `acknowledged_not_done`; 1.1.0 is a superset that admits every payload, including a plain
+  one. Yoetz itself drafts the lowest admitting version (`obligation_schema_version`: 1.1.0 iff
+  one of those is present), so released `1.0.0` stays admitted and byte-identical. Ledgers that
+  hold a plain 1.1.0 obligation do not replay on a build older than this rule. The reducer keeps the last effective status among
+  `open`, `acknowledged_not_done` and `resolved` (meaning fields must repeat; a `resolved`
+  obligation may be reopened `open` or acknowledged, never re-resolved in place; ADR-041); consumers treat `acknowledged_not_done` as not resolved, like `open`, and status
+  `view=obligations` (status-result 1.4.0) shows the status and `acknowledged_not_done_reason`
+  under the `obligation_text` category, like the description. The unreleased event-draft 1.2.0 (and so `publish-work-request/1.2.0`) admits
+  the pair in place and excludes it from its opaque branch. `role: input` items never yield
+  requested-output facts; `role: output` items count as written; a `directory` holding no file is
+  absent. `yoetz.kernel.task_facts.declared_output_items(projection)` returns
+  `(obligation_id, item_index, item_kind, value)` for every effective obligation's `file` or
+  `directory` item with `role: output`, sorted by obligation id (ASCII) then index.
 - `action_recorded`: `action_id`, `action_kind` (`command`|`edit`|`research`|`review`|`other`),
   `description`, optional `command`, `subject_state` (see SubjectStateRef below).
 - `result_recorded`: `result_id`, `action_id`, `outcome` (`success`|`failure`|`partial`|
@@ -772,7 +906,10 @@ Key payload fields (minimum; full shapes in `src/yoetz/domain/events.py`):
   `observation_captured`. Ordinary publication can assert only `caller_asserted`; approved-check,
   import, and observation provenance are reserved to their authenticated authors/channels.
   `observation_captured` requires the observation coordinator (`harness_observed` on
-  `hook_observed`) and never means verified or independently reproduced. Schemas `1.0.0` and
+  `hook_observed`) and never means verified or independently reproduced. It has exactly two
+  shapes: captured bytes (`immutable_snapshot`, `captured`, content-captured coverage) and, since
+  #1013, an observed image digest (`content_digest`, `digest_only`, subject `artifact_bytes`, no
+  captured object), which can never pose as captured content. Schemas `1.0.0` and
   `1.1.0` remain exact-readable; an untyped legacy digest remains unknown rather than inheriting a
   subject from prose.
 - `claim_recorded/1.0.0`: frozen `claim_id`, `claim_kind` (`completion`|`material`),
@@ -814,10 +951,11 @@ research-evidence `material_limitation_omitted`, observation-advice `failed_comm
 the receipt builder all read. `ObservedFailureState` is exactly `live`, `superseded`, `rerun`, or
 `historical`. `classify_observed_runs(runs)` takes `ObservedRun(ref, position, outcome, identity,
 edit)` values and, for each failed or partial run, returns `superseded` when a later run with the
-same identity succeeded, else `rerun` when a later run with the same identity has any other outcome
-(only the latest run of a command identity can be `live`), else `historical` when a later edit whose
-outcome is a stated `success` followed, else `live`. A run without an identity is retired only by a
-later edit. `observed_failure_states(projection, observed_event_ids, through=frontier)` applies it
+same identity succeeded, else `rerun` when a later run with the same identity has a limiting
+failure or partial outcome (only the latest limiting run of a command identity can be `live`), else
+`live`. An unknown outcome does not certify repair. Edits never retire a failed verification, and a
+run without an identity remains live. Explicit acknowledgement discloses that failure without
+making it green. `observed_failure_states(projection, observed_event_ids, through=frontier)` applies it
 to the readable results recorded no later than `through` whose source events are service-stamped
 hook observations (`is_observed_run_record`: observation-coordinator authorship on the
 `hook_observed` channel; in a frozen case, `hook_observed` in the ref's coverage channels). A
@@ -829,13 +967,13 @@ into replay. A `live` observed failure's `failed_work_omitted` adds the `observe
 naming its result and action and a sentence pointing at `status view=results`; research-evidence's
 copy of the same (claim, result) omission is dropped when work integrity reported it
 (`_collapse_failed_work_overlap`), so one omitted failure is one finding. The receipt's limitations
-section names superseded, rerun, historical, and `limitation_refs`-disclosed observed failures once,
-bounded to ten ids per clause. The edit clause is state-scoped, not causal: any successful
-observed edit retires every earlier observed failure regardless of the paths it touched (option (a)
-on #909), and the receipt says only that the failure preceded a later observed workspace edit.
-Known limit: an edit the harness sees only as a shell command (a heredoc written through
-`exec_command` or `Bash`) is a command, not an observed edit, so a failure followed only by such
-edits stays `live` unless the same command is rerun.
+section names superseded, rerun, legacy historical, and `limitation_refs`-disclosed observed
+failures once, bounded to ten ids per clause. An observed edit changes the state under test but is
+not a covering verification, so a failure followed only by an edit stays `live` until the same
+command is rerun or the claim explicitly acknowledges it. An edit the harness sees only as a
+shell command (a heredoc written through `exec_command` or `Bash`) is a command, not an observed
+edit, and follows the same rule for failure supersession. For the stale-verification rule such a
+command counts as an edit when it visibly writes the workspace (`write_scope: workspace`, ADR-045).
 
 `reason` MAY be omitted for `acknowledged` and MUST be non-empty for `provenance_disputed`,
 `rejected`, or `waived`.
@@ -1043,8 +1181,8 @@ materially unavailable, or fails, `weak_or_stale_response` stands, so a hollow r
 lost to a pack that did not run. Selecting a single pack therefore yields that pack's own view.
 
 The ownership partition is exhaustive and disjoint: the first ten kinds belong to the built-in
-`work-integrity/0.1.0` pack, and the latter four belong to the built-in
-`research-evidence/0.1.0` pack. `coordination_overlap` belongs to the local coordination runtime,
+`work-integrity` pack (current version `0.2.0`), and the latter four belong to the built-in
+`research-evidence` pack (current version `0.2.0`). `coordination_overlap` belongs to the local coordination runtime,
 not either built-in pack. `semantic-review` is only a review-context / recipe label; it is not a
 `PolicyPack` value and it never appears as `Finding.policy_id`.
 
@@ -1129,6 +1267,13 @@ otherwise to `insufficient_coverage`. Ordinarily an `insufficient_coverage` chec
 actionable finding. The two closed completion-scope gaps are the narrow exception: selected findings
 remain visible, but the gap dominates both the check verdict and receipt conclusion because empty
 completion scope cannot support an action-required completion verdict.
+A clean conclusion also needs every policy execution complete: `run/completed`, or
+`skipped/not_applicable` on the whole case (no root of that pack's kind exists; #986), never
+`scope_excluded`, `material_unavailable` or `failed`; and only gaps in
+`kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS` (ADR-033 amendment of 2026-10-07), where a
+member of `HOST_OBSERVATION_GUARDED_GAPS` counts only if the applicable check's own coverage
+carried it. A full check's `complete` completeness uses the same list
+(`full_check_gaps_clean`), with those host members only when `commands_complete(totals)`.
 
 `domain/receipts.py` owns the exact schema-shaped `ReceiptDocument`, `ReceiptVersionSlice`,
 policy/schema version entries, obligation/response/gap/redaction records, and canonical sections. It
@@ -1148,6 +1293,16 @@ public provenance.
 finding coverage using `coverage.weakest`; every explicit receipt-gap code must also occur in the
 top-level known-gap set, and the fold must equal that top-level coverage.
 
+The completed check's `review_input_manifest` is metadata-only and remains the authority for what
+the reviewer received: its `phase` (`composed` or `provider_bound`), each section's distinct
+status, digest, revision, byte count, and bounded omission tokens are preserved. The shared
+`domain.review_input_render` projection carries those facts through CLI, MCP, and TUI check views.
+Receipt JSON keeps the released receipt-document schemas closed: the same metadata is carried in
+the existing `limitations_and_coverage.coverage_note`, which the markdown and text renderers
+project, while a missing `coverage_note` keeps historical receipt bytes unchanged. `missing_for_assessment`
+remains a check limitation and renders its closed availability classification on the check and
+receipt surfaces; it never becomes a finding or a clean-review claim.
+
 Shared structural gap codes for optional AI-powered relevance review (distinct families):
 
 - `optional_semantic_review_blocked_by_policy` — blocked before dispatch by network-egress policy;
@@ -1161,6 +1316,21 @@ Shared structural gap codes for optional AI-powered relevance review (distinct f
 - `semantic_review_not_configured` — evaluator/provider not configured;
 - `semantic_relevance_review_not_run` — evaluation failed/timed out/unavailable without a clean pass;
 - `semantic_review_not_requested` — local-only check; AI-powered review was never requested.
+  It bounds the receipt conclusion unless the applicable check recorded
+  `semantic_route_required: false` (issue #986, ADR-033 amendment of 2026-10-08): then the check's
+  route did not require AI-powered review and the code is a disclosure only. A check that asked
+  for `deterministic_only` on such a route records no such code at all (issue #1041): it ran the
+  checks requested, and readers do not re-derive the code from its `not_requested` status. A
+  review the round stopped (`semantic_review_skipped_insufficient_packet`) and every check an
+  older build wrote keep the code they recorded.
+
+`semantic_route_required` (optional boolean on the unreleased `check-recorded` and `check-result`
+1.4.0) records whether the check's route required AI-powered review: the check asked for
+`semantic_required`, or, on the policy route, the effective verification policy is `semantic:
+required`. An explicitly deterministic-only route (the strict MCP route) did not require review
+unless the check asked for it; a strict process with Codex registration drift (#537) follows the
+policy (issue #1021, ADR-040). Writers emit it only as `false`; a requiring route omits it, so those checks and
+every check an older build wrote keep their bytes and the blocking default.
 
 A `deterministic_only` check that follows a blocked or unavailable review carries that earlier
 code forward alongside `semantic_review_not_requested`. The stop-rules make a blocked review a
@@ -1185,15 +1355,45 @@ the readable effective current plan declares zero obligations, exactly one appli
 Both force `coverage_incomplete`, `insufficient_coverage`, and an insufficient-coverage receipt.
 The typed declaration records the participant's scope decision but never purchases a clean verdict.
 
-Four further codes describe a review that did run but could not deliver everything it produced:
+Five further codes describe a review that did run but could not deliver everything it produced:
 
 - `semantic_review_context_withheld` — the review ran without categories its own profile selected;
+- `semantic_review_value_redacted` — egress privacy replaced one or more credential-like values in
+  the sent packet, in place, with `[withheld-by-yoetz:possible-credential]`; the rest of each item
+  was sent (issue #982). It weakens neither proof class;
+- `semantic_review_item_withheld` — in-place replacement could not make an item safe to send, so
+  that item alone was left out (listed in `semantic_withheld_items`). It bounds only the AI-powered
+  review. Either gap comes with `semantic_redacted_values` (owner-approved PL2-1, ADR-009): at most
+  64 `{item_id, source_ref?, disposition: value_replaced|item_withheld, lines}` entries sorted by
+  `item_id`, with up to 32 sorted 1-based line numbers in the captured item's own text (an excerpt or one of
+its `-part-NN` parts, not the source file; renderings say "of the captured item") and `source_ref` only
+  when the catalogued ref is an opaque token. Never a value, offset or path. Carried, when present,
+  by the check event (1.4.0), check result, `status view=operation` page and receipt document; every
+  rendering adds the fixed agent line once (`SEMANTIC_REDACTED_VALUES_AGENT_LINE`);
+- `semantic_review_credential_heuristic_disabled` — the owner's privacy policy had the
+  low-confidence credential heuristic turned off (`credential_heuristic: disabled`, issue #982), so
+  values that only look like passwords or tokens were sent as written to the external reviewer;
+  high-confidence detectors still applied. Emitted when an external review succeeded or its packet
+  was sent; never for a local-model review. A standing limitation
+  and owner disclosure choice, never agent work; it weakens neither proof class;
 - `semantic_challenges_rejected` — the reviewer returned challenges and post-validation dropped at
-  least one (a citation outside the frozen case, an unchanged-claim over a withheld source, or
+  least one (no cited ref had content in the sent packet — reason `ref_not_carried` —, a citation
+  outside the advertised set or the frozen case, an unchanged-claim over a withheld source, or
   citations whose resolved subjects exceed one finding's 64-subject bound). A cited `fnd_` from
   `citable_refs` resolves to that finding's subjects whether it is one of this check's local
   findings or a readable recorded finding inside the frozen fence, so a re-raise that names the
-  earlier finding it concerns is not dropped (issue #905);
+  earlier finding it concerns is not dropped (issue #905). A `ref_not_carried` challenge mints no
+  finding but is never silent: its summary and message are appended to the recorded
+  `review_summary` under a fixed header saying they are advisory and unverified (issue #976);
+- `semantic_review_refs_reduced` — a reviewer item cited refs the sent packet did not carry: a
+  challenge keeps only its sent refs and stands on them, a verified row is dropped (it reads as
+  support, so it may not rest on unsent material) (issue #976). It blocks absence proof of an
+  AI-powered finding except under that review's own explicit, admitted `fixed` ruling on the
+  finding: the gap means the reviewer cited more than it was shown, not that it saw less;
+- `semantic_review_snippet_invalid` — a reviewer quote could not be proved against the exact safe
+  provider-bound text of the rows it cites, including after response recovery without the
+  ephemeral text index. The quote is removed from a kept challenge, a verified row is dropped, and
+  the remaining review stays visible;
 - `semantic_case_content_over_item_limit` — recorded text the publish-side prose bound accepted
   (`MAX_TEXT_BYTES`, 8192) exceeded what one case item carries (`MAX_REVIEW_TEXT_BYTES`, 4096), so
   the case shortened it or replaced the payload with a `yoetz.bounded-content-omission/1` marker.
@@ -1224,7 +1424,13 @@ when that recipe selected the change:
   committed before it is missing;
 - `check_time_change_truncated` — a changed file (named in the change's header), a part of the
   change, or untracked names beyond the listing bound did not reach the reviewer;
-- `check_time_change_redacted` — credential-like spans were replaced before storage and review.
+- `check_time_change_redacted` — credential-like spans were replaced before storage and review,
+  in the change or in a task input file it carried, or such an input was withheld whole;
+- `check_time_change_path_unrepresentable` — the check's local, metadata-only read of changed
+  paths skipped at least one path whose name holds a carriage return or line feed (issue #1019).
+  The read stays usable: each skipped path counts as omitted, the listing is marked truncated, and
+  a requested file it could not list stays unproven rather than unchanged. A standing limitation,
+  classed with the other check-time codes; never a finding, and the path is never recorded.
 
 Post-validation fences each challenge independently: a rejected challenge costs only itself, the
 challenges beside it still become findings, and the drop is declared through this gap. A judgment
@@ -1265,8 +1471,22 @@ Two further check-path operations describe a review that did reach a provider:
 `semantic_judgment_rejected` records a structurally unusable judgment, and
 `semantic_review_accounting` is appended once per dispatched review carrying counts only —
 `semantic_conclusion`, `semantic_challenges_returned`, `semantic_candidates_accepted`,
-`semantic_challenges_rejected`, `semantic_findings_selected`, `semantic_findings_suppressed`.
-The counts reconcile (`returned == accepted + rejected`, `accepted == selected + suppressed`), so
+`semantic_challenges_rejected`, the per-reason split `semantic_rejected_<reason>`
+(`ref_not_carried`, `ref_outside_case`, `hidden_source_claim`, `subject_refs_over_limit`,
+`routine_completeness`, `yoetz_process_state`),
+`semantic_review_refs_reduced`, `semantic_review_snippets_rejected`,
+`semantic_restatements_suppressed`, `semantic_challenges_advisory` (routine correctness notes,
+#1042), `semantic_agent_criteria` (#1043), `semantic_prior_rulings_set_aside`,
+`semantic_rulings_disputed_after_rebuttal`, `semantic_findings_selected`,
+`semantic_findings_suppressed`. A third operation, `semantic_review_follow_up`, is appended once
+per in-check follow-up round (#1047) with `semantic_follow_up_round`, `semantic_follow_up_items` and
+`semantic_follow_up_refs_added`. Every one of these is a closed field of both the stderr sink and
+the durable diagnostic ring: the counters are integers and `semantic_conclusion` is a closed token
+(`observability/logging._FIELD_ORDER`, `observability/privacy._INTEGER_FIELDS` /
+`_TOKEN_FIELDS`, `observability/diagnostics._FIELD_ORDER`); a name either sink does not know is
+dropped there.
+The counts reconcile (`returned == accepted + rejected + suppressed restatements + advisory notes`,
+`accepted == selected + suppressed findings`), so
 "the reviewer answered and none of it reached you" is never invisible. Challenge text, refs, and
 provider identity remain forbidden from this sink like every other.
 
@@ -1285,18 +1505,29 @@ result (#911). A kind outside the allowlist stays response work even when it is 
 rejection or waiver of that finding, which the local packs score, and every response to any other
 finding the check did not return, still revokes it.
 `check_current_as_of_earlier_frontier` is the qualified attribution in this family: when only
-check-answering responses, such limitation acknowledgements, and/or finding-free observation
-records follow the check, its coverage still contributes while the receipt names the subject
-frontier its verdict is current as of. The application also classifies that suffix
-(`kernel/receipt_builder.CheckSuffixClass`: responses only, observations only, or mixed) so the
-limitations sentence names what actually followed the check instead of assuming responses; the
-class is render context, not a wire field or gap code (#657). A response suffix that includes a
-limitation acknowledgement is named as responses "to the findings it returned or to
-observation-authored coverage limitations". `kernel/reducers.invalidates_recorded_check`
-is the single predicate deciding between the two, shared by the receipt and by compact status
-coverage; the reducer's projection freshness applies the same rule through the replay index's
-`observation_finding_event_ids`. Lineage and work-state events such as `work_closed` are not
-material and never revoke a check.
+check-answering responses, such limitation acknowledgements, and/or observation records Yoetz
+cannot prove harmless follow the check, its coverage still contributes while the receipt names the
+subject frontier its verdict is current as of. Which later records count is one predicate,
+`kernel/later_material.later_material_class(record, projection)` (re-exported by
+`kernel/reducers`), with the closed classes `yoetz_own_call | response | exploration |
+no_tool_activity | non_counting_write | edit_or_write | other` (ADR-040 section 7, tb4n3 RC-6,
+#1029). The first four observation classes (a hook or stream observation of one of Yoetz's own
+MCP tools in any host spelling, a read-only run, host stream bookkeeping that names no tool call,
+a scratch or Yoetz-owned write) are ignored: no gap, no supersession. `edit_or_write`, an observed
+deliverable, workspace or outside-workspace edit (an edit tool, or a command whose runtime tokens
+record a counting shell write, `observed_shell_write_counts`, ADR-045), supersedes the check
+exactly like cooperative material work. `other` and `response` keep the disclosure. `kernel/check_standing.check_standing`
+is the one walk over the records after the latest check; the receipt context, receipt capacity,
+compact status coverage and closure readiness all read it, so none can disagree. The application
+classifies the counted suffix (`kernel/receipt_builder.CheckSuffixClass`: responses only,
+observations only, or mixed) so the limitations sentence names what actually followed the check
+instead of assuming responses; the class is render context, not a wire field or gap code (#657).
+A response suffix that includes a limitation acknowledgement is named as responses "to the
+findings it returned or to observation-authored coverage limitations".
+`kernel/reducers.invalidates_recorded_check(record, check_sequence, returned_finding_ids, *,
+limitation_finding_ids, projection)` is the single predicate deciding whether a record supersedes
+the check; the reducer's projection freshness applies the same rule. Lineage and work-state events
+such as `work_closed` are not material and never revoke a check.
 
 ## 9. Kernel (`kernel/`)
 
@@ -1496,10 +1727,14 @@ material and never revoke a check.
   `session_resumed` — never revokes it; a readable `response_recorded` answering a finding the check
   itself returned never revokes it; an `acknowledged` or `provenance_disputed` response to an
   observation-authored, non-actionable finding never revokes it (#911); and a finding-free suffix
-  consisting entirely of service-stamped observation-authored records never revokes it. Those latter advances carry the
-  `check_current_as_of_earlier_frontier` gap. An observation-authored `finding_recorded`, every
+  of service-stamped observation-authored records never revokes it unless it contains an observed
+  edit. The observation records `later_material_class` cannot prove harmless carry the
+  `check_current_as_of_earlier_frontier` gap; the rest add nothing. An observation-authored `finding_recorded`, every
   other material-family event, a response to a finding the check did not return, and a response
-  whose payload is unreadable all revoke it. Frontier equality is not the rule: a check necessarily
+  whose payload is unreadable all revoke it, as does an observed deliverable, workspace or
+  outside-workspace edit (`later_material_class` = `edit_or_write`, tb4n3 RC-6); observations of
+  Yoetz's own calls, read-only reads, host bookkeeping and scratch or Yoetz-owned writes are
+  ignored and add no gap. Frontier equality is not the rule: a check necessarily
   advances the frontier past the subject it tested. The application constructs this context; the
   builder never imports a port type or re-derives applicability.
 - `build_receipt(context, receipt_id, task_id, session_id, generated_at, versions:
@@ -1535,10 +1770,29 @@ material and never revoke a check.
   obligations are all resolved.” The interpolation is the bounded closed enum value, never
   caller-controlled plan summary, revision reason, or other prose.
 - `PolicyPack` is the frozen data-only selector `(policy_id, policy_version)`; it contains no
-  callback or dynamic rule source. Its ids are `work-integrity/0.1.0`,
-  `research-evidence/0.1.0`
+  callback or dynamic rule source. Its ids are `work-integrity/0.2.0`,
+  `research-evidence/0.2.0`
   (`kernel/policies/work_integrity.py`, `kernel/policies/research_evidence.py`).
-  No third `semantic-review` pack exists.
+  No third `semantic-review` pack exists. The local coordination runtime runs
+  `coordination/0.1.0`.
+- Pack versions (`yoetz.protocol.policy_packs`). A pack's version names the rule table that
+  produced a check execution or a local finding, and moves whenever a rule changes meaning, so
+  check results produced under new rules carry a new identity. `0.2.0` of both built-in packs
+  (0.3 line): research-evidence raises `task_requirement_unmet` when no effective obligation cites
+  the task statement and accepts statement-sourced file items as test-edit justification;
+  work-integrity reports a completion that no observed run backs as
+  `claim_without_admissible_evidence`, and only observed edits or runs trigger that corroboration
+  rule. New checks run, and a check request may select, only the current versions
+  (`check-request` 1.1.0). Every earlier version stays decodable: `PolicyVersion`, `Finding`, and
+  the active `check_recorded` 1.4.0, `check-result` 1.4.0, `status-result` 1.4.0,
+  `start-result` 1.1.0, `respond-result` 1.1.0 and `publish-work-result` 1.1.0 contracts admit
+  `0.1.0` beside `0.2.0`, because a recorded check or finding, a check result replayed from the
+  ledger, and a result an earlier 0.3 service shaped keep the identity they were written with. A
+  recorded check carries one generation: every execution it records is either `0.1.0` or current.
+  The released `publish-work-result` 1.0.0 still pins `0.1.0`; control 2.9.0 carries 1.1.0.
+  The versions of one pack form one lineage: the finding issue key names the pack, not its
+  version, and a later check that ran the pack at the finding's version or a later one can resolve
+  it, so open findings recorded before an upgrade are neither stranded nor duplicated.
 
 ## 10. Ports (`ports/`)
 
@@ -1860,8 +2114,9 @@ coverage reported in the same item, so the summary line an agent reads can never
 is cleaner than the coverage vector beside it. `StatusCompactItemModel` rejects the inverse
 (issue #307).
 
-Finding response does not resolve. The issue key is `(origin, policy_id, policy_version, kind,
-complete canonical subject_refs)`. A later same-key row supersedes the old and starts unresolved.
+Finding response does not resolve. The issue key is `(origin, policy_id, kind, complete canonical
+subject_refs)`; it omits `policy_version`, so a row a newer version of the same pack re-raises is
+the same issue. A later same-key row supersedes the old and starts unresolved.
 Resolution is proof-based and replay-derived, owned by `kernel/finding_resolution.py`: the reducer
 folds every readable `check_recorded` event into each finding's projection record as
 `resolved_by_check_event_id` (`FindingProjectionRecord`; the snapshot key is emitted only when set,
@@ -1873,8 +2128,8 @@ qualified only through that recorded scope, `resolution_raising_check_event_id` 
 when set) names the same check, and redacting it reopens the row like redacting the proving check.
 A check resolves a current row only when all of these hold: its recorded `subject_frontier` is at or
 after the finding's ingestion sequence; every finding it returned is readable and none shares the
-row's issue key; `suppressed_count` is zero; the execution for the row's `(policy_id,
-policy_version)` is `run/completed`; its normalized `scope` is whole-case or names one of the row's
+row's issue key; `suppressed_count` is zero; an execution of the row's `policy_id` at the row's
+`policy_version` or a later version of that pack is `run/completed`; its normalized `scope` is whole-case or names one of the row's
 `subject_refs`; its coverage `ledger_freshness` is not `stale_after_material_change|unknown`; and
 its `known_gaps` lie within the proof class's closed tolerated set. `redacted_gap` also blocks by
 default. One local-only exception admits it when the finding's own recorded coverage was readable
@@ -1884,18 +2139,21 @@ unprovable. For local rows the tolerated set is the AI-powered review absence/we
 (`semantic_review_not_requested|semantic_review_not_configured|
 semantic_relevance_review_not_run|optional_semantic_review_blocked_by_policy|
 optional_semantic_review_registration_drift|
-semantic_review_context_withheld|semantic_challenges_rejected|
+semantic_review_context_withheld|semantic_review_item_withheld|semantic_review_value_redacted|
+semantic_review_credential_heuristic_disabled|semantic_challenges_rejected|semantic_review_snippet_invalid|
+semantic_review_refs_reduced|
 semantic_missing_agent_suppliable|semantic_missing_structurally_unavailable|
 semantic_missing_already_supplied|semantic_missing_items_rejected|
 semantic_case_content_over_item_limit|semantic_case_finding_refs_over_limit|
 semantic_prior_findings_over_limit|semantic_prior_verdicts_unsupported|
-semantic_restatements_suppressed|check_time_change_unavailable|
+semantic_restatements_suppressed|semantic_process_state_filtered|
+semantic_review_deferred_before_first_edit|check_time_change_unavailable|
 check_time_change_base_unavailable|check_time_change_truncated|
-check_time_change_redacted`) plus the evidence-strength
+check_time_change_redacted|check_time_change_path_unrepresentable`) plus the evidence-strength
 codes
 (`evidence_content_digest_only|evidence_content_withheld|evidence_digest_subject_legacy_unknown`)
-and the host-observation codes (`captured_object_unavailable|content_unselected|
-host_outcome_unavailable|unpaired_event`), plus the review-selection code
+and the host-observation codes (`captured_object_unavailable|capture_handoff_retired|
+content_unselected|host_outcome_unavailable|unpaired_event`), plus the review-selection code
 `semantic_reference_scope_reduced` (#904): the local-check case is not reduced, so a bounded
 AI-powered review packet is not a limitation of local proof. Those host and selection codes remain
 receipt coverage limitations; the host codes only stop vetoing local absence proof because local
@@ -1905,14 +2163,41 @@ finding. The exception also requires the finding's original coverage to contain 
 pre-existing AI-powered review, evidence, host-observation, and selection tolerances and to have
 freshness outside `stale_after_material_change|redacted_gap|unknown`. For `semantic_model_derived`
 rows only the evidence-strength codes, `semantic_prior_findings_over_limit`,
-`semantic_prior_verdicts_unsupported` and `semantic_restatements_suppressed` are tolerated outright
-(plus, for a row the check records a `fixed` ruling for, the insufficient-packet codes and
-`content_unselected`), and the check must also record `succeeded/semantic_completed`; the
+`semantic_prior_verdicts_unsupported`, `semantic_restatements_suppressed` and
+`semantic_process_state_filtered` are tolerated outright
+(plus, for a row the check records a `fixed` ruling for, the insufficient-packet codes,
+`content_unselected` and the environment task facts, #1000 and #1046), and the check must also record `succeeded/semantic_completed`; the
 capture-baseline comparison below (#884, #904) may also tolerate codes already in the row's own
-recorded baseline. Outside the narrow command-gap partition described below, any
-other gap — redacted or unavailable payloads, redacted objects,
-missing refs, unknown events, completion scope, import range, or a code not in the list — blocks
-both proof classes. A local-only check therefore never resolves an AI-powered finding, and a
+recorded baseline. Two closed families are decided by meaning rather than by baseline. The
+advisory plan-drift codes (`plan_unrefined_before_first_edit|
+obligation_evidence_stale_after_scope_edit|instruction_requirement_unmapped`) are tolerated for
+local rows only: they describe the planning trace, not ledger rows a local pack failed to read.
+The structural test-edit accounting codes (`preexisting_test_baseline_unknown|
+preexisting_test_modified|preexisting_test_renamed|preexisting_test_deleted|
+preexisting_test_skipped|preexisting_test_skip_unknown`) are decided by the finding's basis, not
+its kind (ADR-032 pilot-blocker amendment). Only the local test-edit finding (a
+`task_requirement_unmet` row whose summary is not a task-statement wording; an unknown summary
+reads as this stricter basis) is bounded by `preexisting_test_baseline_unknown`; it tolerates the
+informational codes and `preexisting_test_skip_unknown`. Every other row tolerates the whole set,
+including the statement-based `task_requirement_unmet` rows (summary in
+`TASK_STATEMENT_FINDING_SUMMARIES`) and AI-powered rows of any kind. A statement-based row is
+blocked by `instruction_requirement_unmapped` on the later check, the material that contradicts
+its repair; once that code is gone it also tolerates `completion_scope_undeclared`. Every row,
+local or AI-powered, tolerates `completion_scope_declared_none`, the agent's own recorded scope
+decision (a no-material-work task must still be able to clear a repaired finding). The actionable `preexisting_test_edit_unjustified` blocks every row. All of these codes
+stay on check, status and receipt coverage. The command-attempt codes
+(`command_attempt_uncorroborated|command_attempt_mismatch`) are tolerated by local rows of a kind
+whose rule never reads command attempts or command identity (`completion_with_open_obligations`,
+`claim_without_admissible_evidence`, `result_without_action`, `stale_evidence_for_changed_state`,
+`contradictory_claims_unresolved`, `weak_or_stale_response`, `task_requirement_unmet`), by a
+`requested_item_never_attempted` row whose obligations, read from the pre-check projection, request
+no command, and by an AI-powered row whose subjects, read from the pre-check projection, name no command obligation,
+command action or command result. `obligation_evidence_stale_after_scope_edit` is tolerated by an
+AI-powered row whose subjects name none of the stale resolved obligations
+(`kernel/plan_drift.stale_resolved_obligations`). Outside these and the narrow command-gap
+partition described below, any other gap — redacted or unavailable payloads, redacted objects,
+missing refs, unknown events, any other completion-scope code, import range, or a code not in the
+list — blocks both proof classes. A local-only check therefore never resolves an AI-powered finding, and a
 weakened AI-powered review never resolves one either. A check that returns a finding again clears
 that row's proof; a resolved row is excluded from finding-ID reuse (`prior_finding_ids`), so a
 re-fired issue is a successor under a fresh id that starts unresolved while the resolved row keeps
@@ -2086,7 +2371,28 @@ pending file is the durable last-write queue: an owner operation coalesces an ol
 before apply, while a later producer remains the later operation. While that fence cannot be
 completed, SessionStart and hook delivery defer service access and retain the operation for a later
 retry. Claude and Cursor SessionStart wrappers preserve the reviewed closed lifecycle meaning
-through their structural action, including `clear`; unknown source values are discarded.
+through their structural action, including `clear` and `compact`; unknown source values are
+discarded.
+
+**Post-compaction recap (ADR-044, issue #1027).** A host's post-compaction start (`SessionStart`
+source `compact`) appends one bounded block to the held-ids cue: a receipt-style recap of what
+`status` returned for the mapped session just now. Codex runs its `hooks session-start` re-ground hook and the shared observe pass concurrently on a
+compact start, and the one holding the session lifecycle lock reads status and carries the recap
+(compact view, then up to three bounded `obligations` pages for the declared deliverables); Claude
+Code and Cursor carry it from the shared observe pass; `startup`, `resume`, `clear` and every
+other event are unchanged. The recap is at most 2,400 ASCII characters inside a 4,000-character
+context (`RECAP_LIMIT`, `RECAP_CONTEXT_LIMIT`; every other hook context keeps its 2,000-character
+bound) and states: the held task, session and writer ids, the head frontier, the plan counts, the
+readiness `state` and `agent_actionable` tokens, up to ten open obligations and ten unanswered
+findings (id plus a quoted 80-character excerpt, the rest counted), the latest check's verdict, the
+frontier it examined and its event id, the declared `file`/`directory` outputs with their obligations'
+status (only obligations of the current plan, quoted on one line, labelled with the obligations
+read's own frontier), one plain-words next-action sentence for the readiness `state`, and a count of
+undelivered local rows sampled before the status read. Every line ends `[source ...]` naming the status view and frontier, the check event, the
+hook mapping or the local outbox. Text `status` withheld stays withheld; a field the result did not
+carry reads "not reported"; a section the budget cannot hold is named in an "Omitted for space" line.
+The recap is a trigger-hook output (§ harness integration port, decision 8): it records nothing,
+earns no coverage and is not evidence. Any failure leaves the held-ids cue unchanged.
 
 Raw refs never enter structural durable state; only their commitments do. The caller-controlled
 `workspace_ref_commitment` is an attachment selector, not a repository-privacy commitment, and
@@ -2194,7 +2500,16 @@ check/receipt identity, coverage, findings state, `lineage_authority_revision`, 
 only reuses recorded manifests and never records or refreshes one (#500). The parent receipt
 projects direct children one level: current actionable findings on accepted children block
 clean-completion wording, while the receipt is still produced and names the child and finding.
-Pending-acceptance children and informational findings annotate only; accepted live children are
+A child finding the child agent self-verified (issue #984, ADR-034) carries `self_verified: true`
+on its manifest row (emitted only when true; it requires `resolved: false` and the kind's
+`actionable: true`). The evaluator keeps it out of the parent's actionable findings and, on an
+accepted child, records the standing gap `finding_self_verified` with its finding ids, so the
+parent reads at best `insufficient_coverage`, never `unresolved_findings_remain`. The
+`receipt-document` `1.3.0` child finding row carries the same optional `self_verified`, and
+markdown/text render "self-verified by the child agent; Yoetz could not prove it" under it.
+Both child finding rows carry every finding kind under its own name, the AI-powered review kinds
+`code_defect`, `task_requirement_unmet` and `agent_criterion_unmet` included (ADR-040 amendment
+of 2026-10-12). Pending-acceptance children and informational findings annotate only; accepted live children are
 open gaps and accepted abandoned children are incomplete gaps. An unresolved informational
 finding stays on the child row and does not replace an accepted lifecycle gap or a coverage or
 verification blocker. The only informational kind, `ledger_stale_or_incomplete`, is emitted from
@@ -2376,10 +2691,10 @@ discover or attach another task. When no usable persisted recovery selector appl
 session advice remain bundle-resident; installation coordination uses the catalog without
 transferring their content or authority.
 
-**No new tools and future boundaries.** The series adds no MCP tool. Its six workflow operations
-are `start`, `publish_work`, `check`, `status`, `receipt`, and `respond`, plus the existing
-read-only `read_guidance` support tool; lineage/project behavior composes those surfaces without
-adding another one. The 2026-09-05
+**Historical no-new-tool boundary.** The following paragraph records the pre-#953 series. At that
+point its six workflow operations were `start`, `publish_work`, `check`, `status`, `receipt`, and
+`respond`, plus the existing read-only `read_guidance` support tool; lineage/project behavior
+composed those surfaces without adding another one. The 2026-09-05
 pre-trim snapshot was 204,404 bytes (policy) and 204,658 bytes (strict) against 205,000 bytes.
 After #504 step 0, the source baseline is 148,308 bytes (policy) and 148,562 bytes (strict),
 including 12,385/12,409-byte initialize instructions and 8,218/8,304 bytes of descriptions; it
@@ -2509,7 +2824,7 @@ lifecycle, observation-control, and CLI/UI-only methods. The privacy subset is e
 privacy_pending_list|privacy_receipts_list|privacy_receipts_get`. The observation subset is exactly
 `observation_ingest|observation_status|observation_pause|observation_resume|observation_revoke`
 (local CLI/UI only; never MCP tools — the public MCP surface remains the six workflow tools
-plus read-only `read_guidance`).
+plus read-only `read_guidance` and `closure_prepare`).
 Observation status uses a versioned body containing `schema_version`, `request_id`, and `query`;
 pause, resume, and revoke use `command` in place of `query`. Their successful control responses
 contain `schema_version`, the same `request_id`, and `status`. The support adapter translates these
@@ -2636,11 +2951,13 @@ an open process (ADR-007). The MCP bridge supplies a
 default **30-second** call deadline for `start`, `publish_work`, and `status`, a default
 **50-second** deadline for `respond` and `receipt` (below the common 60-second host MCP tool
 limit, so the bridge's typed timeout reaches the agent first), and a default **300-second**
-deadline for `check`; these use the existing private `deadline_ms` envelope field and do not
+deadline for `check` (a `check` with `mode: inspect` is a read and takes the `status` deadline,
+ADR-047); these use the existing private `deadline_ms` envelope field and do not
 change the public workflow-tool schemas. The bridge environment may override them in integer
 milliseconds, clamped to 1,000-900,000: `YOETZ_MCP_DEADLINE_MS_<TOOL>` (for example
 `YOETZ_MCP_DEADLINE_MS_RECEIPT`) sets one tool, and `YOETZ_MCP_DEADLINE_MS` sets every tool except
-`check`; an unparsable value keeps the default. Raising a deadline above the host's own MCP tool
+`check` (an inspection follows `YOETZ_MCP_DEADLINE_MS_STATUS` and the global variable, never
+`YOETZ_MCP_DEADLINE_MS_CHECK`); an unparsable value keeps the default. Raising a deadline above the host's own MCP tool
 timeout only lets the host give up first. A timed-out write has an unknown outcome: the bridge
 must preserve its retryable failure shape, say that it may already have committed, and direct the
 caller to retry with the same `request_id` (and operation status where applicable). A timed-out
@@ -2680,7 +2997,12 @@ retryable `service_unavailable`). A send failure the transport itself did not cl
 bounded protocol reason `transport_failed`, whose public code is `SERVICE_UNAVAILABLE` and which
 never carries raw exception text, a path, or peer data. Both peers share the one write helper, so a
 failed response write is classified the same way; the daemon records it as a bounded
-`control_response_write` diagnostic and ends that call rather than reporting a malformed frame. A
+`control_response_write` diagnostic and ends that call rather than reporting a malformed frame.
+That record carries only bounded structural context so an abandoned write can be attributed
+(tb4n2 NEW-8, issue #1019): `control_method` (the closed wire method), `client_kind` (the
+handshake kind: `cli`, `mcp_bridge` or `ui`), `duration_ms` (dispatch start to the failed write)
+and `request_id` only when the body carries a valid public `req_` id; never the body, the rpc id or
+peer data. A
 caller whose valid request could not be written is therefore never told `INVALID_REQUEST`, and every
 pending future failed by the resulting connection teardown — including the future of the call whose
 own write failed — is consumed, so a failed send emits no unhandled-future report.
@@ -2696,6 +3018,36 @@ and names `yoetz service status` / `yoetz service stop`. `service_incompatible` 
 are told apart by `safe_details.reason_code`. That MCP `SERVICE_UNAVAILABLE` mapping for
 `protocol_mismatch` is deliberate: the CLI helper still uses `public_error_code_for_control_reason`,
 which keeps `protocol_mismatch` as `INVALID_REQUEST`.
+
+**Typed service startup failures (issue #1040).** Every failure of `yoetz service run` before or
+while it serves writes one durable diagnostic record (component `service.daemon`, operation
+`service_startup_failed`) with `phase` the startup stage — `import`, `configuration`,
+`composition`, `activation` (endpoint publication, after ready activation when the vault unlocks)
+or `serving` — `reason` the reviewed exception-class token (`exception_not_implemented_error`, or
+`exception_unavailable` for an unlisted class), `origin` the innermost `yoetz` frame, and
+`reason_code` the exception's own closed refusal token when it has one (a lifecycle, path-safety,
+instance-identity or configuration reason; or an endpoint, storage, host-lineage or public-error
+refusal — `runtime_directory_unsafe`, `endpoint_in_use`, `storage_path_unsafe`,
+`host_lineage_migration_required`, `migration_required`, … — which stays an unexpected failure).
+An unexpected failure prints `internal_error: the service could not start (stage: <stage>;
+<exception token>[; <reason_code>][; at <origin>]); correlation_id <err_…>` (`stopped
+unexpectedly` for `serving`) and exits 70; typed refusals keep their existing lines and exits,
+and a configuration refusal prints `invalid_request: <reason_code>` and exits 2 as every other
+command does. Losing the singleton to a live service (`service_already_running`) is not
+recorded. On-demand start (`yoetz.service.client`) passes the hidden `service run
+--startup-correlation-id <err_…>` so the child records under an id its spawner chose; when that
+child exits having recorded a failure, the spawner stops waiting and raises `service_unavailable`
+with `phase` set to the stage, `correlation_id` set to the record's id and `retryable: false`. The
+MCP bridge maps it to `SERVICE_UNAVAILABLE` with `safe_details.reason_code`
+`service_start_failed` and `safe_details.phase` the stage (the text channel reads
+`Reason: service_start_failed (stage: <stage>).` plus the fixed remedy), reusing the child's id
+without recording a second one; the message also names the exception token and origin. The CLI
+renders `service_unavailable: the local service exited while starting (<stage; class[;
+reason_code]; origin>); correlation_id <err_…>`. It is an availability failure, so the latch
+above applies. Setup's on-demand starts (`setup vault`, `setup llm --set`, the interactive
+wizard), its restart after a provider binding change and `observe drain` print that same CLI line
+on stderr before their own unchanged result and exit code; that restart stops at the first such
+failure instead of spawning again.
 
 **Availability latch (issue #469).** The bridge treats the control reasons `service_unavailable`,
 `service_incompatible`, `protocol_mismatch`, `endpoint_unsafe`, and `peer_untrusted` as facts
@@ -2725,7 +3077,7 @@ timeouts, draining) never latch. The latch is process-local: a fresh host launch
 `response_projection_failed` is reserved for the window after a handler returns
 for non-`publish_work` writes (and the impossible minimal-envelope path), where a write may already
 be durable and only the response could not be shaped; it is always `retryable=True`, and the bridge
-answers it with the same-`request_id` replay remedy it uses for its own projection failures. For
+answers it with one same-`request_id` replay and then `status view=operation`. For
 `publish_work` that same window returns the reduced total-acceptance success envelope instead of a
 `ControlError`. Deliberate bounded failures raised in that window —
 `privacy_projection_blocked`, `privacy_projection_unavailable`, and any `PublicOperationError` —
@@ -2735,9 +3087,14 @@ surface as a failure (`INTERNAL_ERROR` or otherwise).
 Unexpected exceptions recorded in that window (and at other process boundaries) emit the existing
 stderr structural line and also append one owner-only JSONL diagnostic record under `log_dir()`
 (`service.diagnostics.jsonl`, mode `0o600`, size-capped ring). Fields are limited to
-`timestamp`, `correlation_id`, `component`, `operation`, `reason`, optional `origin`, optional
+`timestamp`, `correlation_id`, `component`, `operation`, `reason`, optional `phase`, optional `origin`, optional
 `request_id`, and the optional bounded integer counts `duration_ms` and `operation_count` — no
-exception text, payload, or paths. The daemon's control-plane watchdog samples event-loop lag from a plain OS thread and
+exception text, payload, or paths. A transient status read records `phase` as `handler`, `projection`,
+or `unknown`; repeated polls on the same validated `(session_id, writer_id, view, task_id)` binding
+reuse one incident correlation. A later successful fresh read emits one
+`status_read_projection_recovered` record with the incident's phase, elapsed `duration_ms`, and
+failure `operation_count`, then clears the process-local incident. A changed or superseded binding
+cannot close that incident. The daemon's control-plane watchdog samples event-loop lag from a plain OS thread and
 appends `control_plane_saturation_entered`/`_persists`/`_cleared` records (component
 `service.daemon`) with those counts at a bounded cadence, so a starved control plane is diagnosed
 while it is happening rather than never (#238); sweep failures append
@@ -3369,7 +3726,10 @@ the same way. The CLI prints a partial page in full and exits 40 with the count 
 Both audit adapters project stored network
 egress receipts as well as local disclosure receipts, so a completed subscription review is
 retrievable by its recorded receipt ID and listable by `channel`, `provider_id`, or
-`endpoint_profile_id`.
+`endpoint_profile_id`. A network receipt may also name its closed `origin_operation`
+(`semantic_check`, `observation_advice` or `credential_probe`; egress-receipt 1.1.0, ADR-009
+tb4n2 amendment), derived from its purpose and reserved structural item ids and omitted when not
+recognized, so a recurring blocked receipt can be traced to the operation that asked for it.
 
 A receipt's `purpose` has two owners, and they are deliberately not the same grammar. Anything
 crossing the privacy-policy boundary — every network egress receipt, every
@@ -3504,6 +3864,50 @@ independently authenticate; tightening is immediate after an ordinary explicit c
 revokes affected authorizations/transports. The never-send set is non-overridable under either
 path.
 
+The scanner keeps concrete credential findings separate from low-confidence assignment heuristics.
+When the sink policy permits it, an item with only a heuristic match carries its surrounding bytes
+with the matched span replaced by `[REDACTED]`; its original digest, transformed digest, scanner
+profile, and bounded redaction count remain distinct. Structured JSON/history content keeps its
+syntax while the value span is replaced. Provider-bound content rows mark that transform with the
+existing `redacted`/`sensitive_redacted` transformation vocabulary so recovery can validate the
+exact transformed manifest even when the item was not a targeted excerpt. An ambiguous or
+untransformable heuristic remains
+withheld, and a safe review of clean siblings may continue with an explicit coverage class. A
+concrete credential, mixed finding, scanner saturation or failure, stale policy/scanner manifest,
+and any final rendered body match remain whole-case no-dispatch refusals. The final-body backstop
+scans heuristics too, so a transformation failure cannot turn into disclosure. Recovery persists
+the transformation/withholding identity with the exact proposal; a corrected check supplies a new
+prepared case. No matched bytes, caller prose, raw exception, or detector output enters a
+structural notice or receipt.
+The check result and CLI/TUI rendering expose bounded transformation or withholding facts; MCP,
+hook-relayed, and receipt projections use the same fields. Privacy receipts mark the secret-scan
+stage as `candidate`, `prepared_case`, or `rendered_body` when that scan actually ran. `not_run` is
+explicit and carries its closed reason; a clean `passed` value is never used as a placeholder for a
+scan that did not execute.
+Only unquoted parser/member/call/enum expressions with source syntax evidence are excluded: a
+`const`/`let`/`var` declaration for a token call or member call, an explicit member assignment
+such as `parser.token = Token.EOF`, a lower-case object property such as `token:
+Token.ConstKeyword`, or a lower-case Python `token = node.token` assignment inside a valid
+function. Bare dotted assignments such as `TOKEN=opaque.value` or `token=opaque.value`,
+call-shaped values such as `password=functionName()`, quoted lookalikes, mixed-language text, and
+malformed source remain withheld. This precision rule does not add an opt-out.
+Since issue #982 the assignment heuristics also skip values that cannot be credential material:
+comparisons and walrus operators (`token == x`, `token := x`); an unquoted next key after a line
+break (an empty `KEY=` followed by `NEXT=`); unquoted language literals and type names (`None`,
+`True`, `str`, `Optional`); unquoted `self.`/`this.`/`cls.` attribute values; for password,
+secret and API-key names, an unquoted call or subscript on a name (`get_secret(`, `secrets[i]`),
+`|>`, or a digit-free documentation placeholder (`<your-api-key>`, `${MY_PASSWORD}`, `gw_...`);
+and, for `*token` names only, unquoted values containing `()[]<>|` or a backtick, unquoted
+numbers, documentation placeholders (`<...>`, `${...}`, `{{...}}`, a trailing `...`), values
+shorter than eight bytes, digit-free snake/constant identifiers, and values with characters
+outside opaque token material (whitespace, brackets, braces, parentheses, pipes, quotes).
+Password, secret and API-key values keep every other shape, including punctuation-heavy values
+such as `p<ss>w0rd|x` or `Summer2024...`. A marker followed by more bytes
+(`TOKEN=[withheld-by-yoetz:possible-credential]rest`) still matches. Typed declarations
+(`password: str = "..."`, value span only) and JSON-escaped keys (`\"password\": \"...\"`) match.
+Capture-time redaction covers only high-confidence findings; heuristic-only matches are redacted
+at egress.
+
 `PreDispatchAuditDecision` is structural-only and terminal; it permits no prepared bytes,
 authorization, or dispatch. A v0.1 content-bearing `DisclosureProposal` has one owning `task_id` and
 is encrypted as `ObjectKind.privacy_audit` in that task bundle; the privacy catalog stores its
@@ -3535,7 +3939,33 @@ admits each member on its own. The policy diff vocabulary gains
 after the primary in the Destination group; adding or changing the fallback is a widening,
 removing it a tightening. Intersection keeps a fallback only when both scopes name the
 identical one. The field is introduced in `privacy-policy-1.1.0` as optional and emitted only when
-present, so single-endpoint policy digests are unchanged. `PrivacyProfile` governs the
+present, so single-endpoint policy digests are unchanged. `credential_heuristic` (issue #982,
+owner opt-out) is `enforced` (default; absent means enforced) or `disabled`. `disabled` reaches only
+external AI-reviewer egress (an LLM-inference candidate with an external provider binding and no
+local sink; `external_review_credential_heuristic`): its classification, minimization and
+prepared, rendered-body and resume scans ignore low-confidence assignment matches. Every local
+output (agent context, local model, local and trusted human views) keeps the heuristic. High-
+confidence findings (known credential shapes, private-key markers, URI passwords, canaries,
+scanner saturation) always block or redact. The applied value travels on `ClassifiedContext` and
+`ApprovedOutboundCase` (`PrivacyClassifierPort.scan_exact_bytes(..., credential_heuristic=...)`),
+and every external receipt prepared under it records `secret_scan.credential_heuristic:
+"disabled"` (egress-receipt 1.1.0; absent when enforced). The policy diff vocabulary gains
+`("global", "credential_heuristic")`, a flag rendered "Possible-credential filter" in the
+Information disclosed group, ordered right after `provider_data_use_evidence`; turning it off is a
+widening, back on a tightening. The setting belongs to the repository grant: composing the
+installation row with a repository row takes the repository row's value, the installation value
+is only the default a new grant is drafted from (a repository-bound proposal never moves it), and
+any narrower composition keeps `enforced` unless both sides are `disabled`. Status-result 1.4.0
+carries the optional `credential_heuristic` object (`repository`, `machine_default`, each
+`enforced`/`disabled`/`unknown`), composed by the service on every status from the repository
+setup read, which carries the same pair (control-result 2.9.0 `privacy_get_setup_body`, optional;
+`credential_heuristic_state` over `RepositoryPrivacyAuthority.machine_policy` and
+`migration_frontiers`). A repository without a grant reads `enforced`, except under a pending
+migration (`legacy_route_available`, `first_repository_available`), where it reports the meet of
+the frontier and the installation row the first check will create, or `unknown` when frontiers
+disagree. The field is written only when `disabled`
+(privacy-policy wire 1.2.0 minimum; 1.0.0/1.1.0 documents naming it are rejected), so every
+existing policy, meet and receipt digest is unchanged. `PrivacyProfile` governs the
 `llm_inference` row/content rules only; `ReviewContextProfile` can only narrow which case items are
 considered and never grants a category, class, destination, scope, or byte. `local_only` disables
 external LLM construction and external task/user-content disclosure but is not a bundled decision
@@ -3731,7 +4161,9 @@ code can never become “no code changed.”
 parallel candidate/challenge pair can duplicate it. A challenge has case-bound `cited_refs`,
 discrepancy, alternative interpretation, direct main-agent message,
 `requested_next_step` (`act|provide_evidence|revise_claim|dispute_with_evidence|
-state_unresolved_limitation`), and uncertainty. Post-validation resolves every cited action/result/
+state_unresolved_limitation|answer_question`), and uncertainty. `answer_question` (issue #976) asks
+the agent a question it answers in the `respond` reason; `acknowledged` on any AI-powered finding
+requires a non-empty reason. Post-validation resolves every cited action/result/
 evidence/frontier-finding/local-check-finding ref to its canonical frozen event/obligation/claim
 roots; only those roots become public `Finding.subject_refs`. A local-check ID is never serialized
 as a dangling public subject. Accepted, ranked challenge prose maps into the existing AI-powered
@@ -3792,8 +4224,13 @@ forbidden. `turn_acknowledged=true` plus ambiguous transport or cleanup maps to
 
 **Semantic budget profile (issue #571, ADR-006 amendment).** `SemanticBudgetProfile` is the
 closed pair `routine | final` (`yoetz.ports.semantic_budget`).
-`select_semantic_budget_profile(projection)` returns `final` when the frozen projection holds an
-effective, readable `completion` claim, and `routine` otherwise. The selected value is frozen as
+`select_semantic_budget_profile(projection, *, final_review=False)` returns `final` when the frozen
+projection holds an effective, readable `completion` claim or the check request carries
+`final_review: true` (the closing review, issue #976), and `routine` otherwise. The review input
+manifest records the selected phase as the optional `review_phase`, and beside its capped
+`omitted_item_count` (listed rows, at most 64) the optional `omitted_item_total`
+(`MAX_REVIEW_OMISSION_TOTAL`, 1,048,576): every distinct omission before the cap, never fewer than
+the rows listed. The selected value is frozen as
 `execution.budget_profile` in the `yoetz.semantic-case/2` snapshot. An absent key reads as
 `final`, and any other value is `semantic_execution_invalid`. It is exposed to the provider
 factory only for the duration of one physical dispatch, and dispatches outside a check see
@@ -3824,6 +4261,73 @@ deterministic codes about the agent's own record (`command_attempt_mismatch`,
 `command_attempt_uncorroborated`, `completion_claim_outside_plan`, `completion_plan_not_claimed`,
 `completion_scope_declared_none`, `completion_scope_undeclared`) as possible real discrepancies: the
 reviewer does not restate the code alone but may challenge what readable material shows.
+
+**Routine frame and the agent's own criteria (issues #1042, #1043; ADR-040 amendment of
+2026-10-12).** A routine review judges incomplete work only: an obligation marked resolved or left
+unfinished, planned verification not run, a missing or emptied output, a done or ran claim the packet
+does not show, an early stop; work not yet started is not a defect. It returns a correctness
+concern as `code_defect`, and `validate_semantic_judgment(..., review_phase="routine")` records a
+`code_defect` challenge that would mint a new finding as an advisory note instead: its summary and
+message are appended to the fenced `review_summary` under the fixed header "Reviewer correctness
+notes (advisory and non-blocking: ...)", counted in `SemanticJudgmentReview.advisory_notes`
+(returned = accepted + rejected + suppressed + advisory) and logged as
+`semantic_challenges_advisory`. No gap is added: the review saw everything and the note is
+recorded in full. A re-raise of a recorded finding still folds onto that finding. The final phase is
+unchanged. The check passes the phase from the review input manifest (`review_phase`), else from
+`select_semantic_budget_profile`. A failure only on probes the agent itself authored beyond the
+task's stated scope is the finding kind `agent_criterion_unmet` (priority 2, research-evidence pack,
+`finding_recorded` 1.4.0, provider judgment 1.2.0 and every 1.4.0 result wire, added in place on
+unreleased versions). `is_limitation_request` is true for it whatever next step the reviewer asked
+for, so it reads `limitation_requested` ("to disclose") with next actions `acknowledge` and `repair`:
+the agent fixes it (a later check proves it absent) or narrows it with a reasoned `acknowledged`
+(`limitation_disclosed`, receipt at best `insufficient_coverage`, listed under "Verification
+limits"). Only that answer narrows it: a `yoetz-verification-limit` decision neither discloses it
+nor marks its obligation `externally_evaluated` (`kernel.limitation`, guard G1). While it is open
+the check continues with `work_open_findings`, never `disclose_limitations`, and the CLI text says
+fix it, or narrow it with `acknowledged` and a reason. The check also routes a reviewer
+`task_requirement_unmet` there when `kernel.review_frame.agent_probe_only` holds. The predicate
+holds when every cited work subject is a hook-observed
+command run that matches none of the requested commands of the effective, unacknowledged, unblocked
+obligations and that the agent did not link to a requested command value (PL6-3:
+`kernel.task_facts.agent_linked_run_events` over the frozen prefix, passed to
+`validate_semantic_judgment` as `agent_linked_runs`; a linked run is the declared verification, and
+an unreadable prefix narrows nothing), at least one such requested command exists, the case carries
+none of `planned_verification_failed|not_observed|stale|unobservable|outcome_unknown`, and the
+command-identity key is registered. The review summary then says, in fixed words and a count, that
+the challenge was recorded as the agent's own criterion (`SemanticJudgmentReview.agent_criteria`,
+logged as `semantic_agent_criteria`).
+
+**No review before the first material edit (issue #1046).** A check whose phase is routine, whose
+mode, route (`policy`) and capability would dispatch a review, and whose frozen prefix records no
+material edit (`kernel.task_facts.material_edit_recorded`: an observed edit or shell write that
+counts under ADR-042/045, whether or not its result arrived, so a Codex shell `apply_patch <<EOF`
+counts by the files its patch names, or an agent-published `edit` action) while the check-time
+capture observed no workspace change, runs the local checks only: `semantic_status` `not_requested`,
+`semantic_reason` `deterministic_mode`, and the standing gap
+`semantic_review_deferred_before_first_edit` (rule G7, a semantic-only gap for absence proofs).
+Nothing is composed or sent. `semantic_required` included: the deferral is not a failed review, so
+the verdict reads from the local checks, never `incomplete_check`. The gap follows the route the
+check recorded, like the `semantic_review_not_requested` it rides with (rule G1): disclosed when the
+check recorded `semantic_route_required: false`, so the check, status and receipt read as a
+`deterministic_only` check on that route would; bounding (`insufficient_coverage`) where review is
+required and not current. The deferral never applies to the closing review (`final_review`, or any
+completion claim). A resumed check keeps its decision: one already in `semantic_wait` keeps its
+review, and one resumed in `ready_to_finalize` reads no fresh capture (a review job its operation
+owns means it reviewed; otherwise the frozen prefix decides). Where the deferred check's route
+requires review, closure readiness counts it as a use of AI-powered review, so it lists
+`closing_review_required`, and while the latest check so deferred an actionable
+`semantic_review_not_requested` does not hide it (a routine check would defer again). Where the
+check recorded `semantic_route_required: false`, a deferral asks for nothing, like a
+`deterministic_only` check on that route.
+The older stopped-round skip (`semantic_review_skipped_insufficient_packet`,
+`kernel/review_round.py`) is a separate rule the deferral does not change: it can still skip a
+closing review that is not `semantic_required`.
+The deferral is decided before the review's own admission, so a pre-work check also asks for no
+repository grant, disclosure decision or review input, and a missing provider or a policy block is
+reported (`not_configured`, `blocked_by_policy`) by the first check after the edit instead.
+The CLI, the MCP check text and the receipt's limitations sentence say "AI-powered review
+deferred". Readiness is unchanged: the review is still required, so the next check after the
+first edit reviews as configured.
 
 `semantic_required` means AI-powered review success is required for a complete verdict, not required
 for returning already-computed local truth. Missing approved external/local capability, privacy
@@ -4142,18 +4646,19 @@ Shared closed types:
   tree first and then redacts decoded string keys and values, preserving structural punctuation;
   any redaction-created duplicate key is rejected instead of silently merging fields.
 - `ObservationGapCode` — closed coverage tokens. `payload_too_large` is one host hook event whose
-  body exceeded `MAX_HOOK_STDIN_BYTES` and was not admitted as a structural row. Codex and Claude
-  Code always stop there. Cursor stops there when the body does not fit `MAX_HOOK_SKIM_BYTES` or
-  the skim cannot validate a complete document. It is not `truncated_payload`, which is an
+  body exceeded `MAX_HOOK_STDIN_BYTES` and was not admitted as a structural row. Every host stops
+  there when the body does not fit `MAX_HOOK_SKIM_BYTES` or the skim cannot validate a complete
+  document (Codex and Claude Code skim too since tb4n1 B5). It is not `truncated_payload`, which is an
   admitted payload clipped after parsing. Nothing about such an event is retained beyond the host
   that ran it and the hook name that host named on its own command line, so it mints no structural
   row and binds to the workspace through the command-line locator alone. A Cursor body parsed
   inside the skim cap that still yields no row (no session, no resolvable workspace, an ambiguous
   session, or an unknown event) records the same gap; the ordinary profile's deliberate
   `afterMCPExecution` skip does not, because its paired `postToolUse` owns the call.
-  `payload_content_omitted` is the Cursor case that did validate: the structural row keeps the
-  closed identity and an empty content-reference list, and coverage must not treat the omitted
-  native bytes as captured. `session_superseded` is a mapped host session
+  `payload_content_omitted` is the case that did validate on any host but still did not fit the
+  trusted cap without its image bytes: the structural row keeps the closed identity and an empty
+  content-reference list, and coverage must not treat the omitted native bytes as captured. A
+  Yoetz-owned MCP tool's identity row records neither gap, because its content is never captured. `session_superseded` is a mapped host session
   whose Yoetz route was retired and whose successor binding could not be followed; it is never
   `ledger_rejected` and never `mapping_missing` (issue #577). `unsupported_event` is an admitted profile with
   an unrecognized wrapper or nested item, or a known wrapper with an incompatible payload shape
@@ -4180,7 +4685,11 @@ Shared closed types:
   domain-separated commitment over the bounded prefix commitment and exact source span, so later
   records remain reachable without an unbounded hook pass. Until then the tail remains pending as
   `truncated_payload`. The marker contains no source bytes, and an invalid or transplanted marker
-  starts a new generation from profile admission rather than authorizing a skip.
+  starts a new generation from profile admission rather than authorizing a skip. An ordinary
+  unterminated final line (Codex still writing it) is held and re-read once its newline lands; it
+  lost nothing, so it is not `truncated_payload` (issue #1041). The compatibility profile also
+  admits the `event_msg.item_completed` item `HookPrompt` (a Stop hook's continuation prompt,
+  Codex 0.159.3) as bookkeeping: no structural field is read from it and it pairs with nothing.
 - `ObservationStatus` — lifecycle `active|degraded|stale|stopped`, source coverage, last
   observation, lag, currently true gaps, unsupported events, and the current `AdviceSnapshot`
   frontier identity. Per-code first/last-seen history is retained separately and does not make a
@@ -4340,6 +4849,16 @@ Independent verification support (local control, not MCP):
 - `.yoetz/checks.toml` — fixed schema `yoetz.approved-check-policy/1`; raw bytes produce the trust
   digest. Repository content proposes no authority. One trusted-local exact-digest confirmation is
   retained as an encrypted workspace-scoped record. Any byte change is untrusted.
+  A missing `.yoetz/checks.toml` (or missing `.yoetz/`) raises `ObservationCheckPolicyAbsent`, a
+  subclass of the `invalid_approved_check_policy` failure, so trust gates still fail closed while
+  reporting surfaces distinguish it: `yoetz observe checks status` emits `state: not_configured`
+  with exit 0, `preview`/`trust`/`run` emit `observation_checks_<op>_failed:policy_not_configured`,
+  and the verification worker records no coverage gap. The `not_configured` status object carries
+  the same keys as `trusted`/`untrusted` (`policy_digest: null`, `sandbox`, empty
+  `executable_checks`, `network_check_state: not_requested`) plus a fixed `note`. Any other policy
+  read or parse fault stays `invalid_policy`; workspace or store faults report `unavailable`. Each
+  policy failure line is followed by a fixed continuation stating that the route is optional owner
+  configuration and never a `yoetz-blocker`.
 - `ObservationVerificationWorker` plus its repository — one generation-fenced lease per task
   bundle/workspace lane; newer subject digests stale older pending work, identical
   workspace/policy/approval/state tuples are cached, abandoned running work returns to pending,
@@ -4482,10 +5001,13 @@ Visible task messages, tool input/result, task-linked terminal output,
 changed-file/diff material, approved-check output, lifecycle, and readiness facts may be captured.
 Hidden reasoning, system/platform/developer prompts, credentials, detected secrets, unrelated files,
 and untethered logs are excluded before storage. Every byte that reaches encrypted observation
-persistence passes `prepare_persisted_plaintext`: known secret spans are redacted in memory before
-encoding, matches persist only redaction metadata, and scanner failure, finding-capacity exhaustion,
-or a canary match records `content_capture_unavailable` and stores no excerpt or approved-check
-output object. SQLite/envelopes
+persistence passes `prepare_persisted_plaintext`: high-confidence secret spans (known credential
+shapes, private-key markers, URI passwords) are redacted in memory before encoding, matches persist
+only redaction metadata, and scanner failure, high-confidence finding-capacity exhaustion, or a
+canary match records `content_capture_unavailable` and stores no excerpt or approved-check output
+object. Heuristic-only assignment matches are kept as captured in the encrypted local store, where
+local and deterministic checks may read them, and are redacted only at egress (issue #982); a
+chunk or excerpt is marked `redacted` only when its bytes were actually replaced. SQLite/envelopes
 retain only encrypted object IDs, commitments, classifications, sizes, and relations.
 Vault/service failure records `content_capture_unavailable` and no plaintext spool.
 Unrecognized visible events accept an opaque stable envelope plus encrypted content and
@@ -4544,6 +5066,23 @@ lane in the shared workspace, but sends its content profile only with rows from 
 Claude Code or Cursor hook delivers a queued Codex or other-host row without a profile, and the
 service resolves that row's profile from its own ticket, instead of refusing it as the terminal
 `content_capture_profile_mismatch`.
+
+Every retirement of a handoff (any `CaptureHandoffRetirementReason`) also appends one
+service-authenticated marker to the ticket's own task ledger, keyed by the ticket identity, whose
+coverage carries `capture_handoff_retired` (issue #1019), including a ticket a terminal store
+refusal retires. The marker and its fixed sentence claim only that the captured content is not
+available; for a refused or quarantined row the call's own record may be missing too, and its own
+codes disclose that. The marker is appended before the ticket is
+tombstoned: a retryable or unexpected append failure leaves the ticket pending, and the next
+reconciliation pass (READY sweep or check preflight) publishes it and only then retires the ticket,
+counting the loss once. A ledger that terminally refuses the marker (a non-retryable typed refusal,
+an operation conflict, or a route without a writer) can never hold it, so that retirement proceeds
+without the marker and the refusal is recorded in service diagnostics. The marker names the closed retirement
+reason only, never a path or content, and another task never receives it. The code is a standing
+limitation with a fixed sentence: deterministic proof and a clean deterministic conclusion tolerate
+it, because local packs never read native captured bytes, and an AI-powered finding treats it as a
+capture baseline (tolerated only when the raising review ran under it too). The workspace
+`content_capture_unavailable` flag in observation status is unchanged and remains workspace-wide.
 
 `content_capture_pending` means encrypted staging is durable while structural ledger ingest is still
 pending. It is separate from `operation_pending`, which is generic observation back-pressure and
@@ -4666,6 +5205,14 @@ the evidence payload and selection route fields. One task-wide operation per lan
 commit-before-ack recovery idempotent; source/authority generations and original session/writer
 remain part of lane identity. Unrouted and overflow-only history remains local. A successful
 inventory does not clear loss identity/count history or bypass a real hard capacity limit.
+`LocalObservationStore.selection_history_gaps` attaches `observation_input_loss` to a later
+input only when that input's call (or the call that spawned it) matches a bounded pairing
+commitment of a lost input in the same lane; legacy, overflowed (more than 16 lost calls) or
+older-writer-advanced lanes stay route-wide (ADR-029, tb4n1 B3). `record_admission_loss(...,
+cause=AdmissionLossCause)` records the closed refusal cause in that private per-lane detail;
+`selection_loss_causes(workspace)` and `admission_loss_cause(workspace, envelope)` read it. The
+wire loss-range shape is unchanged; hooks surface the cause as the `admission_loss_<cause>`
+diagnostic reason.
 
 Outcome semantics and back-pressure vocabulary (ADR-022 decisions 12–13):
 
@@ -4691,7 +5238,11 @@ Outcome semantics and back-pressure vocabulary (ADR-022 decisions 12–13):
   `material_limitation_omitted` candidate per such record. Observed work facts (durable per-call
   action/result records), the acquisition limitation (`host_outcome_unavailable` coverage gap),
   actionable findings (explicit `FAILURE`/`PARTIAL`, cooperative `UNKNOWN`), and receipt gaps stay
-  distinct surfaces.
+  distinct surfaces. When the session stream later appends the corrected outcome for the same
+  action (`materialize_observation_outcome_correction`), the unknown hook result is superseded for
+  readers (`kernel/outcome_corrections.superseded_unknown_results`): check totals count that call
+  once with the recorded outcome, and the frozen case drops that record's
+  `host_outcome_unavailable` gap. Both ledger rows stay immutable (#1001).
 - `operation_pending` is the retryable ingest-rejection reason for designed observation
   back-pressure (check-acquisition/frozen-case barriers and adjacent transient bundle/frontier
   contention). It keeps the outbox row pending and annotated, but is never a current observation
@@ -4733,8 +5284,17 @@ record identities cannot be re-derived), and a still-needed correction binds to 
 action. A later explicit session-stream outcome enriches an earlier hook `UNKNOWN` through an
 append-only `result_correction` linked to the same canonical action; it never rewrites, downgrades,
 or silently overwrites an explicit result. Exact correction retries replay; a contradictory explicit
-outcome appends under its outcome/exit-bound identity with a `dedup_conflict` gap. The correction is
-part of ingest acceptance: an unavailable, lagging, rebuilding, missing-result, or redacted-result
+outcome appends under its outcome/exit-bound identity with a `dedup_conflict` gap. A call-keyed
+delivery (event ids derived from the host call: a paired pre/post, a Codex stream completion, a
+post-only post that names its call) none of whose reconstructable role sets is committed, but whose
+every event id the task ledger already holds, is a duplicate, never a content refusal: nothing is
+appended, the correction still applies, and an append refused as `EVENT_INVALID` is re-read the same
+way before it can quarantine (issue #1027, tb4n3 N3-7). A Codex stream completion is bound to its hook
+call's generation before its captured-content manifests are looked up, so a content-bearing hook post
+and its contentless stream copy resolve the same committed operation across a `compact`, `resume` or
+`clear` generation bump. Event ids derived from a source identity alone (unpaired evidence) can be
+reused by another call, so a collision there, and any partial overlap, still fails closed as
+`ledger_rejected` (#560). The correction is part of ingest acceptance: an unavailable, lagging, rebuilding, missing-result, or redacted-result
 candidate-findings projection returns retryable `service_unavailable` and leaves the outbox row
 pending until the projection can prove and complete the correction. Duplicates retry incomplete
 content/store/ledger/verification/advice work idempotently. Stream cursor advancement occurs only
@@ -4975,6 +5535,18 @@ when that save evicts nothing and leaves one-eighth of the state budget free. Me
 the cap cannot clear the same loss it just recorded; the durable gap history remains after recovery,
 and renewed shedding reactivates it (issue #310).
 
+An unexpected exception in a hook pass, or in the legacy synchronous spool writer, is recorded as
+`observe_<exception class>` in `hook_diagnostics.reasons`, using the service's reviewed closed
+exception-class vocabulary (`observe_exception_value_error`, `observe_exception_os_error`, ...).
+An unlisted class, including an unreviewed subclass of a listed one, collapses to
+`observe_exception_unavailable`; no class name, message, path or command is kept. The bare
+`observe` reason is still admitted for older rows. The drain preflight is split by stage:
+`drain_connect_timeout` (the service connect ran past its preflight bound),
+`drain_connect_failed` (the connect raised), and `native_content_stage_failed` (the encrypted
+native-content handoff raised; the rows stay pending and the content keeps
+`content_capture_unavailable`). `drain_preflight_failed` now names only a failed local outbox read
+before the connect, and is still admitted for older rows (tb4n2 N-3, issue #1019).
+
 Public ingest failures use their `retryable` contract and the stage that refused the request.
 A non-retryable `SESSION_CONFLICT` while acquiring the task runtime becomes `mapping_missing`:
 the envelope stays pending so a later drain can recover its lifecycle mapping, subject to the
@@ -5058,11 +5630,13 @@ discarded or reported only as `observe`.
 A host body refused at stdin ingress for its size is accounted the same way, per host:
 `codex_payload_too_large`, `claude_payload_too_large`, and `cursor_payload_too_large` are the
 bounded hook reasons, recorded against the hook event name the host supplied on the command line.
-Codex and Claude Code never parse that body, so the hook name is their only identity, and each
-notes the `payload_too_large` coverage gap on the consented workspace. Cursor notes that same
-no-row gap when the body exceeds `MAX_HOOK_SKIM_BYTES` or fails validation inside it. When Cursor
-does validate a complete body inside the skim cap, the reason is `cursor_payload_content_omitted`
-and the structural row carries `payload_content_omitted` instead of `payload_too_large`. Before
+Each host notes the no-row `payload_too_large` coverage gap on the consented workspace when the
+body exceeds `MAX_HOOK_SKIM_BYTES` or fails validation inside it; such a body is never parsed, so
+the hook name is its only identity. When a host does validate a complete body inside the skim cap
+and it still exceeds the trusted cap once its image bytes are dropped, the reason is
+`codex_payload_content_omitted`, `claude_payload_content_omitted`, or
+`cursor_payload_content_omitted`, and the structural row carries `payload_content_omitted` instead
+of `payload_too_large`; a Yoetz-owned MCP tool records neither (tb4n1 B5). Before
 these, an oversized Cursor write recorded the generic `cursor_payload_invalid`, an oversized Codex
 event degraded to the bare `observe` token, and an oversized Claude Code event recorded nothing at
 all (issue #667).
@@ -5216,7 +5790,15 @@ only later. It keeps the cell's output local too only when a Codex tool hook
 read that call and before the start of a complete stream pass that still did not see the output:
 such a hook fired while the cell ran, so the nested calls' own hook rows are the ledger record of
 the cell. A hook that could belong to the next cell (ingested after the output was written) never
-counts, so every tool hook's own triggered reconcile is what settles it. Otherwise the reader
+counts, so every tool hook's own triggered reconcile is what settles it. It also keeps the output
+local when every nested tool item the rollout wrote while the cell was open was one of Yoetz's own
+MCP calls (an `McpToolCall` whose server is Yoetz's, or that names no server and a Yoetz tool, as
+`later_material` reads it; issue #1038): the cell is then Yoetz's own call
+whatever the hook timing. A Yoetz item counts only while its cell is the session's only open cell;
+any other item, an uninterpretable row, or a Yoetz item read while several cells are open removes
+that mark from every open cell of the session. The call and its output pair on their shared
+`call_id` (Codex 0.159.3 also gives each row its own `ctc_`/`ctco_` `id`; `id` is only a fallback),
+while a completed tool item keeps its own `id`. Otherwise the reader
 delivers the output, which records the cell as its own action and result (the held call row adds
 only content-free metadata), so a cell whose tools fire no hook (only `tools.update_plan`, for
 example) is recorded whether or not other or later cells were hooked. Each cell's decision is
@@ -6120,9 +6702,11 @@ duration, capability profile, and an installation-keyed HMAC changed-path commit
 boundary and truncated to the canonical integer `duration_ms`; the canonical parser remains
 float-free. Discarded vendor-field floats are replaced transiently, and malformed or unsafe Cursor
 envelopes remain fail-open while recording the payload-free `cursor_payload_invalid` diagnostic; a
-body over the shared 256 KiB hook ingress cap is separated from that vendor-shape refusal. A
-complete body that also fits the 1 MiB skim cap is admitted as a structural row with
-`payload_content_omitted` and `cursor_payload_content_omitted`. A larger body, or a complete
+body over the shared 1 MiB hook ingress cap is separated from that vendor-shape refusal. A
+complete body that also fits the 8 MiB skim cap is admitted whole when dropping its image bytes
+brings it under the ingress cap; otherwise it is admitted as a structural row with
+`payload_content_omitted` and `cursor_payload_content_omitted` (no gap for a scoped Yoetz tool
+spelling; the generic `MCP:<tool>` spelling names no server and keeps the gap). A larger body, or a complete
 oversized body that fails validation, records `cursor_payload_too_large` with the
 `payload_too_large` coverage gap and no structural row.
 The `model` spelling from execution/file-edit events normalizes to `model_id`; a valid `model_id`
@@ -6360,6 +6944,10 @@ here or in the compact `unanswered_findings` preview, so it never sets `findings
 stays in `view=findings` with its own disposition and an explanation that names it a limitation,
 keeps its resolution requirements (it does not become resolvable), and stays on the receipt with
 its coverage; an optional acknowledgement is recorded like any response and carried there (#911).
+A readable finding that a later qualifying check already resolved, with no response, is
+`verified_resolved`, a final state `respond` refuses, so it is not response work either and never
+sets `findings_unanswered` (pilot blocker: otherwise repairing before answering left an item no
+action could clear).
 `kernel/projections.unanswered_finding_ids` is the single rule for the status counter, the compact
 preview, closure readiness, and the durable SQLite mirror. `receipt_blocking_finding_count` selects the
 newest readable finding per receipt issue key and counts the actionable ones that
@@ -6380,6 +6968,25 @@ Pending child annotations do not block. These current advisory facts never refre
 open a child bundle, change a recorded check, or strengthen a receipt. Reading readiness records
 nothing, creates no verdict or IDs, and never strengthens coverage.
 
+When the latest persisted check has test-edit totals, the compact singleton may also carry
+`latest_check_test_edits`. This path-free structural summary includes the checked frontier,
+`read_availability` (`available`, `unknown`, or `unavailable`), `examined`, `baseline_known`, and
+the modified, renamed, deleted, skipped, unjustified, and unknown counts. `unavailable` means no
+admitted capture was available; `unknown` means the capture or baseline was incomplete. It never
+includes a repository path or captured content.
+
+The compact singleton may also carry `latest_check` (status-result 1.4.0, optional, absent when no
+check is recorded; issue #1027, ADR-044): `check_event_id` (the recorded `check_recorded` event the
+projection's latest tested state points at), `checked_frontier` (the frontier that check examined)
+and `verdict` (`action_required|incomplete_check|insufficient_coverage|no_issue_detected`). Each
+`obligations` item may carry `in_current_plan` (status-result 1.4.0, optional): `true` exactly when
+the obligation is in the current plan's effective scope (published, not waived, not superseded by a
+later plan revision; `task_facts.effective_obligations`), `false` for a historical one the view also
+lists, absent when the plan scope cannot be read. It is a
+pointer, not a readiness claim; a check recorded later than `checked_frontier` is not reflected
+until the projection's latest tested state advances. The CLI status render prints it as
+`Latest check: <verdict>; checked frontier <n>; event <id>`.
+
 Every projection view reports one coverage definition in the status envelope (ADR-032, issue
 #913): `coverage` and `gaps` are the task coverage the compact view reports — the applicable
 check folded over the newest record, plus projection and completion-scope gaps — not the newest
@@ -6392,23 +6999,66 @@ project views keep their own documented coverage.
 status success; on the unreleased status-result 1.4.0 wire the six checklist fields are optional
 as a whole (absent for a result shaped by an earlier 0.3 build, never partial or null). Beside the
 unchanged `blocking_conditions` it carries `state` (`action_required|ready|ready_with_limitations|unknown`),
-`gap_classification_version` (`"1"`), and three groups. `agent_actionable` lists, in order, the
+`gap_classification_version` (`"8"` since `deliverable_references_undeclared_file` became an
+agent-actionable task fact (#1044, ADR-035 amendment); `"7"` when the table became a view of
+`kernel.gap_effect` and added the
+readiness token `finding_rejection_awaiting_ruling` (ADR-046) and the standing task-fact
+disclosures `planned_verification_matched_by_prefix` and `declared_output_not_reviewable`
+(ADR-045); `"5"` added the standing code
+`finding_disputed_after_rebuttal` (issue #1020); `"4"` added `assumption_disclosed`,
+`verification_limit_disclosed` and `finding_premise_disputed` (issues #995, #984); `"3"` added
+`finding_self_verified`; the wire still admits `"1"`–`"4"` from an earlier 0.3 build),
+and three groups. `agent_actionable` lists, in order, the
 agent conditions present (`obligations_open`, `findings_unanswered`, `receipt_findings_unresolved`
-unless every receipt-blocking finding's latest response is `acknowledged_not_done`,
+only for findings whose closure class is `agent_work` (an acknowledged requirement is
+`settled_unmet`: final, so the state stays `ready_with_limitations`, and counted in
+`receipt_blocking_finding_count`; a `self_verified` finding is `settled_disclosed` and disclosed as
+the standing code `finding_self_verified`; ADR-046), `finding_rejection_awaiting_ruling` for a
+rejected finding that waits for a reviewer ruling (a check is the next move),
 `no_plan_published`, `no_obligations_declared`, `projection_stale`), then `check_in_progress`
 while a check holds the session frontier (read at the head through the ledger's
 `has_active_frozen_case`; an unanswerable probe counts as in flight), then `check_not_recorded` or
-`check_not_applicable` from the receipt applicability rule, then every actionable gap code and
+`check_not_applicable` from the receipt applicability rule (an observed deliverable or workspace edit
+after the check counts; Yoetz's own calls, read-only reads and host bookkeeping do not,
+`kernel/later_material`, tb4n3 RC-6), then `closing_review_required` (issue
+#976: AI-powered review is required on the route, or completed on the task, or was deferred before
+the first material edit by a check whose route requires it (#1046), and no completed final-phase
+review, or undeliverable review attempt, is current since the last material change; an actionable
+`semantic_review_not_requested` takes its place unless the latest check so deferred the review),
+then every actionable gap code and
 `unclassified_gap:<code>` for a base code the running build does not know.
 `standing_limitations` lists the classified standing base codes (plus
 `check_payload_unavailable`). `acknowledged_not_done` lists up to 64 obligation and finding ids
-recorded as not done, and `acknowledged_not_done_count` counts them all. Every recorded page gap
+recorded as not done, and `acknowledged_not_done_count` counts them all. An obligation is recorded as not done
+by `obligation_published` 1.1.0 with `status: "acknowledged_not_done"` and a required
+`acknowledged_not_done_reason` (1..4096 UTF-8 bytes; 1.0.0 refuses that status; issue #997,
+ADR-032 slice C); it is then not open and not resolved, outside completion coverage (a completion
+claim that omits it raises no `completion_plan_not_claimed`; one that names it still raises
+`completion_with_open_obligations`; ADR-041), a later
+publication of it with `open` or `resolved` takes it back, and the obligations view shows it as
+`open`. A `decision_recorded` statement line `yoetz-assumption:<obligation id>` or
+`yoetz-verification-limit:<obligation id>` (issue #995, ADR-033) adds the standing code
+`assumption_disclosed` or `verification_limit_disclosed`; it never blocks or resolves anything,
+and superseding the decision withdraws it. `finding_premise_disputed` (D7a) discloses
+acknowledged findings the review says the task requires; the Stop gate asks about them once. The
+optional `acknowledged_obligation_count` counts acknowledged obligations without truncation;
+`open_obligation_count` never includes them. The Stop gate challenges each acknowledged obligation
+once (`acknowledgement_recheck`), and the closing review lists them in its blocker question. Every recorded page gap
 is classified by its base code through `yoetz.kernel.closure_readiness.GAP_CLASSIFICATION`. A live
 lineage token from the catalog comparison is disclosed only when a recorded evaluation already
 carries its code (`live_lineage_blockers`; `lineage_child_read_gap` is recorded as
 `lineage_child_unavailable`); otherwise it is agent-actionable whatever its class, because a
 receipt folds recorded lineage only and cannot disclose it yet. No gap is dropped from `gaps` or
-`known_gaps`. `state` is `unknown` exactly with `readiness_unknown`
+`known_gaps`. The optional `check_cause` (`StatusCheckCauseModel`, present only beside the token it explains: `effect`
+`superseded|bounds_conclusion`, `event_id`, `ledger_sequence`, `check_event_id`,
+`check_subject_frontier`, `family`, `material_class`, `rule`, optional `tool`) names the first later
+record that decided it; MCP text, the CLI and the terminal interface render the one frozen sentence
+`readiness_text.check_cause_sentence`. The bounded MCP text on every status view reserves its core
+first (view and frontier, the closure state, the stop instruction, the agent-actionable items, the
+operation-progress fallback), then grants the cause (the full sentence, else its short form: record
+and check frontier, no id or rule), then every boilerplate sentence (the counts sentence of the full
+directive, the generic closure sentence, the operation-progress text); the cause is never required,
+so it cannot displace core (`mcp/summaries.py` `_check_cause_part`, `compose_parts`). `state` is `unknown` exactly with `readiness_unknown`
 (then `agent_actionable` is `("readiness_unknown",)` and the other groups are empty); otherwise it
 is `action_required` while `agent_actionable` is non-empty, `ready_with_limitations` when only
 standing or acknowledged entries remain, and `ready` when nothing remains. The five agent
@@ -6435,6 +7085,69 @@ receipt. Request the receipt." Readiness never recounts findings: "this finding 
 `receipt_findings_unresolved` is a persistent conclusion bound, not an instruction to respond
 again. Once every readable finding is answered, the latter condition remains and tells the caller
 that a receipt may be requested but cannot conclude `no_unresolved_deterministic_findings`.
+
+#### The closure verdict (tb4n3 RC-3, issue #1026, ADR-046)
+
+Every surface that says whether an item still bounds closure reads one verdict, computed from the
+ledger prefix and never stored. Names:
+
+- `yoetz.kernel.closure_class`: `FindingClosureClass` (`agent_work|awaiting_ruling|settled_unmet|settled_disclosed|resolved`),
+  `ObligationClosureClass` (`agent_work|settled_unmet|settled_disclosed|resolved`), `ReceiptEffect`
+  (`none|insufficient_coverage|unresolved_findings_remain`), the closed `FINDING_BASES` /
+  `OBLIGATION_BASES` tables (basis -> class and effect), `NEXT_ACTIONS` (`repair|recheck|reject|acknowledge|acknowledge_not_done|self_verify|reopen|none`),
+  `finding_closure(s)`, `obligation_closures`, `ClosureCounts`, `Recheck`. A basis token names the row
+  (`open_unanswered`, `open_answered`, `reopened`, `limitation_requested`, `rejected_awaiting_ruling`,
+  `rejected_review_unavailable`, `acknowledged_not_done_requirement`, `acknowledged_not_done_bookkeeping`,
+  `self_verified`, `disputed_after_rebuttal`, `rejection_accepted`, `limitation_disclosed`,
+  `limitation_acknowledged_not_done` (`settled_unmet`: a limitation request the agent answered
+  `acknowledged_not_done`, owner decision 2026-10-12),
+  `absence_proved`, `absence_proved_after_acknowledged_not_done`, `absence_proved_after_self_verified`).
+- `yoetz.kernel.gap_effect`: `GAP_EFFECT_TABLE` (one row per recorded gap code and the readiness-only
+  tokens), `GapContext`, `GapEffectKind` (`actionable|standing_bounding|disclosed|historical`),
+  `gap_effect`, `judge_gaps`. `GAP_CLASSIFICATION` is a view of it; `GAP_CLASSIFICATION_VERSION`
+  is `"8"` (#1044: rule G0c makes `deliverable_references_undeclared_file` actionable on both
+  routes).
+- `yoetz.kernel.receipt_prediction.predict_receipt_conclusion(ClosureBasis)`: the receipt's
+  conclusion rules R1-R10 and their reason codes. `receipt_builder.build_receipt` calls it, so the
+  receipt label and every prediction are one function over one context.
+- `yoetz.kernel.closure_verdict.closure_verdict`: the composition (classes, judged gaps, readiness
+  split, prediction, counters, rechecks). `yoetz.application.closure_basis.load_closure_basis`
+  rebuilds the receipt's context at a frontier for status and the check (memoized per session and
+  frontier, valid only while the adapter's projection object is unchanged).
+
+Wire (all optional on the unreleased 1.4.0 results; absent from an earlier 0.3 build and whenever
+the basis could not be read):
+
+- `status` `closure_readiness`: `predicted_receipt {conclusion, reasons[{code, rule, count, refs[<=3],
+  since_frontier?}], reason_total, basis_frontier, provisional}`;
+  `finding_counts {to_do, awaiting_ruling, unmet, disclosed, to_disclose, self_verify_eligible}`
+  (`to_do` includes `awaiting_ruling`; `to_disclose` is never inside `to_do`);
+  `obligation_counts {open, acknowledged, disclosed}`;
+  `awaiting_ruling_findings [{finding_id, since_frontier}]` (<= 8, by id; exactly the findings
+  counted in `finding_counts.awaiting_ruling`, up to the bound); `rechecks [{kind
+  (acceptance|acknowledgement|blocker|premise), key (accept:<h8>|ack:<obl>|blocker:<obl>:<kind>|premise:<n>),
+  subjects[<=8], rule, since_frontier}]`. `receipt_blocking_finding_count` keeps its wire name and
+  means `finding_counts.to_do + finding_counts.unmet`.
+- `status view=findings` rows: `closure_class`, `closure_basis`, `next_actions`;
+  `view=obligations` rows: `closure_class`, `closure_basis`.
+- `check` `finding_checklist.counts`: `to_do`, `awaiting_ruling`, `unmet`, `disclosed`,
+  `to_disclose` (the group travels together); items carry `closure_class` and `closure_basis`;
+  `finding_checklist.next` and `overall_next.action` add `request_ruling` and `disclose_limitations`
+  (owner decision 2026-10-12: the only remaining agent work is a reviewer's limitation request nobody
+  answered; mixed with real work the value stays `work_open_findings`); `overall_next` adds
+  `predicted_conclusion`.
+- `receipt-document` 1.3.0 (additive, in place): `limitation_disclosed_finding_ids`,
+  `conclusion_basis {reasons[{code, rule, count, refs, since_frontier?}], reason_total}`, and a gap
+  `effect` (`bounds|disclosed`). A clean conclusion beside a limitation id or a bounding gap is
+  invalid, and `reason_total` is zero exactly when the conclusion is clean.
+
+Text (`yoetz.protocol.readiness_text`): the owner-approved `readiness_directive` sentence is
+unchanged; `predicted_receipt_variants` appends "The receipt will read X: <reasons>." (while work
+remains: "A receipt requested now would read X: ..."); `closure_counts_variants` prints "Findings to
+do: N (awaiting ruling: K); unmet (acknowledged requirements): M; disclosed: L; to disclose: J.";
+`recheck_note` ("At Stop you will be asked once to re-read: ...") and `awaiting_ruling_variants`
+name the announced re-reads and the findings that wait for a ruling. The MCP status text, the CLI,
+the terminal panel and `closure_prepare` print them; no human surface prints "receipt-blocking".
 
 No plan yields `no_plan_published`. A readable effective plan with declared count zero and no reason
 yields `no_obligations_declared`; the same count with a typed reason clears that blocker while the
@@ -6571,8 +7284,8 @@ facade and are never MCP tools.
 - `service/human_control.py`, `service/secret_ingress.py`, `cli/unlock.py`, and
   `cli/privacy_control.py`: server ceremony/secret consumers plus the separately trusted foreground
   TTY helpers; no ordinary approval flag/token or server import in the helper graph.
-- `mcp/server.py`: low-level `Server("yoetz")`, generated seven-tool registry (six workflow
-  operations plus read-only `read_guidance`), dispatch, prevalidated fallbacks
+- `mcp/server.py`: low-level `Server("yoetz")`, generated eight-tool registry (six workflow
+  operations plus read-only `read_guidance` and `closure_prepare`), dispatch, prevalidated fallbacks
   (`LAST_RESORT_INTERNAL_ERROR_RESULT`), the initialize `instructions` string, a read-only
   guidance resource registry, and one `ServiceClient`; it owns no runtime/application/provider/key
   state. `read_guidance` does not use the service client. On the policy route
@@ -6580,7 +7293,8 @@ facade and are never MCP tools.
   tolerant loader the logging sink uses, only to render the AI-powered review destination disclosure
   (issue #479); it keeps no configuration state and the strict route never reads it.
 - `mcp/descriptors.py`: the one owner of every agent-read string on the MCP surface — the six
-  workflow tool names, `read_guidance`, descriptions, and annotations, plus the `instructions` text.
+  workflow tool names, `read_guidance`, `closure_prepare`, descriptions, and annotations, plus
+  the `instructions` text.
   All are loaded from the packaged `guidance/` resources and verified against the resource manifest
   before use; none is composed at runtime from user, task, provider, or environment values, with one
   typed exception: the policy-route AI-powered review destination disclosure (issue #479, ADR-018
@@ -6626,7 +7340,7 @@ facade and are never MCP tools.
   `*.model_validate`. `ToolDescriptor.output_schema` adds the MCP-required literal root `type:
   object` to the equivalent success/error object union; `catalog_output_schema` preserves the exact
   frozen catalogue bundle, and result admission remains owned by `*.model_validate`. `status` and
-  `read_guidance` carry `readOnlyHint=true`; `receipt` carries `readOnlyHint=false` because it
+  `read_guidance` and `closure_prepare` carry `readOnlyHint=true`; `receipt` carries `readOnlyHint=false` because it
   stages an object and appends a `receipt_recorded` event. Every tool carries an explicit
   `idempotentHint=true`. Policy `check` carries `openWorldHint=true`; strict `check` carries
   `openWorldHint=false` and names the external AI-powered review ceiling. The hint is inspectable
@@ -6754,7 +7468,10 @@ facade and are never MCP tools.
   sink/filter profile.
   `observability/privacy.py`: canary-testable redaction helpers,
   `prepare_persisted_plaintext(data, *, canaries=())` (fail-closed scan before encrypted
-  observation persistence: redact known spans, withhold on canary or scanner failure),
+  observation persistence: redact high-confidence spans, keep heuristic-only matches for egress
+  redaction, withhold on canary, high-confidence saturation, or scanner failure),
+  `redact_high_confidence_content(data)` (the same capture-time rule for hook, approved-check and
+  import content),
   `session_id_hash(session_id, log_mac: MacKeyHandle)`, and
   `privacy_request_commitment(final_request_body, audit_mac: MacKeyHandle)`; raw MAC keys are never
   accepted.
@@ -6851,9 +7568,10 @@ All are non-retryable. Sites that already had specific fixed wording keep it (`T
 unreadable.`, `The status case is unreadable.`, `The stored operation result is invalid.`, `Host
 lineage status is inconsistent.`). Each classification records one diagnostic with component
 `application.status`, operation `status_<view>_<stage>_failed`, the reviewed exception-class
-reason token, the innermost `yoetz` source `origin` of the original exception (never the stage
-boundary), and the request id. The public error carries that record's correlation id, so the
-daemon and MCP bridge reuse it and mint no second `status_public_error` record; `yoetz service
+reason token, the structural `phase` stage, the innermost `yoetz` source `origin` of the original
+exception (never the stage boundary), and the request id. The public error carries that record's
+correlation id and the same safe `phase`, so the daemon and MCP bridge reuse it and mint no second
+`status_public_error` record; `yoetz service
 diagnostics --correlation-id` or `--request-id` resolves the failure. The record never contains an
 exception message, a validation payload, a path, or user content. `CoordinationError` and
 `ProjectCommandError` are reviewed exception-class tokens (`exception_coordination_error`,
@@ -6875,8 +7593,10 @@ member omission without receiving private row content.
 
 ### Evidence-aware closure preparation (issues #569, #618, #657, #660, #666)
 
-`yoetz closure-prepare` is a read-only CLI support command, not a seventh workflow operation.
-It reads privacy-projected `status` pages at one pinned frontier, preserving cursor query identity.
+`yoetz closure-prepare` is a read-only CLI support command, not a workflow operation. The current
+MCP surface also exposes `closure_prepare/1.0.0` as a support tool with the same composer and
+selection model. Both routes read privacy-projected `status` pages at one pinned frontier,
+preserving cursor query identity.
 It exposes inventory and composes one explicit selection into an existing `publish_work`, `respond`,
 or `receipt` request. `yoetz closure-schema` exposes the closed selection-input schema. IDs it
 creates are lowercase UUID v4. Publication drafts use `dry_run=true`; preparation is non-evidential.
@@ -6894,6 +7614,20 @@ saved. A directory flush that fails after the rename fails as `closure_output_no
 file is in place but may not survive a crash, and no summary is printed. Each page it reads is still an ordinary privacy-projected `status` call with its
 own local-disclosure receipt; the file changes where the result goes, not what was disclosed.
 
+The MCP route sends the returned session and writer identities with an explicit selection. It is
+read-only and preparation-only: it never appends, judges work, or claims completion. The bridge
+checks the final host projection and JSON-RPC serialization, including Cursor's structured-content
+and canonical-text copies, before returning success. Its complete response frame is bounded. A draft phase (`attempt`, `respond`, `resolve`, `claim`,
+`receipt`) validates against the whole pinned inventory but echoes only the rows its selection
+names, with the per-view totals and kept counts under `inventory.scope`; the `inventory` phase and
+the CLI keep the complete inventory. An oversized inventory returns `LIMIT_EXCEEDED` with reason
+`closure_result_too_large` and no partial success, so callers select ids from the status pages, use
+a draft phase, or use the CLI `--output` fallback for a larger local inventory. Each refusal is its
+own protocol reason code (`closure_attempt_selection_required`, `closure_obligation_unknown`, ...)
+and its fixed remedy sentence renders on the MCP text beside the reason. The route is shared by
+Codex, Claude Code, and Cursor on macOS, Linux, and WSL 2 through the local bridge. Native Windows
+has no supported Yoetz MCP route; host activation and native dogfood remain separate evidence.
+
 The obligations status row adds optional `command_attempts` (at most 64 rows). Each row contains
 `requested_item_index` (canonical string 0–63), `relation`, `asserted_action_ids`, and
 `observed_event_ids` (each at most 64 unique IDs). Indexes refer to the current obligation's exact
@@ -6903,7 +7637,12 @@ continues to describe caller-asserted accounting. Relations are:
 - `matching_observed_attempt`: one distinct readable command equals the requested UTF-8 text;
 - `asserted_observed_mismatch`: an assertion names the requested command, but explicitly linked
   readable observation describes a different command;
-- `unknown`: observation is absent, omitted, redacted, ambiguous, or exceeds the displayed bound.
+- `unknown`: observation is absent, omitted, redacted, ambiguous, or exceeds the displayed bound,
+  or a linked run that does not match is the agent's own declared equivalence: a cooperative
+  `command` action naming the exact value in `attempted_items` with that observed run in
+  `causal_parents` (the PL6-3 link of ADR-033, which the planned-verification fact already reads as
+  run and discloses as `planned_verification_agent_linked`). Such a link therefore yields
+  `command_attempt_uncorroborated`, never `command_attempt_mismatch` (tb4n4, #1049).
 
 Only service-stamped observation authorship is eligible. Explicit correlation is an action's
 causal parent naming an observed action, or an obligation's resolution result naming that action.
@@ -6932,6 +7671,11 @@ At completion or resolved-obligation frontiers, asserted command relations contr
 `command_attempt_mismatch` or `command_attempt_uncorroborated` to the existing local-check
 case/receipt gap vector. This prevents uncorroborated accounting from becoming execution proof.
 The latter means unknown observation, not non-execution. Receipt capacity computes the same union.
+Hook observation records a keyed commitment (`omitted:hmac-sha256:…`) instead of command text, so a
+requested command item is never byte-compared with an observed run and stays
+`command_attempt_uncorroborated`. Like caller-asserted digest provenance (#912), that code is a
+standing limitation no agent action changes: the work-integrity ledger rule does not make it a
+`ledger_stale_or_incomplete` subject. `command_attempt_mismatch` keeps its finding.
 
 
 ### Observation drain control provenance
@@ -7056,6 +7800,10 @@ table `semantic_progress` (bundle schema 15, migration `0015`); ledger port meth
 `begin_semantic_progress(job_id, queued_at, deadline_at)` (insert once; replay is a no-op),
 `advance_semantic_progress(handle, phase, observed_at) -> bool` (only the active attempt of a
 leased job, only forward, never `terminal`), and `load_semantic_progress(writer_id, operation_id)`.
+A check with in-check follow-up rounds (#1047) owns one job per round: the load reads the live
+job, else the latest round's, the review the check records, by the `follow_up.round` its frozen
+`semantic-case/2` object names (none for the check's own review); attempt count and job id order
+only jobs of one round, never a later round behind an earlier one.
 The read-only runtime facade exposes the load. Provider and gateway code report phases through
 `yoetz.observability.semantic_context.report_semantic_progress(phase)`; the service binds the
 `semantic_progress_sink` context variable to exactly one claimed attempt, and a recording failure
@@ -7309,8 +8057,12 @@ a finding recorded before that stamp, the reducer reads the raising check's reco
 gap outside the baseline set gets a readable baseline on the first later check carrying none of
 those gaps; while one is present it keeps blocking. Resolution classifies selection codes
 (`semantic_reference_scope_reduced`, `content_unselected`) apart from capture-failure codes
-(`content_redacted`, `truncated_payload`, `event_payload_unavailable`, `redacted_event`,
-`redacted_object`), which neither proof class tolerates and no baseline absorbs. `truncated_payload`
+(`truncated_payload`, `event_payload_unavailable`, `redacted_event`,
+`redacted_object`), which neither proof class tolerates and no baseline absorbs. Since issue #982
+`content_redacted` is a host-observation limit instead (it never vetoes local proof and is an
+AI-powered-proof baseline), `semantic_review_item_withheld` is semantic-only and a baseline, and
+`semantic_review_value_redacted` and `semantic_review_credential_heuristic_disabled` are tolerated
+by both proof classes. `truncated_payload`
 keeps blocking until its source is settled. Coverage wording and every receipt gap are unchanged.
 
 The baseline tolerates `semantic_reference_scope_reduced` for a semantic finding only when the
@@ -7403,6 +8155,34 @@ output of a command identity) or `superseded_by` (the source refs of the newer e
 marks describe recording order only; they never claim what the working tree now contains.
 `review_packet` keeps its `outbound-case` 1.1.0 shape; `schemas/privacy/` is unchanged.
 
+The successful provider path records only the `provider_bound` `review_input_manifest`. A
+`composed` manifest is the pre-admission selection and must not be rendered as provider evidence.
+If a provider call succeeds but that exact manifest cannot be retained, the check keeps the
+provider result and records one closed provenance gap: `semantic_provider_input_manifest_missing`,
+`semantic_provider_input_manifest_invalid`, `semantic_provider_input_manifest_parse_failed`,
+`semantic_provider_input_manifest_mismatch`, or
+`semantic_provider_input_manifest_recovery_failed`. These codes describe evidence loss; they do
+not turn a successful provider call into a provider failure or a clean complete review. Durable
+response recovery carries the same bounded reason, and an older response without the field is
+read as an unproven provider binding.
+
+Reviewer snippets are fenced against the exact safe text rows in that provider-bound packet after
+privacy transformation and budget selection. The text index is ephemeral and is never placed in a
+check result, receipt, or durable response. The packet's `citable_refs` names only refs whose
+content it carries (a content row's `source_ref` or `linked_subject_refs`) and this check's local
+findings whose assessment row survived; the text index holds exactly those refs (an assessment row
+is indexed as sent text for its finding), so a reviewer following the contract never cites an
+unsent ref (issue #976). A quote is proved when it is an exact substring of a cited row's sent
+text, or matches it after one shared normalization (typographic quotes and dashes folded to ASCII,
+whitespace runs collapsed; a JSON row is also searched through its decoded strings; a redaction
+placeholder matches only Yoetz's own `[REDACTED]` marker at that position). Case, letters and
+digits are never changed, compatibility forms are not folded, and nothing may be elided; a
+placeholder-only quote, or a span with control or format characters, proves nothing. The recorded
+snippet is the verbatim span the quote matched: sent text, or for a JSON row the decoded string the
+reviewer read. If a response is recovered without the index,
+nothing is proven sent: quote-bearing challenges become `ref_not_carried` advisory concerns and
+verification rows with quotes are dropped.
+
 Excerpt selection stays inside the approved count and byte budget. Reserved room comes first: the
 current diff, then the latest output per identified verification command (with the last failure
 beside a later pass, and the reserved run's exact command when the selection carries command
@@ -7410,8 +8190,19 @@ text), then prior-finding repair evidence (#898), then older hunks of a changed 
 edit is a hunk, so an older one may still be current code; it is marked `superseded_by`);
 everything else follows by recency, then link class, and superseded runs come last. A run is one
 recorded result, so a run's output and its failure summary are never marked as superseding each
-other. A command identity is the digest of the command a
-recorded result answers; captured tool output is unidentified until #910. The task statement
+other. A command identity is the digest of the run key of
+the command a recorded result answers (its text with whitespace collapsed, or a hook run's keyed
+command identity; a hook run without one, `omitted:structural`, identifies nothing). When the
+command ran again later and that newest run left no excerpt the packet can carry, every older output
+of it is marked `superseded_by` the newer result and ranked with superseded runs; two `artifact`
+evidence rows naming the same plain path are one output, and the older is marked `superseded_by` the
+newer (#1045). Read-only task input files (`task-input-NN`, `repository_excerpt`, ADR-031 #1045
+amendment) rank after the reserved classes and ahead of older hunks, within a quarter of the excerpt
+bytes. The obligations section begins with one `declared-deliverables` item
+(`yoetz.declared-deliverables/1`, obligation text): each declared `role: output` item with its
+obligation, index, kind, value and `in_check_time_change` (`added`, `modified`, `deleted`,
+`renamed`, `changed`, `not_changed`, `outside_repository`, `unknown`), and `facts`, the check's
+closed delivered-set codes such as `deliverable_references_undeclared_file`. The task statement
 (#908) is its own section and never competes for an excerpt slot. Each excerpt holds one recorded
 source or one part of one capture. Excerpts honour the approved `max_excerpt_bytes` instead of the
 4 KiB structural item clip; long output keeps its head and tail with a marked elision; an
@@ -7438,7 +8229,9 @@ discloses `semantic_missing_items_rejected`. A malformed item still rejects the 
 fence trims targets to the packet's `citable_refs`, as it trims a ruling's cited refs, dropping an
 item left with none (`semantic_missing_items_rejected`), and drops an item whose earlier request was
 answered by material recorded since unless the reviewer cites that material
-(`semantic_missing_already_supplied`). "Answered" is judged per named target: a repeat is dropped
+(`semantic_missing_already_supplied`). If the same target is named again without related agent
+publication, the item remains actionable and adds `semantic_missing_non_convergent`; a genuinely
+new target is evaluated independently. "Answered" is judged per named target: a repeat is dropped
 only when the earlier request named every one of its targets and each has new agent-published
 material directly tied to it. For an action, result or evidence target that is a result of the named
 action or of another run of the same command (text compared with whitespace collapsed; a hook run's
@@ -7472,11 +8265,33 @@ hook-captured tool output: authorship is the service-stamped envelope fact, carr
 case as `observation_event_ids`, the observation-authored events recorded after the request, emitted
 only when non-empty so other cases keep their bytes; and a result answers `verification_output` only
 when it carries output (linked evidence or a summary). Yoetz classifies each kept item as
-`agent_suppliable` or `structurally_unavailable_on_this_host` (a kind the effective review selection
-or channel can never carry, or a redacted target), adding `semantic_missing_agent_suppliable` and
-`semantic_missing_structurally_unavailable`. These are check limitations, never findings, and weigh
+`agent_suppliable`, `structurally_unavailable_on_this_host` (a kind the effective review selection
+or channel can never carry, or a redacted target) or a Yoetz limit (`yoetz_limit_unsupported_data_type`,
+`yoetz_limit_packet_room`; ADR-006, issue #983), adding `semantic_missing_agent_suppliable`,
+`semantic_missing_structurally_unavailable` or `semantic_missing_yoetz_limit`. Only
+`agent_suppliable` is ever agent work. After two `insufficient_packet` reviews in a row with no edit
+since, or four since the task's last assessed review, checks other than `semantic_required` skip the AI-powered review and disclose the standing gap
+`semantic_review_skipped_insufficient_packet` (`kernel/review_round.py`). These are check limitations, never findings, and weigh
 on finding resolution exactly like the `semantic_packet_insufficient` they ride beside: a local
 issue is still proven absent, and a `fixed` ruling (#905) still resolves its own finding.
+
+Image and binary files in the packet (ADR-006, issues #983, #1004; no new wire field). No bytes or
+pixels of such a file ever leave the machine. An evidence row that records one (a hook-observed
+image, or a row whose `reference` names an unsupported file type and records the file itself) is
+carried as an `evidence_excerpt` that begins `[Yoetz: the agent referenced an image or binary file
+at <path> (evidence <evd>); it was not sent and its content is not assessable from this packet]`
+(an observed image has no path: `[Yoetz: an image was observed (evidence <evd>); it was not sent
+and its content is not assessable from this packet]`). The path keeps only ASCII letters, digits,
+space and `._/+@~=,-` (others become `_`) and at most 160 characters. Agent-authored excerpt text
+never begins a line like a label: such a line is prefixed `(agent text) `, and the reviewer
+trusts a label only as an excerpt's first line naming that excerpt's own `source_ref`. The newest 16 (`MAX_BINARY_NOTICES` in
+`application.semantic_case`) are reserved excerpt room. A row whose `reference` names such a file
+and which carries text (`command_output`, `test_result`, `other` or captured output) is labelled
+`[Yoetz: agent-rendered text of <path> (evidence <evd>); the binary file itself is not sent]`. Both
+appear in the manifest's `caller_evidence` section. The predicates are
+`application.missing_for_assessment.unsupported_data_type(name)` and
+`observed_image_evidence(payload)`. A rendering recorded after a missing-item request for the
+binary's row answers it under the path rule above.
 
 The unreleased `check_recorded` 1.3.0 is extended in place with the optional
 `missing_for_assessment` (kind, target refs, availability; no reviewer prose; 1–8 items, only beside
@@ -7489,6 +8304,34 @@ as the timeline item `prior-missing-for-assessment` with `supplied_since` refs. 
 optional `missing_for_assessment` (check-result 1.3.0, unreleased, additive) and the MCP and CLI
 check text list each item and its availability; status, TUI and receipts carry the gap codes. The
 reviewer's reason stays in the encrypted durable semantic response object.
+
+In-check follow-up (issue #1047, ADR-006). While a review concludes `insufficient_packet` and names
+a `current_diff_for_path`, `verification_output` or `command_identity` item that the fence kept as
+`agent_suppliable` or `yoetz_limit_packet_room` and whose targets Yoetz holds rows for
+(`application.missing_for_assessment.plan_review_follow_up`; `FOLLOW_UP_KINDS`;
+`ReviewFollowUp`), the same `check` rebuilds the case with those rows' excerpts ranked first within
+`follow_up_byte_budget` (half the approved `max_total_excerpt_bytes`, shared by every round) and
+asks again, at most `MAX_REVIEW_FOLLOW_UP_ROUNDS` (3) times and only when the rebuilt packet carries
+a requested excerpt no earlier packet of the check carried. A target resolves to itself, the rows
+an `evt_` target recorded, and for a run its results, its action and the evidence they cite;
+redacted rows never count. Each round goes through the same privacy path, is its own egress, and is
+its own durable semantic job keyed by its case digest (`LedgerPort.load_semantic_job(writer,
+operation, case_digest=None)`); its `semantic-case/2` object names the base job
+(`follow_up.base_case_digest`, `round`) and keeps the base job's endpoint, retries and budget
+profile with its own deadline. The check records the last round: a failed round is recorded as a
+failed first review is, and a round that sends nothing leaves the previous review standing. The
+review input manifest gains the optional `follow_up_round` (1–3; in place on the unreleased
+check-recorded and check-result 1.3.0/1.4.0, status-result 1.4.0 and outbound-case 1.2.0); in a
+follow-up packet its `missing_inputs` list the in-check request, `supplied` with the added excerpt
+sources (provider-bound: only excerpts that crossed the boundary) or `pending`. The evaluation's
+in-process `case_excerpt_refs` (`application.semantic_case.sent_excerpt_content_refs`: what the
+exact sent packet's excerpts held, read from its provider-bound manifest, a captured group's
+`evd_` parts included, which its linked references keep ahead of linking events and claims within
+their 16-ref bound; `None` when unknown) lets the check tell what was shown and what a round
+added; refs a sent packet withheld under a privacy rule join `ReviewFollowUp.added_refs`, a
+withheld captured group's parts with its lead (`withheld_excerpt_content_refs`). The evaluator seam takes the
+optional keyword `follow_up` (returning `None` when nothing was dispatched); the facade forwards it
+only to an evaluator that names it.
 
 `resolution_attempt_required` is the `respond` rejection for an `acknowledged` response to a
 `semantic_model_derived` finding whose `evidence_refs` cite no evidence or result recorded after
@@ -7596,11 +8439,46 @@ A cited `fnd_` in a challenge resolves to that finding's subjects when it is a l
 the same check or a readable recorded finding inside the frozen fence; only already-recorded
 findings are kept as `relates_to`, so a link never names a finding that was ranked away.
 
+A provider challenge may name the finding it restates (`restates`, provider-judgment `1.2.0`,
+optional; issue #980). It folds only when the challenge's `finding_kind` equals the named
+finding's kind. A carried readable open AI-powered finding (one of `prior_finding_refs`): the
+challenge mints nothing; the check records `answered_not_fixed` (the agent had answered) or
+`still_present` on that finding, citing the challenge's refs, and appends the challenge's summary
+and message to `review_summary` under a fixed header naming the id. A carried settled finding (a
+`yoetz.settled-finding/1` row; `SemanticPacketView.settled_finding_refs`, passed to
+`validate_semantic_judgment(settled_finding_refs=)`): the challenge mints nothing and a
+`still_present` ruling is recorded on the final item, which the reducer counts in
+`settled_reraise_count` (no round, never reopened). Any other target (another kind, a resolved or
+final item, an uncarried finding) yields a new finding whose `relates_to` names it and records no
+ruling on it. A `restates` is never
+counted in `semantic_review_refs_reduced`; an id outside the fence is ignored.
+
+Dialogue projection facts (TB4 tb4n1 D7): a finding row counts the agent's `rejected` and
+`self_verified` responses (`rebuttal_count`), keeps the newest admitted ruling
+(`last_reviewer_verdict`), and counts re-raises recorded after the agent settled it
+(`settled_reraise_count`, rulings `still_present`/`answered_not_fixed` on an item whose latest
+response is `acknowledged_not_done` or `self_verified`); all are replay-derived, emitted in
+projection snapshots only when set, and carried on the `yoetz.prior-finding/1` /
+`yoetz.settled-finding/1` rows when set. `kernel.finding_todo.premise_dispute_basis(state,
+finding_id) -> "blocker_cited" | "give_up_reraised" | None` and
+`standing_premise_disputes(state, finding_ids=None)` (`FindingTodo.premise_disputed`) flag an
+`acknowledged_not_done` AI-powered `task_requirement_unmet`/`requested_item_never_attempted`
+finding that asked the agent to `act` only with a recorded anchor: its subject refs cite a
+readable, unsuperseded `yoetz-blocker` decision or an obligation it blocks, or
+`settled_reraise_count > 0`. The acknowledgement stays final; the dispute is for readiness or
+Stop surfaces.
+
+The prior-findings section also carries, after the open findings and inside the same bounds,
+non-rulable `yoetz.settled-finding/1` rows (item ids `settled-finding-<ref>`, prose
+`settled-finding-summary-<ref>` and `settled-finding-response-<ref>`) for readable, unresolved
+AI-powered findings the agent settled; they never enter `prior_finding_refs`, a ruling on one is
+set aside, and one that does not fit adds no `semantic_prior_findings_over_limit`.
+
 The review packet (`outbound-case` `1.2.0`) adds the `prior_finding` section,
-`review_packet.prior_finding_item_ids` (every row of the section, at most 56) and
+`review_packet.prior_finding_item_ids` (every row of the section, at most 112) and
 `review_packet.prior_finding_refs` (the ruling unit: each carried finding's `finding_ref` exactly
-once, newest first, at most 8, listed only while its structural row is carried). It carries the newest readable, unresolved AI-powered
-findings (at most 8, 48 KiB of item content, and only case capacity the other sections leave;
+once, newest first, at most 16, listed only while its structural row is carried). It carries the newest readable, unresolved AI-powered
+findings (at most 16, 96 KiB of item content (issue #976; 8 and 48 KiB before), and only case capacity the other sections leave;
 outside the timeline's 64 rows, so hook rows never crowd it out). Under egress-envelope pressure its
 rows are removed first, oldest finding first, before any other bounding step, so the section never
 displaces work content; removed rows count in `catalog_dropped_count` and add
@@ -7620,7 +8498,8 @@ section existed. A finding recorded without challenge fields is disclosed throug
 record is complete for its version, and nothing it lacks was lost.
 
 The provider judgment is `provider-judgment` `1.1.0`: every conclusion branch requires
-`prior_finding_verdicts` (0–8 of `{finding_id, verdict, cited_refs, note}`; `verdict` ∈
+`prior_finding_verdicts` (0–8 of `{finding_id, verdict, cited_refs, note}`, 0–16 in the unreleased
+`1.2.0` extended in place for issue #976; `verdict` ∈
 `fixed|still_present|answered_not_fixed|unassessable|withdrawn`), for the Codex app-server,
 Responses and Chat Completions cells alike (the prompt-only Chat Completions shape names it too).
 The reviewer returns exactly one ruling per `finding_ref` in `review_packet.prior_finding_refs`,
@@ -7635,7 +8514,7 @@ the prior-findings rows and `citable_refs` of the packet the reviewer was actual
 on a readable open finding the packet did not carry is recorded as `unassessable`); admitted
 rulings are recorded as
 the optional `check_recorded` `1.3.0` field `prior_finding_verdicts` (`{finding_id, verdict,
-cited_refs}`, 1–8, ASCII-sorted by finding id, never the note; unreleased 1.3.0 extended in place),
+cited_refs}`, 1–16 (issue #976), ASCII-sorted by finding id, never the note; unreleased 1.3.0 extended in place),
 present only when at least one ruling was admitted, so a check without rulings keeps its bytes
 (issue #907's optional `missing_for_assessment` shares the version the same way).
 `semantic_prior_verdicts_unsupported` discloses dropped or reduced rulings and, like
@@ -7678,7 +8557,7 @@ at its schema boundary. `status-request`
 
 Every recorded finding has one to-do state (`kernel/finding_todo.py`): `open`,
 `verified_resolved` (the shared `finding_is_resolved` rule), `acknowledged_not_done` (latest
-readable response has that disposition; never reads as resolved), or `rejection_accepted` (a later
+readable response has that disposition; reads as resolved only through a later absence proof, below), or `rejection_accepted` (a later
 check recorded a `withdrawn` ruling on an AI-powered finding whose latest readable response was
 `rejected`; the projection records the check as `rejection_accepted_by_check_event_id`). When the
 same check also satisfies the absence proof for that row, the explicit ruling wins:
@@ -7689,8 +8568,162 @@ three are terminal: `respond` on a terminal finding appends nothing and fails wi
 `INVALID_REQUEST`, reason code `finding_terminal`, field `/finding_id` (no continuation: there is
 nothing to do); a latched row is never resolved later; redacting the latching check clears the
 latch. Terminal items are left out of the prior-findings section and rulings on them are not
-admitted. `receipt_blocking_finding_count` counts `acknowledged_not_done` rows and no longer counts
-`rejection_accepted` rows.
+admitted. `receipt_blocking_finding_count` counts `acknowledged_not_done` rows of a requirement kind that demand work (an
+acknowledged `action_without_result` bookkeeping finding is disclosed instead, ADR-046; a reviewer's limitation
+request is never counted) and no longer counts `rejection_accepted` rows.
+
+#### `self_verified`: proof-limited findings (issue #984, ADR-034)
+
+`self_verified` is a terminal `respond` disposition for a finding the agent repaired that Yoetz
+cannot prove repaired because of its own limits (a *Yoetz limit*: capture, redaction or observation
+loss, review-packet limits). It requires `reason` (non-blank, at most 4096 bytes: how the agent
+verified the repair) and 1–64 `evidence_refs` naming recorded `evd_`/`res_` ids of this task (any
+evidence version, strength or content availability); it accepts no waiver fields. It rides the same
+`respond-request`/`respond-result` `1.1.0` and `response_recorded` `1.1.0` versions as
+`acknowledged_not_done`. Typed `INVALID_REQUEST` refusals: `response_fields_invalid` (`/reason`
+blank, `/evidence_refs` empty), `finding_terminal`, `finding_not_rechecked` (no later check tested
+the finding: repair, then `check`), `finding_not_proof_limited` (the newest check that could resolve
+it still sees it or names agent work); the last two continue as `input_correction_new_identity`.
+`finding_not_proof_limited` carries `safe_details.blocking_reasons`: the 1-32 recorded
+resolution-reason tokens that disqualified it (`self_verification_blocking_reasons`, matching
+`^(coverage:)?[a-z][a-z0-9_]{0,95}$`, `no_recorded_limit` when the check recorded none), and its
+message names them with a next step and the `yoetz-verification-limit:<obligation id>` exit
+(ADR-041).
+Eligibility is `kernel/self_verification.self_verification_refusal(state, finding_id, records)`
+over the resolution reasons of that check (ADR-034): any `coverage:<code>` classified standing in
+`GAP_CLASSIFICATION` is a Yoetz limit. The to-do state `self_verified` is not resolved by its own
+answer (`finding_is_resolved` is false for it unless a qualifying check tested the work after the
+answer; see "Reverse edges" below), is not counted by
+`receipt_blocking_finding_count`, is left out of the next review, and is disclosed: closure
+readiness lists the standing code `finding_self_verified`; `receipt-document` `1.3.0` carries
+`self_verified_finding_ids` (1–100, a `no_unresolved_deterministic_findings` conclusion beside it is
+invalid) and markdown/text render a "Self-verified by the agent; Yoetz could not prove the repair"
+section; the conclusion is at best `insufficient_coverage`. `check-result` `finding_checklist.counts`
+and the status findings view carry `self_verified` as a count and a `todo_state`.
+
+#### `disputed_after_rebuttal`: a standing reviewer disagreement (issue #1020, ADR-040)
+
+`disputed_after_rebuttal` is a recorded reviewer ruling and a final to-do state that Yoetz, not the
+reviewer or the agent, assigns. `_admit_prior_verdicts` records it in place of a `still_present`,
+`answered_not_fixed` or `unassessable` ruling on a shown AI-powered finding whose latest readable
+response is `rejected` with a non-blank reason, when the ruling cites no `evd_`/`res_`/`act_`/`evt_`
+material recorded after that response (findings, claims and obligations are not material). A
+challenge restating such a finding (by `restates`, the restatement key, or a reply naming it)
+records the same ruling. `apply_check_rulings` latches `disputed_after_rebuttal_by_check_event_id`
+on a readable rejection, counts no review round, and never lets a later check upgrade the row to
+`verified_resolved`; redacting the latching check clears the latch. The state is terminal
+(`respond` answers `finding_terminal`), not counted by `receipt_blocking_finding_count` or the
+Stop gate, carried to later packets as a non-rulable `yoetz.settled-finding/1` row, and never clean:
+closure readiness lists the standing code `finding_disputed_after_rebuttal`; `receipt-document`
+`1.3.0` carries `disputed_after_rebuttal_finding_ids` (1–100, a clean conclusion beside it is
+invalid) and markdown/text render a "Disputed after rebuttal" section; the conclusion is at best
+`insufficient_coverage`. `check-result` `finding_checklist.counts.disputed_after_rebuttal` is
+present only when non-zero; the status findings view carries the `todo_state`. `check-recorded`
+`1.3.0`/`1.4.0` `prior_finding_verdict.verdict` admits the value; the provider judgment schema does
+not.
+
+Restatement matching (`_restated_finding`) tries the exact subject set first, then the same kind
+over `_concern_key`: claims mapped to their current superseding claim, and only the obligation set
+when both sides name obligations; every ref but a claim must still be no newer than the earlier
+finding, or than the agent's reasoned rejection when nothing after that rejection is cited. During a
+routine review (the phase the packet named; with no phase passed, before any effective completion
+claim) an AI-powered `requested_item_never_attempted` challenge is dropped and counted under the
+rejection reason `routine_completeness`; the closing review keeps it even without a completion claim
+(issue #1042). In every phase a challenge whose every subject is Yoetz's own capture or process record
+(`kernel.review_frame.yoetz_process_state_only`: the hook observation of a call to one of Yoetz's own
+tools or its result, or, for `action_without_result`, any hook-observed action) is dropped and
+counted under `yoetz_process_state`. Those two reasons add the standing disclosure
+`semantic_process_state_filtered` (gap table rule G5d: disclosed on both routes, tolerated by both
+absence proofs) instead of `semantic_challenges_rejected`, which keeps bounding for every other
+dropped challenge. The bounded accounting record names each reason
+(`semantic_rejected_<reason>`) and the advisory and agent-criterion counts below.
+
+A receipt whose applicable check is followed only by responses to that check's own findings
+(`CheckSuffixClass.RESPONSES_ONLY`) treats `check_current_as_of_earlier_frontier` as a disclosure
+(issue #1021); any other counted later material keeps it bounding the conclusion. "Counted" excludes
+what `later_material_class` proves harmless (Yoetz's own calls, read-only reads, host bookkeeping,
+scratch or Yoetz-owned writes; ADR-040 section 7, tb4n3 RC-6). While the counted suffix bounds,
+`check_current_as_of_earlier_frontier` stays a standing limitation in `closure_readiness` (not
+agent work: a recheck-instruction can regenerate, ADR-040 section 7); `closure_readiness.check_cause`
+(optional) names the first record that superseded the check (beside `check_not_applicable`) or that
+the bounding suffix rests on (beside the standing code): `effect`, `event_id`,
+`ledger_sequence`, `family`, `material_class`, `rule`, optional `tool`, `check_event_id`,
+`check_subject_frontier`.
+
+#### Reverse edges, limitation requests and concern identity (issues #1024 and #1030, ADR-034 and ADR-040 amendments)
+
+Names shared by the kernel, `respond`, `check`, status and the receipt:
+
+- `respond` disposition `reopened` (with `acknowledged_not_done` it rides `respond-request` and
+  `respond-result` `1.1.0` and the `response_recorded` `1.1.0` event; `reason` is required): takes an
+  `acknowledged_not_done` answer back, the finding is `open` and its standing position is retracted.
+  Refused with `response_fields_invalid` on `/disposition` on any other state. `verified_resolved`,
+  `rejection_accepted` and `disputed_after_rebuttal` stay absolutely final (`finding_terminal`);
+  `acknowledged_not_done` answers `finding_terminal` to every disposition but `reopened`; the message
+  names the state and the way out.
+- `respond-result` `1.1.0` optional `closure_after {todo_state, limitation?}`: the state the answer
+  produced, simulated at its own frontier (`limitation` is `limitation_requested`,
+  `limitation_disclosed` or `limitation_acknowledged_not_done` for a reviewer's limitation request;
+  absent otherwise).
+- Absence proof after the answer: `FindingProjectionRecord.resolution_frontier` (the tested frontier
+  of the check named by `resolved_by_check_event_id`) lets `finding_is_resolved` resolve an
+  `acknowledged_not_done` or `self_verified` answer when the proof tested the work after the answer.
+  The status finding items allow `resolved: true` on those two states.
+- Limitation requests: `domain.findings.is_limitation_request(finding)` and
+  `finding_demands_work(finding)`; `kernel.limitation.limitation_standing(state, finding_id) ->
+  LimitationStanding | None` with states `limitation_requested` (to disclose),
+  `limitation_disclosed` (the requirement may be met but cannot be verified here; basis
+  `respond_acknowledgement` or `verification_limit_decision`) and
+  `limitation_acknowledged_not_done` (the requirement is NOT met; basis
+  `respond_acknowledged_not_done`; `LimitationStanding.unmet`), `limitation_requested_ids` and
+  `limitation_disclosed_ids`. The agent's answer decides which (owner decision 2026-10-12; the
+  answer is read before a decision line, so a decision never turns `acknowledged_not_done` into a
+  disclosure). Until answered a limitation request never demands work, is never receipt-blocking and
+  is never clean; answered `acknowledged_not_done` it is `settled_unmet` and holds the receipt at
+  `unresolved_findings_remain`. Acknowledging it needs no recorded resolution attempt.
+- Reducer facts (replay-derived, snapshot-emitted only when set): `standing_position`
+  (`StandingPosition(kind, frontier)`; the earliest unretracted reasoned answer), `last_ruling_frontier`,
+  `resolution_frontier`, `absorbed_refs` (bounded refs a settled item's re-raises cited) on a finding
+  row; `introduced_frontier` on an obligation row (its first publication; republication only changes
+  status). Accessors: `kernel.finding_todo.finding_standing(state, id) -> (kind, frontier) | None`,
+  `ruling_since(state, id) -> int | None`, `standing_answer_frontier(state, id) -> int | None`.
+- Concern identity: `kernel.concern.concern_key(projection, refs) -> ConcernKey`, `same_concern`,
+  `equal_concern`, `kinds_comparable`; new material: `application.review_concern.concern_material_after`
+  and `answer_bound`. Packet: `yoetz_already_disclosed` beside an obligation the agent disclosed and
+  `limitation_already_disclosed` / `limitation_disclosed_by` on a settled-finding row.
+
+#### `duplicate_of`: a re-raised finding linked to an earlier one (issue #996, ADR-034 amendment)
+
+`duplicate_of` is a non-terminal `respond` disposition for a genuine restatement: a finding that
+names the same issue as an earlier finding the agent already answered or is answering (a re-raise
+minted as a new finding that automatic `restates` linking missed). It requires
+`duplicate_of_finding_id` (a `fnd_` id, admitted only with this disposition); `reason` and
+`evidence_refs` are optional; waiver fields are refused. It rides `respond-request`/`respond-result`
+`1.1.0` and `response_recorded` `1.1.0` (the result and event echo `duplicate_of_finding_id`).
+Typed `INVALID_REQUEST` refusals, each continuing as `input_correction_new_identity`:
+`duplicate_target_same_finding`, `duplicate_target_unknown` (not a readable finding of this task),
+`duplicate_target_not_earlier`, `duplicate_target_different_issue` (a different origin or kind),
+`duplicate_target_is_duplicate` (the target is itself linked; the message names the finding to link
+to), `duplicate_has_duplicates` (other findings link to this one) and `duplicate_link_broken`. A
+link holds (`kernel/projections.duplicate_link_holds`) while both findings are readable, the target
+is earlier with the same origin and kind, and no remaining readable check broke it. While it holds
+the duplicate inherits only `self_verified` and `acknowledged_not_done`; it never inherits
+`verified_resolved` or `rejection_accepted` and otherwise stays `open` but answered: linking never
+resolves a finding, only its own qualifying check does. Readiness names an open or inherited pair
+once by the earlier finding (`finding_todo.duplicate_counting_id`); an open duplicate of a settled
+or non-actionable earlier finding counts on its own. The link breaks while any later readable check
+returned the duplicate again, returned a local finding with its issue key, or ruled it
+`still_present` or `answered_not_fixed`: the projection records
+`duplicate_link_broken_by_check_event_ids` (emitted in snapshots only when non-empty; redacting a
+check removes only its id). A broken link or an unreadable earlier finding leaves the duplicate
+unanswered. A linked duplicate stays in the next review's prior findings (with `duplicate_of_ref`)
+and rulings on it are admitted. The status findings row carries `duplicate_of_finding_id` exactly
+while the link holds; `receipt-document` `1.3.0` carries `duplicate_finding_links` (1–100
+`{finding_id, duplicate_of_finding_id}`, ids only, each `finding_id` a carried finding) and
+markdown/text render a "Linked duplicates" section. A child's frozen finding rows read `resolved`
+from the child receipt's to-do predicate and roll a counted-once pair up as one row. Status
+`view=lineage` children carry `self_verified_finding_count` (present only when positive), and
+status readiness lists the standing code `finding_self_verified` when an accepted child has one.
 
 `review_rounds` counts later recorded checks that assessed a finding and left it open: a check that
 returned a local finding again over a later subject, or a recorded `still_present`,
@@ -7704,18 +8737,147 @@ owner's `verification.finding_attempt_budget` (`yoetz-config` `1.3.0`, integer 1
 round count at which an open item asks for a decision. It never throttles `check` and never
 changes state.
 
-Wire (all additive, unreleased versions changed in place):
+Check `1.4.0` preserves the earlier checklist and adds frozen-work `totals` to every newly
+completed check, including insufficient-coverage and failed required-review results. Legacy
+events without totals remain readable; an awaiting-input or awaiting-human continuation is not
+a completed check and has no claimed accounting result. Counters are canonical unsigned strings
+under closed keys for effective-plan obligations, obligation-scoped requested-item attempts,
+service-observed commands, evidence strength, and returned/suppressed findings. The current
+finding-disposition counts remain in `finding_checklist`, distinguished from frozen-work totals.
+Failed exploration stays in historical command counts. A later qualifying run of the same keyed
+command identity can retire a failure; unrelated edits and unknown reruns cannot. A disclosed test
+failure remains live until rerun green. An attempted item or linked evidence record is an assertion
+or link, not a claim that the requirement was verified. Totals survive event replay and operation
+recovery without recounting newer work, and carry no command text, paths, or caller-defined keys.
+
+The totals field `obligations.scope_known` is a canonical `"0"`/`"1"` availability flag. It is
+`"1"` when the current plan declaration is readable (including a readable empty or absent plan)
+and `"0"` when that scope is redacted, malformed, or otherwise unavailable. When it is `"0"`,
+the obligation and obligation-scoped requested-item counters are unavailable rather than observed
+zeroes, the receipt says so, and the scoped deterministic verdict is ineligible. The
+`test_edits.examined` and
+`test_edits.baseline_known` totals are the same binary availability shape; all other totals remain
+canonical unsigned counters.
+
+**Optional pre-check observation wait (#1012).** `check-request` 1.1.0 accepts the optional boolean
+`await_observations` (MCP `check`, `yoetz check --await-observations`). When `true`, the daemon,
+before either dispatch gate, reads the pending local hook outbox rows of every host session whose
+lifecycle mapping names the request's Yoetz session
+(`adapters/integrations/observation_task_pending.session_pending_row_identities`, the same task
+rule as the Stop gate's `observe_hooks._task_pending_outbox_count`), wakes the observation sweeper
+and polls real local state (`application/observation_await.await_task_observations`) until none of
+those snapshot rows is pending or `min(3 s, deadline / 10)` passes. The result then carries the
+closed `observations_awaited` member of `check-result` 1.4.0 — `state` `complete`,
+`bounded_timeout` or `unavailable`, and `pending_count` (canonical unsigned string, `"0"` unless
+`bounded_timeout`) — and only when the request set the flag. The flag is excluded from the check
+request digest and the detached-check identity; the member is never recorded in the ledger or
+`check_recorded`. The wait never fails a check. Golden vectors: CAN-016
+(`fixtures/canonical/check-observations-awaited-1.4.0.case.json`). ADR-029 amendment of
+2026-10-07 owns the decision.
+
+**Inspection check (`mode: inspect`, #1048).** `check-request` 1.1.0's `mode` admits `inspect`
+(unreleased, in place). It is a read routed like `status` (payload read, no write capability): it
+freezes no case, appends no event, writes no operation record, mints no finding, dispatches no
+reviewer and egresses nothing, so the daemon, the MCP bridge and the CLI classify it as read-only
+by one set of modes (`protocol/recovery.READ_ONLY_CHECK_MODES`): a failure, a timeout included, is
+a retryable read failure answered by a fresh request (`read_timeout_new_identity`, no
+`replay_request_id`), never a same-`request_id` replay, and the daemon never runs it detached. The
+bridge gives it the `status` call deadline. The MCP `check` descriptor and its annotations are the
+same for every mode, so a host approves, holds or admits an inspection exactly as any `check`
+(ADR-047 host decisions; the host runbooks record each host). The request model refuses
+`final_review`, `max_findings`, `policy_packs` and `scope` beside it, each at its own field with
+reason `extra_forbidden` (kept out of the JSON Schema: a root conditional lowers the advertised
+check input to `unknown` on observed hosts);
+`await_observations` is accepted and reported as on any check. `expected_frontier` is not
+compared. The answer is the `inspection` branch of `check-result` 1.4.0 (`state: inspected`,
+discriminated beside `complete` and `awaiting_human`/`awaiting_input`; no verdict, findings,
+coverage, versions or `result_frontier`), every leaf structural:
+
+- `subject_frontier` — the frontier read.
+- `remaining` — `readiness`, `predicted_conclusion` (optional), `agent_actionable` and
+  `standing_limitations` exactly as `status` `closure_readiness` prints them at that frontier
+  (`application/status.current_closure_readiness`, ADR-046); `obligations` (at most 64; count in
+  `obligation_count`) — every effective obligation whose class is not `resolved`, as
+  `{obligation_id, closure_class, closure_basis, missing}`, agent work first; `missing` (at most 8)
+  names `{kind, owner, item_indexes?}` with `kind` `requested_item_not_attempted`,
+  `resolution_evidence_not_cited`, `command_attempt_mismatch`, `blocker_unconfirmed` (owner
+  `agent`) or `command_run_not_observed` (owner `yoetz`: an asserted command attempt with no
+  linked hook observation); `findings` (at most 64; `finding_count`) — every finding whose class is
+  not `resolved`, as `{finding_id, closure_class, closure_basis}`.
+- `observed_since_check` — `last_check_frontier` (absent before any check), `action_count`, and
+  the newest 64 hook-observed `action_recorded` rows after that frontier whose `later_material`
+  class is `edit_or_write`, `exploration`, `non_counting_write` or `other` (Yoetz's own calls and
+  host bookkeeping are not listed): `{event_id, ledger_sequence, action_kind, material_class,
+  tool_name?, write_scope?, outcome?, exit_status?, command_commitment?}`. Observed edits record a
+  write class, never a path.
+- `evidence_alignment` — `basis: recorded_links`, `obligation_count` and `off_declared_count`
+  (every row and every `evidence_off_declared_items` row, counted before the bound) and, for each
+  effective obligation citing `resolution_evidence_refs` (at most 64, flagged rows first, then by
+  id), its declared items (requested `command` items and `file`/`directory` items whose role is
+  not `input`, by index and kind), and per cited ref the `origin` (`observed`, `asserted` or
+  `unattributed`) of the action behind it (a result's action; for evidence, the actions of results
+  that cite it and an action named in its `causal_parents`), that action's keyed
+  `command_commitment`, the result `outcome`, and `named_item_indexes` — the declared items its
+  `attempted_items` name (ADR-045 path matching) or, for a requested command, that its observed
+  keyed run matches (the shared planned-command matcher; an asserted command matches only byte for
+  byte). `alignment` is `no_declared_items`, `evidence_names_declared_item`,
+  `evidence_off_declared_items` (some cited evidence traces to an action and none names a declared
+  item) or `evidence_unattributed`. Yoetz records no command text, working directory, environment
+  or service configuration; this compares only those recorded links.
+
+CLI and MCP print the same lines (`protocol/inspection_text`). Golden vectors: CAN-017
+(`fixtures/canonical/check-inspection-1.4.0.case.json`). ADR-047 owns the decision.
+
+A check whose effective mode is deterministic-only can say **no issue detected within
+deterministic coverage** when its complete candidate set, active obligations, requested items and
+relevant observed failures permit it. An omitted mode resolves through the configured verification
+policy; a disabled semantic policy therefore uses this same deterministic-only route, while an
+optional or required semantic route does not. The absence of AI-powered review remains in coverage
+and the receipt; no open/unreadable obligation, unattempted item, unknown command outcome, relevant
+live failure, actionable finding (even suppressed), or material coverage gap can earn this scoped
+verdict.
+[ADR-032](adr/ADR-032-closure-readiness-checklist-and-material-dependency-coverage.md) owns the
+closed standing-limit allowlist and the unchanged receipt honesty boundary.
+
+Wire (the earlier checklist fields remain available in their original versions):
 
 - `check-result` `1.3.0` success: optional `finding_checklist` `{attempt_budget, counts, items[],
   next}`. `attempt_budget` is a canonical string `1`–`50`; each item is `{finding_id, todo_state,
   review_rounds}` (at most 100: the current actionable items, newest row per issue, open items
   first and otherwise in rank order, final rows included; coverage limitations are not to-dos);
   `next` is `decide_at_budget` (an open item reached the budget: repair with new evidence or
-  respond `acknowledged_not_done`), `work_open_findings`, or `request_receipt`. It is current
+  respond `acknowledged_not_done`), `work_open_findings`, `disclose_limitations` (the only agent
+  work left is a reviewer's limitation request nobody answered; `check-result` 1.4.0, owner
+  decision 2026-10-12; an open `agent_criterion_unmet` is work, `work_open_findings`), or
+  `request_receipt`. It is current
   projection context attached after the commit, like advisory notes, and is omitted when that read
   is unavailable; it is never part of the check event.
 - `status-result` `1.4.0` findings view: each row carries `todo_state` and `review_rounds`
   (canonical uint string); the page carries `attempt_budget`.
+- `receipt-document` `1.3.0` (issues #995, #997, #984 D7a): optional `disclosed_assumptions`
+  rows `{obligation_id, kind: assumption|verification_limit, decision_event_id}` (conclusion
+  unchanged), `acknowledged_not_done_obligation_ids` (conclusion never
+  `no_unresolved_deterministic_findings`) and `premise_disputed_finding_ids` (a subset of
+  `acknowledged_not_done_finding_ids`), each present only when non-empty, ids and closed tokens
+  only, each with its own markdown/text section.
+- `receipt-document` `1.3.0` (issue #1017, ADR-032 amendment of 2026-10-08): a `gaps` row may
+  carry `status: "historical"` with `cleared_at_frontier` (a frontier object); both appear
+  together and only on a historical row, and an absent status reads as `live`, so earlier receipts
+  decode unchanged. Domain: `ReceiptGap.status` (`ReceiptGapStatus.LIVE` | `HISTORICAL`) and
+  `ReceiptGap.cleared_at_frontier`. A row is historical when its code reached the receipt only
+  through a retained finding's coverage (`retained_finding_coverage:<code>`), an earlier
+  `check_recorded` through the latest tested check carried it, and that latest check does not;
+  `cleared_at_frontier` is the subject frontier of the first check after the last one that carried
+  it (`application/receipt._historical_gaps`, replay-only). A code is never both live and
+  historical on one receipt, and only the 1.3.0 artifact writes the field. The document's
+  `coverage.known_gaps` keeps the full union (retained findings still carry the code); the receipt
+  conclusion (`kernel/receipt_builder._conclusion`), the limitations section and the compact
+  sentence consider live gaps only, and the receipt *result*'s top-level `coverage.known_gaps`
+  names live gaps only (`domain/receipts.live_receipt_gap_codes`), so the CLI "Limitations" line,
+  the MCP receipt summary count and the terminal interface never count a historical gap. Markdown
+  and text add a "Cleared earlier (historical)" section (`historical_gap_line`: code, clearing
+  frontier, and the code's fixed sentence); the CLI JSON rendering and the MCP summary name them
+  apart (`historical_gaps_from_wire`).
 - `receipt-document` `1.3.0`: optional `acknowledged_not_done_finding_ids` and
   `rejection_accepted_finding_ids` (sorted, 1–100, each a carried finding; absent when empty). The
   markdown and text renderings add "Acknowledged, not done" and "Rejection accepted" sections that
@@ -7730,6 +8892,24 @@ Wire (all additive, unreleased versions changed in place):
   item, and is read from the adapter-owned projection at the result frontier, never from a status
   page or a replay; any failure reading it omits the list and records a
   `finding_checklist_read` diagnostic instead of failing the committed check.
+- `missing_for_assessment` is the authoritative input continuation when it contains an
+  `agent_suppliable` item: supply or repair the named target before requesting an ordinary receipt.
+  The additive `overall_next` projection carries the task-level `status`, `action`, and bounded
+  `target_refs`; its `action` is `supply_missing_input` for those targets (the refs may be empty
+  when the reviewer named a global input), `work_open_findings` for open findings,
+  `disclose_limitations` when the only open findings are reviewer limitation requests nobody
+  answered (`check-result` 1.4.0; the targets are those requests; the agent's own open
+  `agent_criterion_unmet` is `work_open_findings`),
+  `review_recorded_work` for open obligations, undisclosed live failures or a delivered file that
+  loads an undeclared file (`deliverable_references_undeclared_file`, #1044; the target is the
+  referencing obligation, which stays `resolved`), or `request_receipt`
+  when no agent action remains. The finding checklist's `next` remains finding-only and is labeled
+  that way beside this continuation. When only standing or structurally unavailable limits remain,
+  `overall_next.status` is
+  `ready_with_limitations` and `acknowledged_incomplete_endpoint: receipt` keeps the supported
+  coverage-limited receipt path explicit. A `structurally_unavailable_on_this_host` or
+  `yoetz_limit_*` item remains a disclosed limitation the agent verifies itself; it does not become
+  an impossible-to-do action, and it is never a blocker.
 - Stable identity: a challenge whose kind matches a recorded AI-powered finding, whose subject
   set is exactly that finding's (the receipt's issue key), and none of whose subjects was recorded
   after that finding (the evidence fingerprint) is a restatement. A narrower or wider challenge is
@@ -7764,7 +8944,9 @@ plan. Names and contracts:
   transcribed it, 1..`MAX_TASK_STATEMENT_BYTES` (65,536) UTF-8 bytes. It is part of start request
   identity: a retry with the same `request_id` and statement replays; different words under the
   same `request_id` conflict. `yoetz start --task-statement-file PATH|-` reads it verbatim. A
-  request without it keeps its exact historical digest.
+  request without it keeps its exact historical digest. A paused semantic-required check can
+  receive the missing statement through a same-session `publish_work` plan amendment instead;
+  that continuation preserves the original check identity and replays it after recomputation.
 - Ledger: the unreleased `session_opened` 1.2.0 carries an optional `task_statement` beside the
   lineage metadata (on create; a statement alone selects 1.2.0, and a create with neither stays on
   1.1.0). The released families gain new versions that require it: `session_resumed` 1.2.0 (on
@@ -7772,8 +8954,8 @@ plan. Names and contracts:
   publish-work-request 1.2.0 admit in place. Each released version stays frozen and never admits
   the field, and a version minted for the statement is never chosen without one. The advertised
   MCP `publish_work` presentation leaves the plan 1.1.0 branches out to hold the reviewed surface
-  budget, so an MCP agent revises the statement with a reattaching `start`; the catalog schema,
-  the CLI and the service still accept the plan branches. `domain/task_statement.current_task_statement`
+  budget, while the CLI and service still accept plan branches for a same-session statement
+  amendment. `domain/task_statement.current_task_statement`
   returns the newest readable statement in ledger order; earlier ones stay in history, and a
   redacted event contributes nothing.
 - `DeterministicCase.task_statement` (`RecordedTaskStatement`) and `task_title` are frozen from
@@ -7796,6 +8978,13 @@ plan. Names and contracts:
   `review_selection_for_delivery(policy)`, which drops the section when the LLM channel withholds
   `task_description`, so a statement egress would filter is never offered and the packet names
   its absence.
+- A `semantic_required` check whose metadata preflight is actionable returns `state:
+  "awaiting_input"` with `semantic_reason: "review_input_required"` before repository or provider
+  admission. Its continuation is a same-session `publish_work` plan publish or revision carrying
+  `task_statement`; it retains the check's request identity and releases the observation barrier
+  only for that correction path. Replay of the same check request recomputes deterministic
+  assessments from the amended ledger frontier before semantic admission. This continuation is
+  separate from `awaiting_human` privacy approval and never authorizes egress.
 - Gaps (packet, check, finding baseline and receipt coverage): `task_statement_unavailable`
   (nothing carried) always travels with exactly one reason: `task_statement_not_authorized` (the
   selection lacks the section, or the LLM channel's `allowed_categories` lack `task_description`,
@@ -7820,6 +9009,60 @@ plan. Names and contracts:
   `review_selection_policy_schema_version` (1.1.0 unless a 1.2.0-only section is selected), so an
   approval made before the section keeps its bytes and digest; a 1.0.0/1.1.0 row that names the
   section is `privacy_policy_row_corrupt`.
+- Statement-sourced obligations (ADR-032 amendment, TB4 pilot): an obligation maps the request
+  when its `source_refs` names an event that recorded the current statement content.
+  `RecordedTaskStatement.equivalent_event_ids` (from `current_task_statement`) lists every readable
+  `session_opened|session_resumed|plan_published|plan_revised` event whose statement is
+  byte-identical to the current one; the frozen case JSON carries the list only when it holds more
+  than one id. An event that repeats the current statement byte for byte (a re-attach whose
+  `task_statement` is unchanged, or a plan event restating it) is recorded but does not replace the
+  current statement event, so the finding subject, specification revision and packet source ref do
+  not move; an amended statement becomes current and must be mapped again.
+  `kernel/plan_drift.task_statement_unmapped(projection, statement)` is the one predicate;
+  `instruction_requirement_unmapped` is `agent_actionable` and is excluded from
+  `PLAN_DRIFT_ADVISORY_GAPS`. `kernel/deterministic_checks.build_task_statement_unmapped_assessment`
+  raises `task_requirement_unmet` (facts `task_statement_unmapped` /
+  `statement_sourced_obligation_absent`, subject: the statement event) on whole-case checks only.
+  `kernel/test_edit_visibility.preexisting_test_edits(..., task_statement_event_id=...)` accepts the
+  equivalent ids and treats a test file listed as an `item_kind` `file` requested item of such an
+  obligation as justified.
+- Completion on an undecomposed request (pilot-blocker amendment): with a statement recorded and an
+  effective completion claim, a readable plan chain with no plan or an explicit empty scope raises
+  the same `task_requirement_unmet` identity with fact `task_statement_scope_empty` and summary
+  `TASK_STATEMENT_SCOPE_EMPTY_SUMMARY` (`kernel/plan_drift.task_statement_scope_empty_at_completion`;
+  it also adds `instruction_requirement_unmapped` to coverage). Mid-task checks before any completion
+  claim never raise it. It is answered by statement-sourced obligations, or by a readable,
+  unsuperseded `decision_recorded` whose statement holds the exact line
+  `yoetz-no-material-work:<statement event id>` (any equivalent id; `NO_MATERIAL_WORK_MARKER`);
+  that decision is contradicted, and does not count, while the projection holds any `edit` action
+  or the check-time change capture (`CheckChangeMetadata`) shows any changed path. Shell writes are
+  recorded as command actions, so the capture is the witness; a check without that capture does not
+  honour the decision (fail closed). `application/check.py` passes `workspace_changed` to
+  `build_task_statement_unmapped_assessment`; the ledger-only drift advisory keeps the edit rule.
+- Both research-evidence `task_requirement_unmet` rules (statement and test edit) are emitted only by
+  a check whose research-evidence execution is `run/completed`, the same condition their
+  resolution requires. A recorded statement is a research-evidence root, so the pack runs before
+  the first claim. The test-edit finding adds fact `task_statement_recorded` (the statement event)
+  when a statement is recorded, and its text spells out the complete repair: a new statement-sourced
+  obligation listing the test path as a `file` item, `plan_revised` carrying it, an `edit` action
+  whose `attempted_items` list the path (with its result), a verification rerun after that action,
+  the resolved obligation citing that fresh observed evidence, and a superseding claim naming it.
+- Path-metadata test-edit captures carry no diff body: an edited pre-existing test whose skip
+  marker cannot be read is `preexisting_test_skip_unknown` (standing; not informational, so the
+  check stays coverage-incomplete) rather than `preexisting_test_baseline_unknown`, which now means
+  only an unknown task-start baseline or an omitted/truncated edit set.
+- Observed corroboration (same amendment): work-integrity `claim_without_admissible_evidence` with
+  facts `observed_verification_uncited` / `observed_verification_absent` (subject: the completion
+  claim) fires when hooks observed an edit or a verification run with a recorded outcome and the
+  claim's support chain cites no verification-class material after the latest hook-observed edit:
+  a hook-observed, non-`exploration`/`vcs` command result (an outcome-less result counts for
+  corroboration but never triggers the rule) or captured output such a result links, at that
+  result's frontier. Standalone captures, an edit's output and exploration or VCS output never
+  corroborate. Self-generated evidence stays admissible (#977 item 5, ADR-033; tb4n1 E7, #987):
+  the agent's own admissible `command` result outside the `exploration`/`vcs` runner classes (a
+  disclosed failing one included) or
+  `test_result`/`command_output` evidence published after the latest hook-observed edit also
+  satisfies the rule.
 - The unreleased local control 2.9.0 carries the fields in place and admits either
   privacy-policy wire version. A newer client meets an older running service at the schema-manifest
   digest in `control-hello` (`manifest_mismatch`, superseded through `yoetz service restart`), and a
@@ -7954,7 +9197,17 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
 - **Base.** A `start` whose outcome is `created` or `delegated` records
   `TaskChangeBase(object_format, commit)` (the empty tree for an unborn repository) as an encrypted
   `change_capture` object of media type `application/vnd.yoetz.task-change-base+json`, schema
-  `yoetz.task-change-base/1`. The optional ledger seam `record_task_change_base(ref) -> bool` keeps
+  `yoetz.task-change-base/1`. A `task_start` base also carries the task-start snapshot of the
+  ADR-031 #1045 amendment as optional canonical-JSON keys: `untracked` (`[[path, state], ...]`,
+  each an `UntrackedBaselineFile`), `untracked_complete`, `nested` (`[[directory, commit], ...]`)
+  and `nested_untracked` (`[[directory, complete, [[path, state], ...]], ...]`, each a
+  `NestedUntrackedBaseline` for a `nested` directory, rows and paths in ascending order, written
+  only when non-empty; an incomplete row names no file). Every listed file counts against one
+  4096-name, 256 KiB bound; a base without these keys keeps its bytes and reads as no snapshot.
+  `decode_task_change_base` accepts only what the encoder writes (the three snapshot keys together
+  and not all empty, `nested_untracked` only beside them, never empty or null) and rejects any other
+  shape; a `first_check` pin carries none. The
+  optional ledger seam `record_task_change_base(ref) -> bool` keeps
   the first one only (pointer in `bundle_meta` key `task_change_base`, object inventoried as a
   root); `load_task_change_base()` authenticates it. Attach and resume record nothing. A task with
   no base gets one from its first check that captures a change: `TaskChangeBase(...,
@@ -7979,10 +9232,17 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   parts with ids `change-check-time-NNN`, section `excerpt`, category `repository_excerpt`, source
   kind `diff`, source ref `check-time-change`, linked to effective claims and obligations (else the
   latest plan), each prefixed `[Yoetz check-time change, part i of n]`. Each part is at most
-  `min(max_excerpt_bytes, max_total_excerpt_bytes, 4 KiB, item bound)` bytes, marker included.
-  `_check_time_change_reservation(selection, first_part_bytes)` returns the share admitted before
-  other excerpts (half the excerpt count, at least one, and half the total bytes rounded up to the
-  first part); leftovers backfill after every other excerpt. The case digest binds the object
+  `min(max_excerpt_bytes, max_total_excerpt_bytes, item bound)` bytes, marker included (16 KiB
+  under Expanded; issue #983). `_check_time_change_reservation(selection, first_part_bytes)`
+  returns the share admitted before other excerpts (half the excerpt count, at least one, and half
+  the total bytes rounded up to the first part). Leftover parts take the room the reserved excerpt
+  ranks (current diff, latest verification, prior-finding context) leave, ahead of older edit
+  hunks and unreserved or superseded excerpts; any still left backfill after every other excerpt.
+  When a narrowed case leaves less room than one whole part, the first part is cut to that room
+  (at least 256 change bytes, on a line end where one lies in its second half) and prefixed
+  `[Yoetz check-time change, part 1 of n, cut to the packet's room]`; nothing follows it and
+  `check_time_change_truncated` is disclosed (issue #983).
+  Untracked files are read up to `MAX_CHECK_CHANGE_TEXT_BYTES` less the header budget (232 KiB). The case digest binds the object
   identity, content digest, base, flags, admitted part count and any unavailability reason; a case
   without a selected change keeps its historical digest input.
 - **Unavailability reasons.** `CheckChangeOutcome.reason` and the builder's reason are keys of
@@ -7997,22 +9257,25 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `check_time_change_gap_sentence(code)` returns its one fixed sentence, which the receipt builder
   puts in the gap's `detail` and the limitations section body (so JSON, markdown and text receipts
   carry it), `render_human_check` and `render_human_status` print after the gap list, and the MCP
-  check summary appends when it fits the 512-byte bound.
-- **Shown files.** `check_time_change_shown_files(capture, selection, admitted_parts)` returns each
-  `diff --git` section of the stored change that reached the admitted parts, whether it arrived
+  check summary appends when it fits the bound.
+- **Shown files.** `check_time_change_shown_files(capture, shown_bytes)` returns each
+  `diff --git` section of the stored change that reached its leading `shown_bytes`, whether it arrived
   whole and without a `[REDACTED]` marker, the section bytes that arrived, the markers among them,
   whether the whole section arrived, and where the first shown marker starts. The identity is the
   section's first line plus `\0binary` for a `Binary files ` line and `\0deleted` for a `deleted
-  file mode ` line. `admitted_parts` is `check_time_change_parts_carried(case,
-  withheld_categories=)`: the unbroken run of parts from the first whose catalog rows
-  `bounded_case_envelope(case)` kept, or 0 when the policy withholds `repository_excerpt`.
-  `check_change_shown_files(runtime, change, selection, admitted_parts)` commits each through
+  file mode ` line. `shown_bytes` is `check_time_change_bytes_carried(case,
+  withheld_categories=)`: the change bytes (marker lines excluded) of
+  `check_time_change_parts_carried(case, withheld_categories=)`, the unbroken run of parts from the
+  first whose catalog rows `bounded_case_envelope(case)` kept, or 0 when the policy withholds
+  `repository_excerpt`. Counting bytes keeps the record exact whatever part size a planned
+  selection chose and when the first part was cut (issue #983).
+  `check_change_shown_files(runtime, change, shown_bytes)` commits each through
   `runtime.objects.commitment_for(..., CHANGE_CAPTURE)` over the domain
   `yoetz/check-change-shown-file/v1`, the base commit and that identity. Each partially shown file
   also gets `view_commitment`, the same key over `yoetz/check-change-shown-view/v1`, the base
   commit, the identity and `CheckTimeChangeShownFile.view`: the length-prefixed shown length, the
   whole-section flag, every marker offset, and every hunk's offset and header line within the shown
-  bytes. The view is never stored; it is derived from the same `admitted_parts`, so envelope
+  bytes. The view is never stored; it is derived from the same `shown_bytes`, so envelope
   minimization cannot desynchronize it from the accounting. `CheckChangeCapture` and
   `yoetz.check-change/1` carry `base_commit`. The composition passes it to
   `FinalSemanticEvaluation.check_change_files`, and `commit_check_if_current(...,
@@ -8022,3 +9285,403 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   and `required_categories()` then includes `repository_excerpt`. An inference channel without that
   category approves no check-time part, and `withheld_review_categories` names it, so the check
   reports `semantic_review_context_withheld`.
+
+### Task facts, blocker decisions and the Stop-time closure gate (issue #977, ADR-033)
+
+- **`kernel/task_facts.py`.** `task_fact_signals(projection, records) -> TaskFactSignals(codes,
+  markers, acting_started, blocked)` derives closed codes from service-stamped hook observations and
+  the effective plan. `markers` pair a code with its obligation (`<code>:<obligation id>` in the
+  frozen case) or `None`. Agent-actionable (`AGENT_ACTIONABLE_TASK_FACT_GAPS`):
+  `planned_verification_not_observed`, `planned_verification_failed`,
+  `planned_verification_stale`, `edited_after_last_verification`, `requested_output_git_ignored`,
+  `declared_output_removed` (ADR-035), `declared_output_emptied` (ADR-035 amendment, ADR-041),
+  `deliverable_references_undeclared_file` (ADR-035 amendments, #1022, agent work since #1044). Standing (`STANDING_TASK_FACT_GAPS`): `planned_verification_outcome_unknown`,
+  `planned_verification_unobservable`, `planned_verification_agent_linked`,
+  `planned_verification_matched_by_prefix` (ADR-045: a prefix or flags match, counts as run),
+  `declared_output_not_reviewable` (ADR-045), `install_into_yoetz_runtime`, `install_into_private_env`,
+  `write_outside_workspace`, `verification_only_as_root`,
+  `obligation_blocked_outside_agent_control`, `requested_output_ignored_by_repository`,
+  `declared_output_content_moved` (ADR-035),
+  `requested_output_unchanged`,
+  `requested_output_outside_workspace`, `requested_output_unverified`. Each code is classified
+  once in `GAP_CLASSIFICATION`; standing ones are advisory for the check verdict, the receipt
+  conclusion and `DETERMINISTIC_SCOPED_STANDING_GAPS` (all through
+  `kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`, #986), and every task-fact code is tolerated
+  by a local absence proof; the environment facts `write_outside_workspace`,
+  `obligation_blocked_outside_agent_control` (issue #1000), `verification_only_as_root`,
+  `install_into_private_env`, `install_into_yoetz_runtime` and the planned-verification observer
+  heuristics `planned_verification_agent_linked`, `planned_verification_matched_by_prefix`,
+  `planned_verification_outcome_unknown`, `planned_verification_unobservable` (issue #1046) are also
+  tolerated by an AI-powered absence proof under an explicit, admitted `fixed` ruling on that
+  finding (admission already requires the ruling to cite evidence or a result recorded after the
+  finding), never when the review is silent on it. They stay on the receipt; the resolved finding's
+  explanation names the ones its resolving check carried. Facts about the deliverable
+  (`requested_output_*`, `declared_output_*`, `deliverable_references_undeclared_file`) and every
+  agent-actionable fact keep blocking it. `build_deterministic_case` and the compact status gaps add them beside the
+  plan-drift signals.
+- **Planned-verification identity.** `register_command_identity_key(key)` (the service calls it at
+  composition with the local observation store key) lets `requested_command_identity(value)`
+  compute `hmac-sha256:` over `normalize_observed_command(value)`, the identity a hook records as
+  `omitted:<commitment>`. Without a registered key no planned-verification code is produced.
+  `requested_command_identities(value) -> (whole, segment identities, composition) | None` adds the planned
+  value's own segment commitments. An agent link (ADR-033 decision 1, #1003) also matches: a
+  cooperative `command` action whose `attempted_items` holds the exact value and whose
+  `causal_parents` names a hook-observed command action, attributed per obligation; the observed
+  run's outcome decides, and an item matched only that way adds the standing
+  `planned_verification_agent_linked` (`PLANNED_VERIFICATION_AGENT_LINKED_GAP`).
+- **Command segments (`domain/command_segments.py`, ADR-033 decision 1).**
+  `command_segments(normalized) -> CommandSegments(segments, composition) | None` splits a
+  normalized command into its simple commands (quote-aware; `None` when unsplittable or already
+  simple); `command_segment_commitments(key, normalized) -> (sorted commitments, composition) |
+  None` keys them, excludes the whole commitment and keeps at most `MAX_SEGMENT_COMMITMENTS` (32:
+  first and last 16 distinct in command order). `COMMAND_COMPOSITIONS` = `single`, `and_chain`,
+  `masked`. `requested_command_shape(value) -> "command" | "placeholder" | "prose"`. Hooks put
+  the result on the structural fields `command_segment_commitments` and `command_composition`
+  (control-request 2.9.0, hook spool, Codex session stream);
+  `kernel.observed_failures.observed_command_field(commitment, segments, composition)` writes the
+  action `command` field (`omitted:<identity>` unchanged for a simple command, else
+  `omitted:<identity> <composition> <segment>...`), `command_identity` reads only the leading
+  identity, and `command_segment_identities(command)` reads the suffix or returns `None`.
+- **Placeholder refusal.** `publish_work` refuses an `obligation_published` `command` item whose
+  value holds an unquoted `<name>` token with `EVENT_INVALID`, reason
+  `requested_command_placeholder`, field `/event_drafts/N/payload/requested_items/K/value`, and a
+  fixed corrective message; the trusted import channel is exempt.
+- **`acting_started(projection, observed, cooperative)`.** True after an observed edit, an observed
+  run whose runner class is `test`, `lint`, `typecheck` or `build`, or any cooperative (MCP or local
+  CLI) action. `cooperative_event_ids_from_records(records)` and `observed_event_ids_from_records`
+  supply the two sets.
+- **Blocker decisions (claimed, then confirmed; #985).** `blocker_declarations(projection,
+  batches) -> Mapping[ObligationId, BlockerDeclaration(kind, decision_event_id,
+  confirmation_event_id)]` reads readable, unsuperseded `decision_recorded` events whose statement
+  holds the exact line `yoetz-blocker:<kind>` (`BLOCKER_MARKER`; `BLOCKER_KINDS` = `authority`,
+  `consent`, `credential`, `dependency_unavailable`) for their `affected_obligation_ids`. The
+  earliest decision in ledger order *claims* the obligation; the earliest later decision repeating
+  the same kind for it in a different publish batch (`decision_batches(records)`: decision event id
+  to its `operation_id`) *confirms* it. A repeat in the same batch, two lines in one decision, or a
+  dry run never confirms; without batches nothing confirms. A later decision of another kind
+  starts a new claim of that kind; superseded decisions count in neither role.
+  `blocked_obligations(projection,
+  batches)` returns confirmed blockers only; case-only readers (work-integrity,
+  the check-time output read) use `confirmed_blocked_obligation_ids(case gaps)`, which reads the
+  frozen `obligation_blocked_outside_agent_control:<obligation>` markers. Only a confirmed blocker
+  suppresses planned-verification facts, requested-output facts and `requested_item_never_attempted`.
+  Task facts emit `obligation_blocked_outside_agent_control` (standing) for a confirmed open
+  obligation and the agent-actionable Stop-gate token `obligation_blocker_unconfirmed`
+  (`OBLIGATION_BLOCKER_UNCONFIRMED_GAP`) for a claimed one. `ClosureReadinessFacts` carries
+  `open_obligation_ids`, `blocked_obligation_ids`, `blocked_obligation_details` (`(obligation,
+  kind, decision event id)`) and `blocked_obligation_confirmations` (`(obligation, confirming
+  event id)`). When every open effective obligation is blocked, `derive_closure_readiness`
+  replaces `obligations_open` with `obligation_blocker_unconfirmed` (agent-actionable) while any is
+  only claimed, and adds the standing `obligation_blocked_outside_agent_control` for confirmed
+  ones; when all are confirmed, `completion_plan_not_claimed` also moves to standing.
+  `StatusClosureReadinessModel` admits exactly those shapes. Status `closure_readiness` carries
+  the optional `blocked_obligations` list (`obligation_id`, `blocker_kind`, `decision_event_id`,
+  `confirmation` `claimed|confirmed`, and `confirmation_event_id` exactly when confirmed; at most
+  64, ids and closed tokens only, absent from an earlier 0.3 build), and the CLI/terminal status
+  renders it as "Recorded blockers (agent-declared, unverified)". F3 (ADR-025 decision 8):
+  `ClosureReadinessFacts.limitation_refs_required` is
+  `kernel.claim_limitations.required_limitation_ids_for_projection` (the reducer's own rule for a
+  whole-task claim). Status `closure_readiness` carries the optional pair
+  `limitation_refs_required` (sorted `res_` ids, at most 64) and `limitation_refs_required_count`,
+  which are present together. The MCP status summary, the CLI/terminal status and the Stop gate
+  name them; the gate names at most 5. Standing task facts never become
+  `ledger_stale_or_incomplete` findings.
+- **Publish-time blocker notices (#985 C2b/C3).** `publish_work` success and dry-run results
+  (publish-work-result 1.1.0) carry optional `blocker_notices` (1..64 rows: `obligation_id`,
+  `blocker_kind`, `notice` `blocker_claimed|blocker_confirmed|blocker_without_effect`, and `text`,
+  the fixed `PUBLISH_BLOCKER_NOTICE_TEXTS[notice]`), one per `(obligation, kind)` of the batch's
+  blocker lines, from `task_facts.blocker_publication_notices(projection_with_batch,
+  ((event_id, payload), ...))`. `blocker_claimed` is the challenge (repair first; a Yoetz limit is
+  never a blocker, respond `self_verified`; recoverable data is not a blocker; only if still
+  genuine, confirm by repeating the line in a later publish) and, with the Stop re-check, the
+  only text that says how to confirm. `blocker_without_effect` marks a blocker naming no open
+  obligation, including an id the task does not know: it changes no readiness, gap or finding (use `self_verified`, or
+  `acknowledged_not_done` as a last resort). `mcp.summaries.render_publish_blocker_notices`
+  renders the rows on the MCP text channel; structural pointers admit the four leaves.
+- **Closing review of blockers (#976, #978).** `semantic_case.recorded_blockers(projection)`
+  returns `(decision event id, kind, open obligation ids)` per blocker decision on open
+  obligations, claimed or confirmed, and `review_question_set(phase, blockers)` adds one
+  final-phase question that lists them (at most 16, ids and closed kinds) followed by
+  `BLOCKER_REVIEW_INSTRUCTION`: quote the blocked obligation's description and evidence expectation
+  from its packet item `obligation-<id>`, then challenge (required) when the statement says the
+  outcome is achievable or the data recoverable, the obvious prerequisite was not attempted, the
+  material contradicts it, or it names a Yoetz/review limit; the main deliverable calls for
+  scrutiny only, and a genuine credential or authority blocker on it may stand.
+  That challenge becomes an ordinary AI-powered finding. Blocker decisions lead the decision
+  section, and their statement and rationale, like the obligation text, travel only as
+  privacy-gated packet items. Golden question:
+  `tests/fixtures/tb4_replay/pretrain_blocker_review_question.json`.
+- **Requested outputs.** `ChangeCapturePort` implementations may offer
+  `probe_requested_paths(workspace, values) -> tuple[RequestedPathProbe, ...]`
+  (`ports/change_capture.py`; `location` `inside|outside`, root-relative `relative`, `exists`,
+  `ignored`, and for an ignored path `ignore_source` `info_exclude|repository_file|
+  outside_repository` with the root-relative `ignore_file`), metadata only. `application/check_change.requested_output_states(...)` turns them,
+  with the structural change capture, into `RequestedOutputState(location, exists, ignored,
+  changed, deleted, ignored_by_task)` per `(obligation, item index)` (`ignored_by_task`: the rule is
+  `.git/info/exclude` or a `.gitignore` the check-time change adds; values with whitespace, glob,
+  brace, `~`, `$` or a URL scheme are not read), and `requested_output_facts(projection,
+  states)` returns `(absent, markers)`; `requested_output_unchanged` and
+  `requested_output_outside_workspace` are marked only for an item an `edit` action's
+  `attempted_items` names exactly (`attempted_items_for_obligation(state, obligation,
+  action_kind=ActionKind.EDIT)`), since a `file` item may name a read-only input. `work_integrity_findings(case, *, absent_outputs=)`
+  raises `requested_item_never_attempted` with the fact `requested_output_absent`
+  (`REQUESTED_OUTPUT_ABSENT_FACT`) for each absent pair that
+  `reportable_absent_outputs(case, absent)` keeps: an effective completion claim covers its
+  obligation (names it or names none), or `acting_started` and one of the agent's own (cooperative)
+  `edit`, `command` or `other` actions is attributed to it. A requested
+  directory is `changed` when any changed path lies beneath it; the root probes as `relative`
+  `.`, inside, and is changed by any change.
+- **Declared delivered set (ADR-035, issue #1005).** `kernel/delivered_set.py`:
+  `declared_delivered_items(projection) -> tuple[(obligation, item index, item kind, value), ...]`
+  is every effective, unblocked obligation's requested item of kind `file` or `directory` whose
+  `role` is `output` (a role-less 1.0.0 item never counts). `declared_output_removed(projection,
+  states) -> tuple[ObligationId, ...]` names the obligations whose declared item has an `inside`
+  `RequestedOutputState` with `exists=False` and either `deleted=True` (deleted, or renamed away,
+  by the check-time change) or an `edit` action of the session naming it (written, then moved). `_requested_output_inputs` in `application/check.py` adds the closed gap
+  `declared_output_removed` (`DECLARED_OUTPUT_REMOVED_GAP`, defined in `kernel/task_facts.py`) to
+  the check's task-fact gaps. It is agent-actionable, a `STOP_GATE_TOKENS` entry, and has a fixed
+  `TASK_FACT_GAP_SENTENCES` sentence. `content_moved_declared_items(projection, states) ->
+  tuple[(obligation, item index), ...]` names declared items whose state carries
+  `base_lines`, `lines_lost` and `undeclared_lines_added` with `lines_lost >= 20`
+  (`CONTENT_MOVED_MIN_LINES`), `2 * lines_lost >= base_lines` and
+  `2 * undeclared_lines_added >= lines_lost`; the check then adds the standing disclosure
+  `declared_output_content_moved` (`DECLARED_OUTPUT_CONTENT_MOVED_GAP`), never a Stop-gate token.
+  `emptied_declared_items(projection, states, *, blocked=None, history=(), verified=False) ->
+  tuple[(obligation, item index), ...]` (ADR-041, rewritten by ADR-045) is the `emptied` list of
+  `assess_deliverables(projection, states, ...) -> DeliverableAssessment(states, emptied, removed)`:
+  one verdict per **path**, from `deliverable_state_change(state, history, name=, other_growth=) ->
+  DeliverableChange | None` (`emptied`, `truncated`, `removed`, `unchanged`; `None` unknown).
+  `history` is `deliverable_history(records) -> tuple[DeliverableSnapshot(state, event_id,
+  frontier)]` over the earlier `check_recorded` events' `deliverable_states`. A file is `emptied`
+  only with proof of earlier content (`base_lines > 0`, or an earlier check read it with content);
+  `truncated` needs 20 earlier lines and fewer than a tenth left (or 2,048 bytes and a tenth, when
+  no line count was read), is not the content-moved shape, and is not a split (the other declared
+  outputs gained at least half the lost lines, or their growth is unknown). `declared_output_emptied`
+  (`DECLARED_OUTPUT_EMPTIED_GAP`, a Stop-gate token) fires when the change is emptied or truncated
+  and an obligation declaring the path is resolved or claimed now, or an earlier check recorded the
+  path with content with `basis` `delivered` or `verified`; the obligation's current status does
+  not clear it. The exit is `path_assumption`: a `yoetz-assumption:<obligation id>` decision of an
+  obligation declaring the path whose statement or rationale names the declared value or the
+  root-relative path as a whole token. `removed_declared_items(..., history=)` adds a file an
+  earlier check recorded with content that is now gone.
+  `RequestedOutputState.lines` is the current line count (tracked, untracked or unchanged).
+  `deliverable_path_identity(relative) -> hmac-sha256:... | None` keys the history.
+  `requested_output_states` fills `base_lines`, `lines_lost` and `undeclared_lines_added` for a
+  declared `file` the change modifies (`M`) and `lines` for every existing declared `file`
+  (ADR-045), through the optional adapter method `count_change_lines(workspace, base_commit,
+  base_paths) -> ChangeLineCounts(changed: tuple[ChangeLineCount(path, added, removed,
+  untracked), ...], base_lines, truncated)` (`ports/change_capture.py`): numstat for tracked
+  changes, newline counts of untracked non-ignored files (bounded, no link followed, no
+  credential-named or binary file), base line counts for the named paths; numbers only, nothing
+  stored. A declared `directory` covers the files beneath it.
+  `undeclared_reference_inputs(projection, states, blocked=) -> (deliverables, declared)` (tb4n2
+  R2, #1022) returns the values of declared output `file` items that exist `inside` and were not
+  deleted (obligations neither blocked nor `acknowledged_not_done`) and every `file`/`directory`
+  value of any role. `application.check_change.undeclared_references(...) -> tuple[(deliverable,
+  referenced file), ...]` (tb4n4, #1044; it replaced `count_undeclared_references`) probes them,
+  takes as candidates the files the check-time change created (untracked or `A`) that no declared
+  value names or covers (pre-existing tracked files never count), and calls the optional adapter
+  method `find_undeclared_references(workspace, deliverables, candidates) -> tuple[(deliverable
+  index, candidate index), ...]` (at most 64 pairs): for at most 16 root-relative source
+  deliverables (`.py .sh .bash .js .mjs .cjs .ts .rb .pl .r .R .jl .lua .php`, or no suffix with a
+  `#!` first line) it reads at most 256 KiB from the start, link-free, never a credential-named,
+  multiply linked or binary file, and pairs each with the candidates a one-line quoted literal
+  (`'`, `"` or backtick) equals, ends with `/` plus, or equals by a basename of at least 5 bytes.
+  Only positions in the caller's own tuples leave the adapter. Any pair adds the agent-actionable
+  task fact and Stop-gate token `deliverable_references_undeclared_file`
+  (`DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP`; gap rule G0c, actionable on both routes, never a
+  finding); any failure is `()`. The check records the referenced files on the referencing
+  deliverable's `DeliverableState` (`undeclared_references`, below), so the receipt and the Stop
+  gate name them; `delivered_set.undeclared_reference_rows(states)` and
+  `task_fact_tokens.undeclared_reference_variants(rows)` are the one reading and the one sentence
+  ("Undeclared files: <obligation> item <n> names \"<path>\" and ..."), each path through
+  `bounded_text.quoted_path` (ASCII, one line, no double quote, at most 120 characters; the
+  post-compaction recap uses the same helper). Only a `full_local` receipt names a path: under
+  `default_local_export` and `redacted_share` the gap detail is cleared and the limitations section
+  passes the rows without paths, so the sentence counts them ("... names 2 file(s)."). A disclosure
+  decision never clears it; embedding the content, rebuilding it at run time, or declaring the file
+  as a requested item does.
+- **Work-integrity 0.3.0.** `requested_item_never_attempted` waits for `acting_started`, adds the
+  absent-output fact, and skips blocked obligations. Since ADR-042 an item is reported only once a
+  completion claim names its obligation or a published producing action names that obligation (or
+  none), never for a `role: input` item; a published research or review action is not acting.
+- **Task-fact scope (`kernel/task_fact_scope.py`, ADR-042).**
+  `finding_obligation_scope(state, finding_id) -> frozenset[ObligationId]`,
+  `task_fact_bears_on_finding(code, *, state, finding_id, markers) -> bool` and
+  `scoped_resolution_reasons(reasons, *, state, finding_id, records) -> tuple[str, ...]` (drops the
+  `coverage:<task fact>` reasons that do not bear on the finding; never empties the list).
+  `self_verification_refusal` applies it; readiness, the Stop gate and resolution stay task-wide.
+- **Fact lineage and canonical commands (ADR-045, issue #1028).**
+  `kernel/fact_lineage.FactLineage(code, rule, state, obligation_id, item_index, check_event_id,
+  frontier, prior_event_id, prior_frontier, prior_size_bytes, prior_lines, now_size_bytes,
+  now_lines, proof, basis, source_event_ids, accepted_by)` is the typed provenance of a derived
+  fact (closed `rule`: `deliverable_path_history|deliverable_read|planned_command_match|
+  planned_command_unmatched|edit_after_verification_run`; closed `state`; counts and ids only);
+  `lineage_text(item)` is the one `Why:` renderer, `lineage_to_wire` / `lineage_from_wire` the wire
+  mapping. `FactLineageModel` (`protocol/models.py`) is the wire object, carried as the optional
+  `fact_lineage` list (at most 64) on `status` `closure_readiness` and on the check result, derived
+  per request by `closure_readiness.current_fact_lineage(state, records, applicability)` from the
+  applicable check's recorded `deliverable_states` plus `task_fact_signals(...).lineage`.
+  `TaskFactSignals.lineage` covers `planned_verification_not_observed|failed|stale|
+  matched_by_prefix` and `edited_after_last_verification`. `check_recorded` 1.4.0 gains the optional
+  `deliverable_states` (at most 64 `DeliverableState`: `obligation_id`, `item_index`, `path_key`,
+  `size_bytes`, `lines`, `base_lines`, `basis delivered|verified|present`, `change
+  emptied|truncated|removed|unchanged`, `proof task_base|earlier_check`, `prior_size_bytes`,
+  `prior_lines`, `prior_event_id`, `prior_frontier`, `accepted_by`, `unreviewable`, and since
+  #1044 `undeclared_references` (at most 8 sorted root-relative paths of files the change created
+  that this source deliverable names and no item declares: 1-256 characters, valid UTF-8, no control
+  character, no leading `/`, no empty, `.` or `..` segment; the only path text the check records)
+  with `undeclared_reference_count` when more were found than are named); absent when the check read
+  no declared output file. Status `closure_readiness.undeclared_references` (optional on the
+  unreleased status-result 1.4.0, at most 16 rows `{obligation_id, item_index, paths, total}`,
+  `closure_readiness.current_undeclared_references` over the applicable check) carries them; each
+  path is a `repository_excerpt` content leaf of every status view (a privacy policy can withhold
+  it as the omission marker), and the MCP text summary never prints one. `domain/command_segments`: `canonical_words(argv)` (wrappers,
+  assignments, basename, `python3`/`pythonX.Y` to `python`, `python -m pytest` to `pytest`),
+  `canonical_command_commitments(key, argv) -> (full, prefixes, flags)`,
+  `canonical_commitment(key, kind, payload)` (`full|prefix|flag`, domain-separated from segment
+  commitments), `command_structure(normalized) -> CommandStructure(commands, composition,
+  compound)`, `planned_segments(key, normalized)`, `strip_wrappers(argv)`;
+  `command_segment_commitments` now also carries up to `MAX_CANONICAL_COMMITMENTS` (48) canonical
+  commitments, `MAX_COMMAND_COMMITMENTS` (80) in all (the observed action `command` field, the hook
+  structural list, the control-request 2.9.0 `maxItems` and `observed_failures` share that bound;
+  the wire bound and the `write_scope` enum are generated from the hook's constants, #1039).
+  `task_facts.requested_planned_command(value) -> PlannedCommand | None` and `planned_match(run,
+  planned) -> PlannedMatch(outcome, kind) | None` with `kind` `exact|normalized|prefix|flags`;
+  `prefix` and `flags` raise the standing `planned_verification_matched_by_prefix`.
+  `task_facts.observed_planned_commands(projection, observed, cooperative, values)` is the set of
+  requested command values some observed run matched; `command_attempts.same_requested_path` /
+  `value_in_attempted` match a file in another spelling. `domain/shell_writes.shell_write_paths(
+  command)` (literal, attributable paths only; linear; analyses at most `MAX_SHELL_WRITE_CHARS` =
+  16,384 characters, up to the last newline, and drops the command a cut interrupts) and `shell_write_scope(command, *, workspace,
+  inside, owned_roots=, relative_only=)` (outside wins, then `workspace`, then a single non-counting
+  class; two non-counting classes count as `workspace`; a directory destination is classified by
+  where it is, not by a notes or receipt file name; the hook calls it alone, with no separate
+  outside-workspace check);
+  `write_scope` admits `notes` (non-counting) and `workspace` (a shell command that writes the
+  workspace; counts as an edit with `outside_workspace`; `observed_failures.SHELL_EDIT_TOKENS`).
+  `missing_for_assessment.check_change_text_paths(capture)` lists the files the check-time change
+  shows as text; `_TargetFiles.unsupported` decides by Git's NUL sniff first, then the suffix. The
+  standing `declared_output_not_reviewable` (`DECLARED_OUTPUT_NOT_REVIEWABLE_GAP`) is raised when a
+  review ran and a declared output file is a type the packet never carries.
+  `GAP_CLASSIFICATION_VERSION` was `"7"` for this change (`"8"` since #1044).
+- **Runner class.** `domain/observation_selection.command_runner_class` classifies
+  `python -m <module>` by module (pytest/unittest/nose2/tox/nox/doctest `test`, mypy/pyright
+  `typecheck`, ruff/flake8/pylint/pyflakes/pycodestyle `lint`, build/compileall `build`) and never
+  counts an interpreter-run script as `build` by its name (ADR-042). `RecordedPolicyVersionWire`,
+  `CurrentPolicyPackWire`, `RecordedPolicyPackWire` and `RecordedVersionSlicePackWire` admit
+  `work-integrity/0.3.0`; `POLICY_PACK_GENERATIONS` gains the `research-evidence/0.2.0` +
+  `work-integrity/0.2.0` generation.
+- **Runtime structural fields.** The observation envelope and control-request 2.9.0
+  `structural_payload` admit `install_target` (`yoetz_runtime|workspace_env|private_env|system|
+  unresolved`), `write_scope` (`outside_workspace|scratch|yoetz_owned|notes|workspace`; ADR-042:
+  `scratch` and `yoetz_owned` name an edit whose every path is a temp root outside the workspace or
+  Yoetz's own material; ADR-045: `notes` the agent's own notes, `workspace` a shell command that
+  writes the workspace) and
+  `effective_user` (`root|non_root`),
+  produced only by `cli/runtime_facts.runtime_structural_facts`, which judges `install_target`
+  against the task interpreter (the agent's `python3`/`python` on the hook's `PATH`; ADR-033
+  item 7). `observed_action_description(...,
+  install_target=, write_outside_workspace=, effective_user=, write_scope=)` appends
+  ` (install <class>)`, ` (write outside_workspace|scratch|yoetz_owned)`, ` (user <root|non_root>)`
+  after the tool and runner suffixes; `observed_action_runtime_tokens(description)` reads them
+  back and `observed_edit_counts(description)` is `False` only for a `scratch`/`yoetz_owned` edit,
+  which never advances the latest edit or counts as acting (ADR-042). The Codex session stream
+  names a `FileChange` item's `write_scope` from its own paths (never `outside_workspace`). A Yoetz
+  MCP tool (`mcp__yoetz__*`, `mcp__plugin_yoetz_*__*`) always materializes as action kind `other`.
+  `domain/write_scope.py`: `classify_write_path(path, *, workspace, inside, owned_roots) ->
+  workspace|outside_workspace|scratch|yoetz_owned`, `edit_write_scope(classes) -> str | None`,
+  `scratch_overlap(path)`, `yoetz_artifact_name(path)`;
+  `kernel.task_facts.non_counting_edits_exempt(projection) -> frozenset[str]` names the exempt write
+  tokens per class (deliverables win: no `write scratch` exemption when a requested non-input item
+  is under or contains a fixed temp root; no `write yoetz_owned` exemption when one has a receipt
+  name or a requested non-input directory exists). Observation advice 0.1.8 adds the
+  advice-only rule codes `install_into_yoetz_runtime`, `install_into_private_env`,
+  `write_outside_workspace`.
+- **Closure gate (`cli/closure_gate.py`).** `STOP_GATE_TOKENS` (in `kernel/task_facts.py`) are
+  `obligations_open`, `receipt_findings_unresolved` (agent-work findings only),
+  `finding_rejection_awaiting_ruling` (a finding the agent rejected with a reason that awaits the
+  reviewer's ruling; the text sends the agent to `check` with `final_review: true` and never offers
+  acknowledgement), `closing_review_required`, `planned_verification_failed`,
+  `planned_verification_not_observed`, `planned_verification_stale`,
+  `edited_after_last_verification` (ADR-042; observation-dependent like the planned-verification
+  tokens), `requested_output_git_ignored`, `declared_output_removed`, `declared_output_emptied`
+  (the last two are also voiced once per key on a Stop the host already continued, below), and
+  `deliverable_references_undeclared_file` (#1044: the text tells the agent to embed the file,
+  rebuild it at run time or declare it as a delivered output, says disclosing the dependency does
+  not clear it, and names the files from `closure_readiness.undeclared_references`: the one
+  exception to closed tokens, counts and ids in the gate text; a path is never remembered).
+  `closure_gate_from_readiness(readiness, frontier_sequence=, frontier_digest=,
+  observation_pending=, reasked_blockers=, active_stop=, acceptance_uncovered=) ->
+  ClosureGate(identity, text, items, blocker_keys) | None` asks the **re-checks
+  `closure_readiness.rechecks` announces** (tb4n3 RC-8,
+  ADR-033 amendment): `Recheck {kind: acceptance | acknowledgement | blocker | premise, key,
+  subjects, rule, since_frontier}` with the keys `accept:<h8 of sorted resolved obligation ids>`,
+  `ack:<obligation id>`, `blocker:<obligation id>:<kind>`, `premise:<acknowledged count>`. Status,
+  `closure_prepare`, the CLI and the TUI show the same list; the gate never asks one status did
+  not announce, and a readiness without the list (a service older than the gate) announces none.
+  Items added: `BLOCKER_RECHECK_ITEM` (`blocker_recheck`), `ACKNOWLEDGEMENT_RECHECK_ITEM`,
+  `PREMISE_RECHECK_ITEM`, `ACCEPTANCE_RECHECK_ITEM` (`acceptance_recheck`). Delivery memory stays
+  client-side: `blocker_keys` holds the keys the gate asked (the historical field name): a blocker
+  as `<obligation id>:<kind>`, `ack:<obligation id>`, `premise:<n>`,
+  `accept:<h8>@<invite frontier>` and `emptied:<h8 of the declaring obligation items>`. An
+  `acknowledgement` whose `since_frontier` is later than the earliest acceptance invite this session
+  received answers that invite and is not asked (no invite-then-challenge). The acceptance sentence
+  is never composed beside open obligations, a rejected finding awaiting a ruling, a withdrawn
+  deliverable or an undeclared dependency (it then stays unasked). `finding_counts` (`to_do`, `awaiting_ruling`,
+  `self_verify_eligible`) decides the finding count and whether `self_verified` is offered;
+  `awaiting_ruling_findings` and `fact_lineage` give the ids and rules the text names, and
+  `predicted_receipt` supplies the lowest-priority tail sentence (`predicted_receipt_variants`).
+  When the gate fires and readiness `standing_limitations` lists `declared_output_content_moved`, the text
+  carries one informational note; that code alone never fires the gate.
+  `acceptance_uncovered` (#1050, ADR-033 amendment) is `None` when the host gave no final message
+  (today's re-read for every resolved obligation), else the resolved obligations the final message
+  does not address: they are named, and `()` means the re-read is not asked.
+  `uncovered_acceptance(final_message, rows) -> tuple[obligation id, ...]` is the deterministic
+  rule over `(obligation id, acceptance_criteria or description or None)` rows: covered by the
+  obligation id in the first 65,536 characters, or by at least two thirds of the acceptance text's
+  terms (lowercase ASCII alphanumeric tokens of three or more characters, or two with a digit, minus
+  79 closed function words, first 64 distinct) among the message's tokens. Where the re-read rides
+  alone it ends with the sentence that a pure confirmation needs no new record, check or receipt.
+  `read_closure_gate(..., final_message=, on_acceptance_covered=)` reads compact status and raises
+  `ClosureGateUnavailable` when it cannot; when the gate would ask the acceptance re-read and a final
+  message is present it reads one `obligations` page (`status: resolved`, limit 100, 750 ms) and
+  trusts it only when its `resolved` rows hash to the announced `accept:<h8>` key. The Codex Stop
+  body's and the Claude Code Stop payload's `last_assistant_message` reach it in process only
+  (`handle_observe(..., _stop_final_message=)` for Claude Code); Cursor's `stop` carries none.
+  `closure_gate_already_delivered` / `record_closure_gate_delivered(..., blocker_keys=)` keep the
+  owner-only `observation/closure-gate.json` once-per-frontier memory, and
+  `closure_gate_reasked_blockers(session_id)` reads the per-session asked keys in
+  `observation/closure-gate-blockers.json` (at most 64 per session). Both decision functions take
+  `active_stop=` (#985): on a Stop the host already continued, only an announced re-check not yet
+  asked (never `premise`) or a withdrawn deliverable (`declared_output_emptied` /
+  `declared_output_removed`) whose `emptied:<h8>` key was not yet asked can continue the agent.
+  `closure_gate_turn_blocks(session_id)` / `reset_closure_gate_turn` keep
+  the per-turn count in `observation/closure-gate-turns.json`, capped at
+  `MAX_GATE_BLOCKS_PER_TURN` (2); `record_closure_gate_delivered(..., active_stop=)` counts.
+  `BLOCKER_UNCONFIRMED_TOKEN` (`obligation_blocker_unconfirmed`) is a gate item. Hook diagnostic
+  reasons: `closure_gate_continued`, `closure_gate_blocker_rechecked`,
+  `closure_gate_acceptance_rechecked` (the extra Stop turn the acceptance re-read costs),
+  `closure_gate_acceptance_covered` (the final message addressed every resolved obligation's
+  acceptance, so the re-read was not asked; #1050),
+  `closure_gate_active_stop_rechecked`, `closure_gate_not_required`,
+  `closure_gate_repeat_suppressed`, `closure_gate_turn_end_after_continue` (an already-continued
+  Stop that emitted nothing: the normal end of a continued turn; this is the former
+  `closure_gate_loop_guard`, renamed because it guards no loop), `closure_gate_budget_exhausted`,
+  `closure_gate_unavailable`. A route-less `status`
+  control call uses the route the same session's MCP bridge named on its last successful
+  `status` or `check` (`service/session_routes.SessionRouteMemory`, owner-only
+  `session-routes.json` in the service state directory, 256 sessions, last writer wins), else
+  the policy route; a route-less `check` is unchanged (ADR-033 amendment 2026-10-07).
+  `set_standing_advice_withheld` / `standing_advice_withheld` carry standing advice a Codex or
+  Claude Code Stop withheld to the first later `PostToolUse`.
+  Before the gate reads status, the Stop pass drains the task's hook rows toward the current
+  frontier and records `stop_drain_complete` or `stop_drain_incomplete`; `observation_pending` is
+  true only when rows that can change this task's facts remain (#994).
+- **Text surfaces.** `domain/receipts.TASK_FACT_GAP_SENTENCES` holds one fixed sentence per task-fact
+  code; `check_time_change_gap_sentence(code)` returns it, so receipt gap details and limitations,
+  `render_human_check`/`render_human_status` and the MCP check summary show it. A publish rejection
+  whose validation pointer is `/event_drafts/<n>/payload/outcome` adds the fixed
+  `_RESULT_OUTCOME_HINT` (closed outcome set, no `blocked`, the blocker line) to the MCP error text.
+- **Scope.** The requested-output read runs only in `check`; status candidate findings and semantic
+  assessment matching call `work_integrity_findings(case)` without `absent_outputs`.

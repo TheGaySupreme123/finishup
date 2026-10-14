@@ -10,17 +10,17 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import Enum
 from threading import Lock
-from types import MappingProxyType
 from typing import Final, cast
 
 from yoetz.config.models import LoggingConfig
 from yoetz.domain.values import format_rfc3339_millis
+from yoetz.observability.exception_reasons import exception_reason as _exception_reason
 from yoetz.observability.privacy import (
     assert_plaintext_safe,
     redact_diagnostic_value,
 )
 from yoetz.ports.clock import ClockPort
-from yoetz.protocol.ids import IdKind, new_id
+from yoetz.protocol.ids import IdKind, new_id, validate_id
 
 __all__ = [
     "LogMode",
@@ -48,6 +48,7 @@ _FIELD_ORDER: Final = (
     "outcome",
     "reason",
     "reason_code",
+    "phase",
     "origin",
     "engine_version",
     "policy_version",
@@ -56,10 +57,26 @@ _FIELD_ORDER: Final = (
     "semantic_challenges_returned",
     "semantic_candidates_accepted",
     "semantic_challenges_rejected",
+    "semantic_rejected_hidden_source_claim",
+    "semantic_rejected_ref_not_carried",
+    "semantic_rejected_ref_outside_case",
+    "semantic_rejected_routine_completeness",
+    "semantic_rejected_snippet_invalid",
+    "semantic_rejected_subject_refs_over_limit",
+    "semantic_rejected_yoetz_process_state",
+    "semantic_challenges_advisory",
+    "semantic_agent_criteria",
+    "semantic_review_refs_reduced",
+    "semantic_review_snippets_rejected",
     "semantic_restatements_suppressed",
     "semantic_prior_rulings_set_aside",
+    "semantic_rulings_disputed_after_rebuttal",
     "semantic_findings_selected",
     "semantic_findings_suppressed",
+    # One in-check reviewer follow-up round (#1047).
+    "semantic_follow_up_round",
+    "semantic_follow_up_items",
+    "semantic_follow_up_refs_added",
     "semantic_capture_parts_resolved",
     "semantic_diff_parts_resolved",
     "semantic_excerpts_selected",
@@ -76,12 +93,18 @@ _FIELD_ORDER: Final = (
     # Admits the loop-health connection count into _CALLER_FIELDS/_COUNT_FIELDS below, so a
     # bounded-counts caller can report how much work was in flight during a stall.
     "operation_count",
+    # Closed control-plane identity for a response write the peer abandoned (tb4n2 NEW-8).
+    "control_method",
+    "client_kind",
 )
 _FIELD_SET: Final = frozenset(_FIELD_ORDER)
 _CALLER_FIELDS: Final = _FIELD_SET - {"timestamp", "level", "component", "operation"}
 # Fields a bounded-counts caller may supply. The identity fields the emitter binds itself are
 # excluded so a caller can never pass the same keyword twice.
 _COUNT_FIELDS: Final = _CALLER_FIELDS - {"correlation_id", "request_id", "outcome"}
+# Extra structural context a bounded event may carry; the identity and reason fields it binds
+# itself are excluded so a caller can never pass the same keyword twice.
+_CONTEXT_FIELDS: Final = _COUNT_FIELDS - {"reason", "origin", "reason_code", "phase"}
 _STRUCTURAL_MARKER: Final = "_yoetz_structured_record"
 _STRUCTURAL_FIELDS: Final = "_yoetz_structured_fields"
 _COMPONENT_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$", re.ASCII)
@@ -120,76 +143,6 @@ class _SystemClock:
         return 0.0
 
 
-_UNKNOWN_EXCEPTION_REASON: Final = "exception_unavailable"
-# Closed reviewed registry of exception-class names that may identify an internal failure. Every
-# token is a fixed literal; an unlisted class collapses to the sentinel so no class name a caller
-# can influence is ever rendered. Storage/authorizer entries carry the durability failures that
-# reach the daemon's unexpected-dispatch path.
-_EXCEPTION_REASONS: Final[Mapping[str, str]] = MappingProxyType(
-    {
-        "ArithmeticError": "exception_arithmetic_error",
-        "AssertionError": "exception_assertion_error",
-        "AttributeError": "exception_attribute_error",
-        "AuthError": "exception_auth_error",
-        "BlockingIOError": "exception_blocking_io_error",
-        "BrokenPipeError": "exception_broken_pipe_error",
-        "BusyError": "exception_busy_error",
-        "CantOpenError": "exception_cant_open_error",
-        "ConfigError": "exception_config_error",
-        "ConnectionError": "exception_connection_error",
-        "ConnectionRefusedError": "exception_connection_refused_error",
-        "ConnectionResetError": "exception_connection_reset_error",
-        "ConstraintError": "exception_constraint_error",
-        "ControlError": "exception_control_error",
-        "ControlProtocolError": "exception_control_protocol_error",
-        # Coordination domain and project command failures are ValueError subclasses that can
-        # reach the status boundary from a project read (issue #840).
-        "CoordinationError": "exception_coordination_error",
-        "CorruptError": "exception_corrupt_error",
-        "EOFError": "exception_eof_error",
-        "FileExistsError": "exception_file_exists_error",
-        "FileNotFoundError": "exception_file_not_found_error",
-        "FullError": "exception_full_error",
-        "HostLineageRegistryError": "exception_host_lineage_registry_error",
-        "IndexError": "exception_index_error",
-        "InterruptedError": "exception_interrupted_error",
-        "IsADirectoryError": "exception_is_a_directory_error",
-        "KeyError": "exception_key_error",
-        "LifecycleError": "exception_lifecycle_error",
-        "LookupError": "exception_lookup_error",
-        "MemoryError": "exception_memory_error",
-        "MisuseError": "exception_misuse_error",
-        "NotADBError": "exception_not_a_db_error",
-        "NotADirectoryError": "exception_not_a_directory_error",
-        "NotImplementedError": "exception_not_implemented_error",
-        "OSError": "exception_os_error",
-        "OverflowError": "exception_overflow_error",
-        "PathSafetyError": "exception_path_safety_error",
-        "PermissionError": "exception_permission_error",
-        "ProjectCommandError": "exception_project_command_error",
-        "ProtocolValueError": "exception_protocol_value_error",
-        "PublicOperationError": "exception_public_operation_error",
-        "ReadOnlyError": "exception_read_only_error",
-        "RecursionError": "exception_recursion_error",
-        "ReferenceError": "exception_reference_error",
-        "RuntimeError": "exception_runtime_error",
-        "SQLError": "exception_sql_error",
-        "StopAsyncIteration": "exception_stop_async_iteration",
-        "StopIteration": "exception_stop_iteration",
-        "StorageUnsafeError": "exception_storage_unsafe_error",
-        "SystemError": "exception_system_error",
-        "ThreadingViolationError": "exception_threading_violation_error",
-        "TimeoutError": "exception_timeout_error",
-        "TypeError": "exception_type_error",
-        "UnicodeDecodeError": "exception_unicode_decode_error",
-        "UnicodeEncodeError": "exception_unicode_encode_error",
-        "ValidationError": "exception_validation_error",
-        "ValueError": "exception_value_error",
-        "ZeroDivisionError": "exception_zero_division_error",
-    }
-)
-
-
 def _new_correlation() -> str:
     try:
         return new_id(IdKind.CORRELATION)
@@ -197,16 +150,15 @@ def _new_correlation() -> str:
         return _FALLBACK_CORRELATION
 
 
-def _exception_reason(exc: BaseException) -> str:
-    """Return a reviewed structural exception identity without formatting the exception."""
+def _caller_correlation(correlation_id: str | None) -> str:
+    """Keep a valid caller-minted correlation id; mint a fresh one otherwise."""
 
-    # Deriving the token from the class name would let a dynamically created exception class carry
-    # caller data onto stderr, so only these reviewed names ever resolve to a reason.
+    if correlation_id is None:
+        return _new_correlation()
     try:
-        name = type(exc).__name__
+        return validate_id(IdKind.CORRELATION, correlation_id)
     except BaseException:
-        return _UNKNOWN_EXCEPTION_REASON
-    return _EXCEPTION_REASONS.get(name, _UNKNOWN_EXCEPTION_REASON)
+        return _new_correlation()
 
 
 def _level_name(level_number: int) -> str:
@@ -446,6 +398,9 @@ def record_unexpected_exception_without_raising(
     component: str = "process_boundary",
     operation: str = "unexpected_exception",
     request_id: str | None = None,
+    phase: str | None = None,
+    correlation_id: str | None = None,
+    reason_code: str | None = None,
 ) -> str:
     """Emit bounded structural identity for an unexpected internal exception.
 
@@ -453,11 +408,17 @@ def record_unexpected_exception_without_raising(
     service-side and bridge-side records for one failed call be joined exactly, instead of
     guessing from method and timestamp when two calls overlap.
 
+    ``correlation_id`` is an id another process minted and will look up (a service spawned on
+    demand records its startup failure under the id its spawner passed, #1040); an invalid one is
+    replaced by a fresh id, which is returned either way. ``reason_code`` is the exception's own
+    closed refusal token when it carries one but is still reported as unexpected (an endpoint or
+    storage refusal that stops service startup); the sinks gate it like any other token.
+
     In addition to stderr, a durable owner-only diagnostic line is written under ``log_dir()`` so
     a public ``correlation_id`` remains resolvable when harnesses swallow process stderr.
     """
 
-    correlation_id = _new_correlation()
+    correlation_id = _caller_correlation(correlation_id)
     reason = _exception_reason(exc)
     origin = exception_origin(exc)
     try:
@@ -468,6 +429,8 @@ def record_unexpected_exception_without_raising(
             outcome="internal_error",
             reason=reason,
             origin=origin,
+            reason_code=reason_code,
+            phase=phase,
         )
     except BaseException:
         pass
@@ -481,6 +444,8 @@ def record_unexpected_exception_without_raising(
             reason=reason,
             request_id=request_id,
             origin=origin,
+            reason_code=reason_code,
+            phase=phase,
         )
     except BaseException:
         pass
@@ -493,6 +458,7 @@ def record_bounded_event_without_raising(
     operation: str,
     reason: str,
     request_id: str | None = None,
+    context: Mapping[str, object] | None = None,
 ) -> str:
     """Emit bounded structural identity for a reviewed non-exception event.
 
@@ -502,6 +468,11 @@ def record_bounded_event_without_raising(
     tokens are reviewed literals at the call site, and the sinks re-validate them against the
     same field allowlists as an exception record. The durable owner-only line is what makes the
     outcome resolvable when harnesses swallow process stderr.
+
+    ``context`` adds bounded structural fields (closed tokens and integers under allowlisted
+    names such as ``control_method``, ``client_kind`` or ``duration_ms``); a name the sinks do not
+    allowlist, or one this function binds itself, is dropped, and every value passes the same
+    fence as any other field.
     """
 
     return _record_bounded_without_raising(
@@ -510,6 +481,7 @@ def record_bounded_event_without_raising(
         reason=reason,
         outcome="not_dispatched",
         request_id=request_id,
+        context=context,
     )
 
 
@@ -519,13 +491,18 @@ def record_classified_exception_without_raising(
     component: str,
     operation: str,
     request_id: str | None = None,
+    phase: str | None = None,
+    reason_code: str | None = None,
+    correlation_id: str | None = None,
 ) -> str:
     """Record a public classified failure with bounded exception identity.
 
     Unlike ``record_unexpected_exception_without_raising``, this is not an internal last-resort:
     ``outcome`` is ``public_error`` so a wire ``correlation_id`` stays joinable to a class-name
     token and optional ``yoetz`` origin without collapsing the failure into ``internal_error``.
-    The sinks still never record ``str(exc)``, paths, or object ids.
+    The sinks still never record ``str(exc)``, paths, or object ids. ``reason_code`` is the
+    exception's own closed refusal token, when it carries one; ``correlation_id`` is a
+    caller-minted id, as for ``record_unexpected_exception_without_raising``.
     """
 
     return _record_bounded_without_raising(
@@ -535,6 +512,9 @@ def record_classified_exception_without_raising(
         outcome="public_error",
         request_id=request_id,
         origin=exception_origin(exc),
+        reason_code=reason_code,
+        phase=phase,
+        correlation_id=correlation_id,
     )
 
 
@@ -580,10 +560,23 @@ def _record_bounded_without_raising(
     request_id: str | None,
     origin: str | None = None,
     reason_code: str | None = None,
+    phase: str | None = None,
+    context: Mapping[str, object] | None = None,
+    correlation_id: str | None = None,
 ) -> str:
     """Mint one correlation id and write it to both sinks. Never raises to callers."""
 
-    correlation_id = _new_correlation()
+    correlation_id = _caller_correlation(correlation_id)
+    extra: dict[str, object] = {}
+    if context is not None:
+        try:
+            extra = {
+                name: value
+                for name, value in context.items()
+                if type(name) is str and name in _CONTEXT_FIELDS
+            }
+        except BaseException:
+            extra = {}
     try:
         get_logger(component).warning(
             operation,
@@ -593,6 +586,8 @@ def _record_bounded_without_raising(
             reason=reason,
             origin=origin,
             reason_code=reason_code,
+            phase=phase,
+            **extra,
         )
     except BaseException:
         pass
@@ -607,6 +602,8 @@ def _record_bounded_without_raising(
             request_id=request_id,
             origin=origin,
             reason_code=reason_code,
+            phase=phase,
+            counts=extra or None,
         )
     except BaseException:
         pass
@@ -620,6 +617,7 @@ def record_bounded_counts_without_raising(
     outcome: str,
     counts: Mapping[str, object],
     request_id: str | None = None,
+    correlation_id: str | None = None,
 ) -> str:
     """Emit bounded structural counters for a reviewed non-exception event.
 
@@ -631,7 +629,13 @@ def record_bounded_counts_without_raising(
     this would otherwise be the only trace.
     """
 
-    correlation_id = _new_correlation()
+    if correlation_id is None:
+        correlation_id = _new_correlation()
+    else:
+        try:
+            validate_id(IdKind.CORRELATION, correlation_id)
+        except BaseException:
+            correlation_id = _new_correlation()
     # Excluding the names bound directly below is load-bearing, not tidiness: a caller that put
     # ``outcome`` (or a correlation/request id) in ``counts`` would hand the logger the same
     # keyword twice, and the TypeError is swallowed by the guard below — the record would vanish

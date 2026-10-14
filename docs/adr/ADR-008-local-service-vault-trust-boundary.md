@@ -187,7 +187,9 @@ Control failures are bounded reasons, not messages, and the reason must not misd
 state. A handler returning is the commit boundary: everything after it — projection binding,
 client projection, and success-body validation — only shapes the response. An unexpected failure
 there is reported as the retryable `response_projection_failed`, which states that the operation
-stands and that the caller resolves it by replaying the same `request_id`. Reporting it as the
+stands and that the caller resolves it by replaying the same `request_id` once; if that replay also
+fails the failure is deterministic and the caller reads `status view=operation` instead (ADR-043). The bridge's own text projection is not part of this window's failure modes: a
+text that cannot be built never fails the call. Reporting it as the
 generic non-retryable `internal_error` would assert something false about the ledger and steer a
 caller away from the idempotent replay that recovers it. Deliberate bounded failures raised in the
 same window — `privacy_projection_blocked`, `privacy_projection_unavailable`, and public

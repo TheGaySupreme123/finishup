@@ -705,9 +705,9 @@ def test_claude_failure_advice_preserves_raw_event_and_commits_after_output(
     assert specific["hookEventName"] == "PostToolUseFailure"
     context = cast(str, specific["additionalContext"])
     assert context.startswith("Review the failed Yoetz operation before continuing.")
-    # The paired ordinary profile saw no pre for this call, so the one-time
-    # standing-limitation notice for its new orphan scope follows the advice (#917).
-    assert context.count("Yoetz notice (no response needed)") == 1
+    # The paired ordinary profile saw no pre for this call. The orphan remains a
+    # standing coverage record and is not injected into hook context (#974).
+    assert "Yoetz notice (no response needed)" not in context
     assert commits == ["failure-advice-1"]
     envelope = store.list_envelopes(commitment)[0]
     assert envelope.structural_payload["hook_name"] == "PostToolUse"
@@ -764,10 +764,16 @@ def test_claude_plugin_tool_does_not_lease_frontier_advice_for_its_own_call(
     assert store.peek_frontier_motion(commitment, session) is not None
 
 
-def test_claude_stop_delivers_advice_as_non_error_feedback_not_a_block(
+def test_claude_stop_withholds_ordinary_advice_for_the_next_session_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pending advice at Claude Stop uses the documented additionalContext channel (#420)."""
+    """Claude Stop feedback continues the turn, so ordinary advice waits (#420, #985).
+
+    Claude Code's Stop ``additionalContext`` is non-error feedback, but the conversation still
+    continues so Claude can act on it: it spends the continuation the closure gate needs, and
+    the next Stop arrives with ``stop_hook_active``. Advice stays pending and reaches the agent
+    on the next SessionStart through the same additionalContext channel.
+    """
 
     store, commitment = _consented_store(tmp_path)
     # SessionStart would deliver any advice pending at that moment together
@@ -837,13 +843,13 @@ def test_claude_stop_delivers_advice_as_non_error_feedback_not_a_block(
         )
         == 0
     )
-    emitted = cast(Mapping[str, JsonValue], strict_json_parse(stop_out.getvalue()))
-    assert set(emitted) == {"hookSpecificOutput"}
-    specific = cast(Mapping[str, JsonValue], emitted["hookSpecificOutput"])
-    assert specific["hookEventName"] == "Stop"
-    assert "connect_provider" in cast(str, specific["additionalContext"])
-    assert b"decision" not in stop_out.getvalue()
-    assert store.peek_advice_for_delivery(commitment, session_commitment=session_commitment) is None
+    assert stop_out.getvalue() == b"{}\n"
+    assert (
+        store.peek_advice_for_delivery(
+            commitment, allow_standing=True, session_commitment=session_commitment
+        )
+        is not None
+    )
 
     # A second Stop in the same host loop is the documented loop guard: nothing
     # is re-delivered and the output stays empty.
@@ -862,6 +868,26 @@ def test_claude_stop_delivers_advice_as_non_error_feedback_not_a_block(
         == 0
     )
     assert guarded_out.getvalue() == b"{}\n"
+
+    resume_out = io.BytesIO()
+    assert (
+        observe_hooks.handle_claude_observe(
+            event_name="SessionStart",
+            stdin_bytes=canonical_encode(
+                {"session_id": session, "hook_event_name": "SessionStart", "source": "resume"}
+            ),
+            stdout=resume_out,
+            workspace=str(tmp_path),
+            _state=tmp_path,
+            skip_service=True,
+        )
+        == 0
+    )
+    resumed = cast(Mapping[str, JsonValue], strict_json_parse(resume_out.getvalue()))
+    specific = cast(Mapping[str, JsonValue], resumed["hookSpecificOutput"])
+    assert specific["hookEventName"] == "SessionStart"
+    assert "connect_provider" in cast(str, specific["additionalContext"])
+    assert b"decision" not in resume_out.getvalue()
 
 
 @pytest.mark.parametrize(
@@ -1384,13 +1410,22 @@ def test_claude_ordinary_profile_keeps_denial_observation_and_returns_supported_
     assert len(raw.splitlines()) == 1
 
 
-def test_claude_local_only_check_does_not_get_a_semantic_retry_notice(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mode", ["deterministic_only", "inspect"])
+def test_claude_local_only_check_does_not_get_a_semantic_retry_notice(
+    tmp_path: Path, mode: str
+) -> None:
+    """A check that asks for no AI-powered review gets no review notice or retry offer.
+
+    ``inspect`` (#1048) is a read that runs no review either, so a denied inspection spends no
+    retry offer and shows no AI-powered review notice (PR #1054 review).
+    """
+
     output = io.BytesIO()
     payload: dict[str, JsonValue] = {
         "session_id": "local-check",
         "hook_event_name": "PermissionDenied",
         "tool_name": "mcp__yoetz__check",
-        "tool_input": {"mode": "deterministic_only"},
+        "tool_input": {"mode": mode},
         "reason": "[Rule]",
     }
     assert (

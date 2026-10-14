@@ -16,7 +16,7 @@ from mcp import types
 
 from yoetz.domain.events import ClaimRevisionMismatch, public_error_for_claim_revision_mismatch
 from yoetz.mcp.server import result_from_public_model
-from yoetz.mcp.summaries import render_safe_compact_summary
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
 from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.models import PublishWorkResultModel
 
@@ -76,7 +76,7 @@ def test_generic_text_summary_names_reason_code_and_field() -> None:
     summary = render_safe_compact_summary(wire)
     assert summary.startswith("Error EVENT_INVALID; retryable: no; correlation:")
     assert f"Reason: unsorted_set_field at {_FIELD}." in summary
-    assert len(summary.encode("ascii")) <= 512
+    assert len(summary.encode("ascii")) <= MAX_SUMMARY_BYTES
     # Caller/message prose never rides the text channel.
     assert "already in ascending ASCII" not in summary
 
@@ -89,7 +89,7 @@ def test_claim_revision_text_names_the_closed_invariant_and_correction() -> None
     assert "Invariant: limitation_refs_complete." in summary
     assert "include every relevant partial or failed result in limitation_refs" in summary
     assert "The event batch is invalid" not in summary
-    assert len(summary.encode("ascii")) <= 512
+    assert len(summary.encode("ascii")) <= MAX_SUMMARY_BYTES
 
 
 def test_claim_revision_text_is_independent_of_the_error_message() -> None:
@@ -162,7 +162,7 @@ def test_claim_revision_registered_pairs_survive_max_pointer_budget(
     assert f"Reason: claim_revision_mismatch at /event_drafts/99/payload/{field}." in summary
     assert f"Invariant: {invariant}." in summary
     assert "Correction:" in summary
-    assert len(summary.encode("ascii")) <= 512
+    assert len(summary.encode("ascii")) <= MAX_SUMMARY_BYTES
     if invariant in {
         "completion_scope_must_be_explicit",
         "empty_scope_must_not_support_obligations",
@@ -259,3 +259,39 @@ def test_generic_content_matches_the_summary_projector() -> None:
     result = result_from_public_model(model, host_profile="generic")
     wire = cast(dict[str, Any], result.structuredContent)
     assert _text(result) == render_safe_compact_summary(wire)
+
+
+def test_limitation_refs_complete_names_missing_results_within_bounds() -> None:
+    """A completion claim missing live limitations is told exactly which result ids to add."""
+
+    from yoetz.domain.values import result_id
+
+    missing = tuple(
+        result_id(f"res_00000000-0000-4000-8000-{index:012d}") for index in range(40, 0, -1)
+    )
+    error = public_error_for_claim_revision_mismatch(
+        ClaimRevisionMismatch("limitation_refs", "limitation_refs_complete", missing_refs=missing),
+        event_index=2,
+    )
+    assert error.safe_details["count"] == 40
+    assert error.safe_details["invariant"] == "limitation_refs_complete"
+    ordered = sorted(missing)
+    for named in ordered[:32]:
+        assert named in error.message
+    for withheld in ordered[32:]:
+        assert withheld not in error.message
+    assert "and 8 more that the next attempt will name" in error.message
+    assert "hook" in error.message
+    assert len(error.message.encode("utf-8")) <= 4096
+
+
+def test_missing_refs_are_admitted_only_for_limitation_refs_complete() -> None:
+    from yoetz.domain.values import result_id
+    from yoetz.protocol.errors import ProtocolValueError
+
+    with pytest.raises(ProtocolValueError):
+        ClaimRevisionMismatch(
+            "limitation_refs",
+            "limitation_refs_must_be_relevant_non_success_results",
+            missing_refs=(result_id("res_00000000-0000-4000-8000-000000000001"),),
+        )

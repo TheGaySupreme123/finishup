@@ -7,6 +7,7 @@ import hashlib
 from dataclasses import dataclass, replace
 from typing import Final, Literal, Protocol, cast
 
+from yoetz.application import closure_basis as _closure_basis
 from yoetz.application.ledger_snapshot import projection_for_records
 from yoetz.application.unit_of_work import (
     PreparedMutation,
@@ -15,24 +16,20 @@ from yoetz.application.unit_of_work import (
     run_prepared_append,
 )
 from yoetz.domain.events import (
-    CheckRecordedPayload,
     EventDraft,
     EventSchema,
     LedgerRecord,
     ReceiptRecordedPayload,
     encode_payload,
-    is_observation_authored,
     media_type_for,
 )
 from yoetz.domain.receipts import (
-    CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
-    CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP,
     ReceiptDocument,
     ReceiptVersionSlice,
+    live_receipt_gap_codes,
     receipt_document_from_json,
     receipt_document_to_json,
     render_receipt_human,
-    semantic_coverage_gap_code,
 )
 from yoetz.domain.values import (
     Actor,
@@ -46,23 +43,10 @@ from yoetz.domain.values import (
     task_id,
     timestamp_from_datetime,
 )
-from yoetz.kernel.deterministic_checks import CaseGap, build_deterministic_case, case_coverage
-from yoetz.kernel.finding_resolution import (
-    unverified_resolution_finding_ids,
-)
-from yoetz.kernel.finding_todo import FindingTodoState, finding_todo_state
-from yoetz.kernel.lineage import evaluate_recorded_lineage
-from yoetz.kernel.projections import ProjectionState, observation_limitation_finding_ids
+from yoetz.kernel.deterministic_checks import build_deterministic_case
+from yoetz.kernel.projections import ProjectionState
 from yoetz.kernel.receipt_builder import (
-    CheckSuffixClass,
-    ReceiptBuildContext,
-    ReceiptFindingState,
     build_receipt,
-)
-from yoetz.kernel.receipt_capacity import current_receipt_findings
-from yoetz.kernel.reducers import (
-    invalidates_recorded_check,
-    is_material_event_family,
 )
 from yoetz.observability.logging import (
     record_classified_exception_without_raising,
@@ -95,11 +79,9 @@ from yoetz.protocol.canonical import (
 )
 from yoetz.protocol.coverage import (
     Coverage,
-    LedgerFreshness,
     PublicationChannel,
     coverage_for_channel,
     coverage_to_json,
-    weakest,
 )
 from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 from yoetz.protocol.ids import IdKind
@@ -111,6 +93,13 @@ from yoetz.protocol.models import (
 )
 
 __all__ = ["Application", "ReceiptInternalResult", "execute_receipt"]
+
+# The receipt context moved to ``application.closure_basis`` so status builds the same one
+# (ADR-046); the names the receipt always exposed stay importable from here.
+_finding_states = _closure_basis.finding_states
+_check_change_resolution_gaps = _closure_basis.check_change_resolution_gaps
+_historical_gaps = _closure_basis.historical_gaps
+_context = _closure_basis.receipt_context
 
 _RECEIPT_MEDIA_TYPE = "application/vnd.yoetz.receipt+json"
 _RECEIPT_REPLAY_MISMATCH_REASONS: Final = frozenset(
@@ -435,234 +424,6 @@ async def _records_through(
     return records, projection
 
 
-def _finding_states(projection: object) -> tuple[ReceiptFindingState, ...]:
-    assert type(projection) is ProjectionState
-    # Resolution is proof-based: the projection carries which later qualifying check, if any,
-    # proved each current issue absent, and a response disposition never sets it. Reading the
-    # shared rule here is what keeps the receipt and ``receipt_blocking_finding_count`` equal.
-    states: list[ReceiptFindingState] = []
-    for item in current_receipt_findings(projection):
-        todo = finding_todo_state(projection, item.finding_id)
-        states.append(
-            ReceiptFindingState(
-                item.finding_id,
-                todo is FindingTodoState.VERIFIED_RESOLVED,
-                acknowledged_not_done=todo is FindingTodoState.ACKNOWLEDGED_NOT_DONE,
-                rejection_accepted=todo is FindingTodoState.REJECTION_ACCEPTED,
-            )
-        )
-    return tuple(states)
-
-
-def _check_change_resolution_gaps(
-    projection: ProjectionState, finding_states: tuple[ReceiptFindingState, ...]
-) -> list[CaseGap]:
-    """Disclose resolutions that compared a legacy raising view by length only (R945-02).
-
-    Such a resolution stands, but a receipt never presents it as content-verified. One task-wide
-    marker carries the code however many findings it covers, so the disclosure can never exhaust
-    the receipt's 64-gap bound; the receipt builder names the affected findings, boundedly.
-    """
-
-    affected = unverified_resolution_finding_ids(
-        projection, (state.finding_id for state in finding_states if state.resolved)
-    )
-    if not affected:
-        return []
-    return [
-        CaseGap(
-            CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP,
-            CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP,
-            (),
-        )
-    ]
-
-
-def _context(
-    projection: object,
-    frontier: Frontier,
-    case: object,
-    records: tuple[LedgerRecord, ...],
-) -> ReceiptBuildContext:
-    from yoetz.kernel.deterministic_checks import DeterministicCase
-
-    assert type(projection) is ProjectionState
-    assert type(case) is DeterministicCase
-    applicable: CheckRecordedPayload | None = None
-    check_suffix: CheckSuffixClass | None = None
-    finding_states = _finding_states(projection)
-    gaps = list(case.gaps)
-    latest = projection.latest_tested_state
-    check_record: LedgerRecord | None = None
-    if latest is not None:
-        for record in records:
-            if record.event_id == latest.source_check_event_id:
-                check_record = record
-                break
-    limitations = observation_limitation_finding_ids(projection, records)
-    if latest is None:
-        gaps.append(CaseGap("check_not_recorded", "check_not_recorded", ()))
-    elif check_record is not None and any(
-        invalidates_recorded_check(
-            record,
-            check_record.ledger.ingestion_sequence,
-            latest.returned_finding_ids,
-            limitation_finding_ids=limitations,
-        )
-        for record in records
-    ):
-        # Applicability follows the material state, not frontier equality: a check applies to
-        # this receipt when no material-family event superseded it. Its own events (returned
-        # findings plus check_recorded) land atomically right after the tested frontier, so
-        # anything later is genuinely newer work, except a response answering a finding the
-        # check itself returned, which reports on that check rather than replacing what it read,
-        # and an acknowledgement of an observation-authored limitation no check returns (#911).
-        gaps.append(CaseGap("check_not_applicable", "check_not_applicable", ()))
-    elif check_record is not None and type(check_record.payload) is CheckRecordedPayload:
-        applicable = check_record.payload
-        later_material = tuple(
-            record
-            for record in records
-            if is_material_event_family(record.schema.name)
-            and record.ledger.ingestion_sequence > check_record.ledger.ingestion_sequence
-        )
-        if later_material:
-            # Check-answering responses and finding-free observation-authored records can reach
-            # here. The verdict still covers the frontier it tested rather than this one, so the
-            # receipt names that frontier instead of reading as though the work were re-checked.
-            gaps.append(
-                CaseGap(
-                    CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
-                    CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
-                    (),
-                )
-            )
-            # Classify that suffix for the explanation (issue #657). The applicability rule above
-            # already proved every later material record is one of the two attributable kinds, so
-            # the class is exact here; it is render context, never a wire field or a gap code.
-            observed = any(is_observation_authored(record) for record in later_material)
-            responded = any(not is_observation_authored(record) for record in later_material)
-            if observed and responded:
-                check_suffix = CheckSuffixClass.MIXED
-            elif observed:
-                check_suffix = CheckSuffixClass.OBSERVATIONS_ONLY
-            else:
-                check_suffix = CheckSuffixClass.RESPONSES_ONLY
-    else:
-        gaps.append(
-            CaseGap(
-                f"check_payload_unavailable:{latest.source_check_event_id}",
-                "check_payload_unavailable",
-                (latest.source_check_event_id,),
-            )
-        )
-    if applicable is None and not any(
-        gap.code in {"check_not_recorded", "check_not_applicable", "check_payload_unavailable"}
-        for gap in gaps
-    ):
-        gaps.append(CaseGap("check_not_recorded", "check_not_recorded", ()))
-    if applicable is not None:
-        semantic_gap = semantic_coverage_gap_code(
-            applicable.semantic_status, applicable.semantic_reason
-        )
-        if semantic_gap is not None and not any(gap.code == semantic_gap for gap in gaps):
-            gaps.append(CaseGap(f"semantic_outcome:{semantic_gap}", semantic_gap, ()))
-        for code in applicable.coverage.known_gaps:
-            if not any(gap.code == code for gap in gaps):
-                gaps.append(CaseGap(f"check_coverage:{code}", code, ()))
-    coverage = case_coverage(case)
-    if applicable is not None:
-        coverage = weakest(coverage, applicable.coverage)
-    # Findings are historical material, not merely presentation rows. Observation advice can
-    # retain a finding stamped while delivery was stale after the current projection and latest
-    # check have recovered. Fold every current retained row before constructing the context so the
-    # builder's corruption guard remains strict while the application supplies the honest weakest
-    # coverage the receipt document already promises. A resolved row stays in the document as
-    # history, but a later qualifying check proved its issue absent, so its coverage no longer
-    # lowers the conclusion or adds ``retained_finding_coverage`` gaps (issue #912).
-    for state in finding_states:
-        if state.resolved:
-            continue
-        record = projection.findings[state.finding_id]
-        assert record.payload is not None
-        coverage = weakest(coverage, record.payload.coverage)
-    gaps.extend(_check_change_resolution_gaps(projection, finding_states))
-
-    # Lineage is replay-only.  The coordinator may have read live children earlier, but a
-    # receipt never does: it evaluates the aggregate manifest events already present in this
-    # parent prefix.  When a check applies, evaluate the manifest at the check's subject frontier
-    # and retain any later recorded aggregate as an uncovered reference.
-    lineage = evaluate_recorded_lineage(
-        records,
-        tested_through_sequence=(
-            None if applicable is None else applicable.subject_frontier.sequence
-        ),
-        base_coverage=coverage,
-    )
-    coverage = lineage.coverage
-    blocking_children = {
-        rollup.child_task_id
-        for rollup in lineage.children
-        if rollup.blocks_clean_completion and rollup.tested_manifest_ref is not None
-    }
-    # Pending and informational children are annotations.  Keep their full evaluator gaps in
-    # the structured child section, but do not project those gaps into receipt coverage: doing so
-    # would turn an explicitly non-blocking relationship into an insufficient-completion result.
-    for lineage_gap in lineage.gaps:
-        if (
-            lineage_gap.child_task_id is not None
-            and lineage_gap.child_task_id not in blocking_children
-        ):
-            continue
-        event_ref = lineage_gap.manifest_event_id
-        child_ref = "" if lineage_gap.child_task_id is None else str(lineage_gap.child_task_id)
-        event_token = "" if event_ref is None else str(event_ref)
-        marker = ":".join(
-            token for token in ("lineage", lineage_gap.code, child_ref, event_token) if token
-        )
-        subject_refs = () if event_ref is None else (event_ref,)
-        candidate = CaseGap(marker, lineage_gap.code, subject_refs)
-        if not any(gap.marker == candidate.marker and gap.code == candidate.code for gap in gaps):
-            gaps.append(candidate)
-
-    # ReceiptBuildContext requires exact equality between Coverage.known_gaps and CaseGap codes.
-    # Check-derived codes were materialized above; a code introduced only by a retained finding
-    # receives one task-global structural marker so many historical findings cannot exhaust the
-    # receipt's bounded 64-gap surface.
-    represented_codes = {gap.code for gap in gaps}
-    for code in coverage.known_gaps:
-        if code not in represented_codes:
-            gaps.append(CaseGap(f"retained_finding_coverage:{code}", code, ()))
-            represented_codes.add(code)
-    ordered_gaps = tuple(
-        sorted(
-            gaps,
-            key=lambda gap: (
-                gap.marker.encode("ascii"),
-                tuple(ref.encode("ascii") for ref in gap.subject_refs),
-            ),
-        )
-    )
-    codes = tuple(sorted({gap.code for gap in ordered_gaps}, key=str.encode))
-    if codes != coverage.known_gaps:
-        freshness = coverage.ledger_freshness
-        if codes and freshness is LedgerFreshness.CURRENT:
-            freshness = LedgerFreshness.PARTIAL
-        coverage = replace(coverage, ledger_freshness=freshness, known_gaps=codes)
-    return ReceiptBuildContext(
-        projection,
-        frontier,
-        case.availability,
-        coverage,
-        ordered_gaps,
-        finding_states,
-        applicable,
-        lineage,
-        check_suffix=check_suffix,
-        records=records,
-    )
-
-
 async def _accepted_receipt_event(
     runtime: TaskRuntime, operation: OperationRecord
 ) -> tuple[LedgerRecord, ObjectRef]:
@@ -729,7 +490,10 @@ def _internal_result(
         request.include,
         document_json if request.format is ReceiptFormat.JSON else None,
         human,
-        document.coverage,
+        # Issue #1017: the result's coverage names live gaps only, so every surface that counts
+        # limitations from it skips gaps a later check cleared; the document keeps the full union
+        # and marks those gap rows ``historical``.
+        replace(document.coverage, known_gaps=live_receipt_gap_codes(document)),
         document.suppressed_finding_count,
         document.versions,
     )

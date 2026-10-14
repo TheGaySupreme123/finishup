@@ -168,6 +168,23 @@ def _mapping(value: object) -> Mapping[str, object]:
     return {}
 
 
+def _credential_heuristic_pair(value: object) -> tuple[str, str] | None:
+    """The setup read's filter pair (issue #982); ``None`` when absent or malformed."""
+
+    pair = _mapping(value)
+    if not pair:
+        return None
+    allowed = {"enforced", "disabled", "unknown"}
+    repository = pair.get("repository")
+    machine_default = pair.get("machine_default")
+    return (
+        repository if type(repository) is str and repository in allowed else "unknown",
+        machine_default
+        if type(machine_default) is str and machine_default in allowed
+        else "unknown",
+    )
+
+
 def _task_statement_posture(policy_map: Mapping[str, object]) -> tuple[bool | None, str | None]:
     """Whether the composed policy sends the task statement, in ``privacy show`` words (#908).
 
@@ -200,7 +217,8 @@ def _task_statement_posture(policy_map: Mapping[str, object]) -> tuple[bool | No
     text = task_statement_disclosure_text(
         section_selected=selected,
         channel_sends_task_description=channel_sends,
-        predates_section=policy_map.get("schema_version") in {"1.0.0", "1.1.0"}
+        # Read from the selection: the wire version also moves for other fields (#982).
+        predates_section=not selected
         and policy_map.get("review_context_profile") in {"goal_aware", "assisted", "expanded"},
     )
     return selected and channel_sends, text
@@ -1109,6 +1127,7 @@ class YoetzRuntime:
         task_statement_sent, task_statement_disclosure = _task_statement_posture(policy_map)
         return PrivacyPosture(
             recipe_outdated=_review_recipe_outdated(policy_map),
+            credential_heuristic=_credential_heuristic_pair(response.get("credential_heuristic")),
             profile=profile if isinstance(profile, str) else None,
             llm_inference_enabled=llm_enabled,
             readable=True,
@@ -1277,7 +1296,7 @@ class YoetzRuntime:
                 open_browser=True,
                 switch_account=switch_account,
             )
-            await restart_service_for_semantic_composition()
+            await restart_service_for_semantic_composition(report_startup_failure=False)
             return result
         except (OSError, TimeoutError, ValueError) as error:
             raise _subscription_error(error, "Codex subscription setup did not complete") from None
@@ -1302,7 +1321,7 @@ class YoetzRuntime:
 
         try:
             result = await codex_subscription_disconnect()
-            await restart_service_for_semantic_composition()
+            await restart_service_for_semantic_composition(report_startup_failure=False)
             return result
         except (OSError, TimeoutError, ValueError) as error:
             raise _subscription_error(
@@ -1317,7 +1336,7 @@ class YoetzRuntime:
 
         try:
             result = codex_subscription_rollback()
-            await restart_service_for_semantic_composition()
+            await restart_service_for_semantic_composition(report_startup_failure=False)
             return result
         except (OSError, ValueError) as error:
             raise _subscription_error(
@@ -1344,7 +1363,7 @@ class YoetzRuntime:
 
         try:
             result = await codex_subscription_repair()
-            await restart_service_for_semantic_composition()
+            await restart_service_for_semantic_composition(report_startup_failure=False)
             return result
         except (OSError, TimeoutError, ValueError) as error:
             raise _subscription_error(error, "Codex evaluator repair did not complete") from None
@@ -2030,7 +2049,7 @@ class YoetzRuntime:
 
         if isinstance(success, CheckAwaitingHumanModel):
             self._pending_checks[title] = request
-            return "awaiting_human", tuple(render_human_awaiting_human(success).splitlines())
+            return success.state, tuple(render_human_awaiting_human(success).splitlines())
         self._pending_checks.pop(title, None)
         return str(success.verdict), tuple(render_human_check(success).splitlines())
 

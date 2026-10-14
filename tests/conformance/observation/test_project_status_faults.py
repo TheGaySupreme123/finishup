@@ -250,6 +250,7 @@ def _assert_joined(
     *,
     code: PublicErrorCode,
     operation: str,
+    phase: str,
     reason: str,
     origin_module: str,
     request_id: str,
@@ -259,7 +260,7 @@ def _assert_joined(
     assert error.code is code
     assert error.retryable is False
     assert error.correlation_id is not None
-    assert error.safe_details == {}
+    assert error.safe_details == {"phase": phase}
     assert _CANARY not in error.message
     records = _records(correlation_id=error.correlation_id)
     assert len(records) == 1
@@ -469,6 +470,7 @@ async def test_host_lineage_storage_fault_is_classified_at_status_boundary(
             caught.value,
             code=PublicErrorCode.STORAGE_CORRUPT,
             operation="status_lineage_replay_failed",
+            phase="replay",
             reason="exception_host_lineage_registry_error",
             origin_module="yoetz.application.task_views",
             request_id=request_id,
@@ -500,6 +502,7 @@ async def test_candidate_frontier_fault_is_classified_at_status_boundary(
             caught.value,
             code=PublicErrorCode.STORAGE_CORRUPT,
             operation="status_candidate_findings_replay_failed",
+            phase="replay",
             reason="exception_value_error",
             origin_module="yoetz.application.status",
             request_id=request_id,
@@ -524,6 +527,7 @@ async def test_requester_lineage_replay_fault_is_storage_corrupt(
             caught.value,
             code=PublicErrorCode.STORAGE_CORRUPT,
             operation="status_lineage_replay_failed",
+            phase="replay",
             reason="exception_value_error",
             origin_module="yoetz.application.task_views",
             request_id=request_id,
@@ -555,6 +559,7 @@ async def test_project_row_model_fault_is_internal_error(
             caught.value,
             code=PublicErrorCode.INTERNAL_ERROR,
             operation="status_project_model_failed",
+            phase="model",
             reason="exception_validation_error",
             origin_module="yoetz.application.task_views",
             request_id=request_id,
@@ -579,6 +584,7 @@ async def test_project_snapshot_digest_fault_is_internal_error(
             caught.value,
             code=PublicErrorCode.INTERNAL_ERROR,
             operation="status_project_digest_failed",
+            phase="digest",
             reason="exception_value_error",
             origin_module="yoetz.application.status",
             request_id=request_id,
@@ -605,6 +611,7 @@ async def test_unclassified_project_projection_fault_is_internal_error(
             caught.value,
             code=PublicErrorCode.INTERNAL_ERROR,
             operation="status_project_projection_failed",
+            phase="projection",
             reason="exception_coordination_error",
             origin_module="yoetz.application.task_views",
             request_id=request_id,

@@ -1,0 +1,492 @@
+"""tb4n2 R2 / tb4n4: a declared deliverable that loads a created, undeclared file (ADR-035 amendment).
+
+Since tb4n4 (#1044) the read returns which delivered file names which undeclared file, so the
+receipt and the Stop gate can name it; ``_references`` counts the pairs it found.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from builders.observed_runs import ObservedLedger
+from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
+from yoetz.application.check_change import (
+    requested_output_states,
+    undeclared_references,
+)
+from yoetz.domain.events import (
+    EventSchema,
+    ObligationPublishedPayload,
+    ObligationStatus,
+    PlanPublishedPayload,
+    RequestedItem,
+    RequestedItemKind,
+    RequestedItemRole,
+)
+from yoetz.domain.values import obligation_id
+from yoetz.kernel.projections import ProjectionState
+from yoetz.kernel.reducers import replay
+from yoetz.ports.change_capture import CheckWorkspaceSource
+
+_OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
+_REQUEST = "req_00000000-0000-4000-8000-000000000001"
+_GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "LANG": "C",
+    "LC_ALL": "C",
+    "PATH": os.defpath,
+}
+_CRACKER = (
+    "import numpy as np\nMODEL = np.load('english_model.npz')\ndef crack(text):\n    return text\n"
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_global_git(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    home.mkdir(mode=0o700)
+    monkeypatch.setenv("HOME", os.fspath(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+
+def _git(repository: Path, *arguments: str) -> None:
+    subprocess.run(
+        ("git", *arguments),
+        cwd=repository,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        check=True,
+        env={**_GIT_ENV, "HOME": os.fspath(repository)},
+    )
+
+
+def _repository(tmp_path: Path, files: dict[str, str]) -> tuple[Path, object]:
+    repository = tmp_path / "app"
+    repository.mkdir(mode=0o700)
+    _git(repository, "init", "--quiet")
+    for name, text in files.items():
+        (repository / name).write_text(text, encoding="utf-8")
+    _git(repository, "add", "--", *files)
+    _git(
+        repository,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "baseline",
+    )
+    return repository, GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
+
+
+def _item(
+    value: str,
+    role: RequestedItemRole = RequestedItemRole.OUTPUT,
+    kind: RequestedItemKind = RequestedItemKind.FILE,
+) -> RequestedItem:
+    return RequestedItem(kind, value, role=role)
+
+
+def _projection(
+    *items: RequestedItem, status: ObligationStatus = ObligationStatus.OPEN
+) -> ProjectionState:
+    ledger = ObservedLedger()
+    ledger.append(
+        EventSchema("obligation_published", "1.1.0"),
+        ObligationPublishedPayload(
+            obligation_id=_OBLIGATION,
+            description="Deliver the cracker",
+            evidence_expectation="The files",
+            status=status,
+            requested_items=items,
+            acknowledged_not_done_reason=(
+                "Out of scope." if status is ObligationStatus.ACKNOWLEDGED_NOT_DONE else None
+            ),
+        ),
+        observed=False,
+    )
+    ledger.append(
+        EventSchema("plan_published", "1.0.0"),
+        PlanPublishedPayload(1, "Plan", (_OBLIGATION,)),
+        observed=False,
+    )
+    return replay(ledger.prefix)
+
+
+def _references(repository: Path, base: object, *items: RequestedItem) -> int:
+    return _count(repository, base, _projection(*items))
+
+
+def _count(repository: Path, base: object, projection: ProjectionState) -> int:
+    return len(_pairs(repository, base, projection))
+
+
+def _pairs(
+    repository: Path, base: object, projection: ProjectionState
+) -> tuple[tuple[str, str], ...]:
+    adapter = GitChangeCaptureAdapter()
+    capture = adapter.capture_metadata(os.fspath(repository), base)  # type: ignore[arg-type]
+    source = CheckWorkspaceSource(os.fspath(repository), "hmac-sha256:" + "0" * 64)
+
+    async def run() -> tuple[tuple[str, str], ...]:
+        states = await requested_output_states(
+            projection=projection,
+            capture=capture,
+            source=source,
+            port=adapter,
+            request_id=_REQUEST,
+        )
+        return await undeclared_references(
+            projection=projection,
+            capture=capture,
+            source=source,
+            port=adapter,
+            states=states,
+            blocked=None,
+            request_id=_REQUEST,
+        )
+
+    return asyncio.run(run())
+
+
+def _cracker(tmp_path: Path, text: str = _CRACKER) -> tuple[Path, object]:
+    repository, base = _repository(tmp_path, {"README.md": "Cracker\n"})
+    (repository / "cracker.py").write_text(text, encoding="utf-8")
+    (repository / "english_model.npz").write_bytes(b"\x93NUMPY\x00\x01model")
+    return repository, base
+
+
+def test_interleaved_vigenere_deliverable_loading_an_undeclared_model_is_disclosed(
+    tmp_path: Path,
+) -> None:
+    repository, base = _cracker(tmp_path)
+    declared = os.fspath(repository / "cracker.py")
+
+    assert _references(repository, base, _item(declared)) == 1
+    # Declaring the model, as an output or as an input, clears the disclosure.
+    assert _references(repository, base, _item(declared), _item("english_model.npz")) == 0
+    assert (
+        _references(
+            repository,
+            base,
+            _item(declared),
+            _item("english_model.npz", RequestedItemRole.INPUT),
+        )
+        == 0
+    )
+
+
+# tb4n4 interleaved-vigenere S (#1044): ``artifacts/cracker.py`` loaded its two models from beside
+# itself (cracker.py:68 and :75 in the recorded attempt); only the cracker and its requirements
+# were declared, so the grader received neither model and the program printed nothing.
+_VIGENERE_CRACKER = """import os
+
+import numpy as np
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def load_ngrams():
+    return np.load(os.path.join(HERE, "english_ngrams.npz"))
+
+
+def load_words():
+    return np.load(os.path.join(HERE, "english_words.npz"))
+"""
+
+
+def _vigenere(tmp_path: Path) -> tuple[Path, object]:
+    repository, base = _repository(tmp_path, {"README.md": "Cracker\n"})
+    artifacts = repository / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "cracker.py").write_text(_VIGENERE_CRACKER, encoding="utf-8")
+    (artifacts / "requirements.txt").write_text("numpy\n", encoding="utf-8")
+    (artifacts / "english_ngrams.npz").write_bytes(b"\x93NUMPY\x00\x01ngrams")
+    (artifacts / "english_words.npz").write_bytes(b"\x93NUMPY\x00\x01words")
+    return repository, base
+
+
+def test_tb4n4_vigenere_names_each_undeclared_model_beside_the_cracker(tmp_path: Path) -> None:
+    repository, base = _vigenere(tmp_path)
+    delivered = (_item("artifacts/cracker.py"), _item("artifacts/requirements.txt"))
+
+    assert _pairs(repository, base, _projection(*delivered)) == (
+        ("artifacts/cracker.py", "artifacts/english_ngrams.npz"),
+        ("artifacts/cracker.py", "artifacts/english_words.npz"),
+    )
+    # Declaring one model as a delivered output leaves only the other.
+    assert _pairs(
+        repository, base, _projection(*delivered, _item("artifacts/english_ngrams.npz"))
+    ) == (("artifacts/cracker.py", "artifacts/english_words.npz"),)
+    # Declaring both clears it.
+    assert (
+        _pairs(
+            repository,
+            base,
+            _projection(
+                *delivered,
+                _item("artifacts/english_ngrams.npz"),
+                _item("artifacts/english_words.npz"),
+            ),
+        )
+        == ()
+    )
+    # So does a self-contained cracker that rebuilds its tables at run time.
+    (repository / "artifacts" / "cracker.py").write_text(
+        "NGRAMS = build_ngrams()\nWORDS = build_words()\n", encoding="utf-8"
+    )
+    assert _pairs(repository, base, _projection(*delivered)) == ()
+
+
+def test_an_untracked_file_the_task_started_with_is_not_an_undeclared_dependency(
+    tmp_path: Path,
+) -> None:
+    """#1044 blocks closure, so a task-provided data file must not stop the agent (#1045 baseline).
+
+    The task-start base records the untracked files already present; one still unchanged is not
+    part of the change, so it is never a created-file candidate. A model the agent creates is.
+    """
+
+    repository = tmp_path / "app"
+    repository.mkdir(mode=0o700)
+    _git(repository, "init", "--quiet")
+    (repository / "README.md").write_text("Cracker\n", encoding="utf-8")
+    _git(repository, "add", "--", "README.md")
+    _git(
+        repository,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "baseline",
+    )
+    artifacts = repository / "artifacts"
+    artifacts.mkdir()
+    # Provided with the task, never committed: untracked when the task starts.
+    (artifacts / "english_words.npz").write_bytes(b"\x93NUMPY\x00\x01words")
+    base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
+    (artifacts / "cracker.py").write_text(_VIGENERE_CRACKER, encoding="utf-8")
+    (artifacts / "english_ngrams.npz").write_bytes(b"\x93NUMPY\x00\x01ngrams")
+
+    assert _pairs(repository, base, _projection(_item("artifacts/cracker.py"))) == (
+        ("artifacts/cracker.py", "artifacts/english_ngrams.npz"),
+    )
+
+
+def test_a_created_file_inside_a_nested_repository_is_an_undeclared_dependency(
+    tmp_path: Path,
+) -> None:
+    """Review of #1045: the metadata read failed in any workspace holding an untracked nested
+    repository, so the fact was silently never raised there. A file the agent creates inside the
+    repository is a candidate; one it held unchanged since the task started is not."""
+
+    repository, _ = _repository(tmp_path, {"README.md": "Cracker\n"})
+    api = repository / "api"
+    api.mkdir(mode=0o700)
+    _git(api, "init", "--quiet")
+    (api / "README.md").write_text("API\n", encoding="utf-8")
+    _git(api, "add", "--", "README.md")
+    _git(
+        api,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "nested baseline",
+    )
+    # Provided with the task, never committed: untracked inside the nested repository.
+    (api / "english_words.npz").write_bytes(b"\x93NUMPY\x00\x01words")
+    base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
+    (api / "cracker.py").write_text(_VIGENERE_CRACKER, encoding="utf-8")
+    (api / "english_ngrams.npz").write_bytes(b"\x93NUMPY\x00\x01ngrams")
+
+    assert _pairs(repository, base, _projection(_item("api/cracker.py"))) == (
+        ("api/cracker.py", "api/english_ngrams.npz"),
+    )
+
+
+@pytest.mark.parametrize(
+    "literal",
+    [
+        '"/app/english_model.npz"',
+        "f'{HERE}/english_model.npz'",
+        "`./english_model.npz`",
+        '"english_model.npz"',
+    ],
+)
+def test_absolute_suffix_and_basename_literals_match(tmp_path: Path, literal: str) -> None:
+    repository, base = _cracker(tmp_path, f"MODEL = load({literal})\n")
+    assert _references(repository, base, _item("cracker.py")) == 1
+
+
+def test_a_model_inside_a_declared_directory_is_declared(tmp_path: Path) -> None:
+    repository, base = _repository(tmp_path, {"README.md": "Cracker\n"})
+    (repository / "models").mkdir()
+    (repository / "models" / "english_model.npz").write_bytes(b"model")
+    (repository / "cracker.py").write_text("load('models/english_model.npz')\n", "utf-8")
+
+    assert _references(repository, base, _item("cracker.py")) == 1
+    assert (
+        _references(
+            repository,
+            base,
+            _item("cracker.py"),
+            _item("models", kind=RequestedItemKind.DIRECTORY),
+        )
+        == 0
+    )
+
+
+def test_a_reference_to_a_pre_existing_tracked_file_is_not_disclosed(tmp_path: Path) -> None:
+    repository, base = _repository(tmp_path, {"english_model.npz": "tracked\n"})
+    (repository / "cracker.py").write_text(_CRACKER, encoding="utf-8")
+    (repository / "english_model.npz").write_text("tracked and edited\n", encoding="utf-8")
+
+    assert _references(repository, base, _item("cracker.py")) == 0
+
+
+def test_short_basenames_and_unreferenced_files_are_not_disclosed(tmp_path: Path) -> None:
+    repository, base = _repository(tmp_path, {"README.md": "Cracker\n"})
+    (repository / "cracker.py").write_text("x = load('m.np')\nprint('hello')\n", "utf-8")
+    (repository / "data").mkdir()
+    # A basename under five bytes is too common to count without its directory.
+    (repository / "data" / "m.np").write_bytes(b"m")
+    (repository / "notes.txt").write_text("scratch\n", encoding="utf-8")
+
+    assert _references(repository, base, _item("cracker.py")) == 0
+
+
+def test_non_source_binary_and_credential_named_deliverables_are_never_read(
+    tmp_path: Path,
+) -> None:
+    repository, base = _cracker(tmp_path)
+    # A text deliverable that is not source code.
+    (repository / "report.txt").write_text("see english_model.npz\n'english_model.npz'\n", "utf-8")
+    # A binary deliverable with a matching literal after a NUL byte.
+    (repository / "tool.py").write_bytes(b"\x00\x01'english_model.npz'\n")
+    # A credential-named deliverable is never opened.
+    (repository / ".env").write_text("MODEL='english_model.npz'\n", encoding="utf-8")
+
+    assert (
+        _references(
+            repository,
+            base,
+            _item("report.txt"),
+            _item("tool.py"),
+            _item(".env"),
+            _item("cracker.py", RequestedItemRole.INPUT),
+        )
+        == 0
+    )
+
+
+def test_suffix_less_deliverable_needs_a_shebang(tmp_path: Path) -> None:
+    repository, base = _cracker(tmp_path)
+    (repository / "crack").write_text(
+        "#!/usr/bin/env python3\nload('english_model.npz')\n", "utf-8"
+    )
+    (repository / "notes").write_text("load('english_model.npz')\n", encoding="utf-8")
+
+    assert _references(repository, base, _item("crack")) == 1
+    assert _references(repository, base, _item("notes")) == 0
+
+
+def test_a_linked_deliverable_is_not_followed(tmp_path: Path) -> None:
+    repository, base = _cracker(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "real.py").write_text(_CRACKER, encoding="utf-8")
+    (repository / "linked.py").symlink_to(outside / "real.py")
+    (repository / "lib").symlink_to(outside, target_is_directory=True)
+
+    assert _references(repository, base, _item("linked.py")) == 0
+    assert _references(repository, base, _item("lib/real.py")) == 0
+
+
+def test_acknowledged_not_done_obligation_is_skipped(tmp_path: Path) -> None:
+    repository, base = _cracker(tmp_path)
+    projection = _projection(_item("cracker.py"), status=ObligationStatus.ACKNOWLEDGED_NOT_DONE)
+    assert _count(repository, base, projection) == 0
+
+
+def test_adapter_returns_index_pairs_only_and_refuses_unsafe_paths(tmp_path: Path) -> None:
+    from yoetz.ports.change_capture import ChangeCaptureUnavailable
+
+    repository, _base = _cracker(tmp_path)
+    adapter = GitChangeCaptureAdapter()
+    workspace = os.fspath(repository)
+    found = adapter.find_undeclared_references(
+        workspace, ("README.md", "cracker.py"), ("notes.npz", "english_model.npz")
+    )
+    # Positions in the caller's own tuples: no path or content leaves the adapter.
+    assert found == ((1, 1),)
+    assert adapter.find_undeclared_references(workspace, ("cracker.py",), ()) == ()
+    for unsafe in ("../cracker.py", "/etc/passwd", "a/./b"):
+        with pytest.raises(ChangeCaptureUnavailable):
+            adapter.find_undeclared_references(workspace, (unsafe,), ("english_model.npz",))
+    with pytest.raises(ChangeCaptureUnavailable):
+        adapter.find_undeclared_references(workspace, ("x.py",) * 17, ("english_model.npz",))
+
+
+def test_only_the_first_bounded_prefix_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import yoetz.adapters.git_change_capture as capture_module
+
+    repository, _base = _cracker(tmp_path, "#" * 64 + "\nload('english_model.npz')\n")
+    adapter = GitChangeCaptureAdapter()
+    workspace = os.fspath(repository)
+    assert adapter.find_undeclared_references(workspace, ("cracker.py",), ("english_model.npz",))
+    monkeypatch.setattr(capture_module, "_MAX_REFERENCE_FILE_BYTES", 32)
+    assert not adapter.find_undeclared_references(
+        workspace, ("cracker.py",), ("english_model.npz",)
+    )
+
+
+def test_a_failing_read_is_not_raised(tmp_path: Path) -> None:
+    repository, base = _cracker(tmp_path)
+    adapter = GitChangeCaptureAdapter()
+    capture = adapter.capture_metadata(os.fspath(repository), base)  # type: ignore[arg-type]
+    projection = _projection(_item("cracker.py"))
+    source = CheckWorkspaceSource(os.fspath(repository), "hmac-sha256:" + "0" * 64)
+
+    class Broken:
+        def probe_requested_paths(self, workspace: str, values: tuple[str, ...]) -> object:
+            return adapter.probe_requested_paths(workspace, values)
+
+        def find_undeclared_references(self, *_arguments: object) -> object:
+            raise RuntimeError("boom")
+
+    async def run() -> tuple[tuple[str, str], ...]:
+        states = await requested_output_states(
+            projection=projection,
+            capture=capture,
+            source=source,
+            port=adapter,
+            request_id=_REQUEST,
+        )
+        return await undeclared_references(
+            projection=projection,
+            capture=capture,
+            source=source,
+            port=Broken(),
+            states=states,
+            blocked=None,
+            request_id=_REQUEST,
+        )
+
+    assert asyncio.run(run()) == ()

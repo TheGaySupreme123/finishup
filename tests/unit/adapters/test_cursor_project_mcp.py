@@ -420,9 +420,55 @@ def test_same_bytes_recreated_after_preview_are_stale_by_file_identity(tmp_path:
         isolation_root=root,
     )
     before = project.read_bytes()
+    # Keep the previewed file's inode allocated. A freed inode number is handed straight back to
+    # the next file (297 of 300 recreates on the CI-equivalent box), and on kernels before 6.13
+    # timestamps tick once per jiffy (1 ms there), so an unpinned recreate lands on the same
+    # (device, inode, size, mtime, ctime) as the original. The bytes are the same too, so Yoetz has
+    # nothing to distinguish; pinning the old inode makes "recreated" a fact instead of a race.
+    held = tmp_path / "previewed-inode"
+    os.link(project, held)
     project.unlink()
     _write_json(project, original)
     assert project.read_bytes() == before
+    assert os.stat(project).st_ino != os.stat(held).st_ino
+
+    _assert_fixed_reason(
+        lambda: apply_cursor_project_mcp(
+            target,
+            action="install",
+            launcher=LAUNCHER,
+            route_profile="policy",
+            isolation_root=root,
+            preview_digest=str(preview["preview_digest"]),
+            accept=True,
+        )
+    )
+    assert project.read_bytes() == before
+
+
+def test_same_bytes_rewritten_in_place_after_preview_are_stale_by_timestamp(
+    tmp_path: Path,
+) -> None:
+    """The file identity also holds the modification time: a rewrite of the same bytes in place
+    (same inode, same size) is stale once the timestamp differs. The timestamp is set outright,
+    so the result does not depend on the filesystem's clock granularity."""
+
+    target = _target(tmp_path)
+    root = _isolation_root(tmp_path)
+    project = _project_config(target)
+    _write_json(project, {"mcpServers": {"other": {"command": "one"}}})
+    preview = preview_cursor_project_mcp(
+        target,
+        action="install",
+        launcher=LAUNCHER,
+        route_profile="policy",
+        isolation_root=root,
+    )
+    before = project.read_bytes()
+    inode = os.stat(project).st_ino
+    project.write_bytes(before)
+    os.utime(project, ns=(1, 1))
+    assert os.stat(project).st_ino == inode and project.read_bytes() == before
 
     _assert_fixed_reason(
         lambda: apply_cursor_project_mcp(

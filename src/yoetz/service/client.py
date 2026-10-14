@@ -31,7 +31,9 @@ from yoetz.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ConsentSource,
+    CredentialHeuristic,
     EgressChannel,
+    EgressOriginOperation,
     EgressReceipt,
     LocalDisclosureReceipt,
     LocalDisclosureSink,
@@ -42,6 +44,7 @@ from yoetz.domain.privacy import (
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
+    ReceiptSecretScanStage,
     ReceiptTransformations,
     RequestCommitment,
 )
@@ -74,7 +77,7 @@ from yoetz.ports.privacy import (
     PrivacyReceiptView,
 )
 from yoetz.protocol.canonical import parse_canonical_integer_string
-from yoetz.protocol.ids import IdKind, new_id, validate_id
+from yoetz.protocol.ids import IdKind, new_id, validate_id, validate_opaque_item_id
 from yoetz.protocol.models import (
     CheckRequest,
     CheckResult,
@@ -219,14 +222,33 @@ def _open_service_stderr_log() -> BinaryIO:
         raise
 
 
-def _spawn_service_process() -> None:
-    command = (sys.executable, "-m", "yoetz", "service", "run")
+@dataclass(frozen=True, slots=True)
+class _SpawnedService:
+    """A detached service this process started, and the id it records a startup failure under."""
+
+    process: subprocess.Popen[bytes]
+    startup_correlation_id: str
+
+
+def _spawn_service_process() -> _SpawnedService:
+    """Start one detached service that records any startup failure under a fresh id (#1040)."""
+
+    startup_correlation_id = new_id(IdKind.CORRELATION)
+    command = (
+        sys.executable,
+        "-m",
+        "yoetz",
+        "service",
+        "run",
+        "--startup-correlation-id",
+        startup_correlation_id,
+    )
     with _open_service_stderr_log() as stderr_log:
         if os.name == "nt":
             creationflags = int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)) | int(
                 getattr(subprocess, "DETACHED_PROCESS", 0),
             )
-            subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
+            process = subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
                 command,
                 close_fds=True,
                 creationflags=creationflags,
@@ -236,7 +258,7 @@ def _spawn_service_process() -> None:
                 stderr=stderr_log,
             )
         else:
-            subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
+            process = subprocess.Popen(  # noqa: S603 - fixed interpreter/module/arguments
                 command,
                 close_fds=True,
                 env=_service_environment(),
@@ -245,6 +267,31 @@ def _spawn_service_process() -> None:
                 stderr=stderr_log,
                 start_new_session=True,
             )
+    return _SpawnedService(process, startup_correlation_id)
+
+
+def _spawned_startup_failure(spawned: _SpawnedService) -> ControlError | None:
+    """Name the startup failure of a service this process spawned, once it has exited.
+
+    A spawned service that exits having recorded a startup failure under the id it was given will
+    fail the same way on every spawn, so waiting out the rest of the budget only hides why. One
+    that exits without a record (it lost the singleton to a concurrent start) says nothing, and
+    the caller keeps polling for whichever service holds the endpoint.
+    """
+
+    if spawned.process.poll() is None:
+        return None
+    from yoetz.service.startup_failure import read_startup_failure
+
+    failure = read_startup_failure(spawned.startup_correlation_id)
+    if failure is None:
+        return None
+    return ControlError(
+        "service_unavailable",
+        retryable=False,
+        correlation_id=failure.correlation_id,
+        phase=failure.stage,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -433,7 +480,7 @@ def prepare_project_request(
 
 
 class _ReceiptCommon(TypedDict):
-    schema_version: Literal["1.0.0"]
+    schema_version: Literal["1.0.0", "1.1.0"]
     receipt_id: str
     request_id: str
     privacy_proposal_id: str
@@ -448,6 +495,8 @@ class _ReceiptCommon(TypedDict):
     counts: ReceiptCounts
     transformations: ReceiptTransformations
     secret_scan: ReceiptSecretScan
+    withheld_item_ids: tuple[str, ...]
+    withheld_item_reason: Literal["never_send_heuristic"] | None
     safe_failure_reason: PrivacyReason | None
     audit_store_version: Literal[1]
 
@@ -545,13 +594,32 @@ def _transformations_from_wire(value: object) -> ReceiptTransformations:
     )
 
 
-def _secret_scan_from_wire(value: object) -> ReceiptSecretScan:
+def _secret_scan_from_wire(value: object, *, legacy_unknown: bool = False) -> ReceiptSecretScan:
     source = _object(value)
+    match_count = _decimal(source["match_count"])
+    passed = cast(bool, source["passed"])
+    raw_stage = source.get("stage")
+    stage = (
+        ReceiptSecretScanStage.LEGACY_UNKNOWN
+        if legacy_unknown and raw_stage is None
+        else ReceiptSecretScanStage(cast(str, raw_stage or "prepared_case"))
+    )
     return ReceiptSecretScan(
         registry_version=cast(str, source["registry_version"]),
         scanner_profile_digest=cast(str, source["scanner_profile_digest"]),
-        match_count=_decimal(source["match_count"]),
-        passed=cast(bool, source["passed"]),
+        match_count=match_count,
+        passed=passed,
+        stage=stage,
+        not_run_reason=(
+            None
+            if source.get("not_run_reason") is None
+            else PrivacyReason(cast(str, source["not_run_reason"]))
+        ),
+        credential_heuristic=(
+            CredentialHeuristic.ENFORCED
+            if source.get("credential_heuristic") is None
+            else CredentialHeuristic(cast(str, source["credential_heuristic"]))
+        ),
     )
 
 
@@ -560,6 +628,23 @@ def _categories_from_wire(value: object) -> tuple[DataCategory, ...]:
         raise ValueError("privacy_receipt_wire_invalid")
     members = cast(tuple[object, ...], value)
     return tuple(DataCategory(cast(str, item)) for item in members)
+
+
+def _withheld_item_ids_from_wire(value: object) -> tuple[str, ...]:
+    if type(value) is not tuple:
+        raise ValueError("privacy_receipt_wire_invalid")
+    members = cast(tuple[object, ...], value)
+    if any(not _valid_opaque_item_id(item) for item in members):
+        raise ValueError("privacy_receipt_wire_invalid")
+    return tuple(cast(str, item) for item in members)
+
+
+def _valid_opaque_item_id(value: object) -> bool:
+    try:
+        validate_opaque_item_id(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _destination_from_wire(value: object) -> ProviderBinding | NonLlmDestination:
@@ -593,8 +678,12 @@ def _request_commitment_from_wire(value: object) -> RequestCommitment:
 def _receipt_view_from_wire(value: object) -> PrivacyReceiptView:
     wrapper = _object(value)
     receipt = _object(wrapper["receipt"])
+    # Stage-less v1.0 receipts cannot prove whether scanning reached a prepared case.  Preserve
+    # that uncertainty even for a historical completed/passed row instead of manufacturing a
+    # clean PREPARED_CASE state.
+    legacy_scan_unknown = "stage" not in _object(receipt["secret_scan"])
     common: _ReceiptCommon = {
-        "schema_version": cast(Literal["1.0.0"], receipt["schema_version"]),
+        "schema_version": cast(Literal["1.0.0", "1.1.0"], receipt["schema_version"]),
         "receipt_id": cast(str, receipt["receipt_id"]),
         "request_id": cast(str, receipt["request_id"]),
         "privacy_proposal_id": cast(str, receipt["privacy_proposal_id"]),
@@ -608,7 +697,15 @@ def _receipt_view_from_wire(value: object) -> PrivacyReceiptView:
         "blocked_categories": _categories_from_wire(receipt["blocked_categories"]),
         "counts": _counts_from_wire(receipt["counts"]),
         "transformations": _transformations_from_wire(receipt["transformations"]),
-        "secret_scan": _secret_scan_from_wire(receipt["secret_scan"]),
+        "secret_scan": _secret_scan_from_wire(
+            receipt["secret_scan"], legacy_unknown=legacy_scan_unknown
+        ),
+        "withheld_item_ids": _withheld_item_ids_from_wire(receipt.get("withheld_item_ids", ())),
+        "withheld_item_reason": (
+            None
+            if receipt.get("withheld_item_reason") is None
+            else cast(Literal["never_send_heuristic"], receipt["withheld_item_reason"])
+        ),
         "safe_failure_reason": (
             None
             if "safe_failure_reason" not in receipt
@@ -632,6 +729,11 @@ def _receipt_view_from_wire(value: object) -> PrivacyReceiptView:
                 None
                 if "request_commitment" not in receipt
                 else _request_commitment_from_wire(receipt["request_commitment"])
+            ),
+            origin_operation=(
+                None
+                if "origin_operation" not in receipt
+                else EgressOriginOperation(cast(str, receipt["origin_operation"]))
             ),
         )
         return NetworkEgressReceiptView(kind="network_egress", receipt=network_receipt)
@@ -1660,9 +1762,10 @@ async def connect_service_on_demand(
         or holder.service_version != __version__
     ):
         raise ControlError("service_incompatible", retryable=True)
+    spawned: _SpawnedService | None = None
     if holder is None:
         try:
-            _spawn_service_process()
+            spawned = _spawn_service_process()
         except OSError as exc:
             raise ControlError("service_unavailable", retryable=True) from exc
 
@@ -1682,4 +1785,9 @@ async def connect_service_on_demand(
             last_error = exc
             if exc.reason != "service_unavailable":
                 raise
+        if spawned is not None and spawned.process.poll() is not None:
+            startup_failure = _spawned_startup_failure(spawned)
+            if startup_failure is not None:
+                raise startup_failure from last_error
+            spawned = None
     raise ControlError("service_unavailable", retryable=True) from last_error

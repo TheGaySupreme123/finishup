@@ -5,7 +5,11 @@ from __future__ import annotations
 import apsw
 
 from yoetz.adapters.sqlite.connection import verify_schema_identity
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
+from yoetz.adapters.sqlite.migrations import (
+    BUNDLE_MIGRATIONS,
+    current_schema_version,
+    run_migrations,
+)
 from yoetz.protocol.canonical import canonical_encode
 
 _WORKSPACE = "hmac-sha256:" + "a" * 64
@@ -176,13 +180,14 @@ def test_schema_ten_upgrade_preserves_rows_and_installs_capture_ticket_shape() -
 
     report = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)  # type: ignore[arg-type]
     assert report.from_version == 10
-    assert report.to_version == 15
-    assert report.applied_versions == ("0011", "0012", "0013", "0014", "0015")
-    assert db.execute("PRAGMA user_version").fetchone() == (15,)
+    current = current_schema_version(BUNDLE_MIGRATIONS)
+    assert report.to_version == current
+    assert report.applied_versions == ("0011", "0012", "0013", "0014", "0015", "0016")
+    assert db.execute("PRAGMA user_version").fetchone() == (current,)
     assert verify_schema_identity(db).state == "current"
     assert db.execute(
         "SELECT value FROM bundle_meta WHERE key='storage_schema_version'"
-    ).fetchone() == ("15",)
+    ).fetchone() == (str(current),)
     assert db.execute("PRAGMA foreign_key_check").fetchall() == []
 
     assert (
@@ -281,8 +286,8 @@ def test_schema_ten_upgrade_preserves_rows_and_installs_capture_ticket_shape() -
     ).fetchone() == ("staging", b"[]")
 
     rerun = run_migrations(db, BUNDLE_MIGRATIONS, maintenance=None)  # type: ignore[arg-type]
-    assert rerun.from_version == 15
-    assert rerun.to_version == 15
+    assert rerun.from_version == current
+    assert rerun.to_version == current
     assert rerun.applied_versions == ()
     assert db.execute("SELECT count(*) FROM observation_capture_tickets").fetchone() == (1,)
 

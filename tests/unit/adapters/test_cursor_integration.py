@@ -45,10 +45,15 @@ from yoetz.ports.plugin_artifacts import (
     PluginProofFacet,
 )
 from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from yoetz.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
 from yoetz.version import read_verified_resource
 
 _REQUEST = request_id("req_10000000-0000-4000-8000-000000000001")
 _REVIEW_ID = "a" * 64
+_GUIDANCE_NAMES = tuple(
+    uri.removeprefix("yoetz://guidance/")
+    for uri in (*GUIDANCE_DOCUMENT_URIS, *FOCUSED_GUIDANCE_URIS)
+)
 
 
 def test_required_startup_install_inspect_and_reverse(tmp_path: Path) -> None:
@@ -155,18 +160,14 @@ def test_portable_and_native_use_distinct_skill_entries_and_shared_guidance(
     assert native.members["skills/yoetz/SKILL.md"] == read_verified_resource(
         "skills/cursor/yoetz/SKILL.md"
     )
-    for name in (
-        "agent-instructions.md",
-        "coverage-and-receipts.md",
-        "publication-policy.md",
-        "request-templates.md",
-        "workflow.md",
-    ):
+    for name in _GUIDANCE_NAMES:
         assert (
             portable.members[f"skills/yoetz/references/{name}"]
             == native.members[f"skills/yoetz/references/{name}"]
             == read_verified_resource(f"guidance/{name}")
         )
+        assert f"guidance/{name}" in portable.plan.source_refs
+        assert f"guidance/{name}" in native.plan.source_refs
     assert "plugin.json" in portable.members
     assert "hooks/hooks.json" not in portable.members
     assert ".cursor-plugin/plugin.json" not in portable.members

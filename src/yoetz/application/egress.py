@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
+from yoetz.adapters.privacy.local_enforcer import SecretScanRuleset
 from yoetz.domain.findings import SemanticDispatchKind
 from yoetz.domain.privacy import (
     ApprovedLocalDisclosureCase,
@@ -21,6 +22,7 @@ from yoetz.domain.privacy import (
     CandidateContext,
     ClassifiedContext,
     ConsentSource,
+    CredentialHeuristic,
     DataCategory,
     DataClass,
     DisclosureProposal,
@@ -28,6 +30,7 @@ from yoetz.domain.privacy import (
     EgressAuthorization,
     EgressChannel,
     EgressReceipt,
+    ForbiddenDataKind,
     HumanPrivacyDecision,
     LocalDisclosureApproved,
     LocalDisclosureBlocked,
@@ -46,10 +49,18 @@ from yoetz.domain.privacy import (
     ReceiptCounts,
     ReceiptPolicyBinding,
     ReceiptSecretScan,
+    ReceiptSecretScanStage,
     ReceiptTransformations,
     ReviewSelectionPolicy,
+    egress_origin_operation,
+    external_review_credential_heuristic,
+)
+from yoetz.domain.receipts import (
+    SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES,
+    SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
 )
 from yoetz.observability.logging import record_unexpected_exception_without_raising
+from yoetz.observability.privacy import redact_heuristic_spans
 from yoetz.observability.semantic_context import semantic_check_request
 from yoetz.ports.clock import ClockPort
 from yoetz.ports.ids import IdPort
@@ -79,7 +90,8 @@ from yoetz.ports.semantic import (
     SemanticResultUnavailable,
 )
 from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
-from yoetz.protocol.ids import IdKind
+from yoetz.protocol.ids import IdKind, validate_opaque_item_id
+from yoetz.protocol.redacted_values import SemanticRedactedValue, validate_semantic_redacted_values
 
 if TYPE_CHECKING:
     from yoetz.application.privacy_policy import PrivacyPolicyApplication
@@ -102,6 +114,117 @@ type LocalDisclosureResult = (
 )
 
 
+def _validate_withheld_item_ids(value: object) -> None:
+    """Keep every in-process egress/recovery result on the shared opaque-ID contract."""
+
+    if type(value) is not tuple:
+        raise ValueError("semantic_withheld_item_ids_invalid")
+    values = cast(tuple[object, ...], value)
+    if len(values) > 64:
+        raise ValueError("semantic_withheld_item_ids_invalid")
+    if any(type(item_id) is not str for item_id in values):
+        raise ValueError("semantic_withheld_item_ids_invalid")
+    typed_values = cast(tuple[str, ...], values)
+    if typed_values != tuple(sorted(set(typed_values), key=lambda item: item.encode("utf-8"))):
+        raise ValueError("semantic_withheld_item_ids_invalid")
+    for item_id in typed_values:
+        try:
+            validate_opaque_item_id(item_id)
+        except ValueError as exc:
+            raise ValueError("semantic_withheld_item_ids_invalid") from exc
+
+
+def _classified_scan_match_count(classified: ClassifiedContext) -> int:
+    """Count findings from the candidate scan without retaining matched content."""
+
+    return sum(
+        len(item.forbidden_findings) + len(item.heuristic_findings) for item in classified.items
+    )
+
+
+def _heuristic_only_item_ids(classified: ClassifiedContext) -> tuple[str, ...]:
+    """Return opaque ids whose only finding is the bounded heuristic assignment signal."""
+
+    return tuple(
+        sorted(
+            {
+                item.candidate.item_id
+                for item in classified.items
+                if item.scope_valid and item.heuristic_findings and not item.forbidden_findings
+            },
+            key=str.encode,
+        )
+    )
+
+
+def _minimized_scan_match_count(minimized: MinimizedDisclosure) -> int:
+    """Count findings in the exact prepared case scan."""
+
+    return len(set(minimized.forbidden_findings) | set(minimized.heuristic_findings))
+
+
+def _transformation_count(summary: tuple[tuple[str, int], ...], name: str) -> int:
+    """Read one bounded transformation count from durable proposal metadata."""
+
+    for key, count in summary:
+        if key == name:
+            return count
+    return 0
+
+
+def _current_scanner_identity(
+    classifier: PrivacyClassifierPort,
+) -> tuple[str, str] | None:
+    """Read the concrete scanner identity required to resume a prepared disclosure.
+
+    A classifier implementation that predates the identity contract cannot prove that it would
+    apply the same never-send rules.  Treat that as unavailable authority instead of silently
+    accepting the proposal's historical profile.
+    """
+
+    resolver = getattr(classifier, "scanner_identity", None)
+    if not callable(resolver):
+        return None
+    try:
+        value = resolver()
+    except Exception:
+        return None
+    if type(value) is not tuple:
+        return None
+    parts = cast(tuple[object, ...], value)
+    if len(parts) != 2 or type(parts[0]) is not str or type(parts[1]) is not str:
+        return None
+    return cast(tuple[str, str], parts)
+
+
+def _resume_scan_is_clean(
+    classifier: PrivacyClassifierPort,
+    prepared_bytes: bytes,
+    credential_heuristic: CredentialHeuristic = CredentialHeuristic.ENFORCED,
+) -> tuple[ForbiddenDataKind, ...] | None:
+    """Scan the exact persisted transformed bytes with the current scanner.
+
+    ``None`` means the scanner boundary itself was unavailable or malformed.  It is distinct from
+    an empty clean result so a resume cannot turn a broken classifier into a successful dispatch.
+    ``credential_heuristic`` is the owner policy's setting; resume already requires that policy
+    to be exactly the one the proposal was prepared under (issue #982).
+    """
+
+    try:
+        findings = (
+            classifier.scan_exact_bytes(prepared_bytes)
+            if credential_heuristic is CredentialHeuristic.ENFORCED
+            else classifier.scan_exact_bytes(
+                prepared_bytes, credential_heuristic=credential_heuristic
+            )
+        )
+    except Exception:
+        return None
+    if type(findings) is not tuple or any(type(item) is not ForbiddenDataKind for item in findings):
+        return None
+    return findings
+
+
 class RepositoryGrantAdmission(StrEnum):
     """Admission-locked repository authority outcome for check composition.
 
@@ -121,6 +244,7 @@ _SEMANTIC_PURPOSE = "semantic-review"
 _CREDENTIAL_PROBE_PURPOSE = "credential-probe"
 _MEDIA_TYPE = "application/json"
 _SCHEMA_ID = "yoetz-semantic-case-1.0.0"
+_SCAN = SecretScanRuleset()
 # Breadth order, matching ``_scope_rank`` in ``yoetz.application.privacy_policy``: a lower rank
 # is a *broader* scope. ``machine`` is therefore the widest authorization ceiling a channel can
 # carry and ``request`` the narrowest, which is why moving a ceiling from ``task`` to ``machine``
@@ -188,6 +312,30 @@ class SemanticEgressSuccess:
     # What the exact prepared (bounded, minimized) review packet carried; None when that document
     # is not a readable review packet (issue #904).
     disclosure: ReviewPacketDisclosure | None = None
+    # Opaque case item ids withheld by the low-confidence secret-assignment heuristic. The caller
+    # can map these ids to authorized source references from its frozen case; no matched bytes or
+    # user prose cross this boundary.
+    withheld_item_ids: tuple[str, ...] = ()
+    # A successful provider call may lack the exact provider-bound input manifest.  Keep the
+    # bounded reason so the check can disclose provenance loss without substituting the composed
+    # pre-admission manifest.
+    provider_input_manifest_failure: str | None = None
+    redacted_span_count: int = 0
+    # PL2-1: bounded item refs and line numbers of replaced or withheld values, never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_withheld_item_ids(self.withheld_item_ids)
+        validate_semantic_redacted_values(self.redacted_values)
+        if self.provider_input_manifest_failure is not None and (
+            self.provider_input_manifest_failure not in SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES
+        ):
+            raise ValueError("provider_input_manifest_failure_invalid")
+        if self.disclosure is not None and self.disclosure.provider_input_manifest is not None:
+            if self.provider_input_manifest_failure is not None:
+                raise ValueError("provider_input_manifest_failure_invalid")
+        if type(self.redacted_span_count) is not int or self.redacted_span_count < 0:
+            raise ValueError("semantic_redacted_span_count_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,6 +346,16 @@ class SemanticEgressAwaitingHuman:
     privacy_proposal_id: str
     subject_digest: str
     expires_at: datetime
+    withheld_item_ids: tuple[str, ...] = ()
+    redacted_span_count: int = 0
+    # PL2-1: bounded item refs and line numbers of replaced or withheld values, never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_withheld_item_ids(self.withheld_item_ids)
+        validate_semantic_redacted_values(self.redacted_values)
+        if type(self.redacted_span_count) is not int or self.redacted_span_count < 0:
+            raise ValueError("semantic_redacted_span_count_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,6 +365,16 @@ class SemanticEgressAttemptUnknown:
     request_id: str
     privacy_proposal_id: str
     receipt_id: str | None = None
+    withheld_item_ids: tuple[str, ...] = ()
+    redacted_span_count: int = 0
+    # PL2-1: bounded item refs and line numbers of replaced or withheld values, never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_withheld_item_ids(self.withheld_item_ids)
+        validate_semantic_redacted_values(self.redacted_values)
+        if type(self.redacted_span_count) is not int or self.redacted_span_count < 0:
+            raise ValueError("semantic_redacted_span_count_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,6 +386,16 @@ class SemanticEgressBlocked:
     reason: PrivacyReason
     privacy_proposal_id: str | None = None
     receipt_id: str | None = None
+    withheld_item_ids: tuple[str, ...] = ()
+    redacted_span_count: int = 0
+    # PL2-1: bounded item refs and line numbers of replaced or withheld values, never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_withheld_item_ids(self.withheld_item_ids)
+        validate_semantic_redacted_values(self.redacted_values)
+        if type(self.redacted_span_count) is not int or self.redacted_span_count < 0:
+            raise ValueError("semantic_redacted_span_count_invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +416,16 @@ class SemanticEgressProviderOutcome:
     case_digest: str
     privacy_receipt_id: str | None = None
     request_commitment: str | None = None
+    withheld_item_ids: tuple[str, ...] = ()
+    redacted_span_count: int = 0
+    # PL2-1: bounded item refs and line numbers of replaced or withheld values, never values.
+    redacted_values: tuple[SemanticRedactedValue, ...] = ()
+
+    def __post_init__(self) -> None:
+        _validate_withheld_item_ids(self.withheld_item_ids)
+        validate_semantic_redacted_values(self.redacted_values)
+        if type(self.redacted_span_count) is not int or self.redacted_span_count < 0:
+            raise ValueError("semantic_redacted_span_count_invalid")
 
 
 type SemanticEgressResult = (
@@ -282,7 +470,7 @@ def _semantic_local_receipt(
     candidate_count = len(minimized.source_item_digests)
     omitted_count = max(0, candidate_count - included_count)
     return LocalDisclosureReceipt(
-        "1.0.0",
+        "1.1.0",
         ids.new(IdKind.EGRESS_RECEIPT),
         candidate.request_id,
         proposal.privacy_proposal_id,
@@ -311,15 +499,21 @@ def _semantic_local_receipt(
             minimized.token_count,
             None,
         ),
-        ReceiptTransformations(omitted_count, 0, omitted_count),
+        ReceiptTransformations(
+            omitted_count,
+            minimized.redacted_span_count,
+            omitted_count,
+        ),
         ReceiptSecretScan(
             minimized.scanner_registry_version,
             minimized.scanner_profile_digest,
-            len(minimized.forbidden_findings),
-            not minimized.forbidden_findings,
+            len(set(minimized.forbidden_findings) | set(minimized.heuristic_findings)),
+            not (minimized.forbidden_findings or minimized.heuristic_findings),
+            ReceiptSecretScanStage.RENDERED_BODY,
         ),
         reason,
         1,
+        withheld_item_ids=minimized.withheld_item_ids,
     )
 
 
@@ -516,10 +710,22 @@ class PrivacyCoordinator:
                     "local_disclosure_pending",
                     "local_disclosure_completed",
                 }:
+                    withheld_item_ids = await self._withheld_item_ids_for_proposal(
+                        state.reservation.privacy_proposal_id
+                    )
+                    redacted_span_count = await self._redacted_span_count_for_proposal(
+                        state.reservation.privacy_proposal_id
+                    )
+                    redacted_values = await self._redacted_values_for_proposal(
+                        state.reservation.privacy_proposal_id
+                    )
                     return SemanticEgressAttemptUnknown(
                         request_id,
                         state.reservation.privacy_proposal_id,
                         state.receipt_id,
+                        withheld_item_ids,
+                        redacted_span_count,
+                        redacted_values,
                     )
                 return await self._resume_admitted(
                     request_id,
@@ -553,10 +759,22 @@ class PrivacyCoordinator:
                 "local_disclosure_completed",
             }:
                 return None
+            withheld_item_ids = await self._withheld_item_ids_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
+            redacted_span_count = await self._redacted_span_count_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
+            redacted_values = await self._redacted_values_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
             return SemanticEgressAttemptUnknown(
                 request_id,
                 state.reservation.privacy_proposal_id,
                 state.receipt_id,
+                withheld_item_ids,
+                redacted_span_count,
+                redacted_values,
             )
 
     async def reconcile_started_attempts(
@@ -621,6 +839,44 @@ class PrivacyCoordinator:
             return await typed_loader(request_id, case_digest)
         raise ValueError("privacy_audit_attempt_lookup_unavailable")
 
+    async def _load_disclosure_proposal(self, proposal_id: str) -> DisclosureProposal | None:
+        try:
+            proposal = await self._audit.load_disclosure_proposal(proposal_id)
+        except Exception as exc:
+            record_unexpected_exception_without_raising(
+                exc,
+                component="privacy_egress",
+                operation="audit_disclosure_proposal_lookup_failed",
+            )
+            raise
+        return proposal if type(proposal) is DisclosureProposal else None
+
+    async def _withheld_item_ids_for_proposal(self, proposal_id: str) -> tuple[str, ...]:
+        """Recover bounded heuristic omission identities for terminal replay paths."""
+
+        proposal = await self._load_disclosure_proposal(proposal_id)
+        if proposal is None:
+            raise RuntimeError("privacy_audit_proposal_unavailable")
+        return proposal.withheld_item_ids
+
+    async def _redacted_span_count_for_proposal(self, proposal_id: str) -> int:
+        """Recover structural redaction accounting without reopening proposal plaintext."""
+
+        proposal = await self._load_disclosure_proposal(proposal_id)
+        if proposal is None:
+            raise RuntimeError("privacy_audit_proposal_unavailable")
+        return _transformation_count(proposal.transformation_summary, "redacted_spans")
+
+    async def _redacted_values_for_proposal(
+        self, proposal_id: str
+    ) -> tuple[SemanticRedactedValue, ...]:
+        """Recover the bounded PL2-1 item refs and lines persisted with the proposal."""
+
+        proposal = await self._load_disclosure_proposal(proposal_id)
+        if proposal is None:
+            raise RuntimeError("privacy_audit_proposal_unavailable")
+        return proposal.redacted_values
+
     async def _semantic_dispatch_is_current(self) -> bool:
         """Recheck a caller-owned content fence at the gateway boundary."""
 
@@ -652,16 +908,32 @@ class PrivacyCoordinator:
         classified = self._classifier.classify(candidate, effective)
         decision = self._local_decision(classified, effective)
         if decision.outcome is not PrivacyOutcome.COMPLETED:
-            return await self._complete_local_block(classified, effective, decision)
+            return await self._complete_local_block(
+                classified,
+                effective,
+                decision,
+                scan_stage=ReceiptSecretScanStage.CANDIDATE,
+                scan_match_count=_classified_scan_match_count(classified),
+                withheld_item_ids=_heuristic_only_item_ids(classified),
+            )
         minimized = self._classifier.minimize_and_scan(classified, decision)
-        if minimized.forbidden_findings:
+        if minimized.forbidden_findings or minimized.heuristic_findings:
             forbidden = PrivacyDecision(
                 (),
                 minimized.blocked_categories,
                 PrivacyOutcome.BLOCKED_FORBIDDEN_DATA,
                 PrivacyReason.NEVER_SEND_DETECTED,
             )
-            return await self._complete_local_block(classified, effective, forbidden)
+            return await self._complete_local_block(
+                classified,
+                effective,
+                forbidden,
+                scan_stage=ReceiptSecretScanStage.CANDIDATE,
+                scan_match_count=len(
+                    set(minimized.forbidden_findings) | set(minimized.heuristic_findings)
+                ),
+                withheld_item_ids=minimized.withheld_item_ids,
+            )
         if not minimized.included_item_ids and classified.items:
             if candidate.purpose == "client_result_projection":
                 return await self._complete_agent_projection(classified, effective, minimized)
@@ -671,7 +943,16 @@ class PrivacyCoordinator:
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.INSUFFICIENT_APPROVED_CONTEXT,
             )
-            return await self._complete_local_block(classified, effective, empty)
+            return await self._complete_local_block(
+                classified,
+                effective,
+                empty,
+                scan_stage=ReceiptSecretScanStage.CANDIDATE,
+                scan_match_count=len(
+                    set(minimized.forbidden_findings) | set(minimized.heuristic_findings)
+                ),
+                withheld_item_ids=minimized.withheld_item_ids,
+            )
         if candidate.purpose == "client_result_projection":
             return await self._complete_agent_projection(classified, effective, minimized)
         task_id = candidate.scope.task_id
@@ -718,6 +999,8 @@ class PrivacyCoordinator:
             minimized.byte_count,
             minimized.token_count,
             len(minimized.included_item_ids),
+            withheld_item_ids=minimized.withheld_item_ids,
+            redacted_spans=minimized.redacted_span_count,
         )
         await self._audit.complete_local_disclosure(proposal.privacy_proposal_id, receipt)
         included = set(minimized.included_item_ids)
@@ -727,7 +1010,11 @@ class PrivacyCoordinator:
                     ApprovedLocalItem(
                         _pointer(item.candidate.item_id, item.candidate.origin_ref),
                         item.candidate.category,
-                        item.candidate.plaintext,
+                        (
+                            redact_heuristic_spans(item.candidate.plaintext)[0]
+                            if item.heuristic_findings
+                            else item.candidate.plaintext
+                        ),
                     )
                     for item in classified.items
                     if item.candidate.item_id in included
@@ -898,12 +1185,7 @@ class PrivacyCoordinator:
             )
         status = state.status
         if status in {"reserved", "awaiting_human"}:
-            try:
-                pending = await self._audit.load_disclosure_proposal(
-                    state.reservation.privacy_proposal_id
-                )
-            except Exception:
-                pending = None
+            pending = await self._load_disclosure_proposal(state.reservation.privacy_proposal_id)
             if (
                 pending is None
                 or pending.prepared_case_digest != case_digest
@@ -922,14 +1204,31 @@ class PrivacyCoordinator:
                     PrivacyOutcome.APPROVAL_EXPIRED,
                     PrivacyReason.AUTHORIZATION_EXPIRED,
                     privacy_proposal_id=state.reservation.privacy_proposal_id,
+                    withheld_item_ids=pending.withheld_item_ids,
+                    redacted_span_count=_transformation_count(
+                        pending.transformation_summary, "redacted_spans"
+                    ),
+                    redacted_values=pending.redacted_values,
                 )
             return SemanticEgressAwaitingHuman(
                 request_id,
                 state.reservation.privacy_proposal_id,
                 state.reservation.subject_digest,
                 pending.expires_at,
+                pending.withheld_item_ids,
+                _transformation_count(pending.transformation_summary, "redacted_spans"),
+                pending.redacted_values,
             )
         if status in {"denied", "decision_receipt_pending", "expired", "decision_completed"}:
+            withheld_item_ids = await self._withheld_item_ids_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
+            redacted_span_count = await self._redacted_span_count_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
+            redacted_values = await self._redacted_values_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
             return SemanticEgressBlocked(
                 request_id,
                 PrivacyOutcome.HUMAN_DENIED
@@ -944,36 +1243,70 @@ class PrivacyCoordinator:
                 else PrivacyReason.POLICY_DENIED,
                 privacy_proposal_id=state.reservation.privacy_proposal_id,
                 receipt_id=state.receipt_id,
+                withheld_item_ids=withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
             )
         if status in {"receipt_pending", "attempt_completed"}:
             # Attempt already consumed; automatic retry requires a fresh evaluate_semantic.
+            withheld_item_ids = await self._withheld_item_ids_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
+            redacted_span_count = await self._redacted_span_count_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
+            redacted_values = await self._redacted_values_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
             return SemanticEgressBlocked(
                 request_id,
                 PrivacyOutcome.APPROVAL_EXPIRED,
                 PrivacyReason.AUTHORIZATION_REUSED,
                 privacy_proposal_id=state.reservation.privacy_proposal_id,
                 receipt_id=state.receipt_id,
+                withheld_item_ids=withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
             )
         if status not in {"reserved", "approved", "authorized"}:
+            withheld_item_ids = await self._withheld_item_ids_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
+            redacted_span_count = await self._redacted_span_count_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
+            redacted_values = await self._redacted_values_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
             return SemanticEgressBlocked(
                 request_id,
                 PrivacyOutcome.AUDIT_FAILED,
                 PrivacyReason.AUDIT_FAILED,
                 privacy_proposal_id=state.reservation.privacy_proposal_id,
+                withheld_item_ids=withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
             )
         if deadline.expired(self._clock.monotonic_seconds()):
+            withheld_item_ids = await self._withheld_item_ids_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
+            redacted_span_count = await self._redacted_span_count_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
+            redacted_values = await self._redacted_values_for_proposal(
+                state.reservation.privacy_proposal_id
+            )
             return SemanticEgressBlocked(
                 request_id,
                 PrivacyOutcome.TIMEOUT,
                 PrivacyReason.DEADLINE_EXPIRED,
                 privacy_proposal_id=state.reservation.privacy_proposal_id,
+                withheld_item_ids=withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
             )
-        try:
-            proposal = await self._audit.load_disclosure_proposal(
-                state.reservation.privacy_proposal_id
-            )
-        except Exception:
-            proposal = None
+        proposal = await self._load_disclosure_proposal(state.reservation.privacy_proposal_id)
         if (
             proposal is None
             or proposal.prepared_case_digest != case_digest
@@ -985,6 +1318,13 @@ class PrivacyCoordinator:
                 PrivacyOutcome.AUDIT_FAILED,
                 PrivacyReason.AUDIT_FAILED,
                 privacy_proposal_id=state.reservation.privacy_proposal_id,
+                withheld_item_ids=proposal.withheld_item_ids if proposal is not None else (),
+                redacted_span_count=(
+                    _transformation_count(proposal.transformation_summary, "redacted_spans")
+                    if proposal is not None
+                    else 0
+                ),
+                redacted_values=proposal.redacted_values if proposal is not None else (),
             )
         try:
             effective = await self._policies.effective_policy(proposal.scope)
@@ -994,6 +1334,84 @@ class PrivacyCoordinator:
                 PrivacyOutcome.AUDIT_FAILED,
                 PrivacyReason.AUDIT_FAILED,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=proposal.withheld_item_ids,
+                redacted_span_count=_transformation_count(
+                    proposal.transformation_summary, "redacted_spans"
+                ),
+                redacted_values=proposal.redacted_values,
+            )
+        redacted_span_count = _transformation_count(
+            proposal.transformation_summary, "redacted_spans"
+        )
+        redacted_values = proposal.redacted_values
+        # A prepared proposal is a one-use authorization for one policy, scanner and active
+        # route.  Replaying its bytes under a different authority would bypass the current
+        # classification/minimization pass even when the packet still fits today's size limits.
+        if (
+            proposal.policy_version != effective.policy.version
+            or proposal.policy_digest != effective.effective_digest
+        ):
+            return SemanticEgressBlocked(
+                request_id,
+                PrivacyOutcome.BLOCKED_BY_POLICY,
+                PrivacyReason.POLICY_DENIED,
+                privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=proposal.withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
+            )
+        if proposal.route_identity_digest is None or (
+            proposal.purpose == _SEMANTIC_PURPOSE and not proposal.included_item_ids
+        ):
+            return SemanticEgressBlocked(
+                request_id,
+                PrivacyOutcome.AUDIT_FAILED,
+                PrivacyReason.AUDIT_FAILED,
+                privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=proposal.withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
+            )
+        scanner_identity = _current_scanner_identity(self._classifier)
+        if scanner_identity is None or scanner_identity != (
+            proposal.scanner_registry_version,
+            proposal.scanner_profile_digest,
+        ):
+            return SemanticEgressBlocked(
+                request_id,
+                PrivacyOutcome.AUDIT_FAILED,
+                PrivacyReason.AUDIT_FAILED,
+                privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=proposal.withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
+            )
+        prepared_findings = _resume_scan_is_clean(
+            self._classifier,
+            proposal.prepared_bytes,
+            external_review_credential_heuristic(
+                effective.policy, proposal.provider_binding, local_sink=proposal.local_sink
+            ),
+        )
+        if prepared_findings is None:
+            return SemanticEgressBlocked(
+                request_id,
+                PrivacyOutcome.AUDIT_FAILED,
+                PrivacyReason.AUDIT_FAILED,
+                privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=proposal.withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
+            )
+        if prepared_findings:
+            return SemanticEgressBlocked(
+                request_id,
+                PrivacyOutcome.BLOCKED_FORBIDDEN_DATA,
+                PrivacyReason.NEVER_SEND_DETECTED,
+                privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=proposal.withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
             )
         binding = proposal.provider_binding
         if binding is None and proposal.local_sink is LocalDisclosureSink.LOCAL_MODEL:
@@ -1005,6 +1423,11 @@ class PrivacyCoordinator:
                 PrivacyOutcome.AUDIT_FAILED,
                 PrivacyReason.AUDIT_FAILED,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=proposal.withheld_item_ids,
+                redacted_span_count=_transformation_count(
+                    proposal.transformation_summary, "redacted_spans"
+                ),
+                redacted_values=proposal.redacted_values,
             )
         channel = (
             EgressChannel.LLM_INFERENCE
@@ -1023,7 +1446,7 @@ class PrivacyCoordinator:
         )
         minimized = MinimizedDisclosure(
             prepared_bytes=proposal.prepared_bytes,
-            included_item_ids=proposal.source_item_digests,
+            included_item_ids=proposal.included_item_ids,
             source_item_digests=proposal.source_item_digests,
             approved_categories=proposal.approved_categories,
             blocked_categories=proposal.blocked_categories,
@@ -1031,9 +1454,12 @@ class PrivacyCoordinator:
             byte_count=len(proposal.prepared_bytes),
             token_count=proposal.max_tokens,
             case_digest=proposal.prepared_case_digest,
-            scanner_registry_version="resume",
-            scanner_profile_digest=proposal.policy_digest,
-            forbidden_findings=(),
+            scanner_registry_version=proposal.scanner_registry_version,
+            scanner_profile_digest=proposal.scanner_profile_digest,
+            forbidden_findings=prepared_findings,
+            withheld_item_ids=proposal.withheld_item_ids,
+            redacted_span_count=redacted_span_count,
+            redacted_values=redacted_values,
         )
         authority_digest: str | None = None
         if binding.transport == "external":
@@ -1044,8 +1470,24 @@ class PrivacyCoordinator:
                     PrivacyOutcome.BLOCKED_BY_POLICY,
                     PrivacyReason.SCOPE_MISMATCH,
                     privacy_proposal_id=proposal.privacy_proposal_id,
+                    withheld_item_ids=proposal.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
                 )
             effective, authority_digest = activated
+            if (
+                proposal.policy_version != effective.policy.version
+                or proposal.policy_digest != effective.effective_digest
+            ):
+                return SemanticEgressBlocked(
+                    request_id,
+                    PrivacyOutcome.BLOCKED_BY_POLICY,
+                    PrivacyReason.POLICY_DENIED,
+                    privacy_proposal_id=proposal.privacy_proposal_id,
+                    withheld_item_ids=proposal.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
+                )
         if _exceeds_current_limits(proposal, effective):
             # A proposal prepared before the policy narrowed must not reach a provider on resume:
             # its excerpts and bytes answer to the policy in force now (issue #907 Phase 1b).
@@ -1054,6 +1496,9 @@ class PrivacyCoordinator:
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.POLICY_DENIED,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=proposal.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
         if status == "authorized":
             auth_id = state.authorization_id
@@ -1063,6 +1508,9 @@ class PrivacyCoordinator:
                     PrivacyOutcome.AUDIT_FAILED,
                     PrivacyReason.AUDIT_FAILED,
                     privacy_proposal_id=proposal.privacy_proposal_id,
+                    withheld_item_ids=proposal.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
                 )
             try:
                 authorization = await self._audit.load_authorization(auth_id)
@@ -1074,6 +1522,9 @@ class PrivacyCoordinator:
                     PrivacyOutcome.AUDIT_FAILED,
                     PrivacyReason.AUDIT_FAILED,
                     privacy_proposal_id=proposal.privacy_proposal_id,
+                    withheld_item_ids=proposal.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
                 )
             return await self._dispatch_approved(
                 candidate,
@@ -1142,6 +1593,9 @@ class PrivacyCoordinator:
                 effective,
                 decision.outcome,
                 decision.reason or PrivacyReason.POLICY_DENIED,
+                scan_stage=ReceiptSecretScanStage.CANDIDATE,
+                scan_match_count=_classified_scan_match_count(classified),
+                withheld_item_ids=_heuristic_only_item_ids(classified),
             )
 
         minimized = self._classifier.minimize_and_scan(classified, decision)
@@ -1155,6 +1609,11 @@ class PrivacyCoordinator:
                     effective,
                     PrivacyOutcome.BLOCKED_BY_POLICY,
                     PrivacyReason.SCOPE_MISMATCH,
+                    withheld_item_ids=minimized.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
+                    scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                    scan_match_count=_minimized_scan_match_count(minimized),
                 )
             refreshed = await self._activate_repository_admitted(candidate.scope)
             if refreshed is None or refreshed[1] != authority_digest:
@@ -1163,16 +1622,69 @@ class PrivacyCoordinator:
                     effective,
                     PrivacyOutcome.BLOCKED_BY_POLICY,
                     PrivacyReason.SCOPE_MISMATCH,
+                    withheld_item_ids=minimized.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
+                    scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                    scan_match_count=_minimized_scan_match_count(minimized),
                 )
             effective = refreshed[0]
         else:
             effective = await self._policies.effective_policy(candidate.scope)
-        if minimized.forbidden_findings:
+        # The first classification is only a preflight. Policy, repository authority, and the
+        # scanner profile may have changed while that case was being prepared, so re-run the
+        # complete classifier/minimizer against the effective state immediately before reserving
+        # disclosure. A scanner-profile drift is a bounded fail-closed policy result; it never
+        # silently reuses a stale prepared manifest.
+        preflight_scanner = (
+            minimized.scanner_registry_version,
+            minimized.scanner_profile_digest,
+        )
+        refreshed_classified = self._classifier.classify(candidate, effective)
+        refreshed_decision = self._semantic_decision(refreshed_classified, effective, binding)
+        if refreshed_decision.outcome is not PrivacyOutcome.COMPLETED:
+            return await self._complete_semantic_predispatch(
+                candidate,
+                effective,
+                refreshed_decision.outcome,
+                refreshed_decision.reason or PrivacyReason.POLICY_DENIED,
+                scan_stage=ReceiptSecretScanStage.CANDIDATE,
+                scan_match_count=_classified_scan_match_count(refreshed_classified),
+                withheld_item_ids=_heuristic_only_item_ids(refreshed_classified),
+            )
+        refreshed_minimized = self._classifier.minimize_and_scan(
+            refreshed_classified, refreshed_decision
+        )
+        if (
+            refreshed_minimized.scanner_registry_version,
+            refreshed_minimized.scanner_profile_digest,
+        ) != preflight_scanner:
+            return await self._complete_semantic_predispatch(
+                candidate,
+                effective,
+                PrivacyOutcome.BLOCKED_BY_POLICY,
+                PrivacyReason.POLICY_DENIED,
+                withheld_item_ids=refreshed_minimized.withheld_item_ids,
+                redacted_span_count=refreshed_minimized.redacted_span_count,
+                redacted_values=refreshed_minimized.redacted_values,
+                scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                scan_match_count=_minimized_scan_match_count(refreshed_minimized),
+            )
+        minimized = refreshed_minimized
+        # Concrete credentials and scanner saturation still block the whole case. A heuristic
+        # that survives into the prepared bytes means the omission construction was violated, so
+        # the final prepared case also fails closed.
+        if minimized.forbidden_findings or minimized.heuristic_findings:
             return await self._complete_semantic_predispatch(
                 candidate,
                 effective,
                 PrivacyOutcome.BLOCKED_FORBIDDEN_DATA,
                 PrivacyReason.NEVER_SEND_DETECTED,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
+                scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                scan_match_count=_minimized_scan_match_count(minimized),
             )
         if not minimized.included_item_ids:
             return await self._complete_semantic_predispatch(
@@ -1180,6 +1692,11 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.INSUFFICIENT_APPROVED_CONTEXT,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
+                scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                scan_match_count=_minimized_scan_match_count(minimized),
             )
         # Channel ceilings are operator-visible policy dimensions; fail closed when exceeded.
         llm = next(
@@ -1193,6 +1710,11 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.POLICY_DENIED,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
+                scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                scan_match_count=_minimized_scan_match_count(minimized),
             )
         if llm.max_tokens > 0 and minimized.token_count > llm.max_tokens:
             return await self._complete_semantic_predispatch(
@@ -1200,6 +1722,11 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.POLICY_DENIED,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
+                scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                scan_match_count=_minimized_scan_match_count(minimized),
             )
         # The approved excerpt limits are authoritative here too: a review packet with more
         # excerpts, or more excerpt bytes, than the effective policy approved is refused whole,
@@ -1212,6 +1739,11 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.POLICY_DENIED,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
+                scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                scan_match_count=_minimized_scan_match_count(minimized),
             )
 
         task_id = candidate.scope.task_id
@@ -1221,6 +1753,11 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.SCOPE_MISMATCH,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
+                scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
+                scan_match_count=_minimized_scan_match_count(minimized),
             )
 
         now = self._clock.now_utc()
@@ -1273,6 +1810,9 @@ class PrivacyCoordinator:
                 candidate.request_id,
                 PrivacyOutcome.AUDIT_FAILED,
                 PrivacyReason.AUDIT_FAILED,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
 
         proposal = prepared.proposal
@@ -1322,6 +1862,9 @@ class PrivacyCoordinator:
                 proposal.privacy_proposal_id,
                 subject_digest,
                 proposal.expires_at,
+                minimized.withheld_item_ids,
+                minimized.redacted_span_count,
+                minimized.redacted_values,
             )
         try:
             decision = await self._human.request_disclosure_decision(proposal)
@@ -1331,6 +1874,9 @@ class PrivacyCoordinator:
                 PrivacyOutcome.AUDIT_FAILED,
                 PrivacyReason.AUDIT_FAILED,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
         if type(decision) is PendingHumanDecision:
             try:
@@ -1342,6 +1888,9 @@ class PrivacyCoordinator:
                 decision.privacy_proposal_id,
                 subject_digest,
                 decision.expires_at,
+                minimized.withheld_item_ids,
+                minimized.redacted_span_count,
+                minimized.redacted_values,
             )
         if type(decision) is not HumanPrivacyDecision or not decision.approved:
             try:
@@ -1355,6 +1904,10 @@ class PrivacyCoordinator:
                 PrivacyOutcome.HUMAN_DENIED,
                 PrivacyReason.HUMAN_DENIED,
                 proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
+                scan_stage=ReceiptSecretScanStage.PREPARED_CASE,
             )
         try:
             await self._audit.record_human_decision(proposal.privacy_proposal_id, decision)
@@ -1364,6 +1917,9 @@ class PrivacyCoordinator:
                 PrivacyOutcome.AUDIT_FAILED,
                 PrivacyReason.AUDIT_FAILED,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
         return await self._dispatch_approved(
             candidate,
@@ -1398,6 +1954,9 @@ class PrivacyCoordinator:
                 PrivacyOutcome.APPROVAL_EXPIRED,
                 PrivacyReason.AUTHORIZATION_EXPIRED,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
         if deadline.expired(self._clock.monotonic_seconds()):
             return SemanticEgressBlocked(
@@ -1405,6 +1964,9 @@ class PrivacyCoordinator:
                 PrivacyOutcome.TIMEOUT,
                 PrivacyReason.DEADLINE_EXPIRED,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
         # A caller-owned retained-content fence may have changed while policy, audit, or
         # human-approval work awaited. Check before minting any provider authorization, then
@@ -1415,6 +1977,9 @@ class PrivacyCoordinator:
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.SCOPE_MISMATCH,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
 
         if binding.transport == "local_af_unix":
@@ -1424,7 +1989,7 @@ class PrivacyCoordinator:
                 proposal.privacy_proposal_id,
                 proposal.prepared_bytes,
                 _MEDIA_TYPE,
-                minimized.included_item_ids or proposal.source_item_digests,
+                minimized.included_item_ids or proposal.included_item_ids,
                 proposal.approved_categories,
                 proposal.blocked_categories,
                 len(proposal.prepared_bytes),
@@ -1434,6 +1999,8 @@ class PrivacyCoordinator:
                 candidate.purpose,
                 effective.effective_digest,
                 proposal.prepared_case_digest,
+                minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
             )
             if not await self._semantic_dispatch_is_current():
                 return SemanticEgressBlocked(
@@ -1441,6 +2008,9 @@ class PrivacyCoordinator:
                     PrivacyOutcome.BLOCKED_BY_POLICY,
                     PrivacyReason.SCOPE_MISMATCH,
                     privacy_proposal_id=proposal.privacy_proposal_id,
+                    withheld_item_ids=minimized.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
                 )
             try:
                 result = await self._gateway.dispatch_local_semantic(local_case, deadline)
@@ -1456,6 +2026,9 @@ class PrivacyCoordinator:
                     PrivacyOutcome.TRANSPORT_FAILED,
                     PrivacyReason.OUTCOME_UNKNOWN,
                     privacy_proposal_id=proposal.privacy_proposal_id,
+                    withheld_item_ids=minimized.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
                 )
             outcome, reason = _semantic_result_outcome(result)
             receipt = _semantic_local_receipt(
@@ -1482,6 +2055,9 @@ class PrivacyCoordinator:
                 subject_digest,
                 result,
                 prepared_bytes=proposal.prepared_bytes,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
 
         if authority_digest is None or not await self._repository_authority_is_current(
@@ -1492,6 +2068,9 @@ class PrivacyCoordinator:
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.SCOPE_MISMATCH,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
 
         minted: EgressAuthorization
@@ -1514,6 +2093,9 @@ class PrivacyCoordinator:
                     PrivacyOutcome.AUDIT_FAILED,
                     PrivacyReason.AUDIT_FAILED,
                     privacy_proposal_id=proposal.privacy_proposal_id,
+                    withheld_item_ids=minimized.withheld_item_ids,
+                    redacted_span_count=minimized.redacted_span_count,
+                    redacted_values=minimized.redacted_values,
                 )
         authorization = minted
         case = ApprovedOutboundCase(
@@ -1532,6 +2114,9 @@ class PrivacyCoordinator:
             authorization.authorization_id,
             effective.effective_digest,
             proposal.prepared_case_digest,
+            minimized.withheld_item_ids,
+            redacted_span_count=minimized.redacted_span_count,
+            credential_heuristic=external_review_credential_heuristic(effective.policy, binding),
         )
         if not await self._semantic_dispatch_is_current():
             return SemanticEgressBlocked(
@@ -1539,6 +2124,9 @@ class PrivacyCoordinator:
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.SCOPE_MISMATCH,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
         try:
             result = await self._gateway.dispatch_external_semantic(case, authorization, deadline)
@@ -1554,6 +2142,9 @@ class PrivacyCoordinator:
                 PrivacyOutcome.TRANSPORT_FAILED,
                 PrivacyReason.OUTCOME_UNKNOWN,
                 privacy_proposal_id=proposal.privacy_proposal_id,
+                withheld_item_ids=minimized.withheld_item_ids,
+                redacted_span_count=minimized.redacted_span_count,
+                redacted_values=minimized.redacted_values,
             )
         dispatch_kind = (
             SemanticDispatchKind.EXTERNAL_RUNTIME_OAUTH
@@ -1569,6 +2160,9 @@ class PrivacyCoordinator:
             subject_digest,
             result,
             prepared_bytes=proposal.prepared_bytes,
+            withheld_item_ids=minimized.withheld_item_ids,
+            redacted_span_count=minimized.redacted_span_count,
+            redacted_values=minimized.redacted_values,
         )
 
     async def _map_provider_result(
@@ -1582,6 +2176,9 @@ class PrivacyCoordinator:
         result: SemanticResult,
         *,
         prepared_bytes: bytes | None = None,
+        withheld_item_ids: tuple[str, ...] = (),
+        redacted_span_count: int = 0,
+        redacted_values: tuple[SemanticRedactedValue, ...] = (),
     ) -> SemanticEgressResult:
         receipt_id: str | None = None
         try:
@@ -1592,7 +2189,11 @@ class PrivacyCoordinator:
             receipt_id = None
         request_commitment = getattr(result.provenance, "request_commitment", None)
         if type(result) is SemanticResultSuccess:
-            from yoetz.application.semantic_case import review_packet_disclosure
+            from yoetz.application.semantic_case import review_packet_disclosure_result
+
+            disclosure_result = (
+                None if prepared_bytes is None else review_packet_disclosure_result(prepared_bytes)
+            )
 
             return SemanticEgressSuccess(
                 request_id,
@@ -1605,8 +2206,14 @@ class PrivacyCoordinator:
                 request_commitment=request_commitment,
                 # What the provider actually received: the exact prepared bytes after envelope
                 # bounding and privacy minimization, never the pre-minimization case.
-                disclosure=(
-                    None if prepared_bytes is None else review_packet_disclosure(prepared_bytes)
+                disclosure=None if disclosure_result is None else disclosure_result.disclosure,
+                withheld_item_ids=tuple(sorted(set(withheld_item_ids), key=str.encode)),
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
+                provider_input_manifest_failure=(
+                    SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP
+                    if disclosure_result is None
+                    else disclosure_result.failure
                 ),
             )
         if type(result) in {
@@ -1625,6 +2232,9 @@ class PrivacyCoordinator:
                 case_digest,
                 privacy_receipt_id=receipt_id,
                 request_commitment=request_commitment,
+                withheld_item_ids=tuple(sorted(set(withheld_item_ids), key=str.encode)),
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
             )
         return SemanticEgressBlocked(
             request_id,
@@ -1632,6 +2242,9 @@ class PrivacyCoordinator:
             PrivacyReason.OUTCOME_UNKNOWN,
             privacy_proposal_id=privacy_proposal_id,
             receipt_id=receipt_id,
+            withheld_item_ids=tuple(sorted(set(withheld_item_ids), key=str.encode)),
+            redacted_span_count=redacted_span_count,
+            redacted_values=redacted_values,
         )
 
     def _data_use_evidence_current(self, binding: ProviderBinding) -> bool:
@@ -1717,6 +2330,12 @@ class PrivacyCoordinator:
         reason: PrivacyReason,
         *,
         proposal_id: str | None = None,
+        withheld_item_ids: tuple[str, ...] = (),
+        redacted_span_count: int = 0,
+        redacted_values: tuple[SemanticRedactedValue, ...] = (),
+        scan_stage: ReceiptSecretScanStage = ReceiptSecretScanStage.NOT_RUN,
+        scan_match_count: int = 0,
+        scan_not_run_reason: PrivacyReason | None = None,
     ) -> SemanticEgressBlocked:
         now = self._clock.now_utc()
         pid = proposal_id or self._ids.new(IdKind.PRIVACY_PROPOSAL)
@@ -1764,7 +2383,13 @@ class PrivacyCoordinator:
             reservation = await self._audit.reserve(subject)
         except Exception:
             return SemanticEgressBlocked(
-                candidate.request_id, PrivacyOutcome.AUDIT_FAILED, PrivacyReason.AUDIT_FAILED
+                candidate.request_id,
+                PrivacyOutcome.AUDIT_FAILED,
+                PrivacyReason.AUDIT_FAILED,
+                privacy_proposal_id=pid,
+                withheld_item_ids=withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
             )
         if destination is None:
             # Structural channel/policy block without an exact external destination still receipts.
@@ -1776,7 +2401,7 @@ class PrivacyCoordinator:
                 "external",
             )
         receipt = EgressReceipt(
-            "1.0.0",
+            "1.1.0",
             self._ids.new(IdKind.EGRESS_RECEIPT),
             candidate.request_id,
             pid,
@@ -1806,10 +2431,26 @@ class PrivacyCoordinator:
                 None,
                 None,
             ),
-            ReceiptTransformations(0, 0, len(candidate.items)),
-            ReceiptSecretScan("observability-sensitive-content-v1", f"sha256:{'0' * 64}", 0, True),
+            ReceiptTransformations(0, redacted_span_count, len(candidate.items)),
+            ReceiptSecretScan(
+                _SCAN.version,
+                _SCAN.profile_digest,
+                scan_match_count,
+                scan_stage is not ReceiptSecretScanStage.NOT_RUN and scan_match_count == 0,
+                scan_stage,
+                (
+                    (scan_not_run_reason or reason)
+                    if scan_stage is ReceiptSecretScanStage.NOT_RUN
+                    else None
+                ),
+                external_review_credential_heuristic(effective.policy, destination),
+            ),
             reason,
             1,
+            withheld_item_ids=withheld_item_ids,
+            origin_operation=egress_origin_operation(
+                candidate.purpose, (item.item_id for item in candidate.items)
+            ),
         )
         try:
             await self._audit.complete_decision(reservation.privacy_proposal_id, receipt)
@@ -1819,6 +2460,9 @@ class PrivacyCoordinator:
                 PrivacyOutcome.AUDIT_FAILED,
                 PrivacyReason.AUDIT_FAILED,
                 privacy_proposal_id=pid,
+                withheld_item_ids=withheld_item_ids,
+                redacted_span_count=redacted_span_count,
+                redacted_values=redacted_values,
             )
         return SemanticEgressBlocked(
             candidate.request_id,
@@ -1826,6 +2470,9 @@ class PrivacyCoordinator:
             reason,
             privacy_proposal_id=pid,
             receipt_id=receipt.receipt_id,
+            withheld_item_ids=withheld_item_ids,
+            redacted_span_count=redacted_span_count,
+            redacted_values=redacted_values,
         )
 
     def _local_decision(
@@ -1940,7 +2587,11 @@ class PrivacyCoordinator:
                     ApprovedLocalItem(
                         _pointer(item.candidate.item_id, item.candidate.origin_ref),
                         item.candidate.category,
-                        item.candidate.plaintext,
+                        (
+                            redact_heuristic_spans(item.candidate.plaintext)[0]
+                            if item.heuristic_findings
+                            else item.candidate.plaintext
+                        ),
                     )
                     for item in classified.items
                     if item.candidate.item_id in included
@@ -1986,6 +2637,8 @@ class PrivacyCoordinator:
             len(projected),
             minimized.token_count,
             len(included),
+            withheld_item_ids=minimized.withheld_item_ids,
+            redacted_spans=minimized.redacted_span_count,
         )
         field_decisions = tuple(
             sorted(
@@ -2066,6 +2719,11 @@ class PrivacyCoordinator:
         classified: ClassifiedContext,
         effective: EffectivePrivacyPolicy,
         decision: PrivacyDecision,
+        *,
+        scan_stage: ReceiptSecretScanStage,
+        scan_match_count: int,
+        not_run_reason: PrivacyReason | None = None,
+        withheld_item_ids: tuple[str, ...] = (),
     ) -> LocalDisclosureResult:
         candidate = classified.candidate
         sink = candidate.local_sink
@@ -2113,15 +2771,20 @@ class PrivacyCoordinator:
             proposal_id,
             (),
             decision.blocked_categories,
-            "observability-sensitive-content-v1",
-            f"sha256:{'0' * 64}",
-            sum(forbidden_counts.values()),
+            _SCAN.version,
+            _SCAN.profile_digest,
+            scan_match_count,
             decision.outcome,
             decision.reason,
             ConsentSource.NONE,
             0,
             0,
             0,
+            scan_stage=scan_stage,
+            not_run_reason=(
+                not_run_reason if scan_stage is ReceiptSecretScanStage.NOT_RUN else None
+            ),
+            withheld_item_ids=withheld_item_ids,
         )
         await self._audit.complete_decision(reservation.privacy_proposal_id, receipt)
         omitted = _omissions(classified, set())
@@ -2153,13 +2816,22 @@ class PrivacyCoordinator:
         final_bytes: int,
         tokens: int,
         included_count: int,
+        scan_stage: ReceiptSecretScanStage = ReceiptSecretScanStage.PREPARED_CASE,
+        not_run_reason: PrivacyReason | None = None,
+        withheld_item_ids: tuple[str, ...] = (),
+        redacted_spans: int = 0,
     ) -> LocalDisclosureReceipt:
         candidate = classified.candidate
         sink = candidate.local_sink
         assert sink is not None
         candidate_bytes = sum(len(item.candidate.plaintext) for item in classified.items)
+        effective_not_run_reason = (
+            not_run_reason or reason or PrivacyReason.POLICY_DENIED
+            if scan_stage is ReceiptSecretScanStage.NOT_RUN
+            else None
+        )
         return LocalDisclosureReceipt(
-            "1.0.0",
+            "1.1.0",
             self._ids.new(IdKind.EGRESS_RECEIPT),
             candidate.request_id,
             proposal_id,
@@ -2190,12 +2862,21 @@ class PrivacyCoordinator:
             ),
             ReceiptTransformations(
                 len(classified.items) - included_count,
-                0,
+                redacted_spans,
                 len(classified.items) - included_count,
             ),
-            ReceiptSecretScan(scanner_version, scanner_digest, match_count, match_count == 0),
+            ReceiptSecretScan(
+                scanner_version,
+                scanner_digest,
+                match_count,
+                scan_stage is not ReceiptSecretScanStage.NOT_RUN and match_count == 0,
+                scan_stage,
+                effective_not_run_reason,
+                classified.credential_heuristic,
+            ),
             reason,
             1,
+            withheld_item_ids=withheld_item_ids,
         )
 
 

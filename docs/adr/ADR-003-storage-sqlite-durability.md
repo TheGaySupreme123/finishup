@@ -204,6 +204,16 @@ layout check now receives the real pending migration set rather than only the la
 entry. Preservation comparison ignores a migration-created table only while it is empty, so an
 upgrade cannot hide a populated table that the source did not have.
 
+### Amendment — review-input suspension marker and the v16 target (2026-10-03, issue #951)
+
+Bundle migration `0016` widens the existing `operations.suspension_kind` check to admit the
+`review_input` marker. It rebuilds only `operations`, preserving every operation row, result and
+object binding, then restores the reviewed foreign-key and legacy-alter settings. The automatic
+READY-boundary upgrade now targets schema `16` from sources `12`, `13`, `14`, and `15`, with
+migration IDs `0013`–`0016` in its plan digest. A v15 bundle applies only `0016`; a fresh v16
+bundle is accepted at startup. Unknown source versions and schemas newer than the binary still
+fail closed before the migration journal or DDL is reached.
+
 ## Consequences
 
 Platform wheels (not pure-Python) on macOS arm64 + manylinux_2_28 x86_64; Yoetz owns security

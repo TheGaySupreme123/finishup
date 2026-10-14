@@ -46,6 +46,7 @@ __all__ = [
     "DestinationInspection",
     "SkillResourceSource",
     "build_managed_marker",
+    "expected_skill_member_paths",
     "inspect_destination",
     "load_packaged_skill_members",
     "load_packaged_skill_source",
@@ -66,6 +67,14 @@ _EXPECTED_PACKAGE_PATHS: Mapping[str, str] = {
     "references/publication-policy.md": "guidance/publication-policy.md",
     "references/request-templates.md": "guidance/request-templates.md",
     "references/workflow.md": "guidance/workflow.md",
+    "references/startup.md": "guidance/startup.md",
+    "references/recovery.md": "guidance/recovery.md",
+    "references/publication.md": "guidance/publication.md",
+    "references/review.md": "guidance/review.md",
+    "references/receipt.md": "guidance/receipt.md",
+    "references/delegation.md": "guidance/delegation.md",
+    "references/consent.md": "guidance/consent.md",
+    "references/page-delivery.md": "guidance/page-delivery.md",
 }
 _LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
@@ -343,6 +352,12 @@ def load_packaged_skill_members(
     """Verify the package and return immutable skill member path → bytes."""
 
     return _load_source_bundle(resource_source).members
+
+
+def expected_skill_member_paths() -> tuple[str, ...]:
+    """Return installed skill member names without reading or validating package bytes."""
+
+    return tuple(_EXPECTED_PACKAGE_PATHS)
 
 
 def build_managed_marker(source: SkillSource, scope: IntegrationScope) -> bytes:

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
+from yoetz.domain.bounded_text import Part, clip_to_limit, compose_parts
 from yoetz.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
@@ -56,6 +57,7 @@ from yoetz.protocol.coverage import (
     weakest,
 )
 from yoetz.protocol.errors import ProtocolValueError
+from yoetz.protocol.ids import validate_opaque_item_id
 from yoetz.protocol.models import (
     ReceiptRedactionProfile,
     SemanticReason,
@@ -63,12 +65,40 @@ from yoetz.protocol.models import (
     validate_semantic_outcome,
 )
 from yoetz.protocol.recovery import continuation_for_semantic_outcome, directive_for
+from yoetz.protocol.redacted_values import (
+    SemanticRedactedValue,
+    semantic_redacted_values_from_wire,
+    validate_semantic_redacted_values,
+)
 
 __all__ = [
+    "SEMANTIC_REDACTED_VALUES_AGENT_LINE",
+    "SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT",
+    "semantic_redacted_value_text",
+    "ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE",
+    "PREMISE_DISPUTED_SECTION_TITLE",
+    "DISCLOSED_ASSUMPTIONS_SECTION_TITLE",
+    "ReceiptDisclosure",
+    "DUPLICATE_LINKS_SECTION_TITLE",
+    "ReceiptDuplicateLink",
+    "SELF_VERIFIED_SECTION_TITLE",
+    "VERIFICATION_LIMITS_SECTION_TITLE",
+    "CONCLUSION_REASON_CODES",
+    "ReceiptConclusionBasis",
+    "ReceiptConclusionReason",
+    "ReceiptGapEffect",
+    "CHILD_SELF_VERIFIED_NOTE",
+    "HISTORICAL_GAPS_SECTION_TITLE",
+    "historical_gap_line",
+    "historical_gaps_from_wire",
+    "historical_receipt_gaps",
+    "live_receipt_gap_codes",
     "receipt_document_carries_terminal_sections",
     "CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP",
     "CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP",
     "CHECK_TIME_CHANGE_GAPS",
+    "CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP",
+    "CAPTURE_HANDOFF_RETIRED_GAP",
     "CHECK_TIME_CHANGE_REDACTED_GAP",
     "CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP",
     "CHECK_TIME_CHANGE_TRUNCATED_GAP",
@@ -79,6 +109,14 @@ __all__ = [
     "COMPLETION_PLAN_NOT_CLAIMED_GAP",
     "COMPLETION_SCOPE_DECLARED_NONE_GAP",
     "COMPLETION_SCOPE_UNDECLARED_GAP",
+    "PREEXISTING_TEST_BASELINE_UNKNOWN_GAP",
+    "PREEXISTING_TEST_DELETED_GAP",
+    "PREEXISTING_TEST_EDIT_UNJUSTIFIED_GAP",
+    "PREEXISTING_TEST_MODIFIED_GAP",
+    "PREEXISTING_TEST_RENAMED_GAP",
+    "PREEXISTING_TEST_SKIPPED_GAP",
+    "PREEXISTING_TEST_SKIP_UNKNOWN_GAP",
+    "PREEXISTING_TEST_INFORMATIONAL_GAPS",
     "OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP",
     "OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP",
     "PolicyVersionEntry",
@@ -88,6 +126,7 @@ __all__ = [
     "ReceiptChildOutcome",
     "ReceiptChildren",
     "ReceiptGap",
+    "ReceiptGapStatus",
     "ReceiptObligation",
     "ReceiptObligationStatus",
     "ReceiptRedaction",
@@ -97,19 +136,37 @@ __all__ = [
     "ReceiptResponse",
     "ReceiptSection",
     "ReceiptSectionKey",
+    "ReceiptSemanticWithheldItem",
     "ReceiptVersionSlice",
     "SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP",
     "SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP",
     "SEMANTIC_PRIOR_FINDINGS_OVER_LIMIT_GAP",
     "SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP",
+    "SEMANTIC_PROCESS_STATE_FILTERED_GAP",
     "SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP",
     "SEMANTIC_CHALLENGES_REJECTED_GAP",
+    "SEMANTIC_REVIEW_SNIPPET_INVALID_GAP",
+    "SEMANTIC_REVIEW_REFS_REDUCED_GAP",
     "SEMANTIC_MISSING_AGENT_SUPPLIABLE_GAP",
     "SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP",
     "SEMANTIC_MISSING_ITEMS_REJECTED_GAP",
+    "SEMANTIC_MISSING_NON_CONVERGENT_GAP",
+    "SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP",
+    "SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP",
     "SEMANTIC_MISSING_UNAVAILABLE_GAP",
+    "SEMANTIC_MISSING_YOETZ_LIMIT_GAP",
+    "SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES",
+    "SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP",
+    "SEMANTIC_PROVIDER_INPUT_MANIFEST_MISMATCH_GAP",
+    "SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP",
+    "SEMANTIC_PROVIDER_INPUT_MANIFEST_PARSE_FAILED_GAP",
+    "SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP",
     "SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP",
     "SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP",
+    "SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP",
+    "SEMANTIC_REVIEW_EGRESS_REDACTION_GAPS",
+    "SEMANTIC_REVIEW_ITEM_WITHHELD_GAP",
+    "SEMANTIC_REVIEW_VALUE_REDACTED_GAP",
     "SEMANTIC_PACKET_INSUFFICIENT_GAP",
     "SEMANTIC_REVIEW_NOT_CONFIGURED_GAP",
     "SEMANTIC_REVIEW_NOT_REQUESTED_GAP",
@@ -122,7 +179,9 @@ __all__ = [
     "resolved_finding_ids_for_render",
     "unresolved_findings_for_render",
     "semantic_coverage_gap_code",
+    "recorded_semantic_outcome_gap_code",
     "check_time_change_gap_sentence",
+    "TASK_FACT_GAP_SENTENCES",
     "check_time_change_unavailable_reason_gap",
 ]
 
@@ -135,6 +194,26 @@ COMPLETION_SCOPE_DECLARED_NONE_GAP: Final = "completion_scope_declared_none"
 # not policy findings, and remain bounded to two fixed relation codes regardless of claim count.
 COMPLETION_CLAIM_OUTSIDE_PLAN_GAP: Final = "completion_claim_outside_plan"
 COMPLETION_PLAN_NOT_CLAIMED_GAP: Final = "completion_plan_not_claimed"
+# Structural, privacy-preserving test-edit accounting.  These are aggregate codes derived from
+# an encrypted change capture; raw paths remain inside that object and never enter status rows.
+PREEXISTING_TEST_BASELINE_UNKNOWN_GAP: Final = "preexisting_test_baseline_unknown"
+PREEXISTING_TEST_MODIFIED_GAP: Final = "preexisting_test_modified"
+PREEXISTING_TEST_RENAMED_GAP: Final = "preexisting_test_renamed"
+PREEXISTING_TEST_DELETED_GAP: Final = "preexisting_test_deleted"
+PREEXISTING_TEST_SKIPPED_GAP: Final = "preexisting_test_skipped"
+PREEXISTING_TEST_EDIT_UNJUSTIFIED_GAP: Final = "preexisting_test_edit_unjustified"
+# The edited pre-existing tests and their justification were read, but only path metadata was
+# captured (no diff body), so whether any of them gained a skip marker is unknown. A standing
+# coverage limit, deliberately not informational: it still keeps the check from reading complete.
+PREEXISTING_TEST_SKIP_UNKNOWN_GAP: Final = "preexisting_test_skip_unknown"
+PREEXISTING_TEST_INFORMATIONAL_GAPS: Final = frozenset(
+    {
+        PREEXISTING_TEST_MODIFIED_GAP,
+        PREEXISTING_TEST_RENAMED_GAP,
+        PREEXISTING_TEST_DELETED_GAP,
+        PREEXISTING_TEST_SKIPPED_GAP,
+    }
+)
 # The applicable check still contributes its coverage, but only because every material event
 # appended after it answered a finding that same check returned. Its verdict is current as of the
 # frontier it tested, not the receipt's; the gap keeps the receipt from reading as re-checked here.
@@ -153,12 +232,37 @@ SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP: Final = "semantic_relevance_review_not_ru
 # The review ran, but the inference channel withheld categories the review profile
 # selected, so it judged the work without material it was configured to receive.
 SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP: Final = "semantic_review_context_withheld"
+# Egress-only privacy redaction of the review packet (issue #982, owner decision B2). Privacy
+# filtering exists to keep sensitive values away from the external model, so these bound only the
+# AI-powered review that ran without them, never local proof. ``value_redacted``: one or more
+# credential-like values were replaced in place by ``EGRESS_CREDENTIAL_PLACEHOLDER`` and the rest
+# of each item was sent. ``item_withheld``: in-place replacement could not make an item safe to
+# send, so that item alone was left out of the packet (listed in ``semantic_withheld_items``).
+SEMANTIC_REVIEW_VALUE_REDACTED_GAP: Final = "semantic_review_value_redacted"
+SEMANTIC_REVIEW_ITEM_WITHHELD_GAP: Final = "semantic_review_item_withheld"
+SEMANTIC_REVIEW_EGRESS_REDACTION_GAPS: Final = frozenset(
+    {SEMANTIC_REVIEW_VALUE_REDACTED_GAP, SEMANTIC_REVIEW_ITEM_WITHHELD_GAP}
+)
+# The owner's privacy policy had the low-confidence credential heuristic turned off for this
+# review's disclosure (issue #982 owner opt-out): values that only look like passwords or tokens
+# were sent as written; known credential shapes, private keys and URL passwords were still
+# withheld. An owner choice that disclosed more, never agent work and never a review defect.
+SEMANTIC_REVIEW_CREDENTIAL_HEURISTIC_DISABLED_GAP: Final = (
+    "semantic_review_credential_heuristic_disabled"
+)
 # A valid provider answer that could not assess the supplied content is not a clean review.
 SEMANTIC_PACKET_INSUFFICIENT_GAP: Final = "semantic_packet_insufficient"
 # The review ran and returned challenges, and at least one of them was dropped by the
 # post-validation fence. The reviewer said something the check did not carry; coverage says so
 # rather than letting the drop look like the reviewer having found nothing there.
 SEMANTIC_CHALLENGES_REJECTED_GAP: Final = "semantic_challenges_rejected"
+# The provider returned a supporting quote that could not be proved against the sent text of the
+# packet rows it cited. The review itself remains usable; the quote is removed from a kept
+# challenge (a verified row is dropped) and this gap keeps the loss visible on every receipt surface.
+SEMANTIC_REVIEW_SNIPPET_INVALID_GAP: Final = "semantic_review_snippet_invalid"
+# A reviewer challenge or verified row cited refs whose content the sent packet did not carry.
+# Those refs were removed and the item kept on the refs that were sent (issue #976).
+SEMANTIC_REVIEW_REFS_REDUCED_GAP: Final = "semantic_review_refs_reduced"
 # An ``insufficient_packet`` review named what it needed (issue #907). These say, as a check
 # limitation, whether any named item is one the agent can supply, whether any cannot be carried on
 # this host or policy at all, whether the reviewer re-requested an item the agent had already
@@ -166,8 +270,49 @@ SEMANTIC_CHALLENGES_REJECTED_GAP: Final = "semantic_challenges_rejected"
 # pointed outside the packet and was dropped. None of them is a finding or a clean review.
 SEMANTIC_MISSING_AGENT_SUPPLIABLE_GAP: Final = "semantic_missing_agent_suppliable"
 SEMANTIC_MISSING_UNAVAILABLE_GAP: Final = "semantic_missing_structurally_unavailable"
+# tb4n1 D1 (#983): the reviewer named content Yoetz's own packet cannot show (an unsupported data
+# type, or content clipped or omitted for packet room). Never agent work; the agent self-verifies.
+SEMANTIC_MISSING_YOETZ_LIMIT_GAP: Final = "semantic_missing_yoetz_limit"
 SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP: Final = "semantic_missing_already_supplied"
 SEMANTIC_MISSING_ITEMS_REJECTED_GAP: Final = "semantic_missing_items_rejected"
+# A later review named the same target again without a directly related agent publication.  This
+# is a bounded non-convergence disclosure, not proof that a new target was supplied or that the
+# reviewer was wrong; the next step is to publish the named relationship or stop rechecking.
+SEMANTIC_MISSING_NON_CONVERGENT_GAP: Final = "semantic_missing_non_convergent"
+# tb4n1 D3: the reviewer twice in a row (the request and its one retry, no edit since), or four
+# times since the last assessed review, could not assess the packet, so the check runs without the
+# AI-powered review instead of looping on a packet that cannot show the work
+# (``kernel/review_round.py``). A Yoetz limit, never agent work; the receipt discloses it.
+SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
+    "semantic_review_skipped_insufficient_packet"
+)
+# Issue #1046 (tb4n4: 18 of 61 semantic-arm tasks reviewed the plan before any work): a routine
+# check with no material edit recorded and no workspace change observed runs the local plan checks
+# only; the AI-powered review waits for the first edit, and the closing review is never deferred.
+# Nothing was composed or sent. Like the skipped round, never agent work in itself; the next check
+# after an edit reviews as configured.
+SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP: Final = "semantic_review_deferred_before_first_edit"
+# A successful provider call can still lose the exact post-admission input manifest.  Keep the
+# failure reason closed and coverage-bounded so a composed manifest is never presented as what the
+# provider received.  These are internal provenance facts surfaced as ordinary receipt gaps.
+SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP: Final = "semantic_provider_input_manifest_missing"
+SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP: Final = "semantic_provider_input_manifest_invalid"
+SEMANTIC_PROVIDER_INPUT_MANIFEST_PARSE_FAILED_GAP: Final = (
+    "semantic_provider_input_manifest_parse_failed"
+)
+SEMANTIC_PROVIDER_INPUT_MANIFEST_MISMATCH_GAP: Final = "semantic_provider_input_manifest_mismatch"
+SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP: Final = (
+    "semantic_provider_input_manifest_recovery_failed"
+)
+SEMANTIC_PROVIDER_INPUT_MANIFEST_FAILURES: Final = frozenset(
+    {
+        SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
+        SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP,
+        SEMANTIC_PROVIDER_INPUT_MANIFEST_PARSE_FAILED_GAP,
+        SEMANTIC_PROVIDER_INPUT_MANIFEST_MISMATCH_GAP,
+        SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP,
+    }
+)
 SEMANTIC_REVIEW_NOT_REQUESTED_GAP: Final = "semantic_review_not_requested"
 # Publish-side prose accepts twice what one AI-powered review case item can carry, so text that publishes
 # cleanly can still reach the reviewer shortened or replaced by a bounded-omission marker. The
@@ -192,6 +337,12 @@ SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP: Final = "semantic_prior_verdicts_unsupp
 # Issue #905: a challenge that restated a recorded AI-powered finding (same kind, subjects within
 # that finding's, nothing recorded since) was "seen again, suppressed" instead of minted twice.
 SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP: Final = "semantic_restatements_suppressed"
+# Issue #1042: reviewer challenges the check did not record as findings because they called work
+# "never attempted" during a routine review (``routine_completeness``, ADR-040 section 5) or were
+# about Yoetz's own capture or process state (``yoetz_process_state``). A disclosure of the review
+# dialogue, never a limit on what the review saw: it does not bound the receipt and does not veto
+# an absence proof.
+SEMANTIC_PROCESS_STATE_FILTERED_GAP: Final = "semantic_process_state_filtered"
 # The check-time change (ADR-031) is the service's own read of the task's repository when a check
 # runs. Each code names one limit on what that single object could show the reviewer. None of
 # them describes an input of a local policy pack, so they bound the review and the receipt only.
@@ -209,6 +360,15 @@ CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP: Final = "check_time_change_base_unavaila
 CHECK_TIME_CHANGE_TRUNCATED_GAP: Final = "check_time_change_truncated"
 # Credential-like spans were replaced before the change was stored or offered for review.
 CHECK_TIME_CHANGE_REDACTED_GAP: Final = "check_time_change_redacted"
+# The check's local read of which paths changed skipped at least one path whose name holds a
+# carriage return or line feed (issue #1019). The read stays usable but is marked incomplete, so
+# a requested file it could not list stays unproven rather than unchanged. Never names the path.
+CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP: Final = "check_time_change_path_unrepresentable"
+# Native content staged for one observed host call of this task was retired before its structural
+# row could attach it (issue #1019, tb4n2 N-4): its captured bytes are missing, and for a refused
+# or quarantined row the call's structural record may be missing as well. A standing limitation
+# of host capture, never a finding; local packs never read captured bytes.
+CAPTURE_HANDOFF_RETIRED_GAP: Final = "capture_handoff_retired"
 # Why the change was unavailable, as one closed code beside ``check_time_change_unavailable``:
 # ``check_time_change_unavailable_<reason>``. Each maps to one fixed sentence; neither carries a
 # path, Git output or any other user-controlled text. A check recorded before reasons existed
@@ -260,6 +420,7 @@ CHECK_TIME_CHANGE_GAPS: Final = frozenset(
         CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP,
         CHECK_TIME_CHANGE_TRUNCATED_GAP,
         CHECK_TIME_CHANGE_REDACTED_GAP,
+        CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
         *CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
     }
 )
@@ -282,10 +443,138 @@ def check_time_change_gap_sentence(code: str) -> str | None:
             "view commitments existed, so only the lengths and counts of what each review saw "
             "were compared, not where redactions and hunks lay."
         )
+    if code == CAPTURE_HANDOFF_RETIRED_GAP:
+        return (
+            "Captured content for at least one observed call of this task was discarded before"
+            " it could be attached, so that content is not available here; depending on why it"
+            " was discarded, the call's own record may be missing too."
+        )
+    if code == CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP:
+        return (
+            "The check's read of changed files skipped at least one file whose name contains a"
+            " line break, so a requested file it could not list is reported as unproven, not"
+            " as unchanged."
+        )
     if code not in CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS:
-        return None
+        return TASK_FACT_GAP_SENTENCES.get(code)
     text = CHECK_TIME_CHANGE_UNAVAILABLE_REASONS[code[len(_CHECK_TIME_CHANGE_REASON_PREFIX) :]]
     return "The check-time change was unavailable: " + text
+
+
+# One fixed sentence per task-fact gap (#977, ADR-033), shown wherever check-time gap sentences
+# are: receipt gap details and limitations, the CLI human check and status, the MCP check summary.
+# Codes only; no path or command text exists to show.
+TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "planned_verification_not_observed": (
+            "A planned verification (an obligation's requested command) was not matched to an"
+            " observed run, whole or as one part of a composed command. Run it as recorded; if"
+            " you ran it exactly, check the requested command string. If a script or another"
+            " command ran it for you, link that run: publish `action_recorded` (kind `command`)"
+            " with the planned command's exact value in `attempted_items` and the observed run's"
+            " action event id (`status view=history`) in `causal_parents`. The link is disclosed"
+            " as your equivalence; the observed outcome still decides."
+        ),
+        "planned_verification_failed": (
+            "A planned verification command failed on its latest observed run."
+        ),
+        "planned_verification_stale": (
+            "A planned verification command last ran before the latest observed edit."
+        ),
+        "planned_verification_outcome_unknown": (
+            "A planned verification command ran, but the host stated no outcome for it."
+        ),
+        "planned_verification_unobservable": (
+            "A planned verification could not be matched: no observed command carries a command"
+            " identity, or the requested command is a placeholder or a description rather than a"
+            " command."
+        ),
+        "planned_verification_agent_linked": (
+            "A planned verification was matched only through the agent's own link of an observed"
+            " run to the requested command, an equivalence Yoetz did not verify; that run's"
+            " observed outcome still decides."
+        ),
+        "edited_after_last_verification": (
+            "An observed edit followed the last observed test, lint, typecheck or build run."
+        ),
+        "requested_output_git_ignored": (
+            "A requested output file is excluded by .git/info/exclude (a local exclude) or by a"
+            " .gitignore this task created, so a diff-based delivery omits it."
+        ),
+        "requested_output_ignored_by_repository": (
+            "A requested output file is ignored by the repository's own ignore rules, so a"
+            " diff-based delivery would omit it."
+        ),
+        "requested_output_unchanged": (
+            "A requested file the record says was edited exists but is unchanged from the task"
+            " base."
+        ),
+        "requested_output_outside_workspace": (
+            "A requested file the record says was edited lies outside the checked repository;"
+            " Yoetz did not read it."
+        ),
+        "requested_output_unverified": ("Requested output files could not be read at check time."),
+        "declared_output_removed": (
+            "A declared delivered file was deleted or renamed away in the checked change. Restore"
+            " the delivered file, or correct the requested item if the task asked for the"
+            " deletion: Yoetz review limits never justify moving, splitting or deleting"
+            " deliverables."
+        ),
+        "declared_output_content_moved": (
+            "A declared delivered file lost most of its lines while files outside the declared"
+            " delivered set changed or hold about as many lines (untracked files may predate the"
+            " task): content may have moved out of a delivered file into an undelivered one."
+            " Check that the deliverable still works where the task delivers it."
+        ),
+        "declared_output_emptied": (
+            "A declared delivered file that held content earlier (at a recorded check, or at the"
+            " task base) is now empty or holds a small fraction of its earlier size. Restore it"
+            " and disclose its limits: a working partial is a delivery, and an empty file always"
+            " grades as no solution. This stands unless the task asked for this file to be empty"
+            " regardless of outcome and a yoetz-assumption decision names the file."
+        ),
+        "planned_verification_matched_by_prefix": (
+            "A planned verification was matched to an observed run only by its leading arguments"
+            " or by its program and flags: the run did the planned work and more, or in another"
+            " order. It counts as run and is disclosed, not clean verification; Yoetz did not"
+            " verify that the run is what the plan meant."
+        ),
+        "declared_output_not_reviewable": (
+            "A declared delivered file is a type the AI-powered review never receives (binary, by"
+            " the change's own content check, or a binary format) and a review ran: the file is"
+            " present but was not reviewed. Verify it yourself and disclose how; do not reshape"
+            " it for the reviewer."
+        ),
+        "deliverable_references_undeclared_file": (
+            "A declared delivered source file names a file the change created that no requested"
+            " item declares; a grader may receive only the declared files, so the deliverable can"
+            " fail where the task delivers it. Embed the file's content in the deliverable,"
+            " rebuild it at run time, or declare it as a delivered output; disclosing the"
+            " dependency does not resolve it."
+        ),
+        "install_into_yoetz_runtime": (
+            "A package install resolved to Yoetz's own runtime interpreter, not the task's."
+        ),
+        "install_into_private_env": (
+            "A package install went into an environment other than the task's interpreter."
+        ),
+        "write_outside_workspace": (
+            "A write landed outside the workspace; it is not part of the delivered change."
+        ),
+        "verification_only_as_root": (
+            "Every observed test, lint, typecheck or build run ran as root."
+        ),
+        "obligation_blocked_outside_agent_control": (
+            "An open obligation is named by a blocker the agent recorded as outside its control"
+            " (authority, consent, credentials, or an unobtainable dependency) and confirmed in a"
+            " later decision; Yoetz did not verify the claim."
+        ),
+        "obligation_blocker_unconfirmed": (
+            "An open obligation is named by a blocker the agent claimed but did not confirm in a"
+            " later decision; the obligation still counts as open work."
+        ),
+    }
+)
 
 
 OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP: Final = "optional_semantic_review_blocked_by_policy"
@@ -329,10 +618,191 @@ def semantic_coverage_gap_code(status: SemanticStatus, reason: SemanticReason) -
     return SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP
 
 
+def recorded_semantic_outcome_gap_code(
+    status: SemanticStatus, reason: SemanticReason, *, route_required: bool | None
+) -> str | None:
+    """The review-outcome gap a reader folds beside a recorded check's own ``known_gaps``.
+
+    ``semantic_coverage_gap_code`` re-derives the code for a legacy payload whose ``known_gaps``
+    may lack it. A check that recorded ``semantic_route_required: false`` with ``not_requested``
+    (``deterministic_mode``) is new enough that its ``known_gaps`` say exactly what it disclosed:
+    since #1041 a check that asked for no review on a route that required none records no
+    ``semantic_review_not_requested``, and a reader must not add it back.
+    """
+
+    if (
+        route_required is False
+        and status is SemanticStatus.NOT_REQUESTED
+        and reason is SemanticReason.DETERMINISTIC_MODE
+    ):
+        return None
+    return semantic_coverage_gap_code(status, reason)
+
+
 class ReceiptConclusion(str, Enum):  # noqa: UP042 - exact wire enum base
     NO_UNRESOLVED_DETERMINISTIC_FINDINGS = "no_unresolved_deterministic_findings"
     UNRESOLVED_FINDINGS_REMAIN = "unresolved_findings_remain"
     INSUFFICIENT_COVERAGE = "insufficient_coverage"
+
+
+# The receipt fields that disclose terminal finding states by id (issues #905, #984); a finding
+# is in at most one of them.
+_TERMINAL_ID_FIELDS: Final = (
+    "acknowledged_not_done_finding_ids",
+    "rejection_accepted_finding_ids",
+    "self_verified_finding_ids",
+    "disputed_after_rebuttal_finding_ids",
+    "limitation_disclosed_finding_ids",
+)
+# tb4n3 RC-3 (ADR-046): a reviewer's limitation request the agent disclosed. Settled, listed
+# under "Verification limits", never clean.
+VERIFICATION_LIMITS_SECTION_TITLE: Final = "Verification limits"
+# The closed reason codes of a conclusion basis; a conformance test keeps this equal to
+# ``kernel.receipt_prediction.PREDICTION_REASON_CODES`` (the domain cannot import the kernel).
+CONCLUSION_REASON_CODES: Final = {
+    "completion_scope_gap": "R1",
+    "findings_to_do": "R2",
+    "findings_awaiting_ruling": "R2",
+    "findings_unmet": "R2",
+    "child_findings_actionable": "R2",
+    "limitations_to_disclose": "R3",
+    "findings_disclosed": "R3",
+    "obligations_open": "R4",
+    "obligations_acknowledged": "R4",
+    "obligations_disclosed": "R4",
+    "lineage_blocks": "R5",
+    "no_applicable_check": "R6",
+    "check_suppressed_findings": "R7",
+    "check_verdict_insufficient": "R8",
+    "policy_execution_incomplete": "R9",
+    "live_gap_bounds": "R10",
+}
+MAX_CONCLUSION_REASONS: Final = 8
+_REASON_REF_RE: Final = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$", re.ASCII)
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptConclusionReason:
+    """One rule that fired when the conclusion was chosen: why a reader sees this label."""
+
+    code: str
+    rule: str
+    count: int
+    refs: tuple[str, ...] = ()
+    since_frontier: int | None = None
+
+    def __post_init__(self) -> None:
+        invalid = "invalid_receipt_document"
+        if (
+            type(self.code) is not str
+            or CONCLUSION_REASON_CODES.get(self.code) != self.rule
+            or type(self.count) is not int
+            or not 1 <= self.count <= _MAX_SAFE_INTEGER
+            or type(self.refs) is not tuple
+            or len(self.refs) > 3
+            or any(
+                type(ref) is not str or _REASON_REF_RE.fullmatch(ref) is None for ref in self.refs
+            )
+            or self.refs != tuple(sorted(set(self.refs), key=str.encode))
+            or (
+                self.since_frontier is not None
+                and (
+                    type(self.since_frontier) is not int
+                    or not 0 <= self.since_frontier <= _MAX_SAFE_INTEGER
+                )
+            )
+        ):
+            raise ProtocolValueError(invalid)
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptConclusionBasis:
+    """Every rule behind the conclusion, the one that selected it first (ADR-046)."""
+
+    reasons: tuple[ReceiptConclusionReason, ...]
+    reason_total: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.reasons) is not tuple
+            or len(self.reasons) > MAX_CONCLUSION_REASONS
+            or any(type(item) is not ReceiptConclusionReason for item in self.reasons)
+            or type(self.reason_total) is not int
+            or not len(self.reasons) <= self.reason_total <= _MAX_SAFE_INTEGER
+        ):
+            raise ProtocolValueError("invalid_receipt_document")
+
+
+# Issue #1020 (ADR-040): the agent rejected these with a reason and the reviewer repeated them
+# without citing anything newer. A standing disagreement, disclosed; never agent work.
+DISPUTED_AFTER_REBUTTAL_SECTION_TITLE: Final = "Disputed after rebuttal"
+SELF_VERIFIED_SECTION_TITLE: Final = "Self-verified by the agent; Yoetz could not prove the repair"
+# Issue #984 (ADR-034): how a child's self-verified finding reads on the parent receipt.
+CHILD_SELF_VERIFIED_NOTE: Final = "self-verified by the child agent; Yoetz could not prove it"
+DUPLICATE_LINKS_SECTION_TITLE: Final = "Linked duplicates"
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptDuplicateLink:
+    """One holding ``duplicate_of`` link (issue #996): ids only, never prose."""
+
+    finding_id: FindingId
+    duplicate_of_finding_id: FindingId
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "finding_id", finding_id(self.finding_id))
+        object.__setattr__(
+            self, "duplicate_of_finding_id", finding_id(self.duplicate_of_finding_id)
+        )
+        if self.finding_id == self.duplicate_of_finding_id:
+            raise ProtocolValueError("invalid_receipt_document")
+
+
+# Issue #995 (ADR-033): the agent's recorded ``yoetz-assumption:`` / ``yoetz-verification-limit:``
+# decision lines. Disclosed by id and closed kind only; the rationale stays in the decision.
+DISCLOSED_ASSUMPTIONS_SECTION_TITLE: Final = (
+    "Assumptions and verification limits the agent disclosed"
+)
+RECEIPT_DISCLOSURE_KINDS: Final = ("assumption", "verification_limit")
+ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE: Final = "Obligations acknowledged as not done"
+PREMISE_DISPUTED_SECTION_TITLE: Final = "Not done although the review says the task requires it"
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptDisclosure:
+    """One disclosed assumption or verification limit: ids and a closed kind, never prose."""
+
+    obligation_id: ObligationId
+    kind: str
+    decision_event_id: EventId
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "obligation_id", obligation_id(self.obligation_id))
+        object.__setattr__(self, "decision_event_id", event_id(self.decision_event_id))
+        if type(self.kind) is not str or self.kind not in RECEIPT_DISCLOSURE_KINDS:
+            raise ProtocolValueError("invalid_receipt_document")
+
+
+class ReceiptGapStatus(str, Enum):  # noqa: UP042 - exact wire enum base
+    """Whether a receipt gap still bounds the receipt (issue #1017, ADR-033).
+
+    ``historical`` marks a gap an earlier check carried that a later check no longer carries;
+    it stays on the record for honesty but never lowers the conclusion or counts as a current
+    limitation. Only ``historical`` is written on the wire; an absent status reads as ``live``.
+    """
+
+    LIVE = "live"
+    HISTORICAL = "historical"
+
+
+HISTORICAL_GAPS_SECTION_TITLE: Final = "Cleared earlier (historical)"
+
+
+class ReceiptGapEffect(str, Enum):  # noqa: UP042 - exact wire enum base
+    """What a live gap does to the conclusion (ADR-046): it ``bounds`` it or is only ``disclosed``."""
+
+    BOUNDS = "bounds"
+    DISCLOSED = "disclosed"
 
 
 class ReceiptObligationStatus(str, Enum):  # noqa: UP042 - exact wire enum base
@@ -365,6 +835,59 @@ class ReceiptSectionKey(str, Enum):  # noqa: UP042 - exact wire enum base
     EVIDENCE_AND_CLAIM_BASIS = "evidence_and_claim_basis"
     LIMITATIONS_AND_COVERAGE = "limitations_and_coverage"
     VERSION_AND_POLICY_IDENTITY = "version_and_policy_identity"
+
+
+# Owner-approved PL2-1 (issue #982): the one fixed line every human and agent rendering adds,
+# once, when a check or receipt names items whose values the external reviewer did not see.
+SEMANTIC_REDACTED_VALUES_AGENT_LINE: Final = (
+    "Values marked [withheld-by-yoetz:possible-credential] were withheld from the external "
+    "reviewer only; local checks saw them. Do not change consent, rename, hide or reshape your "
+    "work to clear this. If a finding stays open only because of it, verify the repair yourself "
+    "and respond self_verified."
+)
+
+
+# The bounded MCP summaries must keep the frontier head digest (issue #279); when the full line
+# cannot fit beside it, they carry this shorter fixed form. Full renderings always use the line.
+SEMANTIC_REDACTED_VALUES_AGENT_LINE_SHORT: Final = (
+    "Values marked [withheld-by-yoetz:possible-credential] were withheld from the external "
+    "reviewer only; do not change consent or your code; verify yourself, respond self_verified."
+)
+
+
+def semantic_redacted_value_text(item: SemanticRedactedValue) -> str:
+    """One bounded ASCII line naming the item, its ref and lines; never a value."""
+
+    ref = item.item_id if item.source_ref is None else f"{item.source_ref} (item {item.item_id})"
+    lines = (
+        "line " + str(item.lines[0])
+        if len(item.lines) == 1
+        else "lines " + ", ".join(str(line) for line in item.lines)
+        if item.lines
+        else "lines not located"
+    )
+    what = "value replaced" if item.disposition == "value_replaced" else "item withheld"
+    # Line numbers count lines of the captured item (an excerpt or one of its parts), not of the
+    # file it came from; say so, so an agent never reads them as file line numbers.
+    located = f"{lines} of the captured item" if item.lines else lines
+    return f"{ref}: {what}, {located}"
+
+
+@dataclass(frozen=True, slots=True)
+class ReceiptSemanticWithheldItem:
+    """One opaque review item omitted by the never-send heuristic."""
+
+    item_id: str
+    reason: Literal["never_send_heuristic"] = "never_send_heuristic"
+
+    def __post_init__(self) -> None:
+        invalid = "invalid_receipt_semantic_withheld_item"
+        try:
+            validate_opaque_item_id(self.item_id)
+        except (TypeError, ValueError) as exc:
+            raise ProtocolValueError(invalid) from exc
+        if self.reason != "never_send_heuristic":
+            raise ProtocolValueError(invalid)
 
 
 _SUMMARY_SECTION_KEYS: Final = (
@@ -704,18 +1227,20 @@ class ReceiptResponse:
             raise ProtocolValueError(invalid)
         if self.waiver_expiry is not None and type(self.waiver_expiry) is not Timestamp:
             raise ProtocolValueError(invalid)
-        if self.disposition is ResponseDisposition.ACKNOWLEDGED:
+        if self.disposition in {ResponseDisposition.ACKNOWLEDGED, ResponseDisposition.DUPLICATE_OF}:
             if self.waiver_scope is not None or self.waiver_expiry is not None:
                 raise ProtocolValueError(invalid)
         elif self.disposition in {
             ResponseDisposition.ACKNOWLEDGED_NOT_DONE,
             ResponseDisposition.PROVENANCE_DISPUTED,
             ResponseDisposition.REJECTED,
+            ResponseDisposition.SELF_VERIFIED,
         }:
             if (
                 self.reason is None
                 or self.waiver_scope is not None
                 or self.waiver_expiry is not None
+                or (self.disposition is ResponseDisposition.SELF_VERIFIED and not refs)
             ):
                 raise ProtocolValueError(invalid)
         elif self.disposition is ResponseDisposition.WAIVED:
@@ -728,9 +1253,19 @@ class ReceiptGap:
     code: str
     subject_refs: tuple[EventId | ObligationId | ClaimId, ...]
     detail: str | None = None
+    # Issue #1017: a gap a later check cleared stays visible as ``historical`` with the subject
+    # frontier of the first check that no longer carried it. Absent (live) keeps earlier bytes.
+    status: ReceiptGapStatus = ReceiptGapStatus.LIVE
+    cleared_at_frontier: Frontier | None = None
+    # ADR-046: absent reads "not recorded" (an earlier artifact); present only on a live gap.
+    effect: ReceiptGapEffect | None = None
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_gap"
+        if self.effect is not None and (
+            type(self.effect) is not ReceiptGapEffect or self.status is not ReceiptGapStatus.LIVE
+        ):
+            raise ProtocolValueError(invalid)
         code_value = _bounded_text(self.code, 1, 128, invalid)
         if _GAP_CODE_RE.fullmatch(code_value) is None:
             raise ProtocolValueError(invalid)
@@ -741,6 +1276,17 @@ class ReceiptGap:
         object.__setattr__(self, "subject_refs", refs)
         if self.detail is not None:
             object.__setattr__(self, "detail", _bounded_text(self.detail, 1, 4096, invalid))
+        if type(self.status) is not ReceiptGapStatus:
+            raise ProtocolValueError(invalid)
+        if self.status is ReceiptGapStatus.HISTORICAL:
+            if type(self.cleared_at_frontier) is not Frontier:
+                raise ProtocolValueError(invalid)
+        elif self.cleared_at_frontier is not None:
+            raise ProtocolValueError(invalid)
+
+    @property
+    def live(self) -> bool:
+        return self.status is ReceiptGapStatus.LIVE
 
 
 @dataclass(frozen=True, slots=True)
@@ -754,6 +1300,8 @@ class ReceiptChildFinding:
     actionable: bool
     resolved: bool
     resolution_event_id: EventId | None = None
+    # Issue #984 (ADR-034): self-verified by the child agent; Yoetz could not prove it.
+    self_verified: bool = False
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_child_finding"
@@ -773,6 +1321,10 @@ class ReceiptChildFinding:
         if self.resolved is not (resolution is not None):
             raise ProtocolValueError(invalid)
         object.__setattr__(self, "resolution_event_id", resolution)
+        if type(self.self_verified) is not bool or (
+            self.self_verified and (self.resolved or not self.actionable)
+        ):
+            raise ProtocolValueError(invalid)
 
 
 @dataclass(frozen=True, slots=True)
@@ -907,9 +1459,41 @@ class ReceiptDocument:
     # Absent (empty) keeps every earlier receipt's exact bytes.
     acknowledged_not_done_finding_ids: tuple[FindingId, ...] = ()
     rejection_accepted_finding_ids: tuple[FindingId, ...] = ()
+    # Issue #984 (ADR-034): the agent repaired these and verified the repair itself because Yoetz
+    # could not prove it. Disclosed by id in their own section; the conclusion is never clean.
+    self_verified_finding_ids: tuple[FindingId, ...] = ()
+    # Issue #1020 (ADR-040): the reviewer repeated these after the agent's reasoned rejection
+    # without citing anything newer. Disclosed by id in their own section; never clean.
+    disputed_after_rebuttal_finding_ids: tuple[FindingId, ...] = ()
+    # Issue #996: holding ``duplicate_of`` links of carried findings, sorted by finding id. Each
+    # duplicate reads as its earlier finding allows; the link never resolves anything.
+    duplicate_finding_links: tuple[ReceiptDuplicateLink, ...] = ()
+    # Opaque review item identities withheld by the never-send heuristic.  The field is omitted
+    # when empty so historical receipt objects retain their exact bytes.
+    semantic_withheld_items: tuple[ReceiptSemanticWithheldItem, ...] = ()
+    # PL2-1 (issue #982): item refs and line numbers of values the external reviewer did not see.
+    # Omitted when empty so historical receipt objects retain their exact bytes.
+    semantic_redacted_values: tuple[SemanticRedactedValue, ...] = ()
+    # Issue #995 (ADR-033): assumptions and inherent verification limits the agent disclosed on
+    # obligations. Ids and a closed kind only; never changes the conclusion.
+    disclosed_assumptions: tuple[ReceiptDisclosure, ...] = ()
+    # Issue #997 (ADR-032 slice C): obligations the agent acknowledged as not done, with a
+    # reason recorded on the obligation. Disclosed by id; the conclusion is never clean.
+    acknowledged_not_done_obligation_ids: tuple[ObligationId, ...] = ()
+    # Issue #984 (D7a): acknowledged-not-done findings whose challenge says the task itself
+    # requires the work. A subset of ``acknowledged_not_done_finding_ids``, disclosed by id.
+    premise_disputed_finding_ids: tuple[FindingId, ...] = ()
+    # tb4n3 RC-3 (ADR-046): reviewer limitation requests the agent disclosed ("Verification
+    # limits"), and every rule behind the conclusion. Absent (empty / None) keeps earlier bytes.
+    limitation_disclosed_finding_ids: tuple[FindingId, ...] = ()
+    conclusion_basis: ReceiptConclusionBasis | None = None
 
     def __post_init__(self) -> None:
         invalid = "invalid_receipt_document"
+        try:
+            validate_semantic_redacted_values(self.semantic_redacted_values)
+        except ValueError as exc:
+            raise ProtocolValueError(invalid) from exc
         if self.schema_version != "1.0.0":
             raise ProtocolValueError(invalid)
         object.__setattr__(self, "receipt_id", receipt_id(self.receipt_id))
@@ -965,15 +1549,85 @@ class ReceiptDocument:
         carried_ids = frozenset(
             finding.finding_id for finding in cast(tuple[Finding, ...], findings)
         )
-        for name in ("acknowledged_not_done_finding_ids", "rejection_accepted_finding_ids"):
+        for name in _TERMINAL_ID_FIELDS:
             raw_ids = _validate_tuple(getattr(self, name), 0, 100, invalid)
             ids = tuple(finding_id(value) for value in raw_ids)
             _validate_sorted_unique_strings(cast(tuple[str, ...], ids))
             if ids and (receipt_schema_version != "1.3.0" or not carried_ids.issuperset(ids)):
                 raise ProtocolValueError(invalid)
             object.__setattr__(self, name, ids)
-        if set(self.acknowledged_not_done_finding_ids) & set(self.rejection_accepted_finding_ids):
+        terminal_ids = [
+            str(item)
+            for name in _TERMINAL_ID_FIELDS
+            for item in cast(tuple[FindingId, ...], getattr(self, name))
+        ]
+        if len(terminal_ids) != len(set(terminal_ids)):
             raise ProtocolValueError(invalid)
+        if (
+            self.self_verified_finding_ids
+            or self.disputed_after_rebuttal_finding_ids
+            or self.limitation_disclosed_finding_ids
+        ) and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS:
+            # A repair only the agent verified (issue #984), a finding the reviewer still holds
+            # against the agent's rebuttal (issue #1020), or a verification limit the agent
+            # disclosed (ADR-046), never reads as clean.
+            raise ProtocolValueError("invalid_receipt_conclusion")
+        if self.conclusion_basis is not None and (
+            type(self.conclusion_basis) is not ReceiptConclusionBasis
+            or _receipt_document_artifact_version(self.versions) != "1.3.0"
+            or (self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS)
+            != (self.conclusion_basis.reason_total == 0)
+        ):
+            raise ProtocolValueError(invalid)
+        links = _validate_tuple(self.duplicate_finding_links, 0, 100, invalid)
+        if any(type(value) is not ReceiptDuplicateLink for value in links):
+            raise ProtocolValueError(invalid)
+        linked = tuple(
+            str(item.finding_id) for item in cast(tuple[ReceiptDuplicateLink, ...], links)
+        )
+        _validate_sorted_unique_strings(linked)
+        if links and (receipt_schema_version != "1.3.0" or not carried_ids.issuperset(linked)):
+            raise ProtocolValueError(invalid)
+        disputed = tuple(
+            finding_id(value)
+            for value in _validate_tuple(self.premise_disputed_finding_ids, 0, 100, invalid)
+        )
+        _validate_sorted_unique_strings(cast(tuple[str, ...], disputed))
+        if not set(disputed) <= set(self.acknowledged_not_done_finding_ids):
+            raise ProtocolValueError(invalid)
+        object.__setattr__(self, "premise_disputed_finding_ids", disputed)
+        acknowledged_obligations = tuple(
+            obligation_id(value)
+            for value in _validate_tuple(self.acknowledged_not_done_obligation_ids, 0, 100, invalid)
+        )
+        _validate_sorted_unique_strings(cast(tuple[str, ...], acknowledged_obligations))
+        if acknowledged_obligations and receipt_schema_version != "1.3.0":
+            raise ProtocolValueError(invalid)
+        object.__setattr__(self, "acknowledged_not_done_obligation_ids", acknowledged_obligations)
+        if (
+            acknowledged_obligations
+            and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+        ):
+            # An obligation the agent will not do never reads as clean (issue #997).
+            raise ProtocolValueError("invalid_receipt_conclusion")
+        disclosures = _validate_tuple(self.disclosed_assumptions, 0, 64, invalid)
+        if any(type(value) is not ReceiptDisclosure for value in disclosures):
+            raise ProtocolValueError(invalid)
+        disclosure_keys = tuple(
+            (str(item.obligation_id).encode(), item.kind.encode())
+            for item in cast(tuple[ReceiptDisclosure, ...], disclosures)
+        )
+        if disclosure_keys != tuple(sorted(set(disclosure_keys))) or (
+            disclosures and receipt_schema_version != "1.3.0"
+        ):
+            raise ProtocolValueError(invalid)
+        withheld = _validate_tuple(self.semantic_withheld_items, 0, 64, invalid)
+        if any(type(value) is not ReceiptSemanticWithheldItem for value in withheld):
+            raise ProtocolValueError(invalid)
+        typed_withheld = cast(tuple[ReceiptSemanticWithheldItem, ...], withheld)
+        withheld_ids = tuple(item.item_id for item in typed_withheld)
+        if withheld_ids != tuple(sorted(set(withheld_ids), key=str.encode)):
+            raise ProtocolValueError("receipt_semantic_withheld_items_not_canonical")
         section_keys = tuple(cast(ReceiptSection, section).key for section in sections)
         if section_keys not in _VALID_SECTION_KEY_SEQUENCES:
             raise ProtocolValueError("invalid_receipt_section_order")
@@ -997,6 +1651,24 @@ class ReceiptDocument:
         for gap in cast(tuple[ReceiptGap, ...], gaps):
             if gap.code not in self.coverage.known_gaps:
                 raise ProtocolValueError("receipt_gap_not_in_coverage")
+            if gap.effect is not None and (
+                _receipt_document_artifact_version(self.versions) != "1.3.0"
+                or (
+                    gap.effect is ReceiptGapEffect.BOUNDS
+                    and self.conclusion is ReceiptConclusion.NO_UNRESOLVED_DETERMINISTIC_FINDINGS
+                )
+            ):
+                # A clean conclusion beside a gap that bounds it is a contradiction (ADR-046).
+                raise ProtocolValueError("invalid_receipt_gap")
+        # Issue #1017: a historical gap is written only by the 1.3.0 artifact, and a code is
+        # either live or historical on one receipt, never both.
+        historical_codes = {gap.code for gap in cast(tuple[ReceiptGap, ...], gaps) if not gap.live}
+        if historical_codes and (
+            receipt_schema_version != "1.3.0"
+            or historical_codes
+            & {gap.code for gap in cast(tuple[ReceiptGap, ...], gaps) if gap.live}
+        ):
+            raise ProtocolValueError("invalid_receipt_gap")
 
 
 def _policy_version_from_json(value: object) -> PolicyVersionEntry:
@@ -1134,10 +1806,16 @@ def _gap_from_json(value: object) -> ReceiptGap:
     source = _closed_object(
         value,
         frozenset({"code", "subject_refs"}),
-        frozenset({"detail"}),
+        frozenset({"detail", "status", "cleared_at_frontier", "effect"}),
         invalid,
     )
     keys = frozenset(cast(tuple[str, ...], tuple(source)))
+    # Issue #1017: present only on a historical gap, together; absent reads as live.
+    historical = "status" in keys
+    if historical is not ("cleared_at_frontier" in keys) or (
+        historical and _field(source, "status", invalid) != ReceiptGapStatus.HISTORICAL.value
+    ):
+        raise ProtocolValueError(invalid)
     refs = tuple(
         _subject_ref(item, invalid)
         for item in _array(_field(source, "subject_refs", invalid), invalid)
@@ -1146,6 +1824,45 @@ def _gap_from_json(value: object) -> ReceiptGap:
         code=cast(str, _field(source, "code", invalid)),
         subject_refs=refs,
         detail=cast(str, _field(source, "detail", invalid)) if "detail" in keys else None,
+        status=ReceiptGapStatus.HISTORICAL if historical else ReceiptGapStatus.LIVE,
+        cleared_at_frontier=(
+            frontier_from_json(_field(source, "cleared_at_frontier", invalid))
+            if historical
+            else None
+        ),
+        effect=(
+            _enum_value(_field(source, "effect", invalid), ReceiptGapEffect, invalid)
+            if "effect" in keys
+            else None
+        ),
+    )
+
+
+def _conclusion_basis_from_json(value: object) -> ReceiptConclusionBasis:
+    invalid = "invalid_receipt_document"
+    source = _closed_object(value, frozenset({"reasons", "reason_total"}), frozenset(), invalid)
+    reasons: list[ReceiptConclusionReason] = []
+    for item in _array(_field(source, "reasons", invalid), invalid):
+        reason = _closed_object(
+            item,
+            frozenset({"code", "rule", "count", "refs"}),
+            frozenset({"since_frontier"}),
+            invalid,
+        )
+        refs = _array(_field(reason, "refs", invalid), invalid)
+        reasons.append(
+            ReceiptConclusionReason(
+                code=cast(str, _field(reason, "code", invalid)),
+                rule=cast(str, _field(reason, "rule", invalid)),
+                count=cast(int, _field(reason, "count", invalid)),
+                refs=cast(tuple[str, ...], refs),
+                since_frontier=(
+                    cast(int, reason["since_frontier"]) if "since_frontier" in reason else None
+                ),
+            )
+        )
+    return ReceiptConclusionBasis(
+        tuple(reasons), cast(int, _field(source, "reason_total", invalid))
     )
 
 
@@ -1154,9 +1871,12 @@ def _child_finding_from_json(value: object) -> ReceiptChildFinding:
     source = _closed_object(
         value,
         frozenset({"finding_id", "kind", "origin", "priority", "actionable", "resolved"}),
-        frozenset({"resolution_event_id"}),
+        frozenset({"resolution_event_id", "self_verified"}),
         invalid,
     )
+    # Present only when true (issue #984).
+    if "self_verified" in source and _field(source, "self_verified", invalid) is not True:
+        raise ProtocolValueError(invalid)
     keys = frozenset(cast(tuple[str, ...], tuple(source)))
     return ReceiptChildFinding(
         finding_id=finding_id(_field(source, "finding_id", invalid)),
@@ -1170,6 +1890,7 @@ def _child_finding_from_json(value: object) -> ReceiptChildFinding:
             if "resolution_event_id" in keys
             else None
         ),
+        self_verified="self_verified" in keys,
     )
 
 
@@ -1272,6 +1993,20 @@ def _section_from_json(value: object) -> ReceiptSection:
     )
 
 
+def _semantic_withheld_item_from_json(value: object) -> ReceiptSemanticWithheldItem:
+    invalid = "invalid_receipt_semantic_withheld_item"
+    source = _closed_object(
+        value,
+        frozenset({"item_id", "reason"}),
+        frozenset(),
+        invalid,
+    )
+    return ReceiptSemanticWithheldItem(
+        item_id=cast(str, _field(source, "item_id", invalid)),
+        reason=cast(Literal["never_send_heuristic"], _field(source, "reason", invalid)),
+    )
+
+
 def receipt_document_from_json(value: object) -> ReceiptDocument:
     """Decode the exact closed receipt-document schema into immutable domain values."""
 
@@ -1311,9 +2046,19 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         frozenset(
             {
                 "acknowledged_not_done_finding_ids",
+                "acknowledged_not_done_obligation_ids",
                 "children",
+                "premise_disputed_finding_ids",
+                "disclosed_assumptions",
+                "duplicate_finding_links",
                 "rejection_accepted_finding_ids",
+                "self_verified_finding_ids",
+                "disputed_after_rebuttal_finding_ids",
+                "semantic_withheld_items",
+                "semantic_redacted_values",
                 "semantic_provenance",
+                "limitation_disclosed_finding_ids",
+                "conclusion_basis",
             }
         ),
         invalid,
@@ -1353,7 +2098,14 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         raise ProtocolValueError("invalid_receipt_document")
     if not has_children and artifact_version == "1.3.0":
         raise ProtocolValueError("invalid_receipt_document")
-    for name in ("acknowledged_not_done_finding_ids", "rejection_accepted_finding_ids"):
+    for name in (*_TERMINAL_ID_FIELDS, "duplicate_finding_links"):
+        if name in source and not _array(source[name], invalid):
+            raise ProtocolValueError(invalid)
+    for name in (
+        "disclosed_assumptions",
+        "acknowledged_not_done_obligation_ids",
+        "premise_disputed_finding_ids",
+    ):
         if name in source and not _array(source[name], invalid):
             raise ProtocolValueError(invalid)
     semantic_provenance_value = (
@@ -1361,6 +2113,24 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
         if "semantic_provenance" in source
         else None
     )
+    semantic_withheld_items = (
+        tuple(
+            _semantic_withheld_item_from_json(item)
+            for item in _array(_field(source, "semantic_withheld_items", invalid), invalid)
+        )
+        if "semantic_withheld_items" in source
+        else ()
+    )
+    try:
+        semantic_redacted_values = (
+            semantic_redacted_values_from_wire(
+                _array(_field(source, "semantic_redacted_values", invalid), invalid)
+            )
+            if "semantic_redacted_values" in source
+            else ()
+        )
+    except ValueError as exc:
+        raise ProtocolValueError(invalid) from exc
     document = ReceiptDocument(
         receipt_id=receipt_id(_field(source, "receipt_id", invalid)),
         task_id=task_id(_field(source, "task_id", invalid)),
@@ -1397,8 +2167,64 @@ def receipt_document_from_json(value: object) -> ReceiptDocument:
             finding_id(item)
             for item in _array(source.get("rejection_accepted_finding_ids", ()), invalid)
         ),
+        self_verified_finding_ids=tuple(
+            finding_id(item)
+            for item in _array(source.get("self_verified_finding_ids", ()), invalid)
+        ),
+        disputed_after_rebuttal_finding_ids=tuple(
+            finding_id(item)
+            for item in _array(source.get("disputed_after_rebuttal_finding_ids", ()), invalid)
+        ),
+        duplicate_finding_links=tuple(
+            _duplicate_link_from_json(item, invalid)
+            for item in _array(source.get("duplicate_finding_links", ()), invalid)
+        ),
+        semantic_withheld_items=semantic_withheld_items,
+        semantic_redacted_values=semantic_redacted_values,
+        disclosed_assumptions=tuple(
+            _disclosure_from_json(item)
+            for item in _array(source.get("disclosed_assumptions", ()), invalid)
+        ),
+        acknowledged_not_done_obligation_ids=tuple(
+            obligation_id(item)
+            for item in _array(source.get("acknowledged_not_done_obligation_ids", ()), invalid)
+        ),
+        premise_disputed_finding_ids=tuple(
+            finding_id(item)
+            for item in _array(source.get("premise_disputed_finding_ids", ()), invalid)
+        ),
+        limitation_disclosed_finding_ids=tuple(
+            finding_id(item)
+            for item in _array(source.get("limitation_disclosed_finding_ids", ()), invalid)
+        ),
+        conclusion_basis=(
+            _conclusion_basis_from_json(source["conclusion_basis"])
+            if "conclusion_basis" in source
+            else None
+        ),
     )
     return document
+
+
+def _duplicate_link_from_json(value: object, invalid: str) -> ReceiptDuplicateLink:
+    source = _closed_object(
+        value, frozenset({"finding_id", "duplicate_of_finding_id"}), frozenset(), invalid
+    )
+    return ReceiptDuplicateLink(
+        finding_id=finding_id(_field(source, "finding_id", invalid)),
+        duplicate_of_finding_id=finding_id(_field(source, "duplicate_of_finding_id", invalid)),
+    )
+
+
+def _disclosure_from_json(value: object) -> ReceiptDisclosure:
+    invalid = "invalid_receipt_document"
+    keys = frozenset({"obligation_id", "kind", "decision_event_id"})
+    source = _closed_object(value, keys, frozenset(), invalid)
+    return ReceiptDisclosure(
+        obligation_id=obligation_id(_field(source, "obligation_id", invalid)),
+        kind=cast(str, _field(source, "kind", invalid)),
+        decision_event_id=event_id(_field(source, "decision_event_id", invalid)),
+    )
 
 
 def _frontier_to_json(frontier: Frontier) -> dict[str, object]:
@@ -1458,6 +2284,11 @@ def _gap_to_json(value: ReceiptGap) -> dict[str, object]:
     result: dict[str, object] = {"code": value.code, "subject_refs": list(value.subject_refs)}
     if value.detail is not None:
         result["detail"] = value.detail
+    if value.cleared_at_frontier is not None:
+        result["status"] = value.status.value
+        result["cleared_at_frontier"] = _frontier_to_json(value.cleared_at_frontier)
+    if value.effect is not None:
+        result["effect"] = value.effect.value
     return result
 
 
@@ -1492,6 +2323,8 @@ def _child_finding_to_json(value: ReceiptChildFinding) -> dict[str, object]:
     }
     if value.resolution_event_id is not None:
         result["resolution_event_id"] = value.resolution_event_id
+    if value.self_verified:
+        result["self_verified"] = True
     return result
 
 
@@ -1548,6 +2381,61 @@ def receipt_document_to_json(document: ReceiptDocument) -> dict[str, object]:
         )
     if document.rejection_accepted_finding_ids:
         result["rejection_accepted_finding_ids"] = list(document.rejection_accepted_finding_ids)
+    if document.self_verified_finding_ids:
+        result["self_verified_finding_ids"] = list(document.self_verified_finding_ids)
+    if document.disputed_after_rebuttal_finding_ids:
+        result["disputed_after_rebuttal_finding_ids"] = list(
+            document.disputed_after_rebuttal_finding_ids
+        )
+    if document.limitation_disclosed_finding_ids:
+        result["limitation_disclosed_finding_ids"] = list(document.limitation_disclosed_finding_ids)
+    if document.conclusion_basis is not None:
+        result["conclusion_basis"] = {
+            "reasons": [
+                {
+                    "code": item.code,
+                    "rule": item.rule,
+                    "count": item.count,
+                    "refs": list(item.refs),
+                    **(
+                        {}
+                        if item.since_frontier is None
+                        else {"since_frontier": item.since_frontier}
+                    ),
+                }
+                for item in document.conclusion_basis.reasons
+            ],
+            "reason_total": document.conclusion_basis.reason_total,
+        }
+    if document.duplicate_finding_links:
+        result["duplicate_finding_links"] = [
+            {"finding_id": item.finding_id, "duplicate_of_finding_id": item.duplicate_of_finding_id}
+            for item in document.duplicate_finding_links
+        ]
+    if document.premise_disputed_finding_ids:
+        result["premise_disputed_finding_ids"] = list(document.premise_disputed_finding_ids)
+    if document.acknowledged_not_done_obligation_ids:
+        result["acknowledged_not_done_obligation_ids"] = list(
+            document.acknowledged_not_done_obligation_ids
+        )
+    if document.disclosed_assumptions:
+        result["disclosed_assumptions"] = [
+            {
+                "obligation_id": item.obligation_id,
+                "kind": item.kind,
+                "decision_event_id": item.decision_event_id,
+            }
+            for item in document.disclosed_assumptions
+        ]
+    if document.semantic_withheld_items:
+        result["semantic_withheld_items"] = [
+            {"item_id": item.item_id, "reason": item.reason}
+            for item in document.semantic_withheld_items
+        ]
+    if document.semantic_redacted_values:
+        result["semantic_redacted_values"] = [
+            item.as_wire() for item in document.semantic_redacted_values
+        ]
     # Omit absent provenance rather than emitting null: local-only and historical receipt
     # documents therefore retain their exact pre-extension bytes.
     if document.semantic_provenance is not None:
@@ -1595,17 +2483,91 @@ def resolved_finding_ids_for_render(document: ReceiptDocument) -> frozenset[str]
 def unresolved_findings_for_render(document: ReceiptDocument) -> tuple[Finding, ...]:
     """Current (not resolved) finding rows, in document order.
 
-    A ``rejection_accepted`` row is unresolved but settled (issue #905): it has its own section
-    and does not count here.
+    A ``rejection_accepted`` row (issue #905), a ``self_verified`` row (issue #984) or a
+    ``disputed_after_rebuttal`` row (issue #1020) is unresolved but settled: it has its own
+    section and does not count here.
     """
 
     resolved = resolved_finding_ids_for_render(document)
-    settled = frozenset(document.rejection_accepted_finding_ids)
+    settled = frozenset(
+        (
+            *document.rejection_accepted_finding_ids,
+            *document.self_verified_finding_ids,
+            *document.disputed_after_rebuttal_finding_ids,
+        )
+    )
     return tuple(
         finding
         for finding in document.findings
         if finding.finding_id not in resolved and finding.finding_id not in settled
     )
+
+
+def live_receipt_gap_codes(document: ReceiptDocument) -> tuple[str, ...]:
+    """Coverage gap codes that still bound this receipt, in coverage order (issue #1017).
+
+    A ``historical`` gap (a later check no longer carried it) stays in the document's coverage
+    and its gap rows, but it is never a current limitation, so counts and lists exclude it.
+    """
+
+    historical = {gap.code for gap in document.gaps if not gap.live}
+    return tuple(code for code in document.coverage.known_gaps if code not in historical)
+
+
+def historical_receipt_gaps(document: ReceiptDocument) -> tuple[ReceiptGap, ...]:
+    """The gap rows a later check cleared, in document order (issue #1017)."""
+
+    return tuple(gap for gap in document.gaps if not gap.live)
+
+
+def historical_gap_line(gap: ReceiptGap, *, markdown: bool) -> str:
+    """One fixed line for a historical gap: its code and the frontier that cleared it.
+
+    The live gap sentence is deliberately not repeated: several carry repair instructions ("run
+    it as recorded", "link that run") that would steer an agent to redo work the latest check
+    already cleared (Codex review round 3).
+    """
+
+    assert gap.cleared_at_frontier is not None
+    code = f"`{gap.code}`" if markdown else gap.code
+    return f"- {code}: cleared at frontier {gap.cleared_at_frontier.sequence}; no action needed."
+
+
+_WIRE_SEQUENCE_RE: Final = re.compile(r"^(?:0|[1-9][0-9]{0,18})$", re.ASCII)
+
+
+def historical_gaps_from_wire(document: object) -> tuple[tuple[str, str], ...]:
+    """``(code, cleared-at sequence)`` for each historical gap row of a receipt document wire.
+
+    For surfaces that hold only the JSON document (CLI, MCP summary). Each value is re-gated
+    against its closed shape; a malformed row is skipped, never echoed (issue #1017).
+    """
+
+    if not _is_actual_mapping(document):
+        return ()
+    raw_gaps = cast(Mapping[object, object], document).get("gaps")
+    if not isinstance(raw_gaps, (list, tuple)):
+        return ()
+    result: list[tuple[str, str]] = []
+    for raw in cast(Sequence[object], raw_gaps):
+        if not _is_actual_mapping(raw):
+            continue
+        row = cast(Mapping[object, object], raw)
+        code = row.get("code")
+        frontier = row.get("cleared_at_frontier")
+        if row.get("status") != ReceiptGapStatus.HISTORICAL.value or not _is_actual_mapping(
+            frontier
+        ):
+            continue
+        sequence = cast(Mapping[object, object], frontier).get("sequence")
+        if (
+            type(code) is str
+            and _GAP_CODE_RE.fullmatch(code) is not None
+            and type(sequence) is str
+            and _WIRE_SEQUENCE_RE.fullmatch(sequence) is not None
+        ):
+            result.append((code, sequence))
+    return tuple(result)
 
 
 def _waiver_for_render(document: ReceiptDocument) -> ReceiptResponse | None:
@@ -1628,10 +2590,125 @@ def _declared_none_reason_for_render(document: ReceiptDocument) -> str | None:
 
 
 _HUMAN_TEXT_MAX: Final = 32_768
-_HUMAN_TEXT_TRUNCATION_MARKER: Final = (
-    "\n\n[Receipt human_text truncated at 32768 characters; "
-    "remaining canonical section content is omitted.]"
+_HUMAN_TEXT_MARKER_RESERVE: Final = 900
+_HUMAN_TEXT_MARKER_NAMES: Final = 10
+# Who is granted room first when a long receipt must be shortened (tb4n3 RC-2, A7). Every section
+# keeps at least its heading and a "not shown" line, so no section silently disappears; these
+# ranks only decide whose text is cut first. Disclosures that keep a receipt from reading clean
+# outrank the narrative sections.
+_HUMAN_BLOCK_RANK: Final[Mapping[str, int]] = MappingProxyType(
+    {
+        "Summary": 0,
+        "Limitations": 1,
+        "Outstanding work": 3,
+        "Findings": 4,
+        "Evidence basis": 8,
+        "Versions and policy": 9,
+    }
 )
+_HUMAN_DISCLOSURE_RANK: Final = 2
+_HUMAN_DEFAULT_RANK: Final = 6
+
+
+def _human_block_name(block: str) -> str:
+    return block.split("\n", 1)[0].lstrip("#").strip()
+
+
+def _human_block_rank(name: str, history_title: str) -> int:
+    known = _HUMAN_BLOCK_RANK.get(name)
+    if known is not None:
+        return known
+    if name == history_title:
+        return 5
+    if name in {"Children", "Coverage limitations", "Recovery"}:
+        return _HUMAN_DEFAULT_RANK
+    # The remaining blocks are the by-id disclosures: acknowledged, self-verified, disputed,
+    # rejection accepted, duplicate links, premise disputes, assumptions, withheld items.
+    return _HUMAN_DISCLOSURE_RANK
+
+
+def _cut_human_block(block: str, budget: int) -> str:
+    """Cut ``block`` at a line boundary within ``budget`` characters and say how much is left."""
+
+    lines = block.split("\n")
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) + 1 > budget - 48:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    rest = len(lines) - len(kept)
+    if rest == 0:
+        return block
+    if len(kept) <= 1 and rest > 0:
+        # One long body line: keep the start of it rather than only the heading.
+        room = budget - used - 48
+        if room > 80 and len(lines) > len(kept):
+            kept.append(clip_to_limit(lines[len(kept)], room, marker=" [...]", ascii_only=False))
+            rest -= 1
+    if rest:
+        kept.append(f"[... {rest} more line(s) not shown]")
+    return "\n".join(kept)
+
+
+def _human_block_variants(block: str) -> tuple[str, ...]:
+    """The block whole, then progressively shorter line-boundary cuts, then its heading alone."""
+
+    variants = [block]
+    for budget in (12_000, 4_000, 1_500, 600):
+        cut = _cut_human_block(block, budget)
+        if len(cut) < len(variants[-1]):
+            variants.append(cut)
+    heading = block.split("\n", 1)[0]
+    stub = f"{heading}\n[section content not shown]"
+    if len(stub) < len(variants[-1]):
+        variants.append(stub)
+    return tuple(variants)
+
+
+def _bound_human_text(parts: list[str], history_title: str) -> str:
+    """Join the blocks, shortening by section when they exceed the bound (tb4n3 RC-2, A7).
+
+    The old cut took the head of the joined text, so a long receipt silently lost whichever
+    sections came last -- the by-id disclosures, the coverage limitations and the recovery lines
+    -- under a generic marker. Each block now keeps at least its heading and a line saying its
+    content was not shown, disclosures and limitations are shortened last, and the marker names
+    every shortened section.
+    """
+
+    text = "\n\n".join(parts)
+    if len(text) <= _HUMAN_TEXT_MAX:
+        return text
+    names = [_human_block_name(part) for part in parts]
+    blocks = [
+        Part(
+            _human_block_variants(part),
+            required=True,
+            priority=_human_block_rank(name, history_title),
+        )
+        for part, name in zip(parts, names, strict=True)
+    ]
+    composed = compose_parts(
+        blocks,
+        _HUMAN_TEXT_MAX - _HUMAN_TEXT_MARKER_RESERVE,
+        sep="\n\n",
+        ascii_only=False,
+    )
+    shortened = [names[index] for index in composed.shortened]
+    listed = ", ".join(shortened[:_HUMAN_TEXT_MARKER_NAMES])
+    if len(shortened) > _HUMAN_TEXT_MARKER_NAMES:
+        listed += f" and {len(shortened) - _HUMAN_TEXT_MARKER_NAMES} more"
+    marker = (
+        "\n\n[Receipt human_text truncated at 32768 characters; "
+        + (f"shortened sections: {listed}. " if listed else "")
+        + ("Remaining text was cut. " if composed.cut_required else "")
+        + "The structured receipt (format json) holds every section in full.]"
+    )
+    return (
+        clip_to_limit(composed.text, _HUMAN_TEXT_MAX - len(marker), marker="...", ascii_only=False)
+        + marker
+    )
 
 
 def _semantic_recovery_lines(document: ReceiptDocument) -> list[str]:
@@ -1670,6 +2747,22 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
         if section.coverage_note is not None:
             section_parts.append(section.coverage_note)
         parts.append("\n".join(section_parts))
+    historical = historical_receipt_gaps(document)
+    history_block: str | None = None
+    if historical:
+        heading = (
+            f"## {HISTORICAL_GAPS_SECTION_TITLE}" if markdown else HISTORICAL_GAPS_SECTION_TITLE
+        )
+        history_block = "\n".join(
+            (
+                heading,
+                "An earlier check carried these gaps and a later check no longer did. They "
+                "stay on the record but are not current limitations and do not bound this "
+                "receipt's conclusion.",
+                *(historical_gap_line(gap, markdown=markdown) for gap in historical),
+            )
+        )
+        parts.append(history_block)
     if _receipt_document_artifact_version(document.versions) == "1.3.0":
         heading = "## Children" if markdown else "Children"
         child_parts = [heading]
@@ -1690,6 +2783,11 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                     f"- {child.child_task_id}: outcome={child.outcome}; "
                     f"freshness={child.freshness}; tested_manifest={tested}; "
                     f"later_manifest={later}; findings={findings}"
+                )
+                child_parts.extend(
+                    f"  - {item.finding_id}: {CHILD_SELF_VERIFIED_NOTE}"
+                    for item in child.findings
+                    if item.self_verified
                 )
         parts.append("\n".join(child_parts))
     if document.acknowledged_not_done_finding_ids:
@@ -1716,6 +2814,161 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
                 )
             )
         )
+    if document.self_verified_finding_ids:
+        heading = f"## {SELF_VERIFIED_SECTION_TITLE}" if markdown else SELF_VERIFIED_SECTION_TITLE
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent repaired these findings and verified each repair itself, citing "
+                    "its own recorded evidence, because Yoetz could not prove the repair. They "
+                    "are not resolved by Yoetz and keep this receipt from reading clean.",
+                    *(f"- {item}" for item in document.self_verified_finding_ids),
+                )
+            )
+        )
+    if document.limitation_disclosed_finding_ids:
+        heading = (
+            f"## {VERIFICATION_LIMITS_SECTION_TITLE}"
+            if markdown
+            else VERIFICATION_LIMITS_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The reviewer asked the agent to state that these requirements cannot be "
+                    "verified in this environment, and the agent disclosed each one. They are "
+                    "not resolved and not clean: they are limits on what this receipt can "
+                    "establish, listed here by id.",
+                    *(f"- {item}" for item in document.limitation_disclosed_finding_ids),
+                )
+            )
+        )
+    if document.disputed_after_rebuttal_finding_ids:
+        heading = (
+            f"## {DISPUTED_AFTER_REBUTTAL_SECTION_TITLE}"
+            if markdown
+            else DISPUTED_AFTER_REBUTTAL_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent rejected these AI-powered findings with a reason, and the reviewer "
+                    "kept them open without citing anything recorded after that rejection. The "
+                    "reviewer and the agent disagree; these are not agent work, are not resolved, "
+                    "and keep this receipt from reading clean.",
+                    *(f"- {item}" for item in document.disputed_after_rebuttal_finding_ids),
+                )
+            )
+        )
+    if document.duplicate_finding_links:
+        heading = (
+            f"## {DUPLICATE_LINKS_SECTION_TITLE}" if markdown else DUPLICATE_LINKS_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent linked these findings to an earlier finding that names the same "
+                    "issue. A link never resolves a finding by itself: each stays open until its "
+                    "own check proves it absent, or carries the earlier finding's not-done or "
+                    "self-verified answer.",
+                    *(
+                        f"- {item.finding_id} duplicates {item.duplicate_of_finding_id}"
+                        for item in document.duplicate_finding_links
+                    ),
+                )
+            )
+        )
+    if document.premise_disputed_finding_ids:
+        heading = (
+            f"## {PREMISE_DISPUTED_SECTION_TITLE}" if markdown else PREMISE_DISPUTED_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent recorded these findings as not done although the AI-powered review "
+                    "said the task itself requires the work. The agent's reasons are in its "
+                    "responses; Yoetz did not judge them.",
+                    *(f"- {item}" for item in document.premise_disputed_finding_ids),
+                )
+            )
+        )
+    if document.acknowledged_not_done_obligation_ids:
+        heading = (
+            f"## {ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE}"
+            if markdown
+            else ACKNOWLEDGED_OBLIGATIONS_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent recorded these obligations as acknowledged and not done, each with "
+                    "a reason on the obligation. They are not done and keep this receipt from "
+                    "reading clean.",
+                    *(f"- {item}" for item in document.acknowledged_not_done_obligation_ids),
+                )
+            )
+        )
+    if document.disclosed_assumptions:
+        heading = (
+            f"## {DISCLOSED_ASSUMPTIONS_SECTION_TITLE}"
+            if markdown
+            else DISCLOSED_ASSUMPTIONS_SECTION_TITLE
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "The agent recorded these in decisions: a best-effort assumption it made, or "
+                    "a check it inherently could not run. Yoetz did not verify them; each "
+                    "decision holds the agent's text.",
+                    *(
+                        f"- {item.obligation_id}: {item.kind} (decision {item.decision_event_id})"
+                        for item in document.disclosed_assumptions
+                    ),
+                )
+            )
+        )
+    if document.semantic_withheld_items:
+        count = len(document.semantic_withheld_items)
+        noun = "item" if count == 1 else "items"
+        heading = "## Withheld review items" if markdown else "Withheld review items"
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    f"AI-powered review continued without {count} review {noun}. "
+                    "The item text was not sent or echoed; reason: never_send_heuristic.",
+                    *(
+                        f"- {item.item_id}: {item.reason}"
+                        for item in document.semantic_withheld_items
+                    ),
+                )
+            )
+        )
+    if document.semantic_redacted_values:
+        heading = (
+            "## Withheld from external review" if markdown else "Withheld from external review"
+        )
+        parts.append(
+            "\n".join(
+                (
+                    heading,
+                    "Where the external reviewer's copy did not carry a credential-like value "
+                    "(item refs and line numbers only; no value is shown):",
+                    *(
+                        f"- {semantic_redacted_value_text(item)}"
+                        for item in document.semantic_redacted_values
+                    ),
+                    SEMANTIC_REDACTED_VALUES_AGENT_LINE,
+                )
+            )
+        )
     advisory_count = sum(
         1 for finding in document.findings if not FINDING_KIND_TRAITS[finding.kind][1]
     )
@@ -1730,10 +2983,14 @@ def render_receipt_human(document: ReceiptDocument, *, markdown: bool) -> str:
     if recovery:
         heading = "## Recovery" if markdown else "Recovery"
         parts.append("\n".join((heading, *recovery)))
-    text = "\n\n".join(parts) if parts else render_receipt_compact(document)
-    if len(text) > _HUMAN_TEXT_MAX:
-        text = text[: _HUMAN_TEXT_MAX - len(_HUMAN_TEXT_TRUNCATION_MARKER)]
-        text += _HUMAN_TEXT_TRUNCATION_MARKER
+    text = (
+        _bound_human_text(
+            parts,
+            HISTORICAL_GAPS_SECTION_TITLE,
+        )
+        if parts
+        else render_receipt_compact(document)
+    )
     if not text:
         raise ProtocolValueError("invalid_receipt_document")
     return text
@@ -1746,7 +3003,8 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
         raise ProtocolValueError("invalid_receipt_document")
     frontier = document.subject_frontier.sequence
     prefix = f"Yoetz receipt at frontier {frontier}: "
-    gap_codes = frozenset(gap.code for gap in document.gaps)
+    # Historical gaps (issue #1017) never select a compact limitation sentence.
+    gap_codes = frozenset(gap.code for gap in document.gaps if gap.live)
     unresolved = unresolved_findings_for_render(document)
 
     if "encryption_key_unavailable" in gap_codes:
@@ -1857,6 +3115,37 @@ def render_receipt_compact(document: ReceiptDocument) -> str:
         verb = "remains" if count == 1 else "remain"
         return prefix + f"{count} unresolved {noun} {verb}."
     if document.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE:
+        if document.acknowledged_not_done_obligation_ids:
+            count = len(document.acknowledged_not_done_obligation_ids)
+            noun = "obligation was" if count == 1 else "obligations were"
+            return (
+                prefix + f"coverage is insufficient. {count} {noun} acknowledged as not done "
+                "by the agent."
+            )
+        if document.self_verified_finding_ids:
+            count = len(document.self_verified_finding_ids)
+            noun = "finding was" if count == 1 else "findings were"
+            return (
+                prefix + f"coverage is insufficient. {count} {noun} self-verified by the agent; "
+                "Yoetz could not prove the repair."
+            )
+        if document.disputed_after_rebuttal_finding_ids:
+            count = len(document.disputed_after_rebuttal_finding_ids)
+            noun = "finding is" if count == 1 else "findings are"
+            return (
+                prefix + f"coverage is insufficient. {count} {noun} disputed: the agent "
+                "rejected them with a reason and the reviewer repeated them without newer "
+                "material."
+            )
+        child_self_verified = sum(
+            item.self_verified for child in document.children.children for item in child.findings
+        )
+        if child_self_verified:
+            noun = "child finding was" if child_self_verified == 1 else "child findings were"
+            return (
+                prefix + f"coverage is insufficient. {child_self_verified} {noun} self-verified "
+                "by the child agent; Yoetz could not prove the repair."
+            )
         return prefix + "coverage is insufficient. Declared gaps bound this receipt's conclusion."
 
     outstanding_work = next(

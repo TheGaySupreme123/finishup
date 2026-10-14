@@ -2,8 +2,10 @@
 
 The reviewer may name only refs its packet carried. Yoetz, not the reviewer, decides whether the
 agent can supply each item: a kind the effective review selection or channel can never carry, or a
-target the owner redacted, is ``structurally_unavailable_on_this_host``; everything else is
-``agent_suppliable``. A later review sees the earlier request beside what was recorded since, and
+target the owner redacted, is ``structurally_unavailable_on_this_host``; content the packet cannot
+show (an unsupported data type such as an image or binary file, content clipped or omitted for
+packet room) is a ``yoetz_limit_*`` class (tb4n1 D1, #983);
+everything else is ``agent_suppliable``. Only ``agent_suppliable`` is ever agent work. A later review sees the earlier request beside what was recorded since, and
 an item re-requested after it was supplied is dropped unless the reviewer cites that new material.
 "Supplied" is judged per named target: only new material directly tied to that target counts
 (its run, exact command, file path, or a correction of it), so a record that relates only to
@@ -28,7 +30,9 @@ from yoetz.domain.events import (
     ActionRecordedPayload,
     ClaimRecordedPayload,
     ClaimRecordedPayloadV1_1,
+    EvidenceContentAvailability,
     EvidenceDigestProvenance,
+    EvidenceDigestSubject,
     EvidenceRecordedPayload,
     MissingForAssessmentItem,
     PlanPublishedPayload,
@@ -42,23 +46,242 @@ from yoetz.domain.receipts import (
     SEMANTIC_MISSING_AGENT_SUPPLIABLE_GAP,
     SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP,
     SEMANTIC_MISSING_ITEMS_REJECTED_GAP,
+    SEMANTIC_MISSING_NON_CONVERGENT_GAP,
     SEMANTIC_MISSING_UNAVAILABLE_GAP,
+    SEMANTIC_MISSING_YOETZ_LIMIT_GAP,
 )
 from yoetz.domain.values import EventId
+from yoetz.kernel.delivered_set import item_role
 from yoetz.kernel.deterministic_checks import DeterministicCase
 from yoetz.kernel.projections import PendingMissingForAssessment, ProjectionState
+from yoetz.kernel.task_facts import effective_obligations
+from yoetz.ports.change_capture import CheckChangeCapture
 from yoetz.ports.semantic import SemanticJudgment
-from yoetz.protocol.models import MISSING_FOR_ASSESSMENT_KINDS, DataCategory
+from yoetz.protocol.models import (
+    MAX_MISSING_FOR_ASSESSMENT,
+    MAX_REVIEW_FOLLOW_UP_ROUNDS,
+    MISSING_FOR_ASSESSMENT_KINDS,
+    DataCategory,
+)
 
 __all__ = [
+    "FOLLOW_UP_KINDS",
+    "YOETZ_LIMIT_PACKET_ROOM",
+    "YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE",
     "MissingItemsReview",
+    "ReviewFollowUp",
+    "ReviewFollowUpItem",
+    "check_change_binary_paths",
+    "check_change_text_paths",
+    "command_run_key",
+    "observed_image_evidence",
+    "plan_review_follow_up",
     "review_missing_for_assessment",
     "supplied_since",
+    "unsupported_data_type",
     "unsuppliable_missing_kinds",
 ]
 
 AGENT_SUPPLIABLE: Final = "agent_suppliable"
 STRUCTURALLY_UNAVAILABLE: Final = "structurally_unavailable_on_this_host"
+# Yoetz's own review limits (tb4n1 D1, issue #983): content the packet cannot show is never work
+# for the agent. The agent verifies such an item itself and the receipt discloses the limit; it
+# must never split, move, shrink, stash, delete, git-add or git-ignore its work to fit the packet.
+YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE: Final = "yoetz_limit_unsupported_data_type"
+YOETZ_LIMIT_PACKET_ROOM: Final = "yoetz_limit_packet_room"
+# Content the review packet never carries: images, audio, video, documents, archives, disk
+# images, CAD/EDA, fonts, ROMs, data and model files, databases, native objects and captures
+# (tb4n2 A11). Matched on the file name a target records, case-insensitively, on its last suffix
+# (so ``x.tar.zst`` matches ``.zst``). The check-time change's own NUL-byte sniff decides first
+# (ADR-045): a file Git found binary is unsupported, and a file it found text is not, whatever its
+# suffix; the suffix decides only for a file the change did not list. ISO 10303-21 ``.step`` and
+# ``.stp`` are ASCII, so they are not here. A few suffixes also name text formats (``.key`` a PEM key,
+# ``.nc`` G-code, ``.hdr`` an ENVI header, ``.brd``/``.svf``/``.fig``/``.gb`` text board, vector,
+# figure or GenBank files): they are listed anyway, because a false Yoetz limit only means the
+# agent verifies the file itself under a disclosed limit, while a false "agent work" pushes the
+# agent to reshape a deliverable for the reviewer. A suffix-less binary is recognised from the
+# check-time change instead (``check_change_binary_paths``).
+_UNSUPPORTED_SUFFIXES: Final = frozenset(
+    {
+        ".3dm",
+        ".3mf",
+        ".7z",
+        ".a",
+        ".aac",
+        ".aar",
+        ".accdb",
+        ".aiff",
+        ".apk",
+        ".arrow",
+        ".avi",
+        ".avif",
+        ".avro",
+        ".beam",
+        ".bin",
+        ".bit",
+        ".blend",
+        ".bmp",
+        ".brd",
+        ".bz2",
+        ".cab",
+        ".catpart",
+        ".ckpt",
+        ".class",
+        ".cr2",
+        ".db",
+        ".db3",
+        ".deb",
+        ".dll",
+        ".dmg",
+        ".dng",
+        ".doc",
+        ".docx",
+        ".dta",
+        ".duckdb",
+        ".dwg",
+        ".dxf",
+        ".dylib",
+        ".ear",
+        ".egg",
+        ".elf",
+        ".epub",
+        ".exe",
+        ".exr",
+        ".f3d",
+        ".fbx",
+        ".fcstd",
+        ".feather",
+        ".fig",
+        ".flac",
+        ".gb",
+        ".gba",
+        ".gds",
+        ".ggml",
+        ".gguf",
+        ".gif",
+        ".glb",
+        ".gz",
+        ".h5",
+        ".hdf",
+        ".hdf5",
+        ".hdr",
+        ".heic",
+        ".iam",
+        ".ico",
+        ".iges",
+        ".igs",
+        ".img",
+        ".ipa",
+        ".ipt",
+        ".iso",
+        ".jar",
+        ".joblib",
+        ".jp2",
+        ".jpeg",
+        ".jpg",
+        ".jxl",
+        ".keras",
+        ".key",
+        ".ko",
+        ".lib",
+        ".lmdb",
+        ".lz4",
+        ".lzma",
+        ".m4a",
+        ".m4v",
+        ".mat",
+        ".mdb",
+        ".mid",
+        ".midi",
+        ".mkv",
+        ".mlmodel",
+        ".mov",
+        ".mp3",
+        ".mp4",
+        ".mscz",
+        ".msi",
+        ".mxl",
+        ".nc",
+        ".nef",
+        ".nes",
+        ".npy",
+        ".npz",
+        ".numbers",
+        ".nupkg",
+        ".o",
+        ".oas",
+        ".odp",
+        ".ods",
+        ".odt",
+        ".ogg",
+        ".onnx",
+        ".opus",
+        ".orc",
+        ".otf",
+        ".pages",
+        ".parquet",
+        ".pb",
+        ".pcap",
+        ".pcapng",
+        ".pdf",
+        ".pickle",
+        ".pkl",
+        ".png",
+        ".ppt",
+        ".pptx",
+        ".psd",
+        ".pt",
+        ".pth",
+        ".pyc",
+        ".pyd",
+        ".qcow2",
+        ".rar",
+        ".raw",
+        ".rdata",
+        ".rds",
+        ".rom",
+        ".rpm",
+        ".sab",
+        ".safetensors",
+        ".sav",
+        ".sfc",
+        ".sif",
+        ".sketch",
+        ".skp",
+        ".sldasm",
+        ".sldprt",
+        ".so",
+        ".sqlite",
+        ".sqlite3",
+        ".stl",
+        ".svf",
+        ".tar",
+        ".tflite",
+        ".tfrecord",
+        ".tga",
+        ".tgz",
+        ".tif",
+        ".tiff",
+        ".ttf",
+        ".vmdk",
+        ".war",
+        ".wasm",
+        ".wav",
+        ".webm",
+        ".webp",
+        ".whl",
+        ".wma",
+        ".wmv",
+        ".woff",
+        ".woff2",
+        ".x_b",
+        ".xls",
+        ".xlsx",
+        ".xz",
+        ".zip",
+        ".zst",
+    }
+)
 # How many refs recorded since the request the next packet names per item, newest first.
 _MAX_SUPPLIED_REFS: Final = 4
 # Which recorded families can answer each missing kind. ``output_results`` are results that
@@ -90,6 +313,164 @@ class MissingItemsReview:
 
     items: tuple[MissingForAssessmentItem, ...]
     gaps: frozenset[str]
+
+
+# Issue #1047: the kinds whose content Yoetz itself can carry as recorded excerpts (the edit a
+# hook captured, a run's recorded output, its exact command). Every other kind (a task statement,
+# plan or claim text, finding context, ``other``) is never answered by Yoetz inside the check.
+FOLLOW_UP_KINDS: Final = frozenset(
+    {"command_identity", "current_diff_for_path", "verification_output"}
+)
+# Only content Yoetz holds and did not show: a target the agent could supply or one the packet
+# had no room for. A privacy-withheld, redacted or unsupported target is never re-sent.
+_FOLLOW_UP_AVAILABILITIES: Final = frozenset({AGENT_SUPPLIABLE, YOETZ_LIMIT_PACKET_ROOM})
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewFollowUpItem:
+    """One reviewer request Yoetz answers from its records (issue #1047).
+
+    ``source_refs`` are the recorded rows whose excerpts carry the targets' content: each
+    target, the rows an ``evt_`` target recorded, and for a run (an action or its result) the
+    run's results, its action and the evidence those results cite. Redacted rows never count.
+    """
+
+    kind: str
+    target_refs: tuple[str, ...]
+    source_refs: frozenset[str]
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not str or self.kind not in FOLLOW_UP_KINDS:
+            raise ValueError("review_follow_up_invalid")
+        if (
+            type(self.target_refs) is not tuple
+            or not self.target_refs
+            or any(type(ref) is not str for ref in self.target_refs)
+        ):
+            raise ValueError("review_follow_up_invalid")
+        if type(self.source_refs) is not frozenset or not self.source_refs:
+            raise ValueError("review_follow_up_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewFollowUp:
+    """One in-check follow-up round: the reviewer asked, Yoetz adds what it holds (#1047).
+
+    ``items`` accumulate in request order across the check's rounds, so what an earlier round
+    added keeps its place in every later packet. ``shown_refs`` are the refs whose content the
+    excerpts of the check's own first sent packet held; anything a follow-up packet carries
+    beyond them for an item is what Yoetz added. ``added_refs`` is what earlier sent packets
+    already added, plus what egress withheld from a sent packet under a privacy rule (that rule
+    withholds it from every packet): a round that would add nothing else is never sent. In
+    process only; never recorded or logged.
+    """
+
+    round: int
+    items: tuple[ReviewFollowUpItem, ...]
+    shown_refs: frozenset[str]
+    added_refs: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        if type(self.round) is not int or not 1 <= self.round <= MAX_REVIEW_FOLLOW_UP_ROUNDS:
+            raise ValueError("review_follow_up_invalid")
+        if (
+            type(self.items) is not tuple
+            or not 1 <= len(self.items) <= MAX_MISSING_FOR_ASSESSMENT
+            or any(type(item) is not ReviewFollowUpItem for item in self.items)
+        ):
+            raise ValueError("review_follow_up_invalid")
+        if type(self.shown_refs) is not frozenset or type(self.added_refs) is not frozenset:
+            raise ValueError("review_follow_up_invalid")
+
+    @property
+    def source_refs(self) -> frozenset[str]:
+        return frozenset(ref for item in self.items for ref in item.source_refs)
+
+    def added_by(self, carried_excerpt_refs: Iterable[str]) -> frozenset[str]:
+        """The requested source refs a packet carrying these excerpts shows beyond the first."""
+
+        return (frozenset(carried_excerpt_refs) & self.source_refs) - self.shown_refs
+
+
+def plan_review_follow_up(
+    projection: ProjectionState,
+    allowed: frozenset[str],
+    requested: Iterable[MissingForAssessmentItem],
+    *,
+    previous: ReviewFollowUp | None,
+    shown_refs: frozenset[str] | None,
+    privacy_withheld_refs: frozenset[str] = frozenset(),
+) -> ReviewFollowUp | None:
+    """The next in-check follow-up round, or ``None`` when Yoetz has nothing it may add (#1047).
+
+    ``requested`` is the latest ``insufficient_packet`` request, already fenced and classified by
+    ``review_missing_for_assessment``. Only a ``FOLLOW_UP_KINDS`` item the agent could supply or
+    the packet had no room for, naming targets Yoetz holds rows for, is answered here; every
+    other item stays the agent's (or Yoetz's disclosed) business exactly as before. A round runs
+    only while the reviewer still names such an item, fewer than ``MAX_REVIEW_FOLLOW_UP_ROUNDS``
+    rounds ran, and some requested source is neither in the first packet nor added already.
+    ``shown_refs`` (what the first sent packet's excerpts held) is ``None`` when it is unknown:
+    then nothing can be called added, so no round runs. ``privacy_withheld_refs`` are the refs
+    the latest sent packet withheld under a privacy rule; they join ``added_refs``, since
+    sending them again would only spend a round.
+    """
+
+    if previous is not None and previous.round >= MAX_REVIEW_FOLLOW_UP_ROUNDS:
+        return None
+    shown = previous.shown_refs if previous is not None else shown_refs
+    if shown is None:
+        return None
+    items = list(() if previous is None else previous.items)
+    known = {(item.kind, item.target_refs) for item in items}
+    asked = False
+    for entry in requested:
+        if (
+            entry.kind not in FOLLOW_UP_KINDS
+            or entry.availability not in _FOLLOW_UP_AVAILABILITIES
+            or not entry.target_refs
+        ):
+            continue
+        sources = _recorded_sources(projection, entry.target_refs, allowed)
+        if not sources:
+            continue
+        asked = True
+        key = (entry.kind, entry.target_refs)
+        if key in known or len(items) >= MAX_MISSING_FOR_ASSESSMENT:
+            continue
+        known.add(key)
+        items.append(ReviewFollowUpItem(entry.kind, entry.target_refs, sources))
+    if not asked or not items:
+        return None
+    added: frozenset[str] = frozenset() if previous is None else previous.added_refs
+    added |= privacy_withheld_refs & frozenset(ref for item in items for ref in item.source_refs)
+    follow_up = ReviewFollowUp(
+        1 if previous is None else previous.round + 1, tuple(items), shown, added
+    )
+    if not follow_up.source_refs - shown - added:
+        return None
+    return follow_up
+
+
+def _recorded_sources(
+    projection: ProjectionState, targets: Iterable[str], allowed: frozenset[str]
+) -> frozenset[str]:
+    """The recorded rows whose excerpts carry what ``targets`` name (see ``ReviewFollowUpItem``)."""
+
+    refs = set(targets)
+    for family in (projection.actions, projection.results, projection.evidence):
+        for key, row in family.items():
+            if str(row.source_event_id) in refs:
+                refs.add(str(key))
+    named = frozenset(refs)
+    for key, row in projection.results.items():
+        payload = row.payload
+        if payload is None or row.redacted:
+            continue
+        if str(key) in named or str(payload.action_id) in named:
+            refs.update(
+                (str(key), str(payload.action_id), *(str(ref) for ref in payload.evidence_refs))
+            )
+    return frozenset(refs & allowed) - _redacted_refs(projection)
 
 
 def unsuppliable_missing_kinds(
@@ -394,7 +775,7 @@ class _Links:
                 if type(plan) is PlanRevisedPayload and plan.supersedes_plan_version == plan_version
             )
             return frozenset(found)
-        return frozenset(found | self._material(self._subject(target)))
+        return frozenset(found | self._material(self.subject(target)))
 
     def _new_cited(self, refs: Iterable[object]) -> set[str]:
         return {
@@ -440,7 +821,7 @@ class _Links:
         )
         return _Subject(frozenset({ref}), frozenset() if key is None else frozenset({key}), paths)
 
-    def _subject(self, target: str) -> _Subject:
+    def subject(self, target: str) -> _Subject:
         """The runs and paths an action, result or evidence target names (older rows only)."""
 
         projection = self.projection
@@ -547,7 +928,7 @@ class _Links:
             )
         subject = _NO_SUBJECT
         for ref in support:
-            subject = subject | self._subject(str(ref))
+            subject = subject | self.subject(str(ref))
         found = self._material(subject)
         for ref, correction in self.new_claims.items():
             replaced = (
@@ -620,16 +1001,29 @@ def _run_key(payload: ActionRecordedPayload | None) -> _RunKey | None:
     """What makes two runs the same command: its text with whitespace collapsed.
 
     A hook records ``omitted:<digest>`` instead of the text; the same digest is the same command
-    text, so it matches only that digest. ``omitted:structural`` identifies nothing.
+    text, so it matches only that digest. ``omitted:structural`` identifies nothing. A composed
+    run also carries a segment suffix (``omitted:<identity> <composition> <segment>...``, #988);
+    only the leading identity keys it, so one command recorded before and after that suffix
+    existed is one run.
     """
 
     if payload is None or payload.command is None:
         return None
     command = " ".join(payload.command.split())
     if command.startswith("omitted:"):
-        digest = command.removeprefix("omitted:")
+        digest = command.removeprefix("omitted:").split(" ", 1)[0]
         return None if digest in {"", "structural"} else ("digest", digest)
     return ("command", command) if command else None
+
+
+def command_run_key(payload: ActionRecordedPayload | None) -> tuple[str, str] | None:
+    """What makes two recorded runs the same command (see ``_run_key``), for packet selection.
+
+    Shared with the review packet's latest-run rule (issue #1045), so "the same probe" means the
+    same thing when the packet keeps the newest run as when a missing-item request is answered.
+    """
+
+    return _run_key(payload)
 
 
 def _workspace_roots(workspace_root: str | None) -> frozenset[str]:
@@ -806,6 +1200,11 @@ def review_missing_for_assessment(
     citable_refs: frozenset[str] | None = None,
     captured_edit_paths: Mapping[str, frozenset[str]] | None = None,
     workspace_root: str | None = None,
+    packet_limited_refs: frozenset[str] = frozenset(),
+    privacy_withheld_refs: frozenset[str] = frozenset(),
+    change_clipped: bool = False,
+    binary_paths: frozenset[str] = frozenset(),
+    text_paths: frozenset[str] = frozenset(),
 ) -> MissingItemsReview:
     """Fence what the reviewer named to the packet it was shown and classify who can supply it.
 
@@ -819,6 +1218,17 @@ def review_missing_for_assessment(
     (``semantic_missing_already_supplied``), so the same request cannot loop; only new material
     directly tied to a target answers it (see ``_Links``; ``captured_edit_paths`` as in
     ``supplied_since``). Every kept item is recorded with Yoetz's own availability class.
+
+    Content the packet cannot show is Yoetz's own limit, never agent work (tb4n1 D1, #983): a
+    target whose recorded file is an image or other binary format, by suffix or because the
+    check-time change marks it binary (``binary_paths``, see ``check_change_binary_paths``)
+    (``yoetz_limit_unsupported_data_type``); a target the packet named but could not carry whole
+    (``packet_limited_refs``), or a diff request while the check-time change's own text was
+    clipped for room or redacted (``change_clipped``; a redacted task input file alone is not,
+    when the shown-file record is complete and names a file) (``yoetz_limit_packet_room``). The agent verifies such content itself;
+    the receipt discloses the limit. An unanswered repeat stays the agent's work with
+    ``semantic_missing_non_convergent``; the review round itself stops after one retry
+    (``kernel.review_round``).
     """
 
     if judgment.conclusion != "insufficient_packet":
@@ -842,6 +1252,12 @@ def review_missing_for_assessment(
     )
     redacted = _redacted_refs(projection)
     shown = allowed if citable_refs is None else allowed & citable_refs
+    paths_of = _TargetFiles(
+        _Links.of(projection, _ALL_ROWS, observed, captured_edit_paths or {}, workspace_root),
+        captured_edit_paths or {},
+        binary_paths,
+        text_paths,
+    )
     gaps: set[str] = set()
     kept: dict[tuple[str, tuple[str, ...]], str] = {}
     for entry in judgment.missing_for_assessment:
@@ -850,19 +1266,42 @@ def review_missing_for_assessment(
             gaps.add(SEMANTIC_MISSING_ITEMS_REJECTED_GAP)
             if not refs:
                 continue
-        if pending is not None and any(
-            prior.kind == entry.kind and _answered(prior, per_target, refs)
-            for prior, per_target in zip(pending.items, answered, strict=True)
-        ):
+        matching_prior = (
+            ()
+            if pending is None
+            else tuple(
+                (prior, prior_answers)
+                for prior, prior_answers in zip(pending.items, answered, strict=True)
+                if prior.kind == entry.kind
+                and (
+                    (not refs and not prior.target_refs)
+                    or (bool(refs) and set(refs) <= set(prior.target_refs))
+                )
+            )
+        )
+        if any(_answered(prior, prior_answers, refs) for prior, prior_answers in matching_prior):
             gaps.add(SEMANTIC_MISSING_ALREADY_SUPPLIED_GAP)
             continue
         availability = (
             STRUCTURALLY_UNAVAILABLE
-            if entry.kind in unsuppliable_kinds or set(refs) & redacted
-            else AGENT_SUPPLIABLE
+            if entry.kind in unsuppliable_kinds or set(refs) & (redacted | privacy_withheld_refs)
+            else _yoetz_limit(
+                entry.kind,
+                refs,
+                paths_of,
+                packet_limited_refs=packet_limited_refs,
+                change_clipped=change_clipped,
+            )
         )
+        if matching_prior and availability == AGENT_SUPPLIABLE:
+            # The reviewer named only an earlier target set and no directly related publication
+            # answered it. It stays the agent's work (a run never recorded is still owed), with
+            # the non-convergent disclosure; the review round itself stops after the one retry
+            # (``review_round_stopped``, tb4n1 D3). A genuinely new target is intentionally
+            # excluded by the subset test above.
+            gaps.add(SEMANTIC_MISSING_NON_CONVERGENT_GAP)
         key = (entry.kind, refs)
-        if kept.get(key) != STRUCTURALLY_UNAVAILABLE:
+        if kept.get(key, AGENT_SUPPLIABLE) == AGENT_SUPPLIABLE:
             kept[key] = availability
     items = tuple(
         MissingForAssessmentItem(kind=kind, target_refs=refs, availability=availability)
@@ -879,8 +1318,412 @@ def review_missing_for_assessment(
             SEMANTIC_MISSING_AGENT_SUPPLIABLE_GAP
             if item.availability == AGENT_SUPPLIABLE
             else SEMANTIC_MISSING_UNAVAILABLE_GAP
+            if item.availability == STRUCTURALLY_UNAVAILABLE
+            else SEMANTIC_MISSING_YOETZ_LIMIT_GAP
         )
     return MissingItemsReview(items, frozenset(gaps))
+
+
+# Read every recorded row as "older" when only a target's files are wanted, never its answers.
+_ALL_ROWS: Final = 2**62
+
+
+@dataclass(frozen=True, slots=True)
+class _TargetFiles:
+    """The file names a target records: evidence references and captured edit paths.
+
+    Used only to recognise content the packet never carries by its file type; the names are
+    compared lexically and never resolved or opened.
+    """
+
+    links: _Links
+    captured: Mapping[str, frozenset[str]]
+    # Workspace-relative paths the check-time change marks binary (tb4n2 A11).
+    binary: frozenset[str] = frozenset()
+    # Workspace-relative paths the same change lists as text (ADR-045): Git's NUL sniff found no
+    # NUL byte, so their suffix says nothing (a ``.step`` file is ASCII).
+    text: frozenset[str] = frozenset()
+
+    def _relative(self, name: str) -> str | None:
+        path = _normal_path(name, self.links.roots, known_path=True)
+        if path is not None:
+            return path[0]
+        if name.strip() and "://" not in name:
+            # ``_normal_path`` refuses inner whitespace (prose is not a path), but Git names a
+            # binary ``my solver`` exactly; an exact match against Git's own list is safe.
+            text = name.strip()
+            return (
+                _inside(os.path.normpath(text), self.links.roots)
+                if text.startswith("/")
+                else "/".join(part for part in text.split("/") if part not in {"", "."})
+            )
+        return None
+
+    def unsupported(self, name: str) -> bool:
+        """Whether a recorded file name is a type the packet never carries.
+
+        Git's own NUL sniff decides first (ADR-045): the check-time change found the file binary
+        (a suffix-less ``solver`` or firmware blob) or found it text (a ``.step`` file). Only a
+        file the change did not list falls back to its suffix. An absolute name counts only
+        inside the workspace root; names compare normalized but exact, never resolved.
+        """
+
+        if self.binary or self.text:
+            relative = self._relative(name)
+            if relative is not None:
+                if relative in self.binary:
+                    return True
+                if relative in self.text:
+                    return False
+        return _unsupported_data_type(name)
+
+    def __call__(self, target: str) -> frozenset[str]:
+        projection = self.links.projection
+        # An ``evt_`` target names the event that recorded a row; resolve it to that row's own
+        # id, and read the file names any plan, task statement or obligation text mentions.
+        refs = {target}
+        names: set[str] = set()
+        for family in (
+            projection.actions,
+            projection.results,
+            projection.evidence,
+            projection.claims,
+            projection.obligations,
+        ):
+            for key, row in family.items():
+                if str(row.source_event_id) == target:
+                    refs.add(str(key))
+        for ref in tuple(refs):
+            names.update(path for path, _certain in self.links.subject(ref).paths)
+            names.update(self.captured.get(ref, frozenset()))
+            names.update(self._evidence_names(ref))
+        return frozenset(name for name in names if name)
+
+    def requested_files(self, target: str) -> frozenset[str] | None:
+        """The requested output files in scope of a plan, statement or obligation target.
+
+        Used only for an ``other`` item (a requirement the reviewer could not see, such as
+        cad-model's "the schematic itself is unavailable"). An obligation target scopes its own
+        requested ``file`` items; a plan or statement target scopes every effective obligation's.
+        ``None`` when the target is none of these. Items the agent marked as inputs never count.
+        Prose is never scanned: a file a statement only mentions may be an input.
+        """
+
+        projection = self.links.projection
+        obligations = [
+            row
+            for key, row in projection.obligations.items()
+            if target in {str(key), str(row.source_event_id)}
+        ]
+        if not obligations:
+            if not any(str(row.source_event_id) == target for row in projection.plans.values()):
+                return None
+            obligations = [projection.obligations[key] for key in effective_obligations(projection)]
+        return frozenset(
+            item.value
+            for row in obligations
+            if row.payload is not None and not row.redacted
+            for item in row.payload.requested_items
+            if getattr(item.item_kind, "value", item.item_kind) == "file"
+            and item_role(item) != "input"
+        )
+
+    def _evidence_names(self, target: str) -> set[str]:
+        names: set[str] = set()
+        projection = self.links.projection
+        evidence_refs = {target}
+        for row in projection.results.values():
+            payload = row.payload
+            if payload is not None and target in {
+                str(payload.action_id),
+                *(str(ref) for ref in payload.evidence_refs),
+            }:
+                evidence_refs.update(str(ref) for ref in payload.evidence_refs)
+        for ref, row in projection.evidence.items():
+            if str(ref) in evidence_refs and row.payload is not None and not row.redacted:
+                reference = row.payload.reference
+                if reference is not None and "://" not in reference:
+                    names.add(reference.strip())
+                names.update(self.captured.get(str(ref), frozenset()))
+        return names
+
+    def observed_image(self, target: str) -> bool:
+        """Whether the target is, or cites, a hook-observed image kept as a digest only.
+
+        A host image tool result is recorded as service-stamped ``artifact_bytes`` evidence with
+        ``digest_only`` availability (L3 P3-2): its pixels never reach the packet, so a reviewer
+        request for it is an unsupported data type, never agent work.
+        """
+
+        projection = self.links.projection
+        refs = {target}
+        for row in projection.results.values():
+            payload = row.payload
+            if payload is not None and str(payload.action_id) == target:
+                refs.update(str(ref) for ref in payload.evidence_refs)
+        return any(
+            str(ref) in refs and observed_image_evidence(row.payload)
+            for ref, row in projection.evidence.items()
+        )
+
+
+def observed_image_evidence(payload: object) -> bool:
+    """Whether an evidence payload is a hook-observed image kept as a digest only (L3 P3-2)."""
+
+    if type(payload) is not EvidenceRecordedPayload:
+        return False
+    binding = payload.digest_binding
+    return (
+        binding is not None
+        and binding.provenance is EvidenceDigestProvenance.OBSERVATION_CAPTURED
+        and binding.subject is EvidenceDigestSubject.ARTIFACT_BYTES
+        and binding.content_availability is not EvidenceContentAvailability.CAPTURED
+        and (payload.description or "").startswith("Observed image")
+    )
+
+
+def unsupported_data_type(name: str) -> bool:
+    """Whether a recorded file name is a type the review packet never carries (by suffix)."""
+
+    return _unsupported_data_type(name)
+
+
+# The rendered check-time change (``adapters.git_change_capture``): a header listing each changed
+# file as ``  <status> <path>[ (binary)][ notes]``, then a unified diff whose binary sections carry
+# Git's ``Binary files a/X and b/Y differ`` line (an untracked file Yoetz found NUL bytes in is
+# rendered the same way against ``/dev/null``).
+_CHANGE_HEADER_END: Final = b"\nEnd of header. The unified diff follows.\n"
+_CHANGE_LISTED_BINARY: Final = re.compile(r"^  [A-Z?]+ (\S.*?) \(binary\)(?: .*)?$")
+_CHANGE_BINARY_LINE: Final = re.compile(rb"^Binary files (.+) differ$", re.MULTILINE)
+
+
+# A listed text entry: ``  <status> <path> (+<added> -<removed>)``. Git prints numeric line counts
+# only for a file its NUL-byte heuristic found text; a binary file reads ``(binary)`` and a file
+# whose counts were withheld or unknown prints none, which proves nothing either way.
+_CHANGE_LISTED: Final = re.compile(r"^  [A-Z?]+ (\S.*?) \(\+[0-9]+ -[0-9]+\)(?: .*)?$")
+
+
+def check_change_text_paths(capture: CheckChangeCapture | None) -> frozenset[str]:
+    """The repository-relative paths the check-time change lists as text (ADR-045).
+
+    The header lists each changed file once, with ``(binary)`` when Git's NUL-byte heuristic
+    found it binary. Every other listed file was sniffed as text, so its suffix is no evidence:
+    ``part.step`` (ISO 10303-21, ASCII) is reviewable. A quoted, cut-short or non-UTF-8 name is
+    skipped, as for ``check_change_binary_paths``; a skipped name falls back to its suffix.
+    """
+
+    if capture is None:
+        return frozenset()
+    text = capture.text
+    end = text.find(_CHANGE_HEADER_END)
+    header = text if end < 0 else text[:end]
+    binary = check_change_binary_paths(capture)
+    paths: set[str] = set()
+    for line in header.decode("utf-8", errors="replace").split("\n"):
+        if _CHANGE_LISTED_BINARY.match(line) is not None:
+            continue
+        match = _CHANGE_LISTED.match(line)
+        if match is None:
+            continue
+        listed = match.group(1)
+        if listed.startswith('"'):
+            unquoted = _git_unquote(listed)
+            if unquoted is None or unquoted[1] != len(listed):
+                continue
+            listed = unquoted[0]
+        if listed and not listed.endswith("...") and "\ufffd" not in listed:
+            paths.add(listed)
+    return frozenset(paths - binary)
+
+
+def check_change_binary_paths(capture: CheckChangeCapture | None) -> frozenset[str]:
+    """The repository-relative paths the check-time change marks binary (tb4n2 A11).
+
+    Lets a suffix-less binary (a compiled ``solver``, ``a.out``, a firmware blob) count as a type
+    the packet never carries, without the classifier reading any file: Git's NUL-byte heuristic
+    already ran when the change was captured. Read from the header's ``(binary)`` entries and the
+    diff's ``Binary files`` lines. A C-quoted path (non-ASCII or control bytes) is decoded the way
+    Git encoded it; a malformed quote, or a path the header cut short, is skipped rather than
+    guessed, so it stays classified by its suffix alone.
+    """
+
+    if capture is None:
+        return frozenset()
+    text = capture.text
+    end = text.find(_CHANGE_HEADER_END)
+    header = text if end < 0 else text[:end]
+    paths: set[str] = set()
+    for line in header.decode("utf-8", errors="replace").split("\n"):
+        match = _CHANGE_LISTED_BINARY.match(line)
+        if match is not None:
+            listed = match.group(1)
+            if listed.startswith('"'):
+                unquoted = _git_unquote(listed)
+                if unquoted is not None and unquoted[1] == len(listed):
+                    paths.add(unquoted[0])
+            else:
+                paths.add(listed)
+    if end >= 0:
+        for match in _CHANGE_BINARY_LINE.finditer(text, end):
+            paths.update(_binary_line_paths(match.group(1).decode("utf-8", errors="replace")))
+    return frozenset(
+        path
+        for path in paths
+        if path and not path.startswith('"') and not path.endswith("...") and "\ufffd" not in path
+    )
+
+
+_GIT_ESCAPES: Final[Mapping[str, int]] = {
+    "a": 7,
+    "b": 8,
+    "t": 9,
+    "n": 10,
+    "v": 11,
+    "f": 12,
+    "r": 13,
+    '"': 34,
+    "\\": 92,
+}
+
+
+def _git_unquote(text: str) -> tuple[str, int] | None:
+    """Decode one C-quoted Git path at the start of ``text``: ``(path, characters consumed)``.
+
+    ``core.quotePath=true`` (which the capture forces) quotes a non-ASCII or control-byte name as
+    ``"r\\303\\251sum\\303\\251"``. ``None`` when the quoting is malformed or the bytes are not
+    UTF-8, so such a name stays classified by its suffix alone.
+    """
+
+    if not text.startswith('"'):
+        return None
+    raw = bytearray()
+    index = 1
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            try:
+                return raw.decode("utf-8"), index + 1
+            except UnicodeDecodeError:
+                return None
+        if char != "\\":
+            raw.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        escape = text[index + 1 : index + 2]
+        if escape in _GIT_ESCAPES:
+            raw.append(_GIT_ESCAPES[escape])
+            index += 2
+            continue
+        octal = text[index + 1 : index + 4]
+        if len(octal) == 3 and all(digit in "01234567" for digit in octal):
+            raw.append(int(octal, 8) & 0xFF)
+            index += 4
+            continue
+        return None
+    return None
+
+
+def _quoted_binary_line_paths(operands: str) -> tuple[str, ...] | None:
+    """The paths of a ``Binary files`` line where Git quoted at least one operand; else ``None``."""
+
+    if '"' not in operands:
+        return None
+    values: list[str] = []
+    rest = operands
+    for position in range(2):
+        if rest.startswith('"'):
+            decoded = _git_unquote(rest)
+            if decoded is None:
+                return ()
+            value, consumed = decoded
+            rest = rest[consumed:]
+        else:
+            cut = rest.find(" and ") if position == 0 else len(rest)
+            if cut < 0:
+                return ()
+            value, rest = rest[:cut], rest[cut:]
+        values.append(value)
+        if position == 0:
+            if not rest.startswith(" and "):
+                return ()
+            rest = rest[len(" and ") :]
+    if rest:
+        return ()
+    paths = tuple(
+        value[2:]
+        for value, prefix in zip(values, ("a/", "b/"), strict=True)
+        if value != "/dev/null" and value.startswith(prefix)
+    )
+    return paths
+
+
+def _binary_line_paths(operands: str) -> tuple[str, ...]:
+    """The paths of one ``Binary files <a> and <b>`` line; empty when it cannot be split surely.
+
+    An unquoted path may itself hold `` and b/``, so a two-sided line is split only where both
+    operands name the same path, or where exactly one split exists. A quoted operand (a
+    non-ASCII or control-byte name) is decoded the way Git encoded it.
+    """
+
+    quoted = _quoted_binary_line_paths(operands)
+    if quoted is not None:
+        return quoted
+    if operands.startswith("/dev/null and b/"):
+        return (operands.removeprefix("/dev/null and b/"),)
+    if operands.startswith("a/") and operands.endswith(" and /dev/null"):
+        return (operands.removeprefix("a/").removesuffix(" and /dev/null"),)
+    if not operands.startswith("a/"):
+        return ()
+    splits = [
+        (operands[2:index], operands[index + len(" and b/") :])
+        for index in range(len(operands))
+        if operands.startswith(" and b/", index)
+    ]
+    same = [left for left, right in splits if left == right]
+    if same:
+        return (same[0],)
+    return splits[0] if len(splits) == 1 else ()
+
+
+def _unsupported_data_type(name: str) -> bool:
+    base = name.rstrip("/").rsplit("/", 1)[-1].lower()
+    dot = base.rfind(".")
+    return dot > 0 and base[dot:] in _UNSUPPORTED_SUFFIXES
+
+
+def _only_unsupported_outputs(refs: tuple[str, ...], paths_of: _TargetFiles) -> bool:
+    """Every requested output file in the targets' scope is a type the packet never carries.
+
+    One text deliverable in scope (missing or unshown) keeps the item the agent's work: the
+    reviewer may be asking for exactly that file (satb's unwritten score, an unwritten script).
+    """
+
+    scoped = [files for ref in refs if (files := paths_of.requested_files(ref)) is not None]
+    names = {name for files in scoped for name in files}
+    return bool(names) and all(paths_of.unsupported(name) for name in names)
+
+
+def _yoetz_limit(
+    kind: str,
+    refs: tuple[str, ...],
+    paths_of: _TargetFiles,
+    *,
+    packet_limited_refs: frozenset[str],
+    change_clipped: bool,
+) -> str:
+    """Whether Yoetz's own packet, not the agent, is why the reviewer could not see the item."""
+
+    if (
+        any(paths_of.unsupported(name) for ref in refs for name in paths_of(ref))
+        or any(paths_of.observed_image(ref) for ref in refs)
+        or (kind == "other" and _only_unsupported_outputs(refs, paths_of))
+    ):
+        return YOETZ_LIMIT_UNSUPPORTED_DATA_TYPE
+    if set(refs) & packet_limited_refs:
+        return YOETZ_LIMIT_PACKET_ROOM
+    if kind == "current_diff_for_path" and change_clipped:
+        return YOETZ_LIMIT_PACKET_ROOM
+    return AGENT_SUPPLIABLE
 
 
 def _answered(

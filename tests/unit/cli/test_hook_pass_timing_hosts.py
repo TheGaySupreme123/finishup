@@ -193,7 +193,8 @@ def test_codex_pass_that_faults_is_counted_as_failed(
     def broken(*_args: object, **_kwargs: object) -> object:
         raise RuntimeError("private detail")
 
-    monkeypatch.setattr(observe_hooks, "read_hook_payload", broken)
+    # Codex observation reads through the skim-aware ingress since tb4n1 (B5).
+    monkeypatch.setattr(observe_hooks, "read_hook_ingress", broken)
     stdout = io.BytesIO()
     assert (
         observe_hooks.handle_codex_observe(
@@ -526,17 +527,7 @@ def _post_tool_use(host: str, tmp_path: Path) -> bytes:
     return stdout.getvalue()
 
 
-_UNPAIRED_NOTICE_PREFIX = "Yoetz notice (no response needed): pairing was lost"
-
-
-def _without_unpaired_notice(context: str) -> str:
-    """Drop #917's one-time orphan-scope notice, which a lone post may add after other text."""
-
-    index = context.find(_UNPAIRED_NOTICE_PREFIX)
-    return context if index < 0 else context[:index].rstrip()
-
-
-def _context_other_than_unpaired_notice(host: str, emitted: bytes) -> str:
+def _hook_context(host: str, emitted: bytes) -> str:
     document = cast(Mapping[str, object], json.loads(emitted))
     if host == "cursor":
         context = document.get("additional_context")
@@ -547,7 +538,7 @@ def _context_other_than_unpaired_notice(host: str, emitted: bytes) -> str:
             if isinstance(output, dict)
             else None
         )
-    return "" if context is None else _without_unpaired_notice(cast(str, context))
+    return "" if context is None else cast(str, context)
 
 
 _HOST_SESSIONS = {
@@ -567,9 +558,8 @@ def test_observation_only_frontier_motion_is_no_hook_notice_on_any_host(
 
     emitted = _post_tool_use(host, tmp_path)
 
-    # The only context this lone post may carry is #917's one-time no-response notice for the
-    # orphan scope it opens; frontier motion itself is never a notice (#915).
-    assert _context_other_than_unpaired_notice(host, emitted) == ""
+    # Observation-health and frontier plumbing remain local/operator-facing (#974).
+    assert _hook_context(host, emitted) == ""
     assert b"frontier moved" not in emitted
     assert b"run status" not in emitted
 
@@ -611,7 +601,7 @@ def test_pending_advice_is_still_delivered_on_the_next_post_tool_use(
         if host == "cursor"
         else cast(Mapping[str, object], emitted["hookSpecificOutput"])["additionalContext"]
     )
-    assert _without_unpaired_notice(cast(str, context)) == advice.text
+    assert cast(str, context) == advice.text
     assert commits == ["deliver-915"]
 
 

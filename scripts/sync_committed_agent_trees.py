@@ -17,6 +17,7 @@ from typing import cast
 from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
 from yoetz.adapters.integrations.codex_skill import (
     build_managed_marker,
+    expected_skill_member_paths,
     load_packaged_skill_members,
     load_packaged_skill_source,
 )
@@ -93,6 +94,31 @@ def _expected_trees() -> dict[str, dict[str, bytes]]:
     }
 
 
+def _expected_tree_paths() -> dict[str, set[str]]:
+    """Return the canonical member names without reading the packaged bytes.
+
+    Resource-ripple preflight runs before the package mirror and its nested skill manifest have
+    been regenerated.  It still has to reject foreign files before any source is written, so this
+    path inventory deliberately comes from the integration renderer's source layout rather than
+    ``load_packaged_skill_members``.  Full byte validation remains in ``_expected_trees`` for
+    ``--check`` and ``--write``.
+    """
+
+    skill_member_paths = expected_skill_member_paths()
+    skill_paths = set(skill_member_paths) | {_TREES[".agents/skills/yoetz"]}
+    plugin_paths = {
+        ".codex-plugin/plugin.json",
+        "hooks/hooks.json",
+        ".mcp.json",
+        _TREES[".agents/plugins/yoetz"],
+    }
+    plugin_paths.update(f"skills/yoetz/{path}" for path in skill_member_paths)
+    return {
+        ".agents/plugins/yoetz": plugin_paths,
+        ".agents/skills/yoetz": skill_paths,
+    }
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -102,6 +128,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         existing = {name: _existing_tree(_ROOT / name) for name in _TREES}
+        if args.preflight:
+            # Preflight must run before the package mirror is regenerated. Check foreign names
+            # from the canonical source layout first, while leaving byte/manifest validation to
+            # the normal renderer below once the mirror is current.
+            expected_names = _expected_tree_paths()
+            for name, members in expected_names.items():
+                extras = set(existing[name]) - members
+                if not _recorded_extras(existing[name], _TREES[name], extras):
+                    print(
+                        f"sync_committed_agent_trees: FAIL (foreign_agent_files) {name}",
+                        file=sys.stderr,
+                    )
+                    return 1
+            return 0
+
         expected = _expected_trees()
         # Validate both trees before writing either one. Foreign files are never removed.
         for name, members in expected.items():
@@ -112,8 +153,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 return 1
-        if args.preflight:
-            return 0
         drifted = [name for name in expected if existing[name] != expected[name]]
         if args.check and drifted:
             for name in drifted:

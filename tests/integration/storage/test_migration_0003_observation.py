@@ -10,6 +10,7 @@ import pytest
 from yoetz.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     Migration,
+    current_schema_version,
     run_migrations,
 )
 
@@ -50,6 +51,7 @@ def test_schema_two_upgrade_survives_restart_and_file_copy_restore(tmp_path: Pat
         "0013",
         "0014",
         "0015",
+        "0016",
     )
     expected = {
         "observation_workspace_bindings",
@@ -73,18 +75,19 @@ def test_schema_two_upgrade_survives_restart_and_file_copy_restore(tmp_path: Pat
     assert expected <= actual
     db.close()
 
+    current = current_schema_version(BUNDLE_MIGRATIONS)
     reopened = apsw.Connection(str(source))
-    assert reopened.execute("PRAGMA user_version").fetchone() == (15,)
+    assert reopened.execute("PRAGMA user_version").fetchone() == (current,)
     assert reopened.execute(
         "SELECT value FROM bundle_meta WHERE key='storage_schema_version'"
-    ).fetchone() == ("15",)
+    ).fetchone() == (str(current),)
     reopened.close()
 
     restored_path = tmp_path / "restored.sqlite3"
     restored_path.write_bytes(source.read_bytes())
     restored = apsw.Connection(str(restored_path))
     assert restored.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-    assert restored.execute("PRAGMA user_version").fetchone() == (15,)
+    assert restored.execute("PRAGMA user_version").fetchone() == (current,)
 
 
 def test_failed_followup_migration_rolls_back_atomically(tmp_path: Path) -> None:

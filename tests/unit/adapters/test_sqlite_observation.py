@@ -429,6 +429,50 @@ def test_session_status_clears_current_gap_without_clearing_other_sessions() -> 
     asyncio.run(run())
 
 
+def test_sqlite_standing_gaps_do_not_degrade_current_lifecycle() -> None:
+    """Coverage-only gaps remain visible without becoming false health failures (#974)."""
+
+    async def run() -> None:
+        store = _store()
+        store.grant_consent(_WORKSPACE, _TIME)
+        store.bind_session(_WORKSPACE, _SESSION)
+        standing = tuple(
+            sorted(
+                (
+                    ObservationGapCode.UNPAIRED_EVENT.value,
+                    ObservationGapCode.TRUNCATED_PAYLOAD.value,
+                    ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
+                    "pending_attempt_expired",
+                    ObservationGapCode.CONTENT_UNSELECTED.value,
+                ),
+                key=str.encode,
+            )
+        )
+        accepted = await store.ingest(
+            _session_envelope(_SESSION, "hook:standing", 1, gaps=standing)
+        )
+        assert accepted.disposition is ObservationIngestDisposition.ACCEPTED
+
+        status = await store.status_for_session(_WORKSPACE, _SESSION)
+        assert set(standing) <= set(status.gaps)
+        assert status.lifecycle is ObservationLifecycle.ACTIVE
+
+        material = await store.ingest(
+            _session_envelope(
+                _SESSION,
+                "hook:material",
+                2,
+                gaps=(ObservationGapCode.SOURCE_LAG.value,),
+            )
+        )
+        assert material.disposition is ObservationIngestDisposition.ACCEPTED
+        assert (
+            await store.status_for_session(_WORKSPACE, _SESSION)
+        ).lifecycle is ObservationLifecycle.DEGRADED
+
+    asyncio.run(run())
+
+
 def test_codex_session_commitment_for_session_recovers_historical_route() -> None:
     store = _store()
     store.grant_consent(_WORKSPACE, _TIME)

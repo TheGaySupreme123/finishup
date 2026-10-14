@@ -700,6 +700,17 @@ def test_v25_observation_wire_tracks_domain_structural_keys_without_rewriting_v2
             "lineage_parent_task_id",
             # The keyed command identity is additive on the unreleased 2.9 request wire (#909).
             "command_commitment",
+            # So is the command runner class every tool observation carries.
+            "runner_class",
+            # And the closed runtime facts a hook classifies (#977).
+            "install_target",
+            "write_scope",
+            "effective_user",
+            # And the digest-only image facts (P3-2, issue #1013).
+            "observed_images",
+            # And the keyed segment commitments of a composed command (#977).
+            "command_segment_commitments",
+            "command_composition",
         }
     )
     assert set(v25_properties) == expected_observation_keys
@@ -1351,11 +1362,64 @@ def _structural_properties(document: dict[str, Any]) -> dict[str, Any]:
 def _assert_v29_request_adds_only_command_commitment(
     v28: dict[str, Any], v29: dict[str, Any]
 ) -> None:
-    """The 2.9 request adds the keyed command identity and nothing else (#909)."""
+    """The 2.9 request adds the keyed command identity, the runner class and the closed runtime
+    facts (#909, #977) and nothing else."""
 
     v28_fields = _structural_properties(v28)
     v29_fields = _structural_properties(v29)
-    assert set(v29_fields) - set(v28_fields) == {"command_commitment"}
+    assert set(v29_fields) - set(v28_fields) == {
+        "command_commitment",
+        "runner_class",
+        "install_target",
+        "write_scope",
+        "effective_user",
+        "observed_images",
+        "command_segment_commitments",
+        "command_composition",
+    }
+    assert v29_fields["command_segment_commitments"] == {
+        "items": {
+            "maxLength": 76,
+            "minLength": 76,
+            "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+            "type": "string",
+        },
+        # 32 segment plus 48 canonical commitments (ADR-045): the hook's own bound (#1039).
+        "maxItems": 80,
+        "minItems": 1,
+        "type": "array",
+        "uniqueItems": True,
+    }
+    assert v29_fields["command_composition"] == {
+        "enum": ["and_chain", "masked", "single"],
+        "type": "string",
+    }
+    image = v29_fields["observed_images"]
+    assert image["maxItems"] == 8
+    assert image["items"]["additionalProperties"] is False
+    assert image["items"]["required"] == ["byte_count", "content_digest", "media_type"]
+    assert image["items"]["properties"]["media_type"]["enum"] == [
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/unknown",
+        "image/webp",
+    ]
+    assert v29_fields["install_target"] == {
+        "enum": ["private_env", "system", "unresolved", "workspace_env", "yoetz_runtime"],
+        "type": "string",
+    }
+    # ADR-042 (tb4n2 R4): an edit whose every path is scratch or Yoetz-owned is named so; ADR-045
+    # adds the agent's notes and a shell command that writes the workspace (#1039).
+    assert v29_fields["write_scope"] == {
+        "enum": ["notes", "outside_workspace", "scratch", "workspace", "yoetz_owned"],
+        "type": "string",
+    }
+    assert v29_fields["effective_user"] == {"enum": ["non_root", "root"], "type": "string"}
+    assert v29_fields["runner_class"] == {
+        "enum": ["build", "compound", "exploration", "lint", "other", "test", "typecheck", "vcs"],
+        "type": "string",
+    }
     assert v29_fields["command_commitment"] == {
         "maxLength": 76,
         "minLength": 76,
@@ -1363,7 +1427,17 @@ def _assert_v29_request_adds_only_command_commitment(
         "type": "string",
     }
     stripped = json.loads(json.dumps(v29))
-    del _structural_properties(stripped)["command_commitment"]
+    for added in (
+        "command_commitment",
+        "runner_class",
+        "install_target",
+        "write_scope",
+        "effective_user",
+        "observed_images",
+        "command_segment_commitments",
+        "command_composition",
+    ):
+        del _structural_properties(stripped)[added]
     assert {k: v for k, v in v28.items() if k != "$id"} == {
         k: v for k, v in stripped.items() if k != "$id"
     }
@@ -1400,6 +1474,57 @@ def test_v29_request_carries_keyed_command_commitment_never_command_text() -> No
         validate_schema_instance("control-request", "2.9.0", cast(JsonValue, invalid))
 
 
+def test_v29_request_admits_digest_only_image_facts_and_nothing_more() -> None:
+    """P3-2 (issue #1013): an image result crosses as its digest, size, type, and header size."""
+
+    image = {
+        "byte_count": 68,
+        "content_digest": "sha256:" + "b" * 64,
+        "height": 2,
+        "media_type": "image/png",
+        "width": 3,
+    }
+    structural = {
+        "action": "claude_tool_success",
+        "capability_profile_id": "claude-code-ordinary-observation-v1",
+        "correlation_kind": "tool_call_id",
+        "hook_name": "PostToolUse",
+        "observed_images": [
+            image,
+            {k: image[k] for k in ("byte_count", "content_digest")}
+            | {"media_type": "image/unknown"},
+        ],
+        "pairing_mode": "post_only",
+        "success": True,
+        "tool_call_id": "tool-1",
+        "tool_name": "Read",
+    }
+    frame = _current_cli_observation_frame(
+        source="claude_hook", codex_session_id="claude:session-1", structural=structural
+    )
+    validate_schema_instance("control-request", "2.9.0", cast(JsonValue, frame))
+    for key, value in (
+        ("pixels", "AAAA"),
+        ("media_type", "image/svg+xml"),
+        ("width", 0),
+        ("content_digest", None),
+    ):
+        invalid = cast(dict[str, Any], json.loads(json.dumps(frame)))
+        item = cast(dict[str, Any], invalid["body"]["envelope"]["structural_payload"])[
+            "observed_images"
+        ][0]
+        if value is None:
+            del item[key]
+        else:
+            item[key] = value
+        with pytest.raises(ProtocolValueError):
+            validate_schema_instance("control-request", "2.9.0", cast(JsonValue, invalid))
+    too_many = cast(dict[str, Any], json.loads(json.dumps(frame)))
+    too_many["body"]["envelope"]["structural_payload"]["observed_images"] = [image] * 9
+    with pytest.raises(ProtocolValueError):
+        validate_schema_instance("control-request", "2.9.0", cast(JsonValue, too_many))
+
+
 _POLICY_V12 = "https://schemas.yoetz.dev/0.1/privacy/privacy-policy-1.2.0.schema.json"
 
 
@@ -1425,7 +1550,8 @@ def _without_policy_v12(value: Any) -> Any:
 
 def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
     """2.9 derives from 2.8 by one runtime definition, the partial receipt page (#921) and the
-    privacy-policy 1.2.0 admission (issue #908); the 2.8 documents are not rewritten."""
+    privacy-policy 1.2.0 admission (issue #908), and bounded fault-stage attribution (#954);
+    the 2.8 documents are not rewritten."""
 
     for name in ("control-hello", "control-hello-result", "control-request", "control-result"):
         v28 = cast(
@@ -1442,8 +1568,10 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
         assert (_ROOT / f"{name}-2.9.0.schema.json").read_bytes() == _PACKAGE_ROOT.joinpath(
             f"{name}-2.9.0.schema.json"
         ).read_bytes()
-        # 2.9.0 (unreleased) also moves to the respond 1.1.0 pair (issue #905); undo that one
-        # retarget before comparing, so every other byte must still match frozen 2.8.
+        # 2.9.0 (unreleased) also moves to the respond 1.1.0 pair (issue #905), to the
+        # check-result 1.4.0 review output (issue #961) and to the publish-work 1.1.0 result
+        # that names the current policy-pack versions; undo those retargets before comparing,
+        # so every other byte must still match frozen 2.8.
         v29 = cast(
             dict[str, Any],
             _without_policy_v12(
@@ -1452,6 +1580,8 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
                     .read_bytes()
                     .replace(b"respond-request-1.1.0", b"respond-request-1.0.0")
                     .replace(b"respond-result-1.1.0", b"respond-result-1.0.0")
+                    .replace(b"check-result-1.4.0", b"check-result-1.3.0")
+                    .replace(b"publish-work-result-1.1.0", b"publish-work-result-1.0.0")
                 )
             ),
         )
@@ -1468,10 +1598,22 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
         assert set(v29_defs) - set(v28_defs) == {"observation_effective_budget"}
         changed = {key for key in v28_defs if v28_defs[key] != v29_defs[key]}
         assert changed == {
+            "local_disclosure_receipt",
             "observation_selection_runtime",
+            "privacy_receipt_view",
             "privacy_receipts_list_body",
+            "privacy_get_setup_body",
             "error_body",
         }
+        # Issue #982: the repository setup read gains only the optional, derived
+        # possible-credential filter pair; removing it recovers the frozen 2.8 body exactly.
+        v29_setup = json.loads(json.dumps(v29_defs["privacy_get_setup_body"]))
+        for branch in v29_setup["oneOf"]:
+            pair = branch["properties"].pop("credential_heuristic", None)
+            if pair is not None:
+                assert pair["required"] == ["machine_default", "repository"]
+                assert "credential_heuristic" not in branch.get("required", [])
+        assert v29_setup == v28_defs["privacy_get_setup_body"]
         # Issue #921: the receipt page gains only optional, paired partial-listing fields, and the
         # error vocabulary gains only the closed, non-retryable store-side reason.
         v28_page = cast(dict[str, Any], v28_defs["privacy_receipts_list_body"])
@@ -1487,6 +1629,15 @@ def test_v29_changes_only_the_selection_runtime_and_keeps_frozen_v28() -> None:
         }
         v28_errors = cast(list[Any], v28_defs["error_body"]["oneOf"])
         v29_errors = cast(list[Any], v29_defs["error_body"]["oneOf"])
+        # A read failure may identify its service-owned stage. The field stays optional, and
+        # stripping that one additive member must recover each frozen error branch exactly.
+        for branch in v29_errors:
+            assert branch["properties"].pop("phase") == {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                "maxLength": 64,
+            }
+            assert "phase" not in branch["required"]
         added = [branch for branch in v29_errors if branch not in v28_errors]
         assert [branch for branch in v29_errors if branch in v28_errors] == v28_errors
         assert [branch["properties"]["code"] for branch in added] == [

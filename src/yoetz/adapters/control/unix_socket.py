@@ -412,6 +412,28 @@ def _verify_endpoint(path: Path) -> tuple[int, int]:
     return facts.st_dev, facts.st_ino
 
 
+def _restrict_bound_endpoint(path: Path, created_inode: tuple[int, int]) -> None:
+    """Set the owner-only mode on the socket this process just bound, never through a symlink.
+
+    glibc before 2.32 (Ubuntu 20.04, Debian 11, RHEL 8 and images built on them, such as
+    ``condaforge/miniforge3:24.9.2-0``) has no no-follow ``fchmodat``, so the no-follow call
+    raises ``NotImplementedError`` there and every service start failed (#1040). The fallback
+    chmods the entry by name only after ``lstat`` shows it is still the socket this process
+    bound: it sits in the runtime directory just verified as owner-only, so no other principal
+    can replace it, and ``_bind`` re-verifies type, mode and inode afterwards.
+    """
+
+    try:
+        os.chmod(path, ENDPOINT_MODE, follow_symlinks=False)
+        return
+    except NotImplementedError:
+        pass
+    current = path.lstat()
+    if not stat.S_ISSOCK(current.st_mode) or (current.st_dev, current.st_ino) != created_inode:
+        raise LocalControlTransportError("endpoint_unsafe")
+    os.chmod(path, ENDPOINT_MODE)
+
+
 async def _bind(kind: EndpointKind) -> UnixEndpointListener:
     _verify_runtime_directory(create=True)
     path = _endpoint_path(kind)
@@ -431,8 +453,10 @@ async def _bind(kind: EndpointKind) -> UnixEndpointListener:
         raw_socket.bind(os.fspath(path))
         created = path.lstat()
         created_inode = (created.st_dev, created.st_ino)
-        os.chmod(path, ENDPOINT_MODE, follow_symlinks=False)
+        _restrict_bound_endpoint(path, created_inode)
         inode = _verify_endpoint(path)
+        if inode != created_inode:
+            raise LocalControlTransportError("endpoint_unsafe")
         raw_socket.listen(_LISTEN_BACKLOG)
         raw_socket.setblocking(False)
     except BaseException as exc:

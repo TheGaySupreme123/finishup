@@ -10,6 +10,7 @@ from typing import cast
 import pytest
 
 from builders.privacy_policies import minimal_external_policy
+from yoetz.adapters.privacy.local_enforcer import SecretScanRuleset
 from yoetz.application.egress import (
     PrivacyCoordinator,
     SemanticEgressAttemptUnknown,
@@ -22,6 +23,7 @@ from yoetz.domain.privacy import (
     AuthorizationScopeKind,
     ConsentSource,
     DisclosureProposal,
+    ForbiddenDataKind,
     PrivacyOutcome,
     PrivacyProfile,
     PrivacyReason,
@@ -51,6 +53,8 @@ _PROPOSAL = "ppr_54000000-0000-4000-8000-000000000004"
 _WORKSPACE = "hmac-sha256:" + "5" * 64
 _CASE_DIGEST = "sha256:" + "6" * 64
 _AUTHORITY_DIGEST = "sha256:" + "8" * 64
+_ROUTE_DIGEST = "sha256:" + "7" * 64
+_SCANNER = SecretScanRuleset()
 
 
 class _Clock:
@@ -130,7 +134,35 @@ def _proposal(*, expires_at: datetime) -> DisclosureProposal:
         1,
         expires_at,
         "hmac-sha256:" + "a" * 64,
+        (),
+        _SCANNER.version,
+        _SCANNER.profile_digest,
+        ("excerpt-a",),
+        _ROUTE_DIGEST,
     )
+
+
+def test_proposals_without_persisted_scanner_identity_remain_explicitly_unknown() -> None:
+    proposal = replace(
+        _proposal(expires_at=_NOW + timedelta(minutes=5)),
+        scanner_registry_version="unknown",
+        scanner_profile_digest="sha256:" + "0" * 64,
+    )
+    assert proposal.scanner_registry_version == "unknown"
+
+
+class _Classifier:
+    def __init__(self, findings: tuple[ForbiddenDataKind, ...] = ()) -> None:
+        self.findings = findings
+
+    def scanner_identity(self) -> tuple[str, str]:
+        return _SCANNER.version, _SCANNER.profile_digest
+
+    def scan_exact_bytes(
+        self, data: bytes, *, credential_heuristic: object = None
+    ) -> tuple[ForbiddenDataKind, ...]:
+        del data, credential_heuristic
+        return self.findings
 
 
 class _Audit:
@@ -215,10 +247,11 @@ def _coordinator(
     granted: bool = True,
     clock: _Clock | None = None,
     proposal: DisclosureProposal | None = None,
+    classifier: _Classifier | None = None,
 ) -> PrivacyCoordinator:
     return PrivacyCoordinator(
         cast(PrivacyPolicyStorePort, _Policies(granted=granted)),
-        cast(PrivacyClassifierPort, object()),
+        cast(PrivacyClassifierPort, classifier or _Classifier()),
         cast(
             PrivacyAuditPort,
             _Audit(status, proposal or _proposal(expires_at=expires_at)),
@@ -298,6 +331,102 @@ async def test_resume_rejects_proposal_identity_mismatch(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("scanner_registry_version", "scanner_profile_digest"),
+    [
+        ("unknown", "sha256:" + "0" * 64),
+        ("observability-sensitive-content-v2", _SCANNER.profile_digest),
+    ],
+)
+async def test_resume_rejects_stale_scanner_identity(
+    scanner_registry_version: str, scanner_profile_digest: str
+) -> None:
+    proposal = replace(
+        _proposal(expires_at=_NOW + timedelta(minutes=5)),
+        scanner_registry_version=scanner_registry_version,
+        scanner_profile_digest=scanner_profile_digest,
+    )
+    coordinator = _coordinator(
+        "approved",
+        expires_at=_NOW + timedelta(minutes=5),
+        proposal=proposal,
+    )
+
+    result = await coordinator.resume(_REQUEST, _CASE_DIGEST, _deadline())
+
+    assert isinstance(result, SemanticEgressBlocked)
+    assert result.outcome is PrivacyOutcome.AUDIT_FAILED
+    assert result.reason is PrivacyReason.AUDIT_FAILED
+
+
+@pytest.mark.anyio
+async def test_resume_rejects_changed_effective_policy_even_within_limits() -> None:
+    coordinator = _coordinator("approved", expires_at=_NOW + timedelta(minutes=5))
+    policies = cast(_Policies, coordinator._policies)  # pyright: ignore[reportPrivateUsage]
+    policies.effective = replace(
+        policies.effective,
+        effective_digest="sha256:" + "d" * 64,
+    )
+
+    result = await coordinator.resume(_REQUEST, _CASE_DIGEST, _deadline())
+
+    assert isinstance(result, SemanticEgressBlocked)
+    assert result.outcome is PrivacyOutcome.BLOCKED_BY_POLICY
+    assert result.reason is PrivacyReason.POLICY_DENIED
+
+
+@pytest.mark.anyio
+async def test_resume_rejects_proposal_without_route_identity() -> None:
+    proposal = replace(
+        _proposal(expires_at=_NOW + timedelta(minutes=5)),
+        route_identity_digest=None,
+    )
+    coordinator = _coordinator(
+        "approved",
+        expires_at=_NOW + timedelta(minutes=5),
+        proposal=proposal,
+    )
+
+    result = await coordinator.resume(_REQUEST, _CASE_DIGEST, _deadline())
+
+    assert isinstance(result, SemanticEgressBlocked)
+    assert result.outcome is PrivacyOutcome.AUDIT_FAILED
+    assert result.reason is PrivacyReason.AUDIT_FAILED
+
+
+@pytest.mark.anyio
+async def test_resume_rescans_persisted_bytes_before_dispatch() -> None:
+    proposal = replace(
+        _proposal(expires_at=_NOW + timedelta(minutes=5)),
+        prepared_bytes=b'{"token":"credential"}',
+    )
+    coordinator = _coordinator(
+        "approved",
+        expires_at=_NOW + timedelta(minutes=5),
+        proposal=proposal,
+        classifier=_Classifier((ForbiddenDataKind.API_CREDENTIAL,)),
+    )
+    dispatched: list[object] = []
+
+    async def dispatch(self: PrivacyCoordinator, *args: object, **kwargs: object) -> object:
+        del self, args, kwargs
+        dispatched.append(object())
+        return object()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(PrivacyCoordinator, "_dispatch_approved", dispatch)
+    try:
+        result = await coordinator.resume(_REQUEST, _CASE_DIGEST, _deadline())
+    finally:
+        monkeypatch.undo()
+
+    assert isinstance(result, SemanticEgressBlocked)
+    assert result.outcome is PrivacyOutcome.BLOCKED_FORBIDDEN_DATA
+    assert result.reason is PrivacyReason.NEVER_SEND_DETECTED
+    assert dispatched == []
+
+
+@pytest.mark.anyio
 async def test_recorded_denial_terminalizes_without_dispatch() -> None:
     coordinator = _coordinator(
         "decision_receipt_pending",
@@ -361,6 +490,42 @@ async def test_consumed_attempt_recovery_is_terminal_unknown_without_dispatch() 
     assert isinstance(result, SemanticEgressAttemptUnknown)
     assert result.request_id == _REQUEST
     assert result.privacy_proposal_id == _PROPOSAL
+
+
+@pytest.mark.anyio
+async def test_proposal_read_failure_does_not_turn_recovery_ids_into_an_empty_tuple() -> None:
+    """Unreadable proposal state must remain an explicit recovery failure."""
+
+    coordinator = _coordinator(
+        "receipt_pending",
+        expires_at=_NOW + timedelta(minutes=5),
+    )
+    audit = cast(_Audit, coordinator._audit)  # pyright: ignore[reportPrivateUsage]
+
+    async def unreadable(_proposal_id: str) -> DisclosureProposal | None:
+        raise RuntimeError("proposal_store_unavailable")
+
+    audit.load_disclosure_proposal = unreadable  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="proposal_store_unavailable"):
+        await coordinator.recover_started_attempt(_REQUEST, _CASE_DIGEST, _deadline())
+
+
+@pytest.mark.anyio
+async def test_missing_proposal_does_not_look_like_a_clean_unknown_recovery() -> None:
+    coordinator = _coordinator(
+        "receipt_pending",
+        expires_at=_NOW + timedelta(minutes=5),
+    )
+    audit = cast(_Audit, coordinator._audit)  # pyright: ignore[reportPrivateUsage]
+
+    async def missing(_proposal_id: str) -> DisclosureProposal | None:
+        return None
+
+    audit.load_disclosure_proposal = missing  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="privacy_audit_proposal_unavailable"):
+        await coordinator.recover_started_attempt(_REQUEST, _CASE_DIGEST, _deadline())
 
 
 def _packet_with_excerpts(count: int) -> bytes:
@@ -527,6 +692,7 @@ async def test_approved_resume_names_what_the_approved_prepared_packet_carried()
     audit = cast(_Audit, coordinator._audit)  # pyright: ignore[reportPrivateUsage]
     gateway = cast(_Gateway, coordinator._gateway)  # pyright: ignore[reportPrivateUsage]
     dispatched: list[bytes] = []
+    dispatched_item_ids: list[tuple[str, ...]] = []
 
     async def authorize(proposal_id: str, case_digest: str, now: datetime) -> EgressAuthorization:
         return EgressAuthorization(
@@ -552,6 +718,7 @@ async def test_approved_resume_names_what_the_approved_prepared_packet_carried()
     ) -> object:
         del authorization, deadline
         dispatched.append(cast(bytes, getattr(case, "payload")))
+        dispatched_item_ids.append(cast(tuple[str, ...], getattr(case, "included_item_ids")))
         return scripted_success(SemanticJudgment("no_material_discrepancy", ())).result
 
     setattr(audit, "authorize", authorize)
@@ -564,3 +731,4 @@ async def test_approved_resume_names_what_the_approved_prepared_packet_carried()
     assert result.disclosure is not None
     assert result.disclosure.carried == frozenset({shown})
     assert result.disclosure.withheld == frozenset({withheld})
+    assert dispatched_item_ids == [("excerpt-a",)]

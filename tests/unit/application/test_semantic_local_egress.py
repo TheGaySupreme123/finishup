@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,10 @@ from yoetz.domain.privacy import (
     PrivacyReason,
     ProviderBinding,
 )
+from yoetz.domain.receipts import (
+    SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP,
+    SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
+)
 from yoetz.ports.clock import ClockPort
 from yoetz.ports.privacy import (
     EffectivePrivacyPolicy,
@@ -40,8 +45,9 @@ from yoetz.ports.privacy import (
     PrivacyClassifierPort,
     PrivacyPolicyStorePort,
 )
-from yoetz.ports.semantic import Deadline, SemanticJudgment
+from yoetz.ports.semantic import Deadline, SemanticJudgment, SemanticResultSuccess
 from yoetz.protocol.models import DataCategory, SemanticReason, SemanticStatus
+from yoetz.protocol.redacted_values import SemanticRedactedValue
 
 _NOW = datetime(2026, 7, 26, tzinfo=UTC)
 _REQUEST = "req_30000000-0000-4000-8000-000000000001"
@@ -92,9 +98,11 @@ class _Gateway:
     def __init__(self) -> None:
         self.result = scripted_success(SemanticJudgment("no_material_discrepancy", ())).result
         self.calls = 0
+        self.payloads: list[bytes] = []
 
     async def dispatch_local_semantic(self, case: object, deadline: Deadline) -> object:
-        del case, deadline
+        self.payloads.append(cast(bytes, getattr(case, "payload")))
+        del deadline
         self.calls += 1
         return self.result
 
@@ -195,6 +203,8 @@ async def _dispatch(
     deadline: Deadline = Deadline(_NOW + timedelta(minutes=1), 60.0),
     monotonic: float = 1.0,
     prepared_bytes: bytes | None = None,
+    withheld_item_ids: tuple[str, ...] = (),
+    redacted_values: tuple[SemanticRedactedValue, ...] = (),
 ) -> tuple[object, _Audit, _Gateway]:
     binding = _binding()
     audit = _Audit(persist=persist)
@@ -208,22 +218,98 @@ async def _dispatch(
         ready_composition.IdPort(),
     )
     coordinator._semantic_dispatch_guard = dispatch_guard  # pyright: ignore[reportPrivateUsage]
+    selected_bytes = b"{}" if prepared_bytes is None else prepared_bytes
+    minimized = replace(
+        _minimized(),
+        prepared_bytes=selected_bytes,
+        byte_count=len(selected_bytes),
+        case_digest="sha256:" + hashlib.sha256(selected_bytes).hexdigest(),
+        withheld_item_ids=withheld_item_ids,
+        redacted_values=redacted_values,
+    )
+    proposal = replace(
+        _proposal(binding, expires_at=proposal_expires_at),
+        prepared_bytes=selected_bytes,
+        prepared_case_digest=minimized.case_digest,
+    )
     result = await coordinator._dispatch_approved(  # pyright: ignore[reportPrivateUsage]
         _candidate(binding),
         _effective(binding),
-        (
-            _proposal(binding, expires_at=proposal_expires_at)
-            if prepared_bytes is None
-            else replace(
-                _proposal(binding, expires_at=proposal_expires_at), prepared_bytes=prepared_bytes
-            )
-        ),
-        _minimized(),
+        proposal,
+        minimized,
         ConsentSource.BASELINE_POLICY,
         deadline,
         subject_digest=_SUBJECT_DIGEST,
     )
     return result, audit, gateway
+
+
+@pytest.mark.anyio
+async def test_withheld_notice_allows_a_safe_replacement_on_the_next_check() -> None:
+    """The next review dispatch uses the caller's replacement packet, not stale withheld bytes."""
+
+    first_payload = b'{"items":[{"item_id":"clean"}]}'
+    first, first_audit, first_gateway = await _dispatch(
+        persist=True,
+        prepared_bytes=first_payload,
+        withheld_item_ids=("excerpt-heuristic",),
+    )
+    assert isinstance(first, SemanticEgressSuccess)
+    assert first.withheld_item_ids == ("excerpt-heuristic",)
+    assert first_gateway.payloads == [first_payload]
+    assert b"auth_token" not in first_gateway.payloads[0]
+    assert first_audit.receipt is not None
+    assert first_audit.receipt.withheld_item_ids == ("excerpt-heuristic",)
+
+    replacement_payload = b'{"items":[{"item_id":"excerpt-replacement","content":"safe context"}]}'
+    second, second_audit, second_gateway = await _dispatch(
+        persist=True,
+        prepared_bytes=replacement_payload,
+    )
+    assert isinstance(second, SemanticEgressSuccess)
+    assert second.withheld_item_ids == ()
+    assert second_gateway.payloads == [replacement_payload]
+    assert b"excerpt-replacement" in second_gateway.payloads[0]
+    assert second_audit.receipt is not None
+    assert second_audit.receipt.withheld_item_ids == ()
+
+
+@pytest.mark.anyio
+async def test_redacted_value_lines_reach_the_final_evaluation() -> None:
+    """PL2-1 (issue #982): item refs and lines travel from minimization to the check."""
+
+    values = (
+        SemanticRedactedValue(
+            "excerpt-a", "value_replaced", (3, 7), "evd_10000000-0000-4000-8000-000000000021"
+        ),
+    )
+    result, _audit, _gateway = await _dispatch(persist=True, redacted_values=values)
+    assert isinstance(result, SemanticEgressSuccess)
+    assert result.redacted_values == values
+    final = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        result, ready_composition.IdPort()
+    )
+    assert final.semantic_redacted_values == values
+    blocked = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        SemanticEgressBlocked(
+            _REQUEST,
+            PrivacyOutcome.BLOCKED_BY_POLICY,
+            PrivacyReason.POLICY_DENIED,
+            redacted_values=values,
+        ),
+        ready_composition.IdPort(),
+    )
+    assert blocked.semantic_redacted_values == values
+
+
+def test_egress_results_enforce_the_shared_opaque_item_id_shape() -> None:
+    with pytest.raises(ValueError, match="semantic_withheld_item_ids_invalid"):
+        SemanticEgressBlocked(
+            _REQUEST,
+            PrivacyOutcome.BLOCKED_BY_POLICY,
+            PrivacyReason.POLICY_DENIED,
+            withheld_item_ids=("has whitespace",),
+        )
 
 
 @pytest.mark.anyio
@@ -248,6 +334,17 @@ async def test_local_semantic_success_persists_receipt_and_finalizes_local_prove
     assert final.provenance.local_disclosure_reservation_id == _PROPOSAL
     assert final.provenance.egress_authorization_id is None
     assert final.provenance.request_commitment is None
+    redacted_final = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        replace(result, redacted_span_count=2), ready_composition.IdPort()
+    )
+    assert redacted_final.case_content_gaps == ("semantic_review_value_redacted",)
+    # Issue #982: a withheld item is a case-content gap too, so it is stamped on the AI-powered
+    # findings the review raises and can serve as their capture baseline.
+    withheld_final = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
+        replace(result, withheld_item_ids=("excerpt-heuristic",)), ready_composition.IdPort()
+    )
+    assert "semantic_review_item_withheld" in withheld_final.case_content_gaps
+    assert withheld_final.semantic_withheld_item_ids == ("excerpt-heuristic",)
 
 
 @pytest.mark.anyio
@@ -309,6 +406,7 @@ async def test_semantic_success_names_only_content_the_exact_prepared_packet_car
     assert result.disclosure.carried == frozenset({shown, recorded_by})
     assert result.disclosure.withheld == frozenset({withheld, clipped})
     assert result.disclosure.payload_events == frozenset({recorded_by})
+    assert result.provider_input_manifest_failure == SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP
     final = ready_composition._map_egress_to_final(  # pyright: ignore[reportPrivateUsage]
         result, ready_composition.IdPort()
     )
@@ -325,6 +423,23 @@ async def test_semantic_success_names_only_content_the_exact_prepared_packet_car
     opaque, _audit, _gateway = await _dispatch(persist=True)
     assert isinstance(opaque, SemanticEgressSuccess)
     assert opaque.disclosure is None
+    assert opaque.provider_input_manifest_failure == SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP
+
+
+def test_success_boundary_rejects_unclassified_provider_manifest_failures() -> None:
+    with pytest.raises(ValueError, match="provider_input_manifest_failure_invalid"):
+        SemanticEgressSuccess(
+            _REQUEST,
+            _PROPOSAL,
+            None,
+            SemanticDispatchKind.LOCAL_MODEL,
+            cast(
+                SemanticResultSuccess,
+                scripted_success(SemanticJudgment("no_material_discrepancy", ())).result,
+            ),
+            _CASE_DIGEST,
+            provider_input_manifest_failure="provider_text",
+        )
 
 
 @pytest.mark.anyio

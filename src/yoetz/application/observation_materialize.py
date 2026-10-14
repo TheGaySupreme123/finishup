@@ -11,7 +11,7 @@ import hashlib
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Final, Literal, cast
+from typing import Final, Literal, TypedDict, cast
 
 from yoetz.domain.events import (
     EVIDENCE_SCHEMA_VERSION,
@@ -47,8 +47,10 @@ from yoetz.domain.observation import (
     RoutineReadSummary,
     observation_content_binding_matches,
     routine_read_summary_from_envelope,
+    validate_observed_images,
 )
 from yoetz.domain.observation_loss import ObservationSelectionLoss
+from yoetz.domain.receipts import CAPTURE_HANDOFF_RETIRED_GAP
 from yoetz.domain.values import (
     Actor,
     ActorType,
@@ -64,7 +66,14 @@ from yoetz.domain.values import (
     object_id,
     result_id,
 )
-from yoetz.kernel.observed_failures import observed_action_description
+from yoetz.domain.write_scope import WRITE_SCOPES
+from yoetz.domain.yoetz_tools import yoetz_tool_spelling
+from yoetz.kernel.later_material import (
+    COMPLETION_SIGNAL_PREFIX,
+    OPAQUE_OBSERVATION_PREFIX,
+    ROUTINE_READ_SUMMARY_PREFIX,
+)
+from yoetz.kernel.observed_failures import observed_action_description, observed_command_field
 from yoetz.ports.integrations import observation_pairing_contract
 from yoetz.protocol.canonical import request_digest
 from yoetz.protocol.coverage import (
@@ -140,7 +149,7 @@ _ID_DOMAIN: Final = b"yoetz/observation-materialize-id/v1\x00"
 _FILE_TOOLS: Final = frozenset(
     {
         # A Codex rollout ``FileChange`` item is the patch a hooked or stream-only call applied
-        # (#910); it belongs to the edit family so a stream-only edit can retire a failure (#909).
+        # (#910); it belongs to the edit family, but an edit alone never retires a failure (#909).
         "file_change",
         "apply_patch",
         "edit",
@@ -348,6 +357,31 @@ def _post_outcome(payload: Mapping[str, JsonValue]) -> ResultOutcome:
     return ResultOutcome.UNKNOWN
 
 
+class _RuntimeDescriptionFacts(TypedDict, total=False):
+    install_target: str | None
+    write_outside_workspace: bool
+    effective_user: str | None
+    write_scope: str | None
+
+
+def _runtime_description_facts(structural: Mapping[str, JsonValue]) -> _RuntimeDescriptionFacts:
+    """The closed runtime tokens (#977) the observed action description carries.
+
+    ``write_scope`` also names an edit whose every path was scratch or Yoetz-owned (ADR-042);
+    the kernel never lets such an edit make an earlier verification stale.
+    """
+
+    install = structural.get("install_target")
+    user = structural.get("effective_user")
+    scope = structural.get("write_scope")
+    return {
+        "install_target": install if type(install) is str else None,
+        "write_outside_workspace": scope == "outside_workspace",
+        "effective_user": user if type(user) is str else None,
+        "write_scope": scope if type(scope) is str and scope in WRITE_SCOPES else None,
+    }
+
+
 def _omitted_command(structural: Mapping[str, JsonValue]) -> str:
     """The command field of an observed command action: never command text.
 
@@ -356,17 +390,42 @@ def _omitted_command(structural: Mapping[str, JsonValue]) -> str:
     neither stays ``omitted:structural`` exactly as every pre-commitment ledger recorded it.
     """
 
-    for key in ("command_commitment", "command_digest", "argv_digest"):
+    commitment = structural.get("command_commitment")
+    if type(commitment) is str:
+        # A compound or wrapped command also carries its simple commands' keyed commitments
+        # (#977): planned-verification matching reads them; failure supersession does not.
+        segments = structural.get("command_segment_commitments")
+        composition = structural.get("command_composition")
+        return observed_command_field(
+            commitment,
+            tuple(item for item in segments if type(item) is str)
+            if isinstance(segments, tuple | list)
+            else None,
+            composition if type(composition) is str else None,
+        )
+    for key in ("command_digest", "argv_digest"):
         digest = structural.get(key)
         if type(digest) is str:
             return f"omitted:{digest}"
     return "omitted:structural"
 
 
+def _yoetz_mcp_tool(lowered: str) -> bool:
+    """Whether a lower-cased host tool name is a server-qualified Yoetz MCP tool."""
+
+    return yoetz_tool_spelling(lowered) == "server_scoped"
+
+
 def _action_kind(tool: str | None) -> ActionKind:
     if tool is None:
         return ActionKind.OTHER
     lowered = tool.lower()
+    if _yoetz_mcp_tool(lowered):
+        # Yoetz's own MCP tools (``mcp__yoetz__check``, ``mcp__plugin_yoetz_yoetz__receipt``)
+        # record and read the ledger; they never change the work under test, so they are never an
+        # edit or a command whatever their name contains (ADR-042, tb4n2 R4). Another server's
+        # tool keeps the name rules below: ``mcp__fs__edit_file`` may really edit a file.
+        return ActionKind.OTHER
     if lowered in _FILE_TOOLS or "edit" in lowered or "patch" in lowered:
         return ActionKind.EDIT
     if lowered in _COMMAND_TOOLS or "shell" in lowered or "exec" in lowered:
@@ -578,6 +637,80 @@ def _captured_evidence_drafts(
     return tuple(drafts), tuple(sorted(refs, key=str.encode))
 
 
+def _observed_image_drafts(
+    envelope: ObservationEnvelope,
+    *,
+    task_id: str,
+    parents: tuple[str, ...],
+    mapping_version: str,
+) -> tuple[tuple[MaterializedObservationDraft, ...], tuple[str, ...]]:
+    """One digest-only ``evidence_recorded`` per image the hook saw in this tool result.
+
+    P3-2 (issue #1013): the hook hashed the decoded image and read its header before dropping
+    the bytes, so the ledger can name what the agent looked at without holding or sending a
+    pixel. The description carries only closed tokens and integers. A malformed fact set
+    materializes nothing rather than a guessed row.
+    """
+
+    raw = envelope.structural_payload.get("observed_images")
+    if raw is None:
+        return (), ()
+    try:
+        images = validate_observed_images(raw)
+    except ProtocolValueError, TypeError, ValueError:
+        return (), ()
+    drafts: list[MaterializedObservationDraft] = []
+    refs: list[str] = []
+    for index, image in enumerate(images):
+        source = f"{envelope.source_identity}:image:{index}"
+        evidence = stable_observation_id(
+            kind=IdKind.EVIDENCE,
+            task_id=task_id,
+            source_identity=source,
+            mapping_version=mapping_version,
+            role="observed_image",
+        )
+        event = stable_observation_id(
+            kind=IdKind.EVENT,
+            task_id=task_id,
+            source_identity=source,
+            mapping_version=mapping_version,
+            role="observed_image_event",
+        )
+        media = cast(str, image["media_type"])
+        byte_count = cast(int, image["byte_count"])
+        width, height = image.get("width"), image.get("height")
+        size = f" {width}x{height}" if type(width) is int and type(height) is int else ""
+        refs.append(evidence)
+        drafts.append(
+            _draft(
+                event=event,
+                schema_name="evidence_recorded",
+                occurred_at=envelope.receipt_time,
+                payload=EvidenceRecordedPayload(
+                    evidence_id(evidence),
+                    EvidenceKind.ARTIFACT,
+                    EvidenceImmutability.CONTENT_DIGEST,
+                    envelope.receipt_time,
+                    content_digest=cast(str, image["content_digest"]),
+                    description=(
+                        f"Observed image tool result {media}{size} ({byte_count} bytes); "
+                        "pixels were not captured or sent"
+                    ),
+                    digest_binding=EvidenceDigestBinding(
+                        subject=EvidenceDigestSubject.ARTIFACT_BYTES,
+                        content_availability=EvidenceContentAvailability.DIGEST_ONLY,
+                        byte_count=byte_count,
+                        provenance=EvidenceDigestProvenance.OBSERVATION_CAPTURED,
+                    ),
+                ),
+                parents=parents,
+                role=f"observed_image_{index}",
+            )
+        )
+    return tuple(drafts), tuple(sorted(refs, key=str.encode))
+
+
 def materialize_routine_read_summary(
     summary: RoutineReadSummary,
     *,
@@ -630,7 +763,7 @@ def materialize_routine_read_summary(
         role="routine_read_summary_event",
     )
     description = (
-        "Routine-read summary observed "
+        f"{ROUTINE_READ_SUMMARY_PREFIX}"
         f"calls={summary.summary_count} inputs={summary.input_count} "
         f"member_digest={summary.member_digest} content_scope={summary.content_scope}"
     )
@@ -808,7 +941,9 @@ def materialize_selection_loss(
                 if loss.unreconciled
                 else "marker reports historical coverage loss; "
             )
-            + "exact aggregate counts remain in local selection accounting. Attribution: "
+            + "exact aggregate counts remain in local selection accounting. "
+            + ("Refusal cause: " + ", ".join(loss.causes) + ". " if loss.causes else "")
+            + "Attribution: "
             + canonical_encode(loss.identity()).decode()
         ),
     )
@@ -836,6 +971,65 @@ def materialize_selection_loss(
         coverage,
         PublicationChannel.HOOK_OBSERVED,
         (ObservationGapCode.OBSERVATION_INPUT_LOSS.value,),
+        None,
+    )
+
+
+def materialize_capture_handoff_retirement(
+    *, task_id: str, ticket_id: str, reason: str, observed_at: Timestamp
+) -> MaterializedObservationBatch:
+    """Publish one task-scoped marker for a retired native content handoff (issue #1019).
+
+    The staged content of one observed call could not be attached to its structural row. The
+    marker carries ``capture_handoff_retired`` on this task's coverage and names only the closed
+    retirement reason; the ticket identity is a digest, and no path or content is recorded.
+    """
+
+    identity = "capture-handoff-retired:" + ticket_id
+    version = "capture-handoff-retirement/1.0.0"
+    payload = EvidenceRecordedPayload(
+        evidence_id(
+            stable_observation_id(
+                kind=IdKind.EVIDENCE,
+                task_id=task_id,
+                source_identity=identity,
+                mapping_version=version,
+                role="retirement_evidence",
+            )
+        ),
+        EvidenceKind.OTHER,
+        EvidenceImmutability.METADATA_ONLY,
+        observed_at,
+        description=(
+            "Captured content staged for one observed call was retired before it could be"
+            " attached, so it is not available; this marker does not show whether the call's"
+            " own record was committed. Retirement reason: " + reason + "."
+        ),
+    )
+    coverage = replace(
+        coverage_for_channel(PublicationChannel.HOOK_OBSERVED),
+        authorship_assurance=AuthorshipAssurance.SERVICE_AUTHENTICATED,
+        artifact_observation=ArtifactObservation.PUBLISHED_ONLY,
+        known_gaps=(CAPTURE_HANDOFF_RETIRED_GAP,),
+    )
+    item = _draft(
+        event=stable_observation_id(
+            kind=IdKind.EVENT,
+            task_id=task_id,
+            source_identity=identity,
+            mapping_version=version,
+            role="retirement_event",
+        ),
+        schema_name="evidence_recorded",
+        occurred_at=observed_at,
+        payload=payload,
+        role="capture_handoff_retired",
+    )
+    return MaterializedObservationBatch(
+        (item,),
+        coverage,
+        PublicationChannel.HOOK_OBSERVED,
+        (CAPTURE_HANDOFF_RETIRED_GAP,),
         None,
     )
 
@@ -1006,7 +1200,10 @@ def materialize_observation_envelope(
             _observation_host_label(envelope.source) if pairing_mode == "paired" else "Codex hook"
         )
         description = observed_action_description(
-            f"Observed pending {action_kind.value} via {host}", tool
+            f"Observed pending {action_kind.value} via {host}",
+            tool,
+            cast(str | None, structural.get("runner_class")),
+            **_runtime_description_facts(structural),
         )
         command = None
         if action_kind is ActionKind.COMMAND:
@@ -1101,6 +1298,10 @@ def materialize_observation_envelope(
                 mapping_version=mapping,
             )
             drafts.extend(captured_drafts)
+            image_drafts, _image_refs = _observed_image_drafts(
+                envelope, task_id=task_id, parents=(event,), mapping_version=mapping
+            )
+            drafts.extend(image_drafts)
             merged_gaps = (
                 gaps
                 if post_only
@@ -1167,6 +1368,8 @@ def materialize_observation_envelope(
                             f"{_observation_host_label(envelope.source)}"
                         ),
                         tool,
+                        cast(str | None, structural.get("runner_class")),
+                        **_runtime_description_facts(structural),
                     ),
                     command=command,
                 ),
@@ -1181,6 +1384,12 @@ def materialize_observation_envelope(
             mapping_version=mapping,
         )
         drafts.extend(captured_drafts)
+        image_drafts, image_refs = _observed_image_drafts(
+            envelope, task_id=task_id, parents=(action_event,), mapping_version=mapping
+        )
+        drafts.extend(image_drafts)
+        captured_drafts = (*captured_drafts, *image_drafts)
+        captured_refs = tuple(sorted({*captured_refs, *image_refs}, key=str.encode))
         exit_status = _exit_status(structural)
         outcome = _post_outcome(structural)
         if outcome is ResultOutcome.UNKNOWN:
@@ -1389,7 +1598,7 @@ def materialize_observation_envelope(
                     EvidenceKind.OTHER,
                     EvidenceImmutability.METADATA_ONLY,
                     envelope.receipt_time,
-                    description=f"Observed completion signal kind={kind}",
+                    description=f"{COMPLETION_SIGNAL_PREFIX}{kind}",
                 ),
                 role="completion_signal",
             )
@@ -1429,7 +1638,7 @@ def materialize_observation_envelope(
                 EvidenceKind.OTHER,
                 EvidenceImmutability.METADATA_ONLY,
                 envelope.receipt_time,
-                description=f"Opaque observation kind={kind}",
+                description=f"{OPAQUE_OBSERVATION_PREFIX}{kind}",
             ),
             role="opaque",
         )
@@ -1793,10 +2002,120 @@ def paired_action_link(
     return PairedActionLink(action, action_event, replace(batch, drafts=remaining))
 
 
+def observation_event_ids_call_keyed(envelope: ObservationEnvelope) -> bool:
+    """True when the envelope's action and result event ids derive from its host call (#1027).
+
+    A paired pre or post, a Codex stream completion and a post-only post that names its call
+    mint their ids from the task, source lane, host session, generation, call id and tool
+    family, so two deliveries holding the same event id are the same call. Unpaired and
+    no-call evidence mints its ids from the source identity, which a producer can reuse for
+    another call: a collision there is a conflict that must fail closed, never a duplicate.
+    """
+
+    if type(envelope) is not ObservationEnvelope:
+        return False
+    structural = cast(Mapping[str, JsonValue], envelope.structural_payload)
+    pairing_mode, correlation_kind = _pairing_contract(envelope, structural)
+    if _correlation(structural, correlation_kind=correlation_kind) is None:
+        return False
+    kind = envelope.event_kind
+    if envelope.source is ObservationSource.CODEX_SESSION_STREAM and stream_event_is_completed_tool(
+        kind, structural
+    ):
+        kind = "PostToolUse"
+    if kind == "PreToolUse":
+        return pairing_mode == "paired"
+    if kind == "PostToolUse":
+        return not (
+            ObservationGapCode.UNPAIRED_EVENT.value in envelope.gap_codes
+            and pairing_mode == "paired"
+        )
+    return False
+
+
 def paired_action_linked_roles(draft_roles: tuple[str, ...]) -> tuple[str, ...]:
     """Return the role set a batch has once its canonical paired action is linked."""
 
     return tuple(role for role in draft_roles if role != PAIRED_ACTION_ROLE)
+
+
+@dataclass(frozen=True, slots=True)
+class CodexCallGenerationLink:
+    """The paired action one Codex stream command completion names in one generation.
+
+    ``command_identity`` is the base ``omitted:<commitment>`` command identity the
+    completion carries; an aliasing caller compares it with the committed action.
+    """
+
+    generation: int
+    action_id: str
+    action_event_id: str
+    command_identity: str
+
+
+def codex_stream_call_generation_links(
+    envelope: ObservationEnvelope,
+    *,
+    task_id: str,
+    generations: tuple[int, ...],
+) -> tuple[CodexCallGenerationLink, ...]:
+    """Return the paired-call action identities a stream completion would name per generation.
+
+    A Codex hook advances its session generation at every ``SessionStart``, including the
+    ``compact`` start after a context compaction, while the session stream's generation follows
+    the rollout file, which compaction does not rotate. The pair's action identity includes the
+    generation, so after a compaction a stream completion no longer names its hook call (#1019).
+    This returns the candidate identities for the given generations so the coordinator can find
+    the hook call. Only a completed, paired Codex stream command with a host call id and a keyed
+    command commitment qualifies; every other envelope returns ``()``.
+    """
+
+    if type(envelope) is not ObservationEnvelope:
+        return ()
+    structural = cast(Mapping[str, JsonValue], envelope.structural_payload)
+    if (
+        envelope.source is not ObservationSource.CODEX_SESSION_STREAM
+        or not stream_event_is_completed_tool(envelope.event_kind, structural)
+        or ObservationGapCode.UNPAIRED_EVENT.value in envelope.gap_codes
+    ):
+        return ()
+    pairing_mode, correlation_kind = _pairing_contract(envelope, structural)
+    if pairing_mode != "paired":
+        return ()
+    correlation = _correlation(structural, correlation_kind=correlation_kind)
+    commitment = structural.get("command_commitment")
+    family = _action_kind(_tool_name(structural))
+    if correlation is None or type(commitment) is not str or family is not ActionKind.COMMAND:
+        return ()
+    links: list[CodexCallGenerationLink] = []
+    for generation in generations:
+        if type(generation) is not int or isinstance(generation, bool) or generation < 1:
+            continue
+        aliased = replace(envelope, cursor=replace(envelope.cursor, source_generation=generation))
+        source = _materialization_call_source(
+            aliased, phase="pre", correlation=correlation, family=family.value
+        )
+        links.append(
+            CodexCallGenerationLink(
+                generation,
+                stable_observation_id(
+                    kind=IdKind.ACTION,
+                    task_id=task_id,
+                    source_identity=source,
+                    mapping_version=MATERIALIZATION_MAPPING_VERSION,
+                    role="action",
+                ),
+                stable_observation_id(
+                    kind=IdKind.EVENT,
+                    task_id=task_id,
+                    source_identity=source,
+                    mapping_version=MATERIALIZATION_MAPPING_VERSION,
+                    role="action_event",
+                ),
+                observed_command_field(commitment),
+            )
+        )
+    return tuple(links)
 
 
 def _logical_identity_digest(components: tuple[str, ...]) -> str:

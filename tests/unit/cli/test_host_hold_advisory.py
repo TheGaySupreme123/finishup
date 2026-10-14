@@ -249,7 +249,9 @@ def test_claude_permission_denied_output_matches_native_event_schema() -> None:
     }
     assert claude_permission_denied_output("   ", retry=True) == {}
     rendered = claude_permission_denied_output("x" * 2_500, retry=False)
-    assert rendered["systemMessage"] == "x" * 2_000
+    shown = rendered["systemMessage"]
+    assert isinstance(shown, str) and len(shown) == 2_000
+    assert shown.endswith("[Yoetz text cut at 2000 characters; read status or the receipt]")
 
 
 @pytest.mark.parametrize(

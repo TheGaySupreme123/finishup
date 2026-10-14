@@ -21,11 +21,17 @@ from builders.policy_cases import (
     plan_record,
     record,
 )
+from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
 from yoetz.application.check import validate_semantic_judgment
 from yoetz.application.semantic_case import (
     MAX_TASK_STATEMENT_ITEM_BYTES,
     TASK_STATEMENT_ITEM_ID,
+    assemble_filtered_review_packet,
+    bounded_case_envelope,
     build_semantic_case,
+    review_input_manifest,
+    review_packet_disclosure,
+    review_packet_disclosure_result,
     semantic_case_to_candidate_context,
     semantic_case_to_prepared_payload,
 )
@@ -46,11 +52,22 @@ from yoetz.domain.findings import (
 from yoetz.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
+    ClassifiedContext,
+    ClassifiedContextItem,
+    DataClass,
+    PrivacyDecision,
+    PrivacyOutcome,
     ProviderBinding,
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.receipts import SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP
+from yoetz.domain.receipts import (
+    SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
+    SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP,
+    SEMANTIC_PROVIDER_INPUT_MANIFEST_MISMATCH_GAP,
+    SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
+    SEMANTIC_PROVIDER_INPUT_MANIFEST_PARSE_FAILED_GAP,
+)
 from yoetz.domain.task_statement import (
     TASK_STATEMENT_GAPS,
     TASK_STATEMENT_NOT_AUTHORIZED_GAP,
@@ -59,8 +76,8 @@ from yoetz.domain.task_statement import (
     RecordedTaskStatement,
 )
 from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.ports.semantic import ReviewerChallenge, SemanticCase, SemanticJudgment
-from yoetz.protocol.canonical import JsonValue, strict_json_parse
+from yoetz.ports.semantic import ReviewerChallenge, ReviewOmission, SemanticCase, SemanticJudgment
+from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from yoetz.protocol.models import DataCategory, SemanticReason, SemanticStatus
 
 _TERMENV_STATEMENT = (
@@ -355,3 +372,251 @@ def test_long_statement_keeps_head_and_tail_and_marks_the_elision(filler: str) -
     assert f"[... {elided} bytes elided ...]" in statement
     assert content["statement_bytes"] == len(text.encode("utf-8"))
     assert SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP in semantic.packet.coverage.known_gaps
+    assert semantic.packet.input_manifest is not None
+    assert semantic.packet.input_manifest.specification.status == "partial"
+
+
+def test_per_check_manifest_binds_specification_source_revision_and_digest() -> None:
+    semantic = _build(_case(statement=_statement()))
+
+    manifest = semantic.packet.input_manifest
+    assert manifest is not None
+    assert manifest.schema == "yoetz.review-input-manifest/1"
+    assert manifest.specification.status == "complete"
+    assert manifest.specification.source_refs == (str(evt(_STATEMENT_EVENT)),)
+    assert manifest.specification.revision == _STATEMENT_EVENT
+    assert manifest.specification.content_bytes == len(_TERMENV_STATEMENT.encode("utf-8"))
+    assert manifest.specification.content_digest is not None
+    assert manifest.specification.selected_item_ids == (TASK_STATEMENT_ITEM_ID,)
+    assert manifest.selected_item_count == len(semantic.items)
+
+    packet = _packet(semantic)
+    wire = cast(dict[str, JsonValue], packet["review_packet"])["review_input_manifest"]
+    assert isinstance(wire, dict)
+    specification = wire["specification"]
+    assert isinstance(specification, dict)
+    assert specification["status"] == "complete"
+    assert specification["revision"] == _STATEMENT_EVENT
+    assert specification["content_digest"] == manifest.specification.content_digest
+    review_packet = cast(dict[str, JsonValue], packet["review_packet"])
+    provider = review_packet["provider_input_manifest"]
+    assert isinstance(provider, dict)
+    assert provider["phase"] == "provider_bound"
+    provider_count = provider["selected_item_count"]
+    assert type(provider_count) is int
+    assert provider_count == len(_items(packet)) == manifest.selected_item_count
+
+
+def test_input_manifest_counts_each_omission_once_across_section_projections() -> None:
+    omission = ReviewOmission(
+        subject_ref=str(evt(_STATEMENT_EVENT)),
+        category=DataCategory.REPOSITORY_EXCERPT,
+        source_kind="diff",
+        reason="not_selected",
+    )
+    manifest = review_input_manifest(
+        frozen_case=_case(statement=_statement()),
+        review_selection=ReviewSelectionPolicy.for_profile(ReviewContextProfile.ASSISTED),
+        sections=frozenset({"task_statement", "targeted_excerpts"}),
+        items=(),
+        omissions=(omission,),
+        task_statement_ids=(),
+        task_statement_gaps=frozenset(),
+        recorded_statement=None,
+        pending_missing=None,
+    )
+
+    # The same diff omission is visible through the current-diff section and the top-level row;
+    # it is one omitted row for accounting purposes.
+    assert manifest.omitted_item_count == 1
+
+
+def test_disclosure_rejects_malformed_or_count_inconsistent_provider_manifest() -> None:
+    semantic = _build(_case(statement=_statement()))
+
+    valid = _packet(semantic)
+    assert review_packet_disclosure(canonical_encode(valid)) is not None
+    valid_result = review_packet_disclosure_result(canonical_encode(valid))
+    assert valid_result.failure is None
+    assert valid_result.disclosure is not None
+    assert valid_result.disclosure.provider_input_manifest is not None
+    assert valid_result.disclosure.provider_input_text_by_ref
+    first_item = _items(valid)[0]
+    first_source = first_item["source_ref"]
+    assert type(first_source) is str
+    assert (
+        cast(str, first_item["content"])
+        in valid_result.disclosure.provider_input_text_by_ref[first_source]
+    )
+
+    malformed = _packet(semantic)
+    malformed_packet = cast(dict[str, JsonValue], malformed["review_packet"])
+    malformed_packet["provider_input_manifest"] = {
+        "schema": "yoetz.review-input-manifest/1",
+        "phase": "provider_bound",
+    }
+    assert review_packet_disclosure(canonical_encode(malformed)) is None
+
+    inconsistent = _packet(semantic)
+    inconsistent_packet = cast(dict[str, JsonValue], inconsistent["review_packet"])
+    provider = cast(dict[str, JsonValue], inconsistent_packet["provider_input_manifest"])
+    provider["selected_item_count"] = 0
+    assert review_packet_disclosure(canonical_encode(inconsistent)) is None
+
+
+def test_disclosure_result_keeps_provider_provenance_failures_distinct() -> None:
+    semantic = _build(_case(statement=_statement()))
+
+    missing = _packet(semantic)
+    missing_packet = cast(dict[str, JsonValue], missing["review_packet"])
+    del missing_packet["provider_input_manifest"]
+    missing_result = review_packet_disclosure_result(canonical_encode(missing))
+    assert missing_result.disclosure is not None
+    assert missing_result.disclosure.provider_input_manifest is None
+    assert missing_result.failure == SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP
+    # The compatibility helper retains its old fail-open behavior for a readable packet whose
+    # optional provider metadata was not present in an older response.
+    assert review_packet_disclosure(canonical_encode(missing)) is not None
+
+    malformed = _packet(semantic)
+    malformed_packet = cast(dict[str, JsonValue], malformed["review_packet"])
+    malformed_packet["provider_input_manifest"] = {"schema": "wrong", "phase": "provider_bound"}
+    malformed_result = review_packet_disclosure_result(canonical_encode(malformed))
+    assert malformed_result.disclosure is not None
+    assert malformed_result.failure == SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP
+
+    malformed_type = _packet(semantic)
+    malformed_type_packet = cast(dict[str, JsonValue], malformed_type["review_packet"])
+    malformed_type_packet["provider_input_manifest"] = []
+    malformed_type_result = review_packet_disclosure_result(canonical_encode(malformed_type))
+    assert malformed_type_result.disclosure is not None
+    assert malformed_type_result.failure == SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP
+
+    inconsistent = _packet(semantic)
+    inconsistent_packet = cast(dict[str, JsonValue], inconsistent["review_packet"])
+    provider = cast(dict[str, JsonValue], inconsistent_packet["provider_input_manifest"])
+    provider["selected_item_count"] = 0
+    inconsistent_result = review_packet_disclosure_result(canonical_encode(inconsistent))
+    assert inconsistent_result.disclosure is not None
+    assert inconsistent_result.failure == SEMANTIC_PROVIDER_INPUT_MANIFEST_MISMATCH_GAP
+
+    parse_result = review_packet_disclosure_result(b"{")
+    assert parse_result.disclosure is None
+    assert parse_result.failure == SEMANTIC_PROVIDER_INPUT_MANIFEST_PARSE_FAILED_GAP
+
+
+def test_per_check_manifest_keeps_title_only_and_policy_withheld_distinct() -> None:
+    titled = _build(_case(statement=None, title="title only"))
+    assert titled.packet.input_manifest is not None
+    assert titled.packet.input_manifest.specification.status == "title_only"
+    assert titled.packet.input_manifest.specification.source_refs == ("task-title",)
+
+    legacy = ReviewSelectionPolicy.for_profile(
+        ReviewContextProfile.ASSISTED, preset_version="1.1.0"
+    )
+    withheld = _build(_case(statement=_statement()), selection=legacy)
+    assert withheld.packet.input_manifest is not None
+    assert withheld.packet.input_manifest.specification.status == "withheld"
+    assert withheld.packet.input_manifest.specification.content_digest is None
+
+
+def test_provider_manifest_tracks_privacy_removal_and_rendered_statement_bytes() -> None:
+    semantic = _build(_case(statement=_statement()))
+    all_ids = frozenset(item.item_id for item in semantic.items)
+
+    candidate = semantic_case_to_candidate_context(
+        semantic,
+        request_id="req_90800000-0000-4000-8000-000000000002",
+        scope=AuthorizationScope(
+            AuthorizationScopeKind.MACHINE, "ins_90800000-0000-4000-8000-000000000002"
+        ),
+        provider_binding=ProviderBinding(
+            "fake", "fake-model", "fake-provider", "1.0.0", "external"
+        ),
+    )
+    classified = ClassifiedContext(
+        candidate,
+        tuple(
+            ClassifiedContextItem(
+                item,
+                DataClass.PUBLIC_STRUCTURAL,
+                (),
+                True,
+                "test-manifest",
+            )
+            for item in candidate.items
+        ),
+    )
+    privacy_approved = frozenset(item.item_id for item in candidate.items) - {
+        TASK_STATEMENT_ITEM_ID
+    }
+    minimized = LocalPrivacyEnforcer().minimize_and_scan(
+        classified,
+        PrivacyDecision(
+            tuple(sorted(privacy_approved, key=str.encode)),
+            (),
+            PrivacyOutcome.COMPLETED,
+            None,
+        ),
+    )
+    removed = cast(
+        dict[str, JsonValue],
+        strict_json_parse(minimized.prepared_bytes),
+    )
+    removed_result = review_packet_disclosure_result(minimized.prepared_bytes)
+    assert removed_result.failure is None
+    assert removed_result.disclosure is not None
+    assert removed_result.disclosure.provider_input_manifest is not None
+    removed_packet = cast(dict[str, JsonValue], removed["review_packet"])
+    removed_manifest = cast(dict[str, JsonValue], removed_packet["provider_input_manifest"])
+    removed_specification = cast(dict[str, JsonValue], removed_manifest["specification"])
+    assert removed_specification["status"] == "withheld"
+    assert removed_specification["content_digest"] is None
+    assert removed_specification["omitted_refs"] == [str(evt(_STATEMENT_EVENT))]
+    assert removed_specification["omission_reasons"] == ["withheld_by_policy"]
+    # The omission is scoped to the specification; privacy removal must not make unrelated
+    # verification or caller-evidence sections claim the same reason.
+    assert (
+        cast(dict[str, JsonValue], removed_manifest["latest_verification"])["omission_reasons"]
+        == []
+    )
+
+    # Assemble a provider row whose rendered task statement was clipped after composition. The
+    # provider-bound manifest reports the effective digest/bytes and makes the loss visible even
+    # though the item id itself survived.
+    envelope = cast(dict[str, JsonValue], strict_json_parse(bounded_case_envelope(semantic)))
+    content_by_id = {item.item_id: item.content for item in semantic.items}
+    rendered = cast(
+        dict[str, JsonValue],
+        strict_json_parse(content_by_id[TASK_STATEMENT_ITEM_ID]),
+    )
+    original_statement = cast(str, rendered["statement"])
+    clipped_statement = original_statement[:-1]
+    rendered["statement"] = clipped_statement
+    rendered["statement_bytes"] = len(clipped_statement.encode("utf-8"))
+    rendered["elided_bytes"] = 1
+    content_by_id[TASK_STATEMENT_ITEM_ID] = canonical_encode(rendered)
+    clipped = cast(
+        dict[str, JsonValue],
+        strict_json_parse(
+            assemble_filtered_review_packet(
+                envelope,
+                content_by_id=content_by_id,
+                included_item_ids=all_ids,
+            )
+        ),
+    )
+    clipped_result = review_packet_disclosure_result(canonical_encode(clipped))
+    assert clipped_result.failure is None
+    assert clipped_result.disclosure is not None
+    assert clipped_result.disclosure.provider_input_manifest is not None
+    clipped_packet = cast(dict[str, JsonValue], clipped["review_packet"])
+    clipped_manifest = cast(dict[str, JsonValue], clipped_packet["provider_input_manifest"])
+    clipped_specification = cast(dict[str, JsonValue], clipped_manifest["specification"])
+    composed_specification = cast(
+        dict[str, JsonValue],
+        cast(dict[str, JsonValue], clipped_packet["review_input_manifest"])["specification"],
+    )
+    assert clipped_specification["status"] == "partial"
+    assert clipped_specification["content_bytes"] == len(clipped_statement.encode("utf-8"))
+    assert clipped_specification["content_digest"] != composed_specification["content_digest"]

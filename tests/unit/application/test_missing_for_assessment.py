@@ -26,9 +26,12 @@ from builders.policy_cases import (
 )
 from builders.privacy_policies import local_only_policy, minimal_external_policy
 from yoetz.application.missing_for_assessment import (
+    check_change_binary_paths,
+    check_change_text_paths,
     review_missing_for_assessment,
     supplied_since,
     unsuppliable_missing_kinds,
+    unsupported_data_type,
 )
 from yoetz.domain.events import (
     ActionKind,
@@ -76,7 +79,8 @@ from yoetz.kernel.projections import (
     PendingMissingForAssessment,
     ProjectionRecord,
 )
-from yoetz.mcp.summaries import summary_for_check
+from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check
+from yoetz.ports.change_capture import CheckChangeCapture
 from yoetz.ports.runtime import TaskRuntime
 from yoetz.ports.semantic import (
     MissingForAssessment,
@@ -141,7 +145,7 @@ def test_check_summary_names_missing_items_with_closed_tokens_only() -> None:
     assert "verification_output=agent_suppliable" in text
     assert "command_identity=structurally_unavailable_on_this_host" in text
     assert "</script>" not in text
-    assert len(text.encode("ascii")) <= 512
+    assert len(text.encode("ascii")) <= MAX_SUMMARY_BYTES
 
 
 def test_durable_semantic_response_keeps_named_items_and_reads_legacy_bytes() -> None:
@@ -290,6 +294,26 @@ def test_an_output_free_result_never_answers_a_request_for_verification_output()
     review = review_missing_for_assessment(case, (), judgment, unsuppliable_kinds=frozenset())
     assert [item.kind for item in review.items] == ["verification_output"]
     assert "semantic_missing_already_supplied" not in review.gaps
+    assert "semantic_missing_non_convergent" in review.gaps
+
+    # A genuinely new target remains an ordinary actionable request; the non-convergence marker
+    # only applies when the reviewer repeats the same target set without a related publication.
+    new_target = review_missing_for_assessment(
+        _pending(
+            case,
+            MissingForAssessmentItem("verification_output", (str(act(62)),), "agent_suppliable"),
+        ),
+        (),
+        SemanticJudgment(
+            "insufficient_packet",
+            (),
+            missing_for_assessment=(
+                MissingForAssessment("verification_output", (str(res(63)),), "new target"),
+            ),
+        ),
+        unsuppliable_kinds=frozenset(),
+    )
+    assert "semantic_missing_non_convergent" not in new_target.gaps
 
     # A result that carries its output does answer it.
     answered = _requested_case({res(63): record(bare, 63), res(64): record(summarized, 64)})
@@ -349,10 +373,13 @@ def test_material_for_another_target_never_answers_a_named_request() -> None:
     review = review_missing_for_assessment(
         case, (), _repeat("verification_output", str(act(1))), unsuppliable_kinds=frozenset()
     )
+    # Still named and still the agent's work: a run never recorded is owed (tb4n1 D1 review);
+    # the review round stops separately after one retry (kernel.review_round).
     assert [(item.kind, item.target_refs, item.availability) for item in review.items] == [
         ("verification_output", (str(act(1)),), "agent_suppliable")
     ]
     assert "semantic_missing_already_supplied" not in review.gaps
+    assert "semantic_missing_non_convergent" in review.gaps
 
     # The output of the named action, or of a rerun of its exact command, does answer it.
     for action, command in ((1, "pytest tests/a"), (64, "pytest tests/a")):
@@ -1033,3 +1060,497 @@ async def test_the_review_reads_the_workspace_root_the_session_opened_with() -> 
         runtime = SimpleNamespace(ledger=_OpenedLedger(workspace_ref), session_id="ses")
         assert await root_of(cast(TaskRuntime, runtime)) == expected
     assert await root_of(None) is None
+
+
+def test_a_composed_run_keys_on_its_leading_identity() -> None:
+    """Adversarial review of E3 (#988): the segment suffix must not split one command in two."""
+
+    from yoetz.application import missing_for_assessment
+    from yoetz.domain.events import ActionRecordedPayload as _Action
+    from yoetz.domain.values import action_id as _action_id
+
+    identity = "hmac-sha256:" + "a" * 64
+    segment = "hmac-sha256:" + "b" * 64
+    run_key = getattr(missing_for_assessment, "_run_key")
+    before = _Action(
+        _action_id("act_00000000-0000-4000-8000-000000000001"),
+        ActionKind.COMMAND,
+        "Observed command",
+        command=f"omitted:{identity}",
+    )
+    after = _Action(
+        _action_id("act_00000000-0000-4000-8000-000000000002"),
+        ActionKind.COMMAND,
+        "Observed command",
+        command=f"omitted:{identity} and_chain {segment}",
+    )
+    assert run_key(before) == run_key(after) == ("digest", identity)
+
+
+def _first_request(kind: str, target: str) -> SemanticJudgment:
+    return _repeat(cast(MissingForAssessmentKind, kind), target)
+
+
+def test_an_image_or_binary_target_is_an_unsupported_data_type_never_agent_work() -> None:
+    """tb4n1 D1 (cad-model, medical, freecad S): a PNG or CAD deliverable is never carried."""
+
+    for name in ("out/schematic.PNG", "/app/english_model.bin", "model.FCStd", "drawing.pdf"):
+        case = make_case(
+            evidence={evd(5): evidence_record(_diff(5, name), 5)},
+            extra_refs=(evd(5),),
+        )
+        review = review_missing_for_assessment(
+            case, (), _first_request("other", str(evd(5))), unsuppliable_kinds=frozenset()
+        )
+        assert [item.availability for item in review.items] == [
+            "yoetz_limit_unsupported_data_type"
+        ], name
+        assert "semantic_missing_agent_suppliable" not in review.gaps
+        assert "semantic_missing_yoetz_limit" in review.gaps
+
+
+def test_content_the_packet_named_but_could_not_carry_is_packet_room_not_agent_work() -> None:
+    """tb4n1 D1 (interleaved-vigenere S): a clipped deliverable diff is Yoetz's limit.
+
+    The reviewer said "current cracker.py implementation is not available for review" while
+    the check-time change was clipped; Yoetz asked the agent to supply it, and the agent moved
+    the deliverable's data table into an undelivered file. The same request is now Yoetz's
+    packet-room limit, so no ``supply_missing_input`` follows.
+    """
+
+    case = make_case(
+        evidence={evd(5): evidence_record(_diff(5, "cracker.py"), 5)},
+        extra_refs=(evd(5),),
+    )
+    clipped = review_missing_for_assessment(
+        case,
+        (),
+        _first_request("current_diff_for_path", str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+        change_clipped=True,
+    )
+    assert [item.availability for item in clipped.items] == ["yoetz_limit_packet_room"]
+    unselected = review_missing_for_assessment(
+        case,
+        (),
+        _first_request("verification_output", str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+        packet_limited_refs=frozenset({str(evd(5))}),
+    )
+    assert [item.availability for item in unselected.items] == ["yoetz_limit_packet_room"]
+    # A diff the packet carried whole, of a text file, stays a request the agent can answer.
+    shown = review_missing_for_assessment(
+        case,
+        (),
+        _first_request("current_diff_for_path", str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+    )
+    assert [item.availability for item in shown.items] == ["agent_suppliable"]
+
+
+def test_only_a_clipped_or_redacted_change_text_makes_a_diff_request_packet_room() -> None:
+    """Review of #1045: ``check_time_change_redacted`` also reports a redacted task input file,
+    which leaves every diff whole; that alone must not turn a diff request into Yoetz's limit."""
+
+    import yoetz.application.check as check_module
+    from yoetz.domain.events import CheckChangePartialFile, CheckChangeShownFiles
+    from yoetz.domain.receipts import (
+        CHECK_TIME_CHANGE_REDACTED_GAP,
+        CHECK_TIME_CHANGE_TRUNCATED_GAP,
+    )
+
+    packet_limits = getattr(check_module, "_packet_limits")
+    whole = CheckChangeShownFiles(("hmac-sha256:" + "1" * 64,), (), complete=True)
+    marked = CheckChangeShownFiles(
+        (),
+        (CheckChangePartialFile("hmac-sha256:" + "2" * 64, 80, 1, True, 40),),
+        complete=True,
+    )
+
+    def clipped(gaps: tuple[str, ...], files: CheckChangeShownFiles | None) -> bool:
+        result = SimpleNamespace(
+            case_withheld_refs=None,
+            case_privacy_withheld_refs=frozenset(),
+            case_content_gaps=gaps,
+            check_change_files=files,
+        )
+        return packet_limits(result, ())["change_clipped"]
+
+    redacted = (CHECK_TIME_CHANGE_REDACTED_GAP,)
+    # A redacted task input beside a change the packet carried whole and unmarked.
+    assert not clipped(redacted, whole)
+    # The change text itself carried a redaction marker.
+    assert clipped(redacted, marked)
+    # No record, an incomplete one, or one naming no file cannot tell: conservative, as before.
+    assert clipped(redacted, None)
+    assert clipped(redacted, CheckChangeShownFiles(whole.fully_shown, (), complete=False))
+    assert clipped(redacted, CheckChangeShownFiles((), (), complete=True))
+    assert clipped((CHECK_TIME_CHANGE_TRUNCATED_GAP,), whole)
+    assert not clipped((), whole)
+
+    case = make_case(
+        evidence={evd(5): evidence_record(_diff(5, "cracker.py"), 5)},
+        extra_refs=(evd(5),),
+    )
+    review = review_missing_for_assessment(
+        case,
+        (),
+        _first_request("current_diff_for_path", str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+        change_clipped=clipped(redacted, whole),
+    )
+    assert [item.availability for item in review.items] == ["agent_suppliable"]
+
+
+def test_a_hook_observed_image_is_an_unsupported_data_type() -> None:
+    """tb4n1 D6 + L3 P3-2: an observed image tool result is kept as a digest only, never sent."""
+
+    image = EvidenceRecordedPayload(
+        evd(7),
+        EvidenceKind.ARTIFACT,
+        EvidenceImmutability.CONTENT_DIGEST,
+        timestamp_from_string("2026-09-27T00:00:00.000Z"),
+        content_digest="sha256:" + "d" * 64,
+        description="Observed image tool result image/png 800x600 (5120 bytes); "
+        "pixels were not captured or sent",
+        digest_binding=EvidenceDigestBinding(
+            subject=EvidenceDigestSubject.ARTIFACT_BYTES,
+            content_availability=EvidenceContentAvailability.DIGEST_ONLY,
+            byte_count=5120,
+            provenance=EvidenceDigestProvenance.OBSERVATION_CAPTURED,
+        ),
+    )
+    case = make_case(evidence={evd(7): evidence_record(image, 7)}, extra_refs=(evd(7),))
+    review = review_missing_for_assessment(
+        case, (), _first_request("other", str(evd(7))), unsuppliable_kinds=frozenset()
+    )
+    assert [item.availability for item in review.items] == ["yoetz_limit_unsupported_data_type"]
+
+
+def test_agent_rendered_text_of_a_binary_answers_a_request_for_it() -> None:
+    """PL5-2 (#1004): text output recorded with the binary's path as its reference supplies it.
+
+    The reviewer named the PDF deliverable; the agent then records ``pdftotext`` output whose
+    ``reference`` is that PDF's path. The request is counted as supplied and dropped, never
+    asked again.
+    """
+
+    rendering = EvidenceRecordedPayload(
+        evd(70),
+        EvidenceKind.COMMAND_OUTPUT,
+        EvidenceImmutability.METADATA_ONLY,
+        timestamp_from_string("2026-09-27T00:00:00.000Z"),
+        reference="out/invoice.pdf",
+        description="INVOICE 2026-0042\nTotal due: 1,240.00 EUR",
+    )
+    case = _pending(
+        make_case(
+            evidence={
+                evd(5): evidence_record(_diff(5, "out/invoice.pdf"), 5),
+                evd(70): evidence_record(rendering, 70),
+            },
+            extra_refs=(evd(5), evd(70)),
+        ),
+        MissingForAssessmentItem("other", (str(evd(5)),), "yoetz_limit_unsupported_data_type"),
+    )
+    pending = case.projection.pending_missing_for_assessment
+    assert pending is not None
+    allowed = frozenset(str(ref) for ref in case.allowed_ids)
+    assert supplied_since(case.projection, pending, allowed) == ((str(evd(70)),),)
+    dropped = review_missing_for_assessment(
+        case, (), _repeat("other", str(evd(5))), unsuppliable_kinds=frozenset()
+    )
+    assert dropped.items == ()
+    assert "semantic_missing_already_supplied" in dropped.gaps
+
+
+def _requesting(number: int, *files: str) -> ObligationPublishedPayload:
+    from yoetz.domain.events import RequestedItem, RequestedItemKind
+
+    return ObligationPublishedPayload(
+        obl(number),
+        "Deliver the requested files",
+        "the files",
+        ObligationStatus.OPEN,
+        requested_items=tuple(RequestedItem(RequestedItemKind.FILE, name) for name in files),
+    )
+
+
+def test_an_other_item_is_a_yoetz_limit_only_when_every_requested_output_is_binary() -> None:
+    """tb4n1 review: cad-model's unseen schematic is a limit; satb's unwritten score is work.
+
+    tb4n3 (ADR-045): ISO 10303-21 ``.step`` is ASCII, so a request in scope of a ``.step`` file
+    is the agent's work (the reviewer may be asking for exactly that file); a native CAD part is
+    the limit.
+    """
+
+    cad = make_case(
+        obligations={
+            obl(3): obligation_record(_requesting(3, "/app/part.sldprt", "/app/part.png"), 3)
+        },
+        extra_refs=(obl(3),),
+    )
+    review = review_missing_for_assessment(
+        cad, (), _first_request("other", str(obl(3))), unsuppliable_kinds=frozenset()
+    )
+    assert [item.availability for item in review.items] == ["yoetz_limit_unsupported_data_type"]
+    step = make_case(
+        obligations={
+            obl(3): obligation_record(_requesting(3, "/app/part.step", "/app/part.png"), 3)
+        },
+        extra_refs=(obl(3),),
+    )
+    review = review_missing_for_assessment(
+        step, (), _first_request("other", str(obl(3))), unsuppliable_kinds=frozenset()
+    )
+    assert [item.availability for item in review.items] == ["agent_suppliable"]
+    satb = make_case(
+        obligations={
+            obl(3): obligation_record(_requesting(3, "/app/input.mp3", "/app/score.musicxml"), 3)
+        },
+        extra_refs=(obl(3),),
+    )
+    review = review_missing_for_assessment(
+        satb, (), _first_request("other", str(obl(3))), unsuppliable_kinds=frozenset()
+    )
+    assert [item.availability for item in review.items] == ["agent_suppliable"]
+
+
+# --- tb4n2 A11: edge-case file types and suffix-less binaries ------------------------------------
+
+_A11_SUFFIXES = (
+    # Archives and containers (a multi-suffix name matches on its last suffix).
+    *(
+        ".rar .lz4 .lzma .cab .iso .dmg .img .qcow2 .vmdk .deb .rpm .apk .ipa .whl .egg .war .ear"
+    ).split(),
+    *".aar .nupkg .sif .tar.zst .tar.lz4 .tar.xz".split(),
+    # Zip-based office and app files.
+    *".doc .ppt .odt .ods .odp .epub .key .pages .numbers .mscz .3mf .sketch .fig".split(),
+    # Audio and video.
+    *".flac .ogg .opus .m4a .aac .aiff .wma .mov .avi .mkv .webm .m4v .wmv".split(),
+    # Images.
+    *".psd .raw .cr2 .nef .dng .exr .hdr .tga .jp2 .jxl".split(),
+    # CAD, 3D and EDA.
+    *".glb .fbx .3dm .skp .f3d .sldprt .sldasm .ipt .iam .catpart .x_b .sab .gds .oas".split(),
+    *".brd .bit .svf".split(),
+    # ROMs and fonts.
+    *".rom .nes .gb .gba .sfc .ttf .otf .woff .woff2".split(),
+    # Data and model files.
+    *".feather .arrow .orc .avro .tfrecord .lmdb .hdf5 .hdf .nc .mat .sav .dta .rds".split(),
+    *".rdata .joblib .ckpt .gguf .ggml .tflite .pb .keras .mlmodel".split(),
+    # Databases, natives and captures.
+    *".sqlite3 .db3 .duckdb .mdb .accdb .a .lib .elf .ko .pyd .msi .beam .pcap .pcapng".split(),
+)
+
+
+def _named_file_review(
+    name: str,
+    kind: str = "other",
+    *,
+    binary_paths: frozenset[str] = frozenset(),
+    text_paths: frozenset[str] = frozenset(),
+) -> list[str]:
+    case = make_case(
+        evidence={evd(5): evidence_record(_diff(5, name), 5)},
+        extra_refs=(evd(5),),
+    )
+    review = review_missing_for_assessment(
+        case,
+        (),
+        _first_request(kind, str(evd(5))),
+        unsuppliable_kinds=frozenset(),
+        workspace_root="/work/repo",
+        binary_paths=binary_paths,
+        text_paths=text_paths,
+    )
+    return [item.availability for item in review.items]
+
+
+@pytest.mark.parametrize("suffix", _A11_SUFFIXES)
+def test_every_listed_binary_kind_is_an_unsupported_data_type(suffix: str) -> None:
+    """tb4n2 A11: content the packet cannot carry is Yoetz's limit, whatever its case."""
+
+    assert unsupported_data_type(f"out/deliverable{suffix}")
+    assert unsupported_data_type(f"out/DELIVERABLE{suffix.upper()}")
+    assert _named_file_review(f"out/deliverable{suffix}") == ["yoetz_limit_unsupported_data_type"]
+
+
+@pytest.mark.parametrize(
+    "name", ("Makefile", "Dockerfile", "solver.c", "build.sh", "README", ".a", "notes.txt")
+)
+def test_text_and_suffix_less_names_stay_agent_work_without_a_binary_mark(name: str) -> None:
+    assert not unsupported_data_type(name)
+    assert _named_file_review(name) == ["agent_suppliable"]
+
+
+_BINARY_CHANGE = (
+    b"Yoetz check-time change: captured by the Yoetz service when this check ran; "
+    b"the agent did not supply it.\n"
+    b"Base: the commit HEAD named when this task started.\n"
+    b"Scope: committed and uncommitted changes.\n"
+    b"Changed files: 3 tracked, 3 untracked. Not shown: 0.\n"
+    b"Files:\n"
+    b"  M bin/firmware (binary)\n"
+    b"  M src/solver.c (+3 -1)\n"
+    b"  D old tool (binary)\n"
+    b"  A solver (binary) untracked\n"
+    b'  A "caf\\303\\251" (binary) untracked\n'
+    b"  A Makefile (+2 -0) untracked\n"
+    b"End of header. The unified diff follows.\n"
+    b"diff --git a/bin/firmware b/bin/firmware\n"
+    b"Binary files a/bin/firmware and b/bin/firmware differ\n"
+    b"diff --git a/src/solver.c b/src/solver.c\n"
+    b"--- a/src/solver.c\n"
+    b"+++ b/src/solver.c\n"
+    b"@@ -1 +1,3 @@\n"
+    b"+Binary files a/fake and b/fake differ\n"
+    b"diff --git a/old tool b/old tool\n"
+    b"deleted file mode 100755\n"
+    b"Binary files a/old tool and /dev/null differ\n"
+    b"diff --git a/a.out b/a.out\n"
+    b"new file mode 100755\n"
+    b"Binary files /dev/null and b/a.out differ\n"
+    b"diff --git a/x and b/y b/x and b/y\n"
+    b"Binary files a/x and b/y and b/x and b/y differ\n"
+)
+
+
+def _binary_capture(text: bytes = _BINARY_CHANGE) -> CheckChangeCapture:
+    return CheckChangeCapture(
+        base="task_start",
+        text=text,
+        tracked_files=3,
+        untracked_files=3,
+        omitted_files=0,
+        truncated=False,
+    )
+
+
+def test_the_check_time_change_names_its_binary_files() -> None:
+    """Git's binary marks, read from the header and the diff; quoted names decoded, diff-body
+    lines skipped."""
+
+    assert check_change_binary_paths(_binary_capture()) == frozenset(
+        {"bin/firmware", "old tool", "solver", "a.out", "x and b/y", "café"}
+    )
+    assert check_change_binary_paths(None) == frozenset()
+
+
+def test_a_suffix_less_binary_the_change_marks_is_an_unsupported_data_type() -> None:
+    """tb4n2 A11: a compiled ``solver`` or ELF harness reads as Yoetz's limit, never agent work."""
+
+    binary = check_change_binary_paths(_binary_capture())
+    for name in (
+        "solver",
+        "./solver",
+        "/work/repo/a.out",
+        "bin/firmware",
+        "old tool",
+        "/work/repo/old tool",
+        "café",
+    ):
+        for kind in ("other", "verification_output", "current_diff_for_path"):
+            assert _named_file_review(name, kind, binary_paths=binary) == [
+                "yoetz_limit_unsupported_data_type"
+            ], (name, kind)
+    # A text file in the same change, and a binary's name outside the workspace, stay agent work.
+    for name in (
+        "Makefile",
+        "src/solver.c",
+        "/elsewhere/solver",
+        "/elsewhere/old tool",
+        "old  tool",
+    ):
+        assert _named_file_review(name, binary_paths=binary) == ["agent_suppliable"], name
+
+
+def test_an_other_item_whose_requested_outputs_are_marked_binary_is_a_yoetz_limit() -> None:
+    case = make_case(
+        obligations={obl(3): obligation_record(_requesting(3, "/work/repo/solver"), 3)},
+        extra_refs=(obl(3),),
+    )
+
+    def availability(binary: frozenset[str]) -> list[str]:
+        review = review_missing_for_assessment(
+            case,
+            (),
+            _first_request("other", str(obl(3))),
+            unsuppliable_kinds=frozenset(),
+            workspace_root="/work/repo",
+            binary_paths=binary,
+        )
+        return [item.availability for item in review.items]
+
+    assert availability(frozenset({"solver"})) == ["yoetz_limit_unsupported_data_type"]
+    assert availability(frozenset()) == ["agent_suppliable"]
+
+
+def test_a_claim_target_with_only_text_evidence_stays_agent_work() -> None:
+    """tb4n2 music L205: the validator's output for a claim is text the agent can publish."""
+
+    claim = ClaimRecordedPayload(clm(1), ClaimKind.COMPLETION, "harmony.mxl written", (evd(4),))
+    evidence = EvidenceRecordedPayload(
+        evd(4),
+        EvidenceKind.COMMAND_OUTPUT,
+        EvidenceImmutability.METADATA_ONLY,
+        timestamp_from_string("2026-09-27T00:00:00.000Z"),
+        description="validator: 0 parallel fifths",
+    )
+    case = make_case(
+        claims={clm(1): claim_record(claim, 3)},
+        evidence={evd(4): evidence_record(evidence, 4)},
+        extra_refs=(clm(1), evd(4)),
+    )
+    review = review_missing_for_assessment(
+        case,
+        (),
+        _first_request("verification_output", str(clm(1))),
+        unsuppliable_kinds=frozenset(),
+        binary_paths=frozenset({"harmony.mxl"}),
+    )
+    assert [item.availability for item in review.items] == ["agent_suppliable"]
+
+
+_TEXT_CHANGE = (
+    b"Yoetz check-time change: captured by the Yoetz service when this check ran.\n"
+    b"Changed files: 2 tracked, 4 untracked. Not shown: 0.\n"
+    b"Files:\n"
+    b"  ? part.step (+120 -0) untracked\n"
+    b"  ? part.stl (binary) untracked\n"
+    b"  M src/solver.c (+3 -1)\n"
+    b"  ? my part.stp (+9 -0) untracked\n"
+    b"  ? withheld.bin untracked\n"
+    b"End of header. The unified diff follows.\n"
+)
+
+
+def test_the_check_time_change_names_its_text_files() -> None:
+    """tb4n3 RC-5 (ADR-045): Git's NUL sniff lists a file with numeric line counts as text."""
+
+    text = check_change_text_paths(_binary_capture(_TEXT_CHANGE))
+    assert text == frozenset({"part.step", "src/solver.c", "my part.stp"})
+    assert check_change_binary_paths(_binary_capture(_TEXT_CHANGE)) == frozenset({"part.stl"})
+    assert check_change_text_paths(None) == frozenset()
+
+
+def test_the_content_sniff_decides_before_the_suffix() -> None:
+    """tb4n3 cad: ISO 10303-21 ``.step`` is ASCII. A listed text file is never an unsupported data
+    type by its suffix, a listed binary is whatever its name, and an unlisted file falls back to
+    the suffix."""
+
+    capture = _binary_capture(_TEXT_CHANGE)
+    binary, text = check_change_binary_paths(capture), check_change_text_paths(capture)
+    # ``.step`` and ``.stp`` are not on the suffix list at all any more.
+    assert not unsupported_data_type("out/part.step") and not unsupported_data_type("part.stp")
+    # A text file that does carry a listed binary suffix (``.key`` holding a PEM key) is text when
+    # the change listed it as text, and still a Yoetz limit when the change did not list it.
+    listed_text = frozenset({"notes.key"})
+    assert _named_file_review("notes.key", text_paths=listed_text) == ["agent_suppliable"]
+    assert _named_file_review("notes.key") == ["yoetz_limit_unsupported_data_type"]
+    # Git found it binary, whatever the name.
+    assert _named_file_review("part.stl", binary_paths=binary, text_paths=text) == [
+        "yoetz_limit_unsupported_data_type"
+    ]
+    assert _named_file_review("renamed.txt", binary_paths=frozenset({"renamed.txt"})) == [
+        "yoetz_limit_unsupported_data_type"
+    ]
