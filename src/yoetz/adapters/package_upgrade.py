@@ -11,12 +11,16 @@ from typing import Final, cast
 from packaging.version import InvalidVersion, Version
 
 from yoetz import __version__
-from yoetz.adapters.release_runtime import installation_prefix, release_update_lock
+from yoetz.adapters.release_runtime import (
+    hash_bytecode_environment,
+    installation_prefix,
+    release_update_lock,
+)
 
 # An explicit lower bound replaces an old exact installation pin and forbids downgrade.
-# --compile-bytecode: ordinary runs of the installation load compiled bytecode. The release
-# runtime reuses only hash-based bytecode whose source hash matches; uv's default timestamp
-# bytecode is compiled afresh for the sealed copy (ADR-007).
+# --compile-bytecode, run with SOURCE_DATE_EPOCH in the child's environment: uv then writes
+# checked-hash bytecode, which the release runtime verifies and reuses for its sealed copy, so
+# the first serving start after an upgrade does not compile the whole package (ADR-007).
 PACKAGE_UPGRADE_ARGV: Final = (
     "uv",
     "tool",
@@ -102,6 +106,7 @@ def execute_package_upgrade() -> str:
             result = subprocess.run(  # noqa: S603 - closed argv, same supported carrier
                 command,
                 check=False,
+                env=hash_bytecode_environment(os.environ),
                 umask=0o022,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

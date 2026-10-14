@@ -255,16 +255,23 @@ the five-second handshake and services the restart budget.
    matches the copied source and no other account can write it or its directory; only the flags
    are rewritten. Timestamp bytecode is never reused: its header proves only a whole-second mtime
    and a size, which an edit within the same second at equal length keeps, so reusing it could
-   seal stale code. Anything else is compiled with the generation's own file names. A module this interpreter cannot compile still
-   compiles at import. Pycs are sealed `0400` in `0500` directories like every other member.
+   seal stale code. Anything else is compiled with the generation's own file names. A module
+   this interpreter cannot compile still compiles at import. Pycs are sealed `0400` in `0500` directories like every other member.
 2. **Older generations are not reused.** The generation key includes a layout version, so a
    generation sealed before this change never satisfies a newer start; the next start builds a
    complete one and the ordinary lease-aware pruning removes the old one once unused.
-3. **Installs compile.** The documented install, `npx yoetz`, `yoetz upgrade --accept` and the
-   test-instance provisioner pass `--compile-bytecode`. uv writes timestamp bytecode by default
-   (hash-based only under `SOURCE_DATE_EPOCH`), which item 1 does not reuse, so creating a
-   generation compiles the package once per release (macOS: about 7.8 s; 3.1 s when hash-based
-   bytecode is reused); serving starts then load the sealed bytecode. uv records that flag as the receipt option `compile-bytecode`; the upgrade accepts
+3. **Installs compile checked-hash bytecode.** The documented install, `npx yoetz`,
+   `yoetz upgrade --accept` and the test-instance provisioner pass `--compile-bytecode`. uv
+   writes timestamp bytecode unless `SOURCE_DATE_EPOCH` is set, so the paths Yoetz runs itself
+   (`npx yoetz`, `yoetz upgrade --accept`, the provisioner) set it in the install child's
+   environment only (an exported value is kept), and uv writes checked-hash bytecode that item 1
+   reuses. A plain user-run `uv tool install --compile-bytecode` still yields timestamp bytecode;
+   the first serving start then compiles the package once, and a client that gives up meanwhile
+   sees the retryable `service_handshake_timeout`, which names that one-time compile. Measured on
+   macOS (M-series, 2026-10-14, a full 0.3.0 runtime of about 3,500 modules, cold generation
+   creation on a machine at load average about 33, three runs each): 22.2-28.7 s (median 24.4 s)
+   from timestamp bytecode against 8.4-13.1 s (median 10.7 s) from checked-hash bytecode. uv
+   records that flag as the receipt option `compile-bytecode`; the upgrade accepts
    exactly that option and still refuses any other recorded option.
 4. **A slow start is named.** When on-demand start ends its budget while the service it spawned
    (or a live singleton holder) is still starting, the error carries phase `handshake_timeout`

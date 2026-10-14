@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import shutil
 import sys
 from collections.abc import Callable, Generator
 from pathlib import Path
@@ -613,3 +614,78 @@ def test_generation_from_an_earlier_layout_is_never_reused(
     newer = runtimes.prepare_release_runtime(prefix)
     assert newer != older
     assert _pyc(newer, "lib/python3.14/site-packages/dependency/lazy.py").exists()
+
+
+def _tiny_wheel(directory: Path) -> Path:
+    import base64
+    import hashlib
+    import zipfile
+
+    files = {
+        "hashdep_mod.py": b"VALUE = 'installed by an owned path'\n",
+        "hashdep-1.0.dist-info/METADATA": b"Metadata-Version: 2.1\nName: hashdep\nVersion: 1.0\n",
+        "hashdep-1.0.dist-info/WHEEL": (
+            b"Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+        ),
+    }
+    record: list[str] = []
+    for name, data in files.items():
+        digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+        record.append(f"{name},sha256={digest},{len(data)}")
+    record.append("hashdep-1.0.dist-info/RECORD,,")
+    wheel = directory / "hashdep-1.0-py3-none-any.whl"
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+        archive.writestr("hashdep-1.0.dist-info/RECORD", "\n".join(record) + "\n")
+    return wheel
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is the supported installer")
+def test_owned_install_environment_yields_reused_checked_hash_bytecode(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """`yoetz upgrade`, `npx yoetz` and the provisioner install with checked-hash bytecode.
+
+    uv's ``--compile-bytecode`` writes timestamp pycs, which a sealed generation never reuses;
+    the owned install paths set ``SOURCE_DATE_EPOCH`` in the child so the generation reuses
+    the installed bytecode instead of compiling the package on the first serving start.
+    """
+
+    import subprocess
+
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    site = prefix / "lib/python3.14/site-packages"
+    environment = runtimes.hash_bytecode_environment(os.environ)
+    assert "SOURCE_DATE_EPOCH" not in os.environ  # the child's environment only
+    subprocess.run(
+        [
+            "uv", "pip", "install", "--offline", "--no-deps", "--compile-bytecode",
+            "--python", sys.executable, "--target", str(site), str(_tiny_wheel(tmp_path)),
+        ],
+        env=environment,
+        umask=0o022,
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )  # fmt: skip
+    installed = site / "__pycache__" / f"hashdep_mod.{_TAG}.pyc"
+    assert int.from_bytes(installed.read_bytes()[4:8], "little") == 0b11  # checked hash
+    for path in (prefix, *prefix.rglob("*")):
+        if not path.is_symlink():
+            path.chmod(path.stat().st_mode & ~0o022)
+    compiled = _spy_compiles(monkeypatch)
+    target = runtimes.prepare_release_runtime(prefix)
+    assert "hashdep_mod.py" not in compiled
+    assert "lazy.py" in compiled  # the fixture's module has no installed bytecode
+    sealed = _pyc(target, "lib/python3.14/site-packages/hashdep_mod.py").read_bytes()
+    assert sealed[16:] == installed.read_bytes()[16:]
+
+
+def test_hash_bytecode_environment_keeps_an_explicit_epoch() -> None:
+    assert runtimes.hash_bytecode_environment({"PATH": "/bin"}) == {
+        "PATH": "/bin",
+        "SOURCE_DATE_EPOCH": runtimes.HASH_BYTECODE_EPOCH,
+    }
+    kept = runtimes.hash_bytecode_environment({"SOURCE_DATE_EPOCH": "1700000000"})
+    assert kept == {"SOURCE_DATE_EPOCH": "1700000000"}

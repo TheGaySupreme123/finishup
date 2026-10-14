@@ -577,9 +577,10 @@ def control_failure(
         stderr_writer(
             _with_holder_pid(
                 "service_unavailable: service_handshake_timeout: the local service is still "
-                "starting and did not answer in time. The first start after an install or "
-                "update, and slow machines such as WSL under nested virtualization, take "
-                "longer. Wait a few seconds and retry; 'yoetz service status' answers once it "
+                "starting and did not answer in time. This is expected, not a failure: the "
+                "first start after an install or update prepares Yoetz's retained copy and "
+                "compiles it once when the install did not, and slow machines such as WSL under "
+                "nested virtualization take longer. Wait a few seconds and retry; 'yoetz service status' answers once it "
                 "is ready. Do not run 'yoetz service run' or 'yoetz service restart' for this; "
                 "if it never becomes ready, run 'yoetz service diagnostics'"
             )

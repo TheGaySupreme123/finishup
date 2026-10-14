@@ -22,7 +22,7 @@ import sys
 import tempfile
 import time
 import warnings
-from collections.abc import Generator
+from collections.abc import Generator, Mapping
 from pathlib import Path
 from typing import Final, Literal, cast
 
@@ -368,6 +368,25 @@ def _compile_bytecode(prefix: Path, staging: Path, published: Path) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         _compile_sources(prefix, staging, published, tag)
+
+
+# 1980-01-01: any non-empty SOURCE_DATE_EPOCH makes py_compile, and so uv's --compile-bytecode,
+# write checked-hash pycs, which a generation can verify and reuse; the value itself is only
+# read by build backends, and zip archives cannot hold earlier timestamps.
+HASH_BYTECODE_EPOCH: Final = "315532800"
+
+
+def hash_bytecode_environment(base: Mapping[str, str]) -> dict[str, str]:
+    """``base`` for one owned install child, so its compiled bytecode is checked-hash.
+
+    Set only in the child's environment, never in this process. An epoch the caller already
+    exports is kept; any non-empty value selects checked-hash bytecode.
+    """
+
+    environment = dict(base)
+    if not environment.get("SOURCE_DATE_EPOCH"):
+        environment["SOURCE_DATE_EPOCH"] = HASH_BYTECODE_EPOCH
+    return environment
 
 
 def _reusable_bytecode(installed: Path, source: bytes) -> bytes | None:

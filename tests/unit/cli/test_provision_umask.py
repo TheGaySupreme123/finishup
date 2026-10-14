@@ -35,6 +35,29 @@ def test_uv_commands_run_under_umask_022(monkeypatch: pytest.MonkeyPatch) -> Non
     assert seen["umask"] == 0o022
 
 
+def test_runtime_install_writes_checked_hash_bytecode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    module = _provisioner()
+    seen: list[tuple[list[str], dict[str, str] | None]] = []
+
+    def run(args: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        seen.append((args, kwargs.get("env")))
+        if args[:2] == ["uv", "venv"]:
+            (tmp_path / "runtime/bin").mkdir(parents=True)
+            (tmp_path / "runtime/bin/yoetz").write_text("#!/bin/sh\n")
+        return subprocess.CompletedProcess(args, 0, b"", b"")
+
+    monkeypatch.setattr(module, "_run", run)
+    base = {"PATH": "/usr/bin"}
+    module._install_runtime(tmp_path / "runtime", tmp_path / "w.whl", "3.14", base)  # noqa: SLF001
+    install = [env for args, env in seen if args[:2] == ["uv", "pip"] and "install" in args]
+    assert install and all(env and env["SOURCE_DATE_EPOCH"] for env in install)
+    assert "SOURCE_DATE_EPOCH" not in base  # the caller's environment is untouched
+    venv = [env for args, env in seen if args[:2] == ["uv", "venv"]]
+    assert venv == [base]
+
+
 def test_runtime_created_under_umask_0002_is_left_owner_writable_only(tmp_path: Path) -> None:
     module = _provisioner()
     runtime = tmp_path / "runtime"

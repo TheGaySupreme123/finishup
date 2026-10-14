@@ -165,6 +165,20 @@ def _build_wheel(source: Path, dist: Path) -> Path:
     return wheels[0]
 
 
+# Mirrors yoetz.adapters.release_runtime.HASH_BYTECODE_EPOCH: any non-empty SOURCE_DATE_EPOCH
+# makes uv's --compile-bytecode write checked-hash pycs, which the retained runtime reuses.
+_HASH_BYTECODE_EPOCH: Final = "315532800"
+
+
+def _hash_bytecode_env(env: dict[str, str]) -> dict[str, str]:
+    """The install child's environment only; an epoch the operator exports is kept."""
+
+    install_env = dict(env)
+    if not install_env.get("SOURCE_DATE_EPOCH"):
+        install_env["SOURCE_DATE_EPOCH"] = _HASH_BYTECODE_EPOCH
+    return install_env
+
+
 def _install_runtime(runtime: Path, wheel: Path, python: str, env: dict[str, str]) -> Path:
     created = _run(["uv", "venv", "--python", python, str(runtime)], env=env)
     if created.returncode != 0:
@@ -172,9 +186,10 @@ def _install_runtime(runtime: Path, wheel: Path, python: str, env: dict[str, str
         raise _fail("runtime_venv_failed")
     interpreter = runtime / "bin" / "python"
     args = ["uv", "pip", "install", "--compile-bytecode", "--python", str(interpreter), str(wheel)]
-    installed = _run([*args[:2], "--offline", *args[2:]], env=env)
+    install_env = _hash_bytecode_env(env)
+    installed = _run([*args[:2], "--offline", *args[2:]], env=install_env)
     if installed.returncode != 0:
-        installed = _run(args, env=env)
+        installed = _run(args, env=install_env)
     if installed.returncode != 0:
         sys.stderr.write(installed.stderr.decode("utf-8", errors="replace"))
         raise _fail("runtime_install_failed")

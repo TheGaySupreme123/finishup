@@ -73,6 +73,13 @@ function main() {
   // The install runs under umask 022: Yoetz refuses a runtime another account
   // can write, and a umask 0002 shell would otherwise make every installed file
   // group-writable (harmless only for a user-private group). Restored after.
+  // SOURCE_DATE_EPOCH (child only; any value the user exports is kept) makes uv
+  // write checked-hash bytecode, which Yoetz's retained runtime verifies and
+  // reuses, so the first serving start does not compile the whole package.
+  const installEnv = { ...process.env };
+  if (!installEnv.SOURCE_DATE_EPOCH) {
+    installEnv.SOURCE_DATE_EPOCH = "315532800";
+  }
   const previousUmask = process.umask(0o022);
   let install;
   try {
@@ -87,7 +94,7 @@ function main() {
         "3.14",
         `yoetz==${version}`,
       ],
-      { stdio: "inherit", shell: false },
+      { stdio: "inherit", shell: false, env: installEnv },
     );
   } finally {
     process.umask(previousUmask);

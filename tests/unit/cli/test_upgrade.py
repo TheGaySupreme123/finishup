@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
@@ -189,6 +191,11 @@ def test_package_execution_binds_invoking_uv_tool(
         assert kwargs["stdout"] == subprocess.DEVNULL
         # A umask 0002 shell must not leave the replacement writable by the group.
         assert kwargs["umask"] == 0o022
+        # Checked-hash bytecode the sealed generation can reuse; set for the child only.
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        assert cast(dict[str, str], env).get("SOURCE_DATE_EPOCH")
+        assert "SOURCE_DATE_EPOCH" not in os.environ
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(package_adapter.subprocess, "run", run)
