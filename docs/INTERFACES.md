@@ -3971,6 +3971,16 @@ Network egress additionally requires the exact channel-compatible `ProviderBindi
 NonLlmDestination`; local disclosure names its sink and forbids attempt-only request-body counts.
 Required schema data is never modeled as an optional compatibility default.
 
+Predispatch `EgressReceipt.blocked_categories` contains only actual classifier/category-policy
+denials (#1019). Request-level scope/destination/channel refusal and failure to assemble approved
+context do not by themselves deny any category. `approved_categories` and `counts.approved_items`
+record classification approval, never provider delivery; before classification neither approval
+nor denial is asserted. `safe_failure_reason` independently names the actual failure. Stored older
+receipts preserve their original category accounting. Because the released receipt shape is
+closed, the human rendering of `yoetz privacy receipts get|list` (not `--json`) adds one stderr
+line per network receipt with no `dispatch_id` that still carries approvals: `not sent: privacy
+receipt <receipt_id> (<outcome>) never reached a provider; ...` (#1019 r2).
+
 `EgressReceipt` and `LocalDisclosureReceipt` share one closed outcome/reason compatibility matrix:
 `completed` forbids `safe_failure_reason`; every other outcome requires exactly one reason permitted
 for that outcome. `blocked_by_policy` admits the direct policy/scope/category/purpose/destination
@@ -4347,6 +4357,19 @@ registered in §7. Adapter provenance has no authorization/reservation/receipt I
 published. Final provenance adds exact attempt, dispatch-authority, receipt, commitment, status,
 and reason fields only after the terminal privacy receipt is durable; predispatch gaps use the
 status/reason pair with no provenance.
+
+`review_item_catalog(items)` and `review_envelope_to_candidate_context(envelope, items, ...)`
+(`application.semantic_case`) are the shared catalog/classification projection for explicit checks
+and automatic advice. They offer the structural `review-packet` envelope and only catalogued
+content as separate categorized candidates. `observation_advice_to_candidate_context(attempt, ...,
+review_context_profile, include_finding_prose)` (`application.observation_advice_semantic`)
+validates the frozen advice packet through `validate_semantic_evidence_packet`
+(`application.observation_advice`), keeps rule metadata and gaps structural, and separates
+finding-summary prose. The service passes the effective repository policy's
+`review_context_profile` (named in the envelope) and offers finding-summary prose only when
+`review_selection_for_delivery(policy).include_finding_prose` (never under `structural`). Both producers use
+`assemble_filtered_review_packet` to retain only privacy-approved content. Advice does not invent a
+cooperative ledger frontier, source excerpts, or task-check coverage (#1019, ADR-009).
 
 For `dispatch_kind=external_runtime_oauth`, provenance additionally requires one
 `RuntimeAttemptEvidence` value. It contains only exact runtime/source/executable/protocol/
@@ -4960,7 +4983,27 @@ Shared closed types:
   without both no row
   is written, no provider is contacted, and the snapshot adds `advice_semantic_unavailable` once
   with semantic state `disabled`, never `advice_semantic_pending`; only a completed review of the
-  same identity is still reused. Only a `succeeded` row with validated finding ids adds
+  same identity is still reused. When both pass but the effective repository policy needs a human
+  preview (`semantic_preview_required`, `application.egress`: profile `confirm_every_request`,
+  i.e. the metadata-only recipe, or an LLM channel with `preview_required`), the scheduler's
+  `preview_required` probe skips the same way with the typed addon reason `preview_required`: no
+  row, revisit, provider identity, backoff or disclosure proposal; the snapshot adds
+  `advice_semantic_preview_required` beside `advice_semantic_unavailable` with semantic state
+  `disabled` (gap rule G5b, disclosed). A row queued before such a policy change closes at dispatch
+  as `unavailable` / `authorization_missing` with no provider identity, and `PrivacyCoordinator`
+  refuses an `observation_advice` candidate under such a policy before classification
+  (`blocked_by_policy` / `policy_denied`, no proposal, no category approval) (#1019 r2). It
+  likewise refuses (`scope_mismatch`) an advice candidate whose envelope names a review-context
+  profile other than the effective one, or that offers `finding_summary` prose the effective
+  selection excludes (`advice_selection_is_current`, `application.egress`). The dispatch maps a
+  `SemanticEgressBlocked` result from its typed reason, never from the configured binding
+  (`advice_outcome_for_blocked`, `service.ready_composition`): `outcome_unknown` keeps
+  `failed` / `provider_failed` with the provider identity; `policy_denied`, `scope_mismatch`,
+  `purpose_not_allowed`, `destination_not_allowed`, `channel_unavailable` and
+  `authorization_stale` close `unavailable` / `authorization_missing`; other pre-dispatch refusals
+  stay `failed` / `provider_failed`; none of the proven-unsent ones names a provider, and each links
+  its privacy receipt or proposal id as `attempt_receipt` (#1019 r3). The MCP `status` advice text
+  adds one fixed sentence when the snapshot carries `advice_semantic_preview_required`. Only a `succeeded` row with validated finding ids adds
   `semantic_model_derived`; a succeeded attempt that returned no challenges is an honest receipt and
   no finding.
 

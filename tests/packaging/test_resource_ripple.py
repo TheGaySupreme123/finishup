@@ -97,6 +97,7 @@ def _synthetic_checkout(root: Path, *, inventory_count: int, reviewed_count: int
     _write(root, "scripts/sync_repository_authority_schemas.py", "")
     _write(root, "scripts/sync_committed_agent_trees.py", "")
     _write(root, "scripts/sync_mcp_descriptor_digests.py", "")
+    _write(root, "scripts/generate_advice_egress_fixture.py", "")
     _write(root, "scripts/generate_project_policy_fixture.py", "")
     _write(root, "scripts/generate_check_conclusion_fixture.py", "")
     _write(root, "scripts/generate_check_totals_fixture.py", "")

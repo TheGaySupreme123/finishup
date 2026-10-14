@@ -7,7 +7,7 @@ import importlib
 import os
 import sys
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from functools import cache
 from pathlib import Path
 from types import MappingProxyType
@@ -4922,6 +4922,34 @@ def _partial_receipt_page_lines(undecodable_count: int, receipt_ids: tuple[str, 
     return "\n".join(lines)
 
 
+def _receipt_not_sent_lines(views: Iterable[object]) -> tuple[str, ...]:
+    """Label classification-only approvals on network receipts whose dispatch never started.
+
+    A refused request can still carry ``approved_categories`` and ``counts.approved_items``: they
+    record what classification approved, not what left the machine (#1019). The released receipt
+    shape cannot carry a new field, so the human rendering says so beside it. Only structural
+    receipt ids and closed outcome values are printed.
+    """
+
+    from yoetz.ports.privacy import NetworkEgressReceiptView
+
+    lines: list[str] = []
+    for view in views:
+        if type(view) is not NetworkEgressReceiptView:
+            continue
+        receipt = view.receipt
+        if receipt.dispatch_id is not None or not (
+            receipt.approved_categories or receipt.counts.approved_items
+        ):
+            continue
+        lines.append(
+            f"not sent: privacy receipt {receipt.receipt_id} ({receipt.outcome.value}) never "
+            "reached a provider; its approved_categories and counts.approved_items are "
+            "classification results, not data sent"
+        )
+    return tuple(lines)
+
+
 async def _privacy_receipts_list(page_size: int, cursor: str | None, json_output: bool) -> int:
     from yoetz.service.client import ListPrivacyReceiptsRequest
 
@@ -4937,6 +4965,9 @@ async def _privacy_receipts_list(page_size: int, cursor: str | None, json_output
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
     _human_or_json(result, json_output=json_output)
+    if not json_output:
+        for line in _receipt_not_sent_lines(result.receipts):
+            _stderr(line)
     if result.undecodable_count:
         # A partial page is printed in full -- every receipt that could be read -- and then exits
         # non-zero, so a script can never mistake it for a complete listing.
@@ -4957,7 +4988,7 @@ def privacy_receipts_list(
 
 
 async def _privacy_receipts_get(receipt_id: str, json_output: bool) -> int:
-    from yoetz.service.client import GetPrivacyReceiptRequest
+    from yoetz.service.client import GetPrivacyReceiptRequest, PrivacyReceiptFound
 
     try:
         request = GetPrivacyReceiptRequest(receipt_id)
@@ -4971,6 +5002,9 @@ async def _privacy_receipts_get(receipt_id: str, json_output: bool) -> int:
     except ControlError as error:
         return _control_failure(error, json_output=json_output)
     _human_or_json(result, json_output=json_output)
+    if not json_output and isinstance(result, PrivacyReceiptFound):
+        for line in _receipt_not_sent_lines((result.receipt,)):
+            _stderr(line)
     return 0
 
 

@@ -6,6 +6,21 @@ reverse-chronological released versions.
 
 ## Unreleased
 
+- **Behaviour change:** background AI-powered advice now actually sends the approved, minimized
+  advice packet to your configured reviewer when external review is configured and your privacy
+  policy allows unattended requests (#1019). The background switch was already on by default, but
+  an invalid review envelope meant nothing was sent before. Set
+  `observation.semantic_advice_enabled = false` to stop background sends on every host.
+- Background advice is skipped under policies that require you to preview each request (the
+  Metadata only recipe, or `preview_required` on the AI-powered review channel). It shows
+  `advice_semantic_preview_required`; nothing is queued or sent, no approval waits for you, and no
+  provider attempt or retry backoff is recorded. Explicit checks keep their preview. The advice
+  packet follows your review-context choice (a choice changed while a review waits is applied, never
+  the stale one), a policy change that lands mid-request is recorded as not sent rather than as a
+  provider failure, the MCP status advice text names the preview skip, and
+  `yoetz privacy receipts get|list` now marks refused receipts whose category approvals were never
+  sent (#1019).
+
 ### Fixed
 
 - The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
@@ -461,6 +476,12 @@ reverse-chronological released versions.
   budget without dropping any rule.
 
 ### Fixed
+
+- Automatic AI-powered observation advice can now reach the configured reviewer through the
+  approved review-packet envelope on Codex, Claude Code and Cursor. Scoped gaps and rule metadata
+  are retained; finding summaries travel only when their category is approved. Malformed or denied
+  advice stays blocked. Privacy receipts now distinguish actual category denials from request or
+  packet-assembly failures, while older receipts remain readable (#1019, ADR-009).
 
 - Hooks, the agent connection (MCP) and the service start as fast as an ordinary run again. They
   run from a sealed copy of the installation that held no compiled bytecode, so every start

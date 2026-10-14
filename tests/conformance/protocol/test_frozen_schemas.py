@@ -24,8 +24,9 @@ _MANIFEST_PATH = "manifest.json"
 _SCHEMA_NAMESPACE = "https://schemas.yoetz.dev/0.1/"
 _EXPECTED_SCHEMA_MANIFEST_SCHEMA = "yoetz.schema-manifest/1.0.0"
 _EXPECTED_SCHEMA_MANIFEST_VERSION = "1.0.0"
-_EXPECTED_MEMBER_COUNT = 228
-_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 53
+# +1 each: the review-packet-row 2.0.0 provider contract (robust lane row contract).
+_EXPECTED_MEMBER_COUNT = 229
+_EXPECTED_REQUEST_RESULT_VERSION_COUNT = 54
 _EXPECTED_EVENT_VERSION_COUNT = 29
 
 

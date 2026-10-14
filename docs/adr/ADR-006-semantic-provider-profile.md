@@ -2050,3 +2050,19 @@ A round already dispatched stays counted even if egress withholds every newly su
 request is unavailable, not pending work, and receipts retain empty supply refs. Avoiding that one
 dispatch would require an egress preflight transaction; this change does not bypass egress or
 reuse a prior disclosure to save a round.
+
+### Background advice and preview-required privacy (2026-10-14, #1019 round 2)
+
+Admission gains a third readiness leg after the provider and route legs (#923): when the
+effective repository policy needs a human preview, background advice is skipped with the typed
+reason `preview_required` and the `advice_semantic_preview_required` gap beside
+`advice_semantic_unavailable` (semantic state `disabled`). No row, revisit, provider identity,
+backoff or disclosure proposal results. A row queued before the policy changed closes at dispatch
+as `authorization_missing` without provider identity, so it neither charges the session interval
+nor grows the provider-failure backoff. The advice packet follows the effective review-context
+profile. The privacy decision is recorded in ADR-009.
+
+Round 3: a late policy or authority switch refused inside the egress pipeline closes the row
+`authorization_missing` without provider identity, mapped from the typed refusal (ADR-009); only
+`outcome_unknown` is recorded as a possibly provider-reaching failure. A candidate built for a
+review-context profile no longer in force is refused and rebuilt on the next admission.

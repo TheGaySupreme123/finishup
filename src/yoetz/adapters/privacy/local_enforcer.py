@@ -13,6 +13,7 @@ from yoetz.application.semantic_case import (
     assemble_filtered_review_packet,
 )
 from yoetz.domain.privacy import (
+    OBSERVATION_ADVICE_PACKET_ITEM_ID,
     CandidateContext,
     CandidateContextItem,
     ClassifiedContext,
@@ -283,7 +284,12 @@ def _assemble_semantic_review_payload(
                 },
             )
         )
-    if not isinstance(envelope, dict):
+    if not (
+        isinstance(envelope, dict)
+        and envelope.get("schema") == _SEMANTIC_PACKET_SCHEMA
+        and isinstance(envelope.get("review_packet"), dict)
+        and isinstance(envelope.get("item_catalog"), list)
+    ):
         return canonical_encode(
             cast(JsonValue, {"items": [], "omissions": [], "schema": _SEMANTIC_PACKET_SCHEMA})
         )
@@ -673,6 +679,19 @@ class LocalPrivacyEnforcer:
                     and isinstance(semantic_packet.get("review_packet"), dict)
                 ):
                     included = ()
+                elif any(
+                    item.candidate.item_id == OBSERVATION_ADVICE_PACKET_ITEM_ID
+                    for item in classified.items
+                ):
+                    # Advice without its actual structural content is not a usable advice
+                    # packet, even when the generic envelope alone remains approved.
+                    rows = semantic_packet.get("items")
+                    if not isinstance(rows, list) or not any(
+                        isinstance(row, dict)
+                        and row.get("item_id") == OBSERVATION_ADVICE_PACKET_ITEM_ID
+                        for row in rows
+                    ):
+                        included = ()
         else:
             rows = [
                 {

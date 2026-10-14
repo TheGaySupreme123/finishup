@@ -612,8 +612,13 @@ paired fallback serves explicit checks, never background advice, so a primary th
 pauses background advice even when the fallback could. Otherwise nothing is queued and nothing
 leaves your machine;
 advice shows `advice_semantic_unavailable` instead of `advice_semantic_pending`, and receipts no
-longer say AI-powered advice is pending. Signing in or enabling the channel takes effect on the
-next observation; connecting or disconnecting a provider takes effect when Yoetz restarts its
+longer say AI-powered advice is pending. Background advice also needs a privacy choice that lets
+it run without you previewing each request: with Metadata only, or any policy that asks you to
+preview every request, it is skipped and shows `advice_semantic_preview_required`. Nothing is
+queued, no approval waits for you and nothing is sent; explicit checks still ask you to preview.
+When it does run, background advice sends the approved, minimized advice summary and follows your
+review-context choice (Structural sends no finding summaries). Signing in or enabling the channel
+takes effect on the next observation; connecting or disconnecting a provider takes effect when Yoetz restarts its
 service, which setup does for you. Your coding session keeps running either way.
 
 To turn background advice off, add `semantic_advice_enabled = false` to the existing
