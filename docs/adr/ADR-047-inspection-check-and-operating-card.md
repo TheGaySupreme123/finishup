@@ -307,7 +307,10 @@ open and both test targets had passed. Two causes, two changes:
   is needed." and one next write derived from the same result's `closure_readiness` (`state`,
   `agent_actionable`) and its first open obligation id: resolve that obligation with
   `resolution_evidence_refs`, `respond`, run the planned verification then `check`, `check` with
-  `final_review: true`, or `receipt`. No line is added while `check_in_progress` is listed. The
+  `final_review: true`, or `receipt`. No line is added when the result itself asks for a
+  reread: readiness `unknown` (or a state this build does not know), `readiness_unknown`,
+  `projection_stale` or `check_in_progress` listed, a `rebuild_state` other than `current`, or a
+  non-zero `projection_lag`. The
   structured result and every schema are unchanged; on the Cursor profile, whose text block is the
   exact canonical JSON copy, the line is a separate leading block. A read appends nothing, so the
   count cannot be derived from the ledger; a bridge restart only restarts the count. All three

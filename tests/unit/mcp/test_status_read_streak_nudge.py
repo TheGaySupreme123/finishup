@@ -217,3 +217,34 @@ async def test_cursor_keeps_its_canonical_block_and_gains_a_leading_one(
     assert len(texts) == 2
     assert texts[0].startswith("Status read 3 times in a row with no write.")
     assert texts[1] == _SUMMARY
+
+
+@pytest.mark.parametrize(
+    "wire",
+    [
+        # The service's honest unknown: its one checklist entry is to read status again.
+        {
+            "ok": True,
+            "closure_readiness": {"state": "unknown", "agent_actionable": ["readiness_unknown"]},
+        },
+        {
+            "ok": True,
+            "closure_readiness": {
+                "state": "action_required",
+                "agent_actionable": ["projection_stale"],
+            },
+        },
+        {"ok": True},
+        {"ok": True, "closure_readiness": {"state": "bogus", "agent_actionable": []}},
+        # A projection still catching up: rereading is what the contract asks for.
+        {**_obligations_wire(), "rebuild_state": "rebuilding"},
+        {**_obligations_wire(), "projection_lag": "4"},
+    ],
+    ids=["unknown", "stale", "absent", "unrecognized", "rebuilding", "lagging"],
+)
+def test_no_nudge_while_readiness_is_unknown_or_the_projection_is_catching_up(
+    wire: dict[str, Any],
+) -> None:
+    """Round 2 (3): an unknown readiness must not become "no status read is needed"."""
+
+    assert status_streak_nudge(wire, 9) == ""

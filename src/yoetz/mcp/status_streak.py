@@ -60,6 +60,9 @@ _RERUN_TOKENS: Final = frozenset(
     }
 )
 _CHECK_TOKENS: Final = frozenset({"check_not_recorded", "semantic_review_not_requested"})
+_KNOWN_STATES: Final = frozenset({"action_required", "ready", "ready_with_limitations"})
+# Readiness entries whose remedy is reading status again, or waiting for the running check.
+_REREAD_TOKENS: Final = frozenset({"readiness_unknown", "projection_stale", "check_in_progress"})
 
 
 def _token(value: object) -> str:
@@ -148,12 +151,28 @@ def _first_open_obligation(wire: Mapping[str, object]) -> str | None:
     return None
 
 
+def _reread_is_the_contract(
+    wire: Mapping[str, object], state: str, actionable: tuple[str, ...]
+) -> bool:
+    """Whether rereading status is what the result itself asks for (round 2, finding 3).
+
+    An unknown or unrecognized readiness, a stale or lagging projection, a rebuild, or a check
+    still running: each says "read status again", so no line may say a read is not needed.
+    """
+
+    if state not in _KNOWN_STATES or any(token in _REREAD_TOKENS for token in actionable):
+        return True
+    rebuild = wire.get("rebuild_state")
+    lag = wire.get("projection_lag")
+    return (rebuild is not None and rebuild != "current") or (lag is not None and lag != "0")
+
+
 def _next_write(wire: Mapping[str, object]) -> str:
     state, actionable = _readiness(wire)
+    if _reread_is_the_contract(wire, state, actionable):
+        return ""
     if state in {"ready", "ready_with_limitations"}:
         return "Next: call receipt."
-    if "check_in_progress" in actionable:
-        return ""
     if "obligations_open" in actionable:
         obligation = _first_open_obligation(wire)
         target = f"obligation_published for {obligation}" if obligation else "each open obligation"
@@ -188,7 +207,8 @@ def _next_write(wire: Mapping[str, object]) -> str:
 def status_streak_nudge(wire: Mapping[str, object], streak: int) -> str:
     """The one-line lead for a status result read ``streak`` times in a row, or ``""``.
 
-    ``""`` below the threshold, for an error result, and while a check is still running.
+    ``""`` below the threshold, for an error result, and whenever the result itself asks for a
+    reread: unknown readiness, a stale, lagging or rebuilding projection, or a running check.
     """
 
     if streak < STATUS_STREAK_NUDGE_THRESHOLD or wire.get("ok") is not True:
