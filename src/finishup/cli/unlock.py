@@ -395,6 +395,7 @@ _CHANGE_GROUPS: Final[tuple[tuple[str, tuple[tuple[str, str], ...]], ...]] = (
         "Authorization",
         (
             ("channel", "preview_required"),
+            ("global", "conversation_review"),
             ("channel", "scope_ceiling"),
             ("channel", "authorization_ttl_seconds"),
             ("global", "effective_scope"),
@@ -435,6 +436,7 @@ _CHANGE_LABELS: Final[dict[tuple[str, str], str]] = {
     ("global", "effective_scope"): "Policy applies to",
     ("global", "provider_data_use_evidence"): "Current provider data-use evidence",
     ("global", "credential_heuristic"): "Possible-credential filter",
+    ("global", "conversation_review"): "Conversations",
     ("channel", "enabled"): "Channel",
     ("channel", "provider"): "Provider and model",
     ("channel", "fallback_provider"): "Fallback provider and model",
@@ -492,6 +494,19 @@ _FLAG_WORDS: Final[dict[tuple[str, str], tuple[str, str]]] = {
 }
 
 
+# Fixed local wording for the conversation setting (ADR-049); the service sends only the token.
+CONVERSATION_REVIEW_WORDS: Final[dict[str, str]] = {
+    "local_only": "Local only; agents may not turn on AI-powered review",
+    "local_owner_approval": (
+        "Start local; AI-powered review in a conversation waits for your approval of each review"
+    ),
+    "local_agent_opt_in": (
+        "Start local; an agent may turn on AI-powered review in a conversation without asking"
+    ),
+    "ai_powered": "AI-powered review in every conversation",
+}
+
+
 def _change_line_label(change: PrivacyPolicyChange) -> str:
     base = _CHANGE_LABELS[(change.area, change.field)]
     if change.subject is None:
@@ -537,6 +552,8 @@ def _change_value_text(change: PrivacyPolicyChange, value: PrivacyPolicyChangeVa
         return _binding_text(value.labels)
     if change.field == "effective_scope":
         return _scope_text(value.labels)
+    if change.field == "conversation_review" and len(value.labels) == 1:
+        return CONVERSATION_REVIEW_WORDS.get(value.labels[0], value.labels[0])
     return ", ".join(value.labels)
 
 

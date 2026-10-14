@@ -231,6 +231,7 @@ from finishup.domain.privacy import (
     CandidateContext,
     CandidateContextItem,
     ChannelPolicy,
+    ConversationReview,
     DataCategory,
     DataClass,
     EgressChannel,
@@ -275,6 +276,7 @@ from finishup.domain.values import (
 from finishup.kernel.lineage import LineageEvaluation
 from finishup.kernel.policies.observation_advice import ObservationCompositionFact
 from finishup.kernel.projections import ProjectionState
+from finishup.kernel.review_mode import ConversationReviewContext
 from finishup.kernel.task_facts import register_command_identity_key
 from finishup.kernel.test_edit_visibility import preexisting_test_edits
 from finishup.observability.logging import (
@@ -6653,6 +6655,21 @@ async def provide_service_ready_context(
             return ObservationAdviceSemanticOutcome(
                 status="unavailable", failure_reason="authorization_missing"
             )
+        # ADR-049: background advice belongs to no conversation's switch, so it runs only where
+        # the owner chose AI-powered review in every conversation. Where conversations start
+        # local, nothing is sent in the background.
+        advice_policy_app = getattr(privacy, "policy_application", None)
+        if advice_policy_app is not None:
+            advice_effective = await advice_policy_app.policy_store.effective_policy(
+                repository_scope
+            )
+            if (
+                advice_effective.policy.effective_conversation_review
+                is not ConversationReview.AI_POWERED
+            ):
+                return ObservationAdviceSemanticOutcome(
+                    status="unavailable", failure_reason="authorization_missing"
+                )
         binding = await resolve_provider_binding()
         if binding is None:
             return ObservationAdviceSemanticOutcome(
@@ -7433,6 +7450,44 @@ async def provide_service_ready_context(
     support_handlers.update(project_handlers)
 
     import_publication_authority = ImportPublicationAuthority(state_path=paths.state)
+    reviewer_bound = semantic_configured and provider_endpoint_bound
+
+    async def conversation_review_context(
+        task_runtime: TaskRuntime,
+    ) -> ConversationReviewContext | None:
+        """The owner's conversation setting and review availability for one task (ADR-049).
+
+        Read-only: the task route's repository commitment selects the effective policy the
+        reviewer would run under. ``None`` when the task has no repository-bound route or this
+        composition has no policy application; the check then keeps the released behaviour.
+        """
+
+        policy_application = getattr(privacy, "policy_application", None)
+        if policy_application is None:
+            return None
+        route = await catalog.resolve_route(task_runtime.session_id)
+        if route is None or route.repository_privacy_commitment is None:
+            return None
+        scope = AuthorizationScope(
+            AuthorizationScopeKind.TASK,
+            installation_id,
+            route.repository_privacy_commitment,
+            route.task_id,
+        )
+        effective = await policy_application.policy_store.effective_policy(scope)
+        llm = next(
+            (
+                item
+                for item in effective.policy.channel_policies
+                if item.channel is EgressChannel.LLM_INFERENCE
+            ),
+            None,
+        )
+        return ConversationReviewContext(
+            effective.policy.effective_conversation_review,
+            reviewer_bound and llm is not None and llm.enabled,
+        )
+
     return ServiceReadyContext(
         service_generation=service_generation,
         vault_generation=vault_generation,
@@ -7485,6 +7540,7 @@ async def provide_service_ready_context(
         host_lineage_registry=host_lineage_registry,
         reconcile_observation_losses=observation_coordinator.reconcile_task_selection_losses,
         change_capture=change_capture,
+        conversation_review_context=conversation_review_context,
     )
 
 

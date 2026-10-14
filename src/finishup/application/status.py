@@ -57,7 +57,13 @@ from finishup.kernel.deterministic_checks import (
 )
 from finishup.kernel.fact_lineage import lineage_to_wire
 from finishup.kernel.gap_effect import UNCLASSIFIED_GAP_PREFIX, GapEffectKind
+from finishup.kernel.projections import ProjectionState
 from finishup.kernel.receipt_prediction import predict_receipt_conclusion
+from finishup.kernel.review_mode import (
+    ConversationReviewContext,
+    conversation_review_mode_from_switches,
+    review_mode_switches,
+)
 from finishup.observability.logging import record_unexpected_exception_without_raising
 from finishup.ports.diagnostics import RuntimeCapability
 from finishup.ports.host_lineage import HostLineageRegistryPort
@@ -271,6 +277,9 @@ class StatusInternalResult:
     # ``(repository, machine_default)`` possible-credential filter state, composed by the service
     # from the owner's privacy policy (issue #982); ``None`` when not composed.
     credential_heuristic: tuple[str, str] | None = None
+    # ADR-049: the conversation's review mode, the owner's setting and the latest switch,
+    # composed from the head projection and the owner's policy; ``None`` when not composed.
+    review_mode: dict[str, JsonValue] | None = None
 
     def as_json(self) -> dict[str, JsonValue]:
         # Unset optional non-null leaves (today: obligation ``acceptance_criteria``, structural
@@ -314,7 +323,53 @@ class StatusInternalResult:
                     }
                 }
             ),
+            **({} if self.review_mode is None else {"review_mode": dict(self.review_mode)}),
         }
+
+
+async def status_review_mode(app: object, runtime: TaskRuntime) -> dict[str, JsonValue] | None:
+    """The conversation's review mode for status (ADR-049); ``None`` when it cannot be read.
+
+    Read-only: the owner's setting and review availability from the application's reader, and
+    the switches from the head compact projection. A read failure leaves status readable.
+    """
+
+    reader = getattr(app, "conversation_review_context", None)
+    if not callable(reader):
+        return None
+    try:
+        context = await cast(
+            Callable[[TaskRuntime], Awaitable[ConversationReviewContext | None]], reader
+        )(runtime)
+        if type(context) is not ConversationReviewContext:
+            return None
+        stored = await runtime.ledger.load_projection(runtime.session_id, ProjectionView.COMPACT)
+        switches = (
+            review_mode_switches(stored.state)
+            if stored is not None and type(stored.state) is ProjectionState
+            else ()
+        )
+    except Exception as exc:
+        record_unexpected_exception_without_raising(
+            exc, component="status", operation="conversation_review_read_failed"
+        )
+        return None
+    conversation = conversation_review_mode_from_switches(
+        switches, context.setting, ai_review_available=context.ai_review_available
+    )
+    body: dict[str, JsonValue] = {
+        "mode": conversation.mode.value,
+        "requested": conversation.requested.value,
+        "setting": conversation.setting.value,
+        "ai_review_available": context.ai_review_available,
+    }
+    if conversation.local_reason is not None:
+        body["local_reason"] = conversation.local_reason
+    latest = conversation.latest_switch
+    if latest is not None:
+        body["switch_event_id"] = latest.event_id
+        body["switch_sequence"] = str(latest.sequence)
+    return body
 
 
 def _error(code: PublicErrorCode, message: str) -> PublicOperationError:
@@ -2186,6 +2241,7 @@ async def execute_status(
             semantic_review_required=_semantic_review_required(app, route_profile),
             check_in_flight=frontier == head and await _check_in_flight(runtime),
         )
+        review_mode = await status_review_mode(app, runtime)
         return StatusInternalResult(
             "0.1",
             "1.0.0",
@@ -2208,6 +2264,7 @@ async def execute_status(
             import_status,
             closure_readiness,
             item_authorship,
+            review_mode=review_mode,
         )
     except (StatusFault, TypeError, ValueError) as exc:
         # The request passed schema validation and every caller-shape rejection above is explicit,

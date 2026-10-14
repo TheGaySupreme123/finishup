@@ -29,6 +29,7 @@ from finishup.domain.events import (
     AcceptedEvent,
     CheckChangeShownFiles,
     CheckRecordedPayload,
+    CheckReviewMode,
     DeliverableState,
     EventSchema,
     EvidenceDigestProvenance,
@@ -1061,6 +1062,7 @@ class SqliteLedger:
                             semantic_withheld_item_ids=check_payload.semantic_withheld_item_ids,
                             semantic_redacted_values=check_payload.semantic_redacted_values,
                             semantic_route_required=check_payload.semantic_route_required,
+                            review_mode=check_payload.review_mode,
                             deliverable_states=check_payload.deliverable_states,
                         )
                 else:
@@ -2817,6 +2819,7 @@ class SqliteLedger:
         semantic_redacted_values: tuple[SemanticRedactedValue, ...] = (),
         semantic_route_required: bool | None = None,
         deliverable_states: tuple[DeliverableState, ...] = (),
+        review_mode: CheckReviewMode | None = None,
     ) -> CheckCommitResult:
         await self._ensure_recovered()
         async with self._lock:
@@ -2855,6 +2858,7 @@ class SqliteLedger:
                     semantic_redacted_values=semantic_redacted_values,
                     semantic_route_required=semantic_route_required,
                     deliverable_states=deliverable_states,
+                    review_mode=review_mode,
                 )
             except PublicOperationError:
                 # The memory oracle terminalizes a frontier conflict before raising it. Preserve

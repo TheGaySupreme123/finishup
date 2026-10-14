@@ -23,6 +23,8 @@ from finishup.domain.privacy import (
     ProviderDataUseProfile,
     ReviewContextProfile,
     ReviewSelectionPolicy,
+    conversation_review_widens,
+    policy_field_omitted,
     sort_privacy_changes,
     validate_privacy_change_set,
 )
@@ -975,6 +977,21 @@ def privacy_policy_changes(
         PrivacyPolicyChangeValue.of_flag(candidate.credential_heuristic_enforced),
         current.credential_heuristic_enforced and not candidate.credential_heuristic_enforced,
     )
+    # Conversations that start with AI-powered review, or an agent's switch that no longer waits
+    # for the owner, need less of the owner: a widening through the trusted decision. Moving back
+    # toward local conversations or owner approval is a tightening that applies directly
+    # (ADR-049). The effective values are compared, so an unset field reads as released.
+    current_conversations = current.effective_conversation_review
+    candidate_conversations = candidate.effective_conversation_review
+    _append(
+        changes,
+        "global",
+        "conversation_review",
+        None,
+        PrivacyPolicyChangeValue.of_labels((current_conversations.value,)),
+        PrivacyPolicyChangeValue.of_labels((candidate_conversations.value,)),
+        conversation_review_widens(current_conversations, candidate_conversations),
+    )
     _review_changes(changes, candidate.review_selection, current.review_selection)
     for new, old in zip(candidate.channel_policies, current.channel_policies, strict=True):
         _channel_changes(changes, new, old)
@@ -1085,8 +1102,9 @@ def _to_json(value: object) -> object:
         return {
             field.name: _to_json(getattr(value, field.name))
             for field in fields(value)
-            # Never written at its default, so every existing policy identity is unchanged.
-            if getattr(value, field.name) is not CredentialHeuristic.ENFORCED
+            # Defaults that predate their fields are never written (issues #982, ADR-049), so
+            # every policy, case and receipt from before them keeps its exact canonical bytes.
+            if not policy_field_omitted(field.name, getattr(value, field.name))
         }
     if type(value) is tuple:
         return [_to_json(member) for member in cast(tuple[object, ...], value)]

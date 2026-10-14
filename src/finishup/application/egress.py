@@ -22,6 +22,7 @@ from finishup.domain.privacy import (
     CandidateContext,
     ClassifiedContext,
     ConsentSource,
+    ConversationReview,
     CredentialHeuristic,
     DataCategory,
     DataClass,
@@ -1819,8 +1820,12 @@ class PrivacyCoordinator:
             )
 
         proposal = prepared.proposal
+        # ADR-049: where the owner chose that AI-powered review an agent turns on waits for
+        # them, every review asks the owner first, exactly like per-request confirmation.
         preview_required = (
-            policy.profile is PrivacyProfile.CONFIRM_EVERY_REQUEST or llm.preview_required
+            policy.profile is PrivacyProfile.CONFIRM_EVERY_REQUEST
+            or llm.preview_required
+            or policy.effective_conversation_review is ConversationReview.LOCAL_OWNER_APPROVAL
         )
         subject_digest = prepared.reservation.subject_digest
         if preview_required:

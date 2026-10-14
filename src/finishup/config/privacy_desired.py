@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Final, cast
 
 from finishup.config.models import ConfigError
-from finishup.domain.privacy import CredentialHeuristic, PrivacyPolicy
+from finishup.domain.privacy import PrivacyPolicy, policy_field_omitted
 from finishup.domain.values import format_rfc3339_millis
 from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
@@ -42,8 +42,9 @@ def _to_json(value: object) -> object:
         return {
             field.name: _to_json(getattr(value, field.name))
             for field in fields(value)
-            # ``credential_heuristic`` is written only when the owner turned it off (#982).
-            if getattr(value, field.name) is not CredentialHeuristic.ENFORCED
+            # Defaults that predate their fields are never written (issues #982, ADR-049), so
+            # every policy, case and receipt from before them keeps its exact canonical bytes.
+            if not policy_field_omitted(field.name, getattr(value, field.name))
         }
     if type(value) is tuple:
         return [_to_json(member) for member in cast(tuple[object, ...], value)]

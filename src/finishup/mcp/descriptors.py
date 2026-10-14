@@ -879,6 +879,32 @@ _INPUT_SCHEMA_EXAMPLES: Final[Mapping[str, tuple[dict[str, JsonValue], ...]]] = 
                 "actor": dict(_EXAMPLE_ACTOR),
                 "client": dict(_EXAMPLE_CLIENT),
             },
+            # ADR-049: turn AI-powered review on for the rest of this task (review_mode local
+            # turns it back off). One decision on decision_recorded 1.1.0; the owner's policy
+            # decides whether and what is sent.
+            {
+                "protocol_version": "0.1",
+                "schema_version": "1.0.0",
+                "request_id": _example_id("request", 14),
+                "session_id": _example_id("session", 1),
+                "writer_id": _example_id("writer", 1),
+                "expected_frontier": {"sequence": "2", "head_digest": _EXAMPLE_HEAD_DIGEST},
+                "event_drafts": [
+                    _example_draft(
+                        14,
+                        "decision_recorded",
+                        {
+                            "statement": "Use AI-powered review for the rest of this task.",
+                            "rationale": "Multi-file change that local checks cannot judge.",
+                            "authority": _EXAMPLE_ACTOR["actor_id"],
+                            "review_mode": "ai_powered",
+                        },
+                        version="1.1.0",
+                    ),
+                ],
+                "actor": dict(_EXAMPLE_ACTOR),
+                "client": dict(_EXAMPLE_CLIENT),
+            },
             *(
                 _lifecycle_example(40 + index, family)
                 for index, family in enumerate(
@@ -1906,6 +1932,8 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "ascending ASCII order; rejection names unsorted_set_field. attempted_items belongs only on the "
         "action_recorded payload; copy each requested_items value exactly and never place it on "
         "claim_recorded. decision_recorded.authority is a structural actor id, not approval prose; "
+        "decision_recorded 1.1.0 review_mode ai_powered or local switches this task's review "
+        "(finishup://guidance/review.md); "
         "action_kind is one of command, edit, research, review, or other; command also requires "
         "command. claim_recorded at schema 1.1.0 separates supporting_refs from "
         "limitation_refs and corrections name exact prior effective claims in supersedes_claim_refs. "
@@ -1936,7 +1964,8 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "is left to close and why, what hooks observed since the last check, and whether each "
         "obligation's evidence links to its declared deliverables or commands; use it instead "
         "of repeated status reads. A no_issue_detected verdict does not mean the work is "
-        "correct. Choose mode "
+        "correct. Omitted mode follows the task's review_mode (status shows it; tasks may start "
+        "local). Choose mode "
         "deliberately: semantic_required when the user, effective policy or acceptance requires "
         "it, including subsequent final checks. Omit mode to preserve the configured default; "
         "use semantic_if_configured only when review is known to be optional. Reserve "
@@ -2165,8 +2194,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "policy": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:678c28071085258547d5379188a1e522c38bfd645ba618afa17d0a9e611b9e50",
-                "check": "sha256:dbee5513a344d7661f5866e1f898f585a3cfd0d228878c78e56f4db3dbf1168b",
+                "publish_work": "sha256:b85e305f6a585d33a43493382ed0e8c69263fa8645e54fd3a4968c31429e0edc",
+                "check": "sha256:281973543fc14d042edde9ccfe3f1231897ab2beb3d503ccfd435adec50c98e4",
                 "respond": "sha256:fd86417eb834164fc8f62d466e4e29ce6250c9272d7e8969777f67efba1390ba",
                 "status": "sha256:51c1546da9f9ffe512201ee57631571f89b9d64c30a0a20fb3425483ddbe3628",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
@@ -2177,8 +2206,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
         "strict": MappingProxyType(
             {
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
-                "publish_work": "sha256:678c28071085258547d5379188a1e522c38bfd645ba618afa17d0a9e611b9e50",
-                "check": "sha256:a846120a701e25cc66f39252287757a844c987795fdfded9f3d0d5d6f6a1a009",
+                "publish_work": "sha256:b85e305f6a585d33a43493382ed0e8c69263fa8645e54fd3a4968c31429e0edc",
+                "check": "sha256:35239f5c20e4347c3bdf36248a525cb7fb3d681e120e310d10415e5ed85990e9",
                 "respond": "sha256:fd86417eb834164fc8f62d466e4e29ce6250c9272d7e8969777f67efba1390ba",
                 "status": "sha256:51c1546da9f9ffe512201ee57631571f89b9d64c30a0a20fb3425483ddbe3628",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
@@ -2190,8 +2219,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:cf32c2f257d131e7df23eabecf679dce8b03ef7ec27dcdacd287eef27b1976df",
-        "strict": "sha256:874768eec5a4eea76d50ebea2ab7516786a27b4ef2c1591d58d1e66b640bb718",
+        "policy": "sha256:33d672d7ce406e5be5bfce916c432873784fdc8a4b943af20ead533c41276206",
+        "strict": "sha256:5acf76a7f053644b76f2039765631a6537414fed3abc05773aa50268da65159c",
     }
 )
 

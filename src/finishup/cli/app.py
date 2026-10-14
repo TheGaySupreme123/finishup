@@ -1948,6 +1948,89 @@ async def _run_credential_heuristic_command(
     return 0 if report.outcome in {"configured", "unchanged"} else 20
 
 
+_CONVERSATION_SETTINGS: Final = {
+    "agent-opt-in": "local_agent_opt_in",
+    "owner-approval": "local_owner_approval",
+    "local-only": "local_only",
+    "ai-powered": "ai_powered",
+}
+
+
+async def _run_conversation_review_command(setting_name: str, json_output: bool) -> int:
+    from finishup.cli.privacy_setup import run_conversation_review_change
+    from finishup.cli.unlock import HumanCeremonyCliError
+    from finishup.domain.privacy import ConversationReview
+
+    token = _CONVERSATION_SETTINGS.get(setting_name)
+    if token is None:
+        typer.echo(
+            "privacy_conversations_invalid: choose agent-opt-in, owner-approval, local-only, "
+            "or ai-powered",
+            err=True,
+        )
+        return 2
+    setting = ConversationReview(token)
+    try:
+        report = await run_conversation_review_change(setting)
+    except ControlError as error:
+        return _control_failure(error, json_output=json_output)
+    except (HumanCeremonyCliError, OSError, ValueError) as error:
+        reason = getattr(error, "reason", None)
+        typer.echo(
+            "privacy_conversations_failed: "
+            f"{reason if type(reason) is str else 'privacy_conversations_failed'}",
+            err=True,
+        )
+        return 20
+    if report.outcome == "failed":
+        typer.echo(f"privacy_conversations_failed: {report.reason or 'invalid'}", err=True)
+        return 20
+    if report.reason == "repository_privacy_grant_missing" and not json_output:
+        typer.echo(
+            "AI-powered review is not set up for this repository, so every conversation here "
+            "already runs FinishUP's local checks only. Nothing changed.",
+            err=True,
+        )
+    _human_or_json(
+        {
+            "conversation_review": setting.value,
+            "scope": "repository",
+            "outcome": report.outcome,
+            **({"proposal_id": report.proposal_id} if report.proposal_id is not None else {}),
+            **({"reason": report.reason} if report.reason is not None else {}),
+        },
+        json_output=json_output,
+    )
+    return 0 if report.outcome in {"configured", "unchanged"} else 20
+
+
+@privacy_app.command("conversations")
+def privacy_conversations(
+    setting: Annotated[
+        str,
+        typer.Argument(
+            help=(
+                "agent-opt-in (recommended): tasks start local and your agent can turn on "
+                "AI-powered review for a task when it helps; owner-approval: tasks start local "
+                "and each review an agent turns on waits for your approval; local-only: agents "
+                "may not turn on AI-powered review; ai-powered: every task starts with "
+                "AI-powered review."
+            ),
+            metavar="agent-opt-in|owner-approval|local-only|ai-powered",
+        ),
+    ],
+    json_output: _JSON = False,
+) -> None:
+    """Choose how this repository's conversations use AI-powered review.
+
+    Moving toward local conversations or your approval applies at once. Anything that needs less
+    of you applies only after the trusted local approval on this terminal, and never sends more
+    than the repository's privacy grant allows.
+    """
+
+    _finish(run_async(lambda: _run_conversation_review_command(setting, json_output)))
+
+
 privacy_credential_heuristic_app = typer.Typer(
     help=(
         "Turn the possible-credential filter for the external AI reviewer off or back on for "
