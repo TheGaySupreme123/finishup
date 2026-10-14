@@ -260,6 +260,8 @@ __all__ = [
     "sent_ledger_refs",
     "withheld_excerpt_content_refs",
     "semantic_case_to_candidate_context",
+    "review_item_catalog",
+    "review_envelope_to_candidate_context",
     "semantic_case_to_prepared_payload",
 ]
 
@@ -5843,7 +5845,7 @@ def _build_semantic_case_once(
                 retain(child)
 
     retain(_packet_to_json(packet))
-    retain(cast(JsonValue, _item_catalog_json(items)))
+    retain(cast(JsonValue, review_item_catalog(items)))
     for item in items:
         if item.section == "excerpt":
             continue
@@ -6659,7 +6661,7 @@ def follow_up_byte_budget(selection: ReviewSelectionPolicy) -> int:
     return selection.max_total_excerpt_bytes // 2
 
 
-def _item_catalog_json(
+def review_item_catalog(
     items: Sequence[SemanticCaseItem], follow_up_supplied: frozenset[str] = frozenset()
 ) -> list[dict[str, JsonValue]]:
     """Metadata-only catalog so egress can project without reverse-engineering origin_ref.
@@ -6706,7 +6708,7 @@ def _case_envelope_json(case: SemanticCase) -> dict[str, JsonValue]:
             "dependency_digest": case.dependency_digest,
             "frontier_refs": sorted(case.frontier_refs),
             "omitted_reference_count": str(case.omitted_reference_count),
-            "item_catalog": _item_catalog_json(case.items, case.follow_up_supplied_item_ids),
+            "item_catalog": review_item_catalog(case.items, case.follow_up_supplied_item_ids),
             "local_check_refs": sorted(case.local_check_refs),
             "policy_id": case.policy_id,
             "policy_version": case.policy_version,
@@ -8563,6 +8565,29 @@ def semantic_case_to_candidate_context(
     if type(case) is not SemanticCase:
         raise TypeError("semantic_case_invalid")
     envelope = bounded_case_envelope(case)
+    return review_envelope_to_candidate_context(
+        envelope,
+        case.items,
+        request_id=request_id,
+        scope=scope,
+        provider_binding=provider_binding,
+        subject_digest=case.case_digest,
+    )
+
+
+def review_envelope_to_candidate_context(
+    envelope: bytes,
+    case_items: Sequence[SemanticCaseItem],
+    *,
+    request_id: str,
+    scope: AuthorizationScope,
+    provider_binding: ProviderBinding,
+    subject_digest: str,
+) -> CandidateContext:
+    """Offer a frozen review envelope and only its catalogued, classified content.
+
+    Used by explicit checks and background advice; both feed the same approved-id filter.
+    """
     # The catalog is the authority for what the provider payload may carry, so an item bounding
     # removed from the catalog must not travel as a candidate item either. Offering content whose
     # catalog row is gone would get it approved by privacy and then silently discarded during
@@ -8578,7 +8603,7 @@ def semantic_case_to_candidate_context(
             envelope,
         )
     ]
-    for item in case.items:
+    for item in case_items:
         if item.item_id not in catalogued:
             continue
         items.append(
@@ -8596,7 +8621,7 @@ def semantic_case_to_candidate_context(
         local_sink=None,
         purpose=SEMANTIC_REVIEW_PURPOSE,
         scope=scope,
-        subject_digest=case.case_digest,
+        subject_digest=subject_digest,
         provider_binding=provider_binding,
         items=tuple(items),
     )

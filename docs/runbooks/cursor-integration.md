@@ -1914,6 +1914,12 @@ is issue #912.
 
 ## Background semantic advice controls
 
+The shared service offers frozen advice through the same approved review-packet assembly as
+explicit checks (#1019). Rule metadata and scoped gaps are structural; finding summaries require
+approval of `finding_summary`. Invalid or withheld advice stays blocked, and privacy receipt
+category lists describe actual category denials separately from the request's failure reason.
+This is shared dispatch behavior; the host's hook adapter and ordinary advice delivery are unchanged.
+
 Background review is on by default wherever AI-powered review is configured
 (`[verification] semantic` `required` or `optional`); an explicit `[observation]
 semantic_advice_enabled` always wins, and `false` turns it off (issue #888, maintainer decision

@@ -32,8 +32,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 from yoetz.application.observation_advice import (
@@ -42,14 +43,35 @@ from yoetz.application.observation_advice import (
     ObservationAdviceCandidate,
     ObservationAdviceSemanticAddon,
     minimized_semantic_evidence_packet,
+    validate_semantic_evidence_packet,
+)
+from yoetz.application.semantic_case import (
+    review_envelope_to_candidate_context,
+    review_item_catalog,
 )
 from yoetz.domain.findings import FindingId
+from yoetz.domain.privacy import (
+    OBSERVATION_ADVICE_PACKET_ITEM_ID,
+    AuthorizationScope,
+    CandidateContext,
+    CandidateContextItem,
+    EgressChannel,
+    ProviderBinding,
+)
 from yoetz.observability.logging import record_unexpected_exception_without_raising
+from yoetz.ports.semantic import SemanticCaseItem
 from yoetz.ports.semantic_budget import (
     semantic_background_scope,
     semantic_budget_profile_scope,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from yoetz.protocol.canonical import (
+    JsonValue,
+    canonical_digest,
+    canonical_encode,
+    strict_json_parse,
+)
+from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel, coverage_to_json
+from yoetz.protocol.models import DataCategory
 
 if TYPE_CHECKING:
     from yoetz.application.egress import SemanticEgressAttemptUnknown
@@ -68,6 +90,7 @@ __all__ = [
     "AdviceSemanticDrainHandle",
     "AdviceSemanticProviderReady",
     "ObservationAdviceSemanticAttempt",
+    "observation_advice_to_candidate_context",
     "ObservationAdviceSemanticDeferral",
     "ObservationAdviceSemanticOutcome",
     "ObservationAdviceSemanticRepository",
@@ -213,6 +236,119 @@ class ObservationAdviceSemanticAttempt:
     evidence_digest: str | None = None
     summaries: tuple[str, ...] = ()
     details: tuple[str, ...] = ()
+
+
+def observation_advice_to_candidate_context(
+    attempt: ObservationAdviceSemanticAttempt,
+    *,
+    request_id: str,
+    scope: AuthorizationScope,
+    provider_binding: ProviderBinding,
+) -> CandidateContext:
+    """Wrap the frozen advice packet in the shared semantic-review envelope (#1019).
+
+    Advice is observation-scoped, with no cooperative ledger frontier or source excerpts.
+    Finding prose is separately classified, never embedded in structural envelope metadata.
+    Invalid/legacy unknown packets keep the old fail-closed shape for an honest privacy receipt.
+    """
+    try:
+        packet = strict_json_parse(attempt.packet_json)
+        if not isinstance(packet, dict):
+            raise ValueError("observation_advice_packet_invalid")
+        validate_semantic_evidence_packet(packet)
+        if (
+            canonical_digest(packet) != attempt.subject_digest
+            or tuple(cast(list[str], packet["coverage_gaps"])) != attempt.coverage_gaps
+        ):
+            raise ValueError("observation_advice_packet_invalid")
+    except TypeError, ValueError, UnicodeDecodeError:
+        return CandidateContext(
+            request_id,
+            EgressChannel.LLM_INFERENCE,
+            None,
+            "semantic-review",
+            scope,
+            attempt.subject_digest,
+            provider_binding,
+            (
+                CandidateContextItem(
+                    OBSERVATION_ADVICE_PACKET_ITEM_ID,
+                    DataCategory.BOUNDED_STRUCTURAL_METADATA,
+                    scope,
+                    "/observation-advice",
+                    attempt.packet_json,
+                ),
+            ),
+        )
+    summaries = packet.pop("finding_summaries")
+    structural = canonical_encode(packet)
+    items = [
+        SemanticCaseItem(
+            OBSERVATION_ADVICE_PACKET_ITEM_ID,
+            "timeline",
+            DataCategory.BOUNDED_STRUCTURAL_METADATA,
+            "task",
+            OBSERVATION_ADVICE_PACKET_ITEM_ID,
+            (),
+            0,
+            structural,
+            len(structural),
+            "sha256:" + hashlib.sha256(structural).hexdigest(),
+        )
+    ]
+    if summaries:
+        content = canonical_encode({"finding_summaries": summaries})
+        items.append(
+            SemanticCaseItem(
+                "observation-advice-summaries",
+                "timeline",
+                DataCategory.FINDING_SUMMARY,
+                "task",
+                OBSERVATION_ADVICE_PACKET_ITEM_ID,
+                (),
+                1,
+                content,
+                len(content),
+                "sha256:" + hashlib.sha256(content).hexdigest(),
+            )
+        )
+    envelope = canonical_encode(
+        cast(
+            JsonValue,
+            {
+                "schema": "yoetz.review-packet-case/2",
+                "case_digest": attempt.subject_digest,
+                "dependency_digest": attempt.subject_digest,
+                "policy_id": str(packet["policy"]).split("/", 1)[0],
+                "policy_version": str(packet["policy"]).split("/", 1)[1],
+                "frontier_refs": [],
+                "local_check_refs": [],
+                "question_set": [
+                    "Review only the recorded observation advice and its coverage gaps; "
+                    "do not infer task completion or repository correctness."
+                ],
+                "review_context_profile": "custom",
+                "item_catalog": review_item_catalog(items),
+                "review_packet": {
+                    "timeline_item_ids": [item.item_id for item in items],
+                    "coverage": coverage_to_json(
+                        replace(
+                            coverage_for_channel(PublicationChannel.HOOK_OBSERVED),
+                            known_gaps=attempt.coverage_gaps,
+                        )
+                    ),
+                },
+            },
+        )
+    )
+    return review_envelope_to_candidate_context(
+        envelope,
+        items,
+        request_id=request_id,
+        scope=scope,
+        provider_binding=provider_binding,
+        subject_digest=attempt.subject_digest,
+    )
 
 
 @dataclass(frozen=True, slots=True)

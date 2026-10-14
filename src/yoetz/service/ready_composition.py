@@ -132,6 +132,7 @@ from yoetz.application.observation_advice_semantic import (
     ObservationAdviceSemanticOutcome,
     ObservationAdviceSemanticScheduler,
     ObservationAdviceSemanticSupervisor,
+    observation_advice_to_candidate_context,
     reconcile_cancelled_advice_request,
 )
 from yoetz.application.observation_control import build_observation_support_handlers
@@ -231,11 +232,9 @@ from yoetz.domain.observation import (
     observation_capture_ticket_id,
 )
 from yoetz.domain.privacy import (
-    OBSERVATION_ADVICE_PACKET_ITEM_ID,
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
-    CandidateContextItem,
     ChannelPolicy,
     DataCategory,
     DataClass,
@@ -6714,24 +6713,17 @@ async def provide_service_ready_context(
             return ObservationAdviceSemanticOutcome(
                 status="unavailable", failure_reason="provider_unavailable"
             )
-        candidate = CandidateContext(
-            request_id=ids.new(IdKind.REQUEST),
-            channel=EgressChannel.LLM_INFERENCE,
-            local_sink=None,
-            purpose=_ADVICE_SEMANTIC_PURPOSE,
-            scope=repository_scope,
-            subject_digest=attempt.subject_digest,
-            provider_binding=binding,
-            items=(
-                CandidateContextItem(
-                    OBSERVATION_ADVICE_PACKET_ITEM_ID,
-                    DataCategory.BOUNDED_STRUCTURAL_METADATA,
-                    repository_scope,
-                    "/observation-advice",
-                    attempt.packet_json,
-                ),
-            ),
-        )
+        try:
+            candidate = observation_advice_to_candidate_context(
+                attempt,
+                request_id=ids.new(IdKind.REQUEST),
+                scope=repository_scope,
+                provider_binding=binding,
+            )
+        except TypeError, ValueError, UnicodeDecodeError:
+            return ObservationAdviceSemanticOutcome(
+                status="failed", failure_reason="provider_failed"
+            )
         deadline = Deadline(clock.now_utc(), clock.monotonic_seconds() + 60.0)
         # The supervisor runs one advisory provider attempt at a time. Remember the exact request
         # identity this dispatch minted so a foreground rebind that cancels it can reconcile the

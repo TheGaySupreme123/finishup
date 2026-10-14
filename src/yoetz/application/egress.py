@@ -1593,6 +1593,7 @@ class PrivacyCoordinator:
                 effective,
                 decision.outcome,
                 decision.reason or PrivacyReason.POLICY_DENIED,
+                decision=decision,
                 scan_stage=ReceiptSecretScanStage.CANDIDATE,
                 scan_match_count=_classified_scan_match_count(classified),
                 withheld_item_ids=_heuristic_only_item_ids(classified),
@@ -1609,6 +1610,7 @@ class PrivacyCoordinator:
                     effective,
                     PrivacyOutcome.BLOCKED_BY_POLICY,
                     PrivacyReason.SCOPE_MISMATCH,
+                    decision=decision,
                     withheld_item_ids=minimized.withheld_item_ids,
                     redacted_span_count=minimized.redacted_span_count,
                     redacted_values=minimized.redacted_values,
@@ -1622,6 +1624,7 @@ class PrivacyCoordinator:
                     effective,
                     PrivacyOutcome.BLOCKED_BY_POLICY,
                     PrivacyReason.SCOPE_MISMATCH,
+                    decision=decision,
                     withheld_item_ids=minimized.withheld_item_ids,
                     redacted_span_count=minimized.redacted_span_count,
                     redacted_values=minimized.redacted_values,
@@ -1648,6 +1651,7 @@ class PrivacyCoordinator:
                 effective,
                 refreshed_decision.outcome,
                 refreshed_decision.reason or PrivacyReason.POLICY_DENIED,
+                decision=refreshed_decision,
                 scan_stage=ReceiptSecretScanStage.CANDIDATE,
                 scan_match_count=_classified_scan_match_count(refreshed_classified),
                 withheld_item_ids=_heuristic_only_item_ids(refreshed_classified),
@@ -1664,6 +1668,7 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.POLICY_DENIED,
+                decision=refreshed_decision,
                 withheld_item_ids=refreshed_minimized.withheld_item_ids,
                 redacted_span_count=refreshed_minimized.redacted_span_count,
                 redacted_values=refreshed_minimized.redacted_values,
@@ -1671,6 +1676,7 @@ class PrivacyCoordinator:
                 scan_match_count=_minimized_scan_match_count(refreshed_minimized),
             )
         minimized = refreshed_minimized
+        decision = refreshed_decision
         # Concrete credentials and scanner saturation still block the whole case. A heuristic
         # that survives into the prepared bytes means the omission construction was violated, so
         # the final prepared case also fails closed.
@@ -1680,6 +1686,7 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_FORBIDDEN_DATA,
                 PrivacyReason.NEVER_SEND_DETECTED,
+                decision=decision,
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
@@ -1692,6 +1699,7 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.INSUFFICIENT_APPROVED_CONTEXT,
+                decision=decision,
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
@@ -1710,6 +1718,7 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.POLICY_DENIED,
+                decision=decision,
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
@@ -1722,6 +1731,7 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.POLICY_DENIED,
+                decision=decision,
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
@@ -1739,6 +1749,7 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.POLICY_DENIED,
+                decision=decision,
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
@@ -1753,6 +1764,7 @@ class PrivacyCoordinator:
                 effective,
                 PrivacyOutcome.BLOCKED_BY_POLICY,
                 PrivacyReason.SCOPE_MISMATCH,
+                decision=decision,
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
@@ -1829,6 +1841,7 @@ class PrivacyCoordinator:
                 subject_digest,
                 deadline,
                 authority_digest=authority_digest,
+                category_decision=decision,
             )
         return await self._dispatch_approved(
             candidate,
@@ -1851,6 +1864,7 @@ class PrivacyCoordinator:
         deadline: Deadline,
         *,
         authority_digest: str | None,
+        category_decision: PrivacyDecision,
     ) -> SemanticEgressResult:
         if self._human is None:
             try:
@@ -1904,6 +1918,7 @@ class PrivacyCoordinator:
                 PrivacyOutcome.HUMAN_DENIED,
                 PrivacyReason.HUMAN_DENIED,
                 proposal_id=proposal.privacy_proposal_id,
+                decision=category_decision,
                 withheld_item_ids=minimized.withheld_item_ids,
                 redacted_span_count=minimized.redacted_span_count,
                 redacted_values=minimized.redacted_values,
@@ -2284,7 +2299,13 @@ class PrivacyCoordinator:
         if any(item.forbidden_findings for item in classified.items):
             return PrivacyDecision(
                 (),
-                tuple({item.candidate.category for item in classified.items}),
+                tuple(
+                    {
+                        item.candidate.category
+                        for item in classified.items
+                        if item.forbidden_findings
+                    }
+                ),
                 PrivacyOutcome.BLOCKED_FORBIDDEN_DATA,
                 PrivacyReason.NEVER_SEND_DETECTED,
             )
@@ -2330,6 +2351,7 @@ class PrivacyCoordinator:
         reason: PrivacyReason,
         *,
         proposal_id: str | None = None,
+        decision: PrivacyDecision | None = None,
         withheld_item_ids: tuple[str, ...] = (),
         redacted_span_count: int = 0,
         redacted_values: tuple[SemanticRedactedValue, ...] = (),
@@ -2359,6 +2381,18 @@ class PrivacyCoordinator:
                 key=lambda value: str(value.value).encode("ascii"),
             )
         )
+        # A request-level failure is not a category decision. Preserve only the classifier's
+        # actual denial set; a missing/malformed envelope can discard approved content without
+        # denying its category. Before classification, neither approval nor denial is asserted.
+        blocked_categories = () if decision is None else decision.blocked_categories
+        approved_ids = frozenset(() if decision is None else decision.approved_item_ids)
+        blocked_count = sum(
+            item.item_id not in approved_ids and item.category in blocked_categories
+            for item in candidate.items
+        )
+        approved_categories = tuple(
+            {item.category for item in candidate.items if item.item_id in approved_ids}
+        )
         subject = PreDispatchAuditDecision(
             pid,
             candidate.request_id,
@@ -2372,7 +2406,7 @@ class PrivacyCoordinator:
             None if destination is None else canonical_digest({"binding": destination.provider_id}),
             categories,
             len(candidate.items),
-            len(candidate.items),
+            blocked_count,
             (),
             now,
             subject_digest,
@@ -2418,20 +2452,20 @@ class PrivacyCoordinator:
                 _scope_digest(candidate.scope),
             ),
             ConsentSource.NONE,
-            (),
-            tuple({item.category for item in candidate.items}),
+            approved_categories,
+            blocked_categories,
             ReceiptCounts(
                 len(candidate.items),
                 0,
                 len(candidate.items),
-                0,
-                len(candidate.items),
+                len(approved_ids),
+                blocked_count,
                 sum(len(item.plaintext) for item in candidate.items),
                 0,
                 None,
                 None,
             ),
-            ReceiptTransformations(0, redacted_span_count, len(candidate.items)),
+            ReceiptTransformations(len(candidate.items), redacted_span_count, blocked_count),
             ReceiptSecretScan(
                 _SCAN.version,
                 _SCAN.profile_digest,

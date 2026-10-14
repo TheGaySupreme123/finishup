@@ -164,7 +164,8 @@ def _installed_manifest_agrees_with_schema(repo_root: Path) -> bool:
 
 def _check(repo_root: Path) -> bool:
     return (
-        _run(repo_root, "generate_project_policy_fixture.py", "--check")
+        _run(repo_root, "generate_advice_egress_fixture.py", "--check")
+        and _run(repo_root, "generate_project_policy_fixture.py", "--check")
         and _run(repo_root, "generate_check_conclusion_fixture.py", "--check")
         and _run(repo_root, "generate_check_totals_fixture.py", "--check")
         and _run(repo_root, "generate_check_observations_awaited_fixture.py", "--check")
@@ -187,6 +188,7 @@ def _write_pass(repo_root: Path) -> bool:
         ):
             return False
     steps = (
+        ("generate_advice_egress_fixture.py", "--write"),
         ("generate_project_policy_fixture.py", "--write"),
         ("generate_check_conclusion_fixture.py", "--write"),
         ("generate_check_totals_fixture.py", "--write"),

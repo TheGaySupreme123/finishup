@@ -280,10 +280,10 @@ def egress_origin_operation(purpose: str, item_ids: Iterable[str]) -> EgressOrig
     if purpose != "semantic-review":
         return None
     identities = frozenset(item_ids)
-    if REVIEW_PACKET_ITEM_ID in identities:
-        return EgressOriginOperation.SEMANTIC_CHECK
     if OBSERVATION_ADVICE_PACKET_ITEM_ID in identities:
         return EgressOriginOperation.OBSERVATION_ADVICE
+    if REVIEW_PACKET_ITEM_ID in identities:
+        return EgressOriginOperation.SEMANTIC_CHECK
     return None
 
 

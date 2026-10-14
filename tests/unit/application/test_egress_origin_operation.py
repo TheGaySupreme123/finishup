@@ -278,3 +278,52 @@ async def test_blocked_advice_dispatch_receipt_names_observation_advice() -> Non
     assert result.reason is PrivacyReason.INSUFFICIENT_APPROVED_CONTEXT
     (receipt,) = audit.receipts
     assert receipt.origin_operation is EgressOriginOperation.OBSERVATION_ADVICE
+
+
+@pytest.mark.anyio
+async def test_malformed_advice_does_not_claim_category_denial() -> None:
+    audit = _Audit()
+    coordinator = PrivacyCoordinator(
+        cast(PrivacyPolicyStorePort, _Store()),
+        cast(PrivacyClassifierPort, LocalPrivacyEnforcer()),
+        cast(PrivacyAuditPort, audit),
+        cast(OutboundGatewayPort, _Gateway()),
+        cast(ClockPort, _Clock()),
+        cast(IdPort, _Ids()),
+        human_authority=HumanAuthorityCapability(
+            "established_passphrase",
+            "sha256:" + "8" * 64,
+            1,
+            "passphrase",
+            1,
+            True,
+        ),
+    )
+    scope = AuthorizationScope(AuthorizationScopeKind.TASK, INSTALLATION_ID, _COMMITMENT, _TASK)
+    binding = llm_channel(minimal_external_policy()).provider_binding
+    assert binding is not None
+    candidate = CandidateContext(
+        _REQUEST,
+        EgressChannel.LLM_INFERENCE,
+        None,
+        "semantic-review",
+        scope,
+        _DIGEST,
+        binding,
+        (
+            CandidateContextItem(
+                OBSERVATION_ADVICE_PACKET_ITEM_ID,
+                DataCategory.BOUNDED_STRUCTURAL_METADATA,
+                scope,
+                "/observation-advice",
+                b"{}",
+            ),
+        ),
+    )
+    result = await coordinator.evaluate_semantic(candidate, Deadline(_NOW, 61.0))
+    assert isinstance(result, SemanticEgressBlocked)
+    assert result.reason is PrivacyReason.INSUFFICIENT_APPROVED_CONTEXT
+    (receipt,) = audit.receipts
+    assert receipt.blocked_categories == ()
+    assert receipt.counts.blocked_items == 0
+    assert receipt.counts.approved_items == 1

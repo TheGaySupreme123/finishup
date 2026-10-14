@@ -3949,6 +3949,13 @@ Network egress additionally requires the exact channel-compatible `ProviderBindi
 NonLlmDestination`; local disclosure names its sink and forbids attempt-only request-body counts.
 Required schema data is never modeled as an optional compatibility default.
 
+Predispatch `EgressReceipt.blocked_categories` contains only actual classifier/category-policy
+denials (#1019). Request-level scope/destination/channel refusal and failure to assemble approved
+context do not by themselves deny any category. `approved_categories` and `counts.approved_items`
+record classification approval, never provider delivery; before classification neither approval
+nor denial is asserted. `safe_failure_reason` independently names the actual failure. Stored older
+receipts preserve their original category accounting.
+
 `EgressReceipt` and `LocalDisclosureReceipt` share one closed outcome/reason compatibility matrix:
 `completed` forbids `safe_failure_reason`; every other outcome requires exactly one reason permitted
 for that outcome. `blocked_by_policy` admits the direct policy/scope/category/purpose/destination
@@ -4325,6 +4332,16 @@ registered in §7. Adapter provenance has no authorization/reservation/receipt I
 published. Final provenance adds exact attempt, dispatch-authority, receipt, commitment, status,
 and reason fields only after the terminal privacy receipt is durable; predispatch gaps use the
 status/reason pair with no provenance.
+
+`review_item_catalog(items)` and `review_envelope_to_candidate_context(envelope, items, ...)`
+(`application.semantic_case`) are the shared catalog/classification projection for explicit checks
+and automatic advice. They offer the structural `review-packet` envelope and only catalogued
+content as separate categorized candidates. `observation_advice_to_candidate_context(attempt, ...)`
+(`application.observation_advice_semantic`) validates the frozen advice packet through
+`validate_semantic_evidence_packet` (`application.observation_advice`), keeps rule metadata and gaps
+structural, and separates finding-summary prose. Both producers use
+`assemble_filtered_review_packet` to retain only privacy-approved content. Advice does not invent a
+cooperative ledger frontier, source excerpts, or task-check coverage (#1019, ADR-009).
 
 For `dispatch_kind=external_runtime_oauth`, provenance additionally requires one
 `RuntimeAttemptEvidence` value. It contains only exact runtime/source/executable/protocol/

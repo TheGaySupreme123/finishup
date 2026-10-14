@@ -412,6 +412,12 @@ reverse-chronological released versions.
 
 ### Fixed
 
+- Automatic AI-powered observation advice can now reach the configured reviewer through the
+  approved review-packet envelope on Codex, Claude Code and Cursor. Scoped gaps and rule metadata
+  are retained; finding summaries travel only when their category is approved. Malformed or denied
+  advice stays blocked. Privacy receipts now distinguish actual category denials from request or
+  packet-assembly failures, while older receipts remain readable (#1019, ADR-009).
+
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `yoetz-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so
   that line could never answer it there. Cursor agents are told instead to confirm a met criterion

@@ -905,6 +905,43 @@ receipts on one `bounded_structural_metadata` item with no way to name the opera
   attempt. Suppressing those attempts, or admitting the advice packet, is a separate decision (a
   disclosure-shape change), recorded on issue #1019 and not made here.
 
+## Automatic advice review and category-denial honesty amendment (2026-10-14, issue #1019)
+
+Maintainer acknowledgement for this privacy/egress design gate: the owner explicitly requested
+this scoped repair. The earlier #1019 observation-advice delivery defect is resolved by the
+following shared service behavior; the original receipt-origin amendment above records the
+historical failure, not the current delivery contract.
+
+- The frozen minimized advice packet is offered as separately classified content inside the same
+  `review-packet` envelope/catalog contract used by explicit `check`. The existing approved-item
+  filter assembles `yoetz.review-packet-case/2`; no live repository, transcript or log is added.
+  Producer-owned rule metadata and scoped gaps remain `bounded_structural_metadata`;
+  `finding_summaries` are separate `finding_summary` content and never appear in the structural
+  envelope. Only approved content is retained. A malformed packet, missing or denied envelope,
+  or an assembly that loses the advice content fails closed. Packet digest and gaps must match
+  the frozen attempt. Old pending rows with an unknown packet format remain fail closed.
+- Advice uses a custom observation-only context with no cooperative ledger frontier or ledger
+  citations. Its question and coverage name
+  only the recorded observation facts and gaps; delivery is not a closing task check. The
+  `observation-advice-packet` content marker takes precedence over the shared envelope marker
+  when deriving `origin_operation`, including successful and blocked receipts.
+- Predispatch receipts carry only categories actually denied by the classifier/category policy.
+  Failure to assemble approved context does not deny its category: it reports
+  `insufficient_approved_context`, zero included items and no category denial unless another item
+  was actually denied. Scope, destination, channel and size refusals likewise preserve the actual
+  request failure reason instead of declaring every candidate category denied. Approval counts
+  describe classification, never provider delivery. Before classification, neither approval nor
+  denial is asserted. `secret_scan.stage` still distinguishes an unrun scan from prepared scanning.
+- The existing egress-receipt 1.1.0 fields carry these facts; no new reason or
+  required field is introduced. Stored 1.0.0/1.1.0 receipts keep their exact bytes and remain readable;
+  older overbroad category sets are historical assertions, not retroactively corrected facts.
+- Codex, Claude Code and Cursor share this service path, on all supported platforms. Hooks only
+  enqueue; background dispatch applies the same authority and category checks as CLI/MCP checks.
+  CLI and terminal-interface privacy receipt inspection receive the same corrected network receipt.
+  No host adapter, receipt agent-sink projection, or JSON/markdown/text task-receipt projection
+  changes here; those overlap the privacy lane but are outside this repair. Verification uses an
+  isolated service composition and fake provider, not live host sessions or model calls.
+
 ## Declared outputs outside the workspace amendment (2026-10-08, issue #1016, tb4n2 R7)
 
 Owner decision (maintainer acknowledgement on #1016): a deliverable the task places outside the

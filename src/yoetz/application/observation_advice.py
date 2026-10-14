@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -65,6 +66,7 @@ __all__ = [
     "build_observation_advice_snapshot",
     "hook_advice_context",
     "minimized_semantic_evidence_packet",
+    "validate_semantic_evidence_packet",
     "scoped_session_envelopes",
     "scoped_session_status",
     "select_advice_item",
@@ -1200,6 +1202,62 @@ def advice_items_for_ledger(snapshot: AdviceSnapshot) -> tuple[AdviceItem, ...]:
     """Local items for task-ledger materialization (Agent A coordinator hook)."""
 
     return tuple(item for item in snapshot.ranked_items if item.origin == "deterministic")
+
+
+def validate_semantic_evidence_packet(packet: Mapping[str, JsonValue]) -> None:
+    """Only producer-owned structural fields may enter an advice review envelope (#1019)."""
+    if set(packet) != {
+        "format",
+        "policy",
+        "evidence_basis_digest",
+        "coverage_gaps",
+        "finding_summaries",
+        "deterministic_rules",
+    }:
+        raise ValueError("observation_advice_packet_invalid")
+    if (
+        packet["format"] != "yoetz.observation-advice-semantic/1"
+        or packet["policy"] != f"{OBSERVATION_ADVICE_POLICY_ID}/{OBSERVATION_ADVICE_POLICY_VERSION}"
+    ):
+        raise ValueError("observation_advice_packet_invalid")
+    validate_sha256_digest(cast(str, packet["evidence_basis_digest"]))
+    gaps, summaries, rules = (
+        packet[key] for key in ("coverage_gaps", "finding_summaries", "deterministic_rules")
+    )
+    if (
+        not isinstance(gaps, list)
+        or len(gaps) > MAX_KNOWN_GAPS
+        or any(
+            type(gap) is not str or re.fullmatch(r"[a-z][a-z0-9_./:-]{0,127}", gap) is None
+            for gap in gaps
+        )
+        or not isinstance(summaries, list)
+        or len(summaries) > 16
+        or any(type(summary) is not str for summary in summaries)
+        or not isinstance(rules, list)
+    ):
+        raise ValueError("observation_advice_packet_invalid")
+    for rule in rules:
+        if not isinstance(rule, dict) or set(rule) != {
+            "kind",
+            "rule_code",
+            "next_action",
+            "evidence_ref_count",
+            "summary",
+        }:
+            raise ValueError("observation_advice_packet_invalid")
+        code, action, count = rule["rule_code"], rule["next_action"], rule["evidence_ref_count"]
+        if (
+            type(code) is not str
+            or code not in _RULE_SUMMARIES
+            or type(action) is not str
+            or action not in _VALID_ADVICE_NEXT_ACTIONS
+            or type(count) is not int
+            or count < 0
+            or rule["summary"] != _RULE_SUMMARIES[code]
+        ):
+            raise ValueError("observation_advice_packet_invalid")
+        FindingKind(cast(str, rule["kind"]))
 
 
 def minimized_semantic_evidence_packet(
