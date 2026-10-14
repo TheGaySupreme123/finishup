@@ -174,6 +174,36 @@ _NEXT_PROJECT: Final = (
     "Run 'finishup setup run' from inside the project folder you want to connect, or pass "
     "--project <folder>. Your home folder and the filesystem root cannot be connected."
 )
+_NEXT_PRIVACY_AFTER_PROVIDER: Final = (
+    "Next: from the project folder, run 'finishup --privacy' to choose the disclosure policy for "
+    "AI-powered review; the provider binding is kept."
+)
+_PRIVACY_READY: Final = frozenset({"configured", "unchanged"})
+
+
+def _emit_unconnectable_project(host: str, *, json_output: bool) -> int:
+    """Report a project folder setup cannot connect, with the same words on every path."""
+
+    if json_output:
+        typer.echo(
+            json.dumps(
+                {
+                    "schema": "yoetz.host-connection-report/1",
+                    "host": host,
+                    "action": "connect",
+                    "connection_observed": False,
+                    "outcome": "incomplete",
+                    "reason": "workspace_locator_invalid",
+                    "next_step": _NEXT_PROJECT,
+                },
+                sort_keys=True,
+            )
+        )
+    else:
+        typer.echo(f"{host}: incomplete")
+        typer.echo("workspace_locator_invalid")
+        typer.echo(_NEXT_PROJECT)
+    return 1
 
 
 def _resolve_setup_project(project: Path | None, *, interactive: bool) -> Path | None:
@@ -788,7 +818,8 @@ def _choose_binary(
     for index, binary in enumerate(binaries, start=1):
         version = binary.reported_version or "unknown version"
         typer.echo(f"  {index}. {binary.executable_path} ({version})")
-    raw = typer.prompt("Select the Codex installation to configure", default="1")
+    default = _path_codex_choice([Path(binary.executable_path) for binary in binaries]) or 1
+    raw = typer.prompt("Select the Codex installation to configure", default=str(default))
     if not raw.isdecimal() or not 1 <= int(raw) <= len(binaries):
         raise _UsageExit(_usage_failure("the harness selection is not one of the listed numbers"))
     return binaries[int(raw) - 1]
@@ -1992,6 +2023,7 @@ async def _register_step(
     accept: bool,
     route_profile: Literal["policy", "strict"] | None = None,
     codex_home: Path | None = None,
+    workspace: Path | None = None,
     _state: Path | None = None,
 ) -> dict[str, JsonValue]:
     """Backward-compatible name for the complete Codex integration step."""
@@ -2001,6 +2033,7 @@ async def _register_step(
         interactive=interactive,
         accept=accept,
         route_profile=route_profile,
+        workspace=workspace,
         codex_home=codex_home,
         _state=_state,
     )
@@ -2226,8 +2259,13 @@ async def _interactive_provider_setup(
     model: str | None = None,
     before_credential: Callable[[], Awaitable[str | None]] | None = None,
     storage_only: bool = False,
+    project: Path | None = None,
 ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]]:
-    """Run trusted local setup ceremonies while keeping secrets out of wizard state."""
+    """Run trusted local setup ceremonies while keeping secrets out of wizard state.
+
+    ``project`` is the folder the credential's repository privacy commitment names (the current
+    directory when omitted), the same folder the privacy step governs.
+    """
 
     from finishup.adapters.keys.os_keyring import AutoUnlockPassphraseStore, OSKeyringError
     from finishup.cli.privacy_setup import get_privacy_setup_snapshot
@@ -2529,7 +2567,7 @@ async def _interactive_provider_setup(
         provider.endpoint_profile_version,
     )
     try:
-        repository_snapshot = await get_privacy_setup_snapshot()
+        repository_snapshot = await get_privacy_setup_snapshot(project)
         repository_commitment = repository_snapshot.bound_scope.get("workspace_ref_commitment")
     except ControlError, OSError, ValueError:
         repository_commitment = None
@@ -2629,6 +2667,19 @@ def _emit_provider_setup_layer_report(*, privacy_outcome: str) -> None:
     )
 
 
+def _emit_codex_subscription_layer_report(*, privacy_outcome: str) -> None:
+    """The Codex-subscription route's own layers: no API key and no vault credential exist."""
+
+    typer.echo(
+        "Codex subscription binding written. Codex keeps the ChatGPT sign-in in the dedicated "
+        "evaluator home; FinishUP never reads it."
+    )
+    typer.echo("Other layers (ready vs not demonstrated by this path):")
+    typer.echo(f"  Privacy policy: {privacy_outcome}")
+    typer.echo("  Live AI-powered review: not demonstrated")
+    typer.echo("The binding and the sign-in are not proof that an AI-powered review ran.")
+
+
 async def _run_local_only_privacy_setup(project: Path | None) -> int:
     """Record the owner's "local only; agents may not opt in" answer (ADR-049).
 
@@ -2703,10 +2754,12 @@ async def run_provider_setup(
     if not service.get("reachable"):
         typer.echo("provider_setup_failed: service_unavailable", err=True)
         return 20
-    privacy_result: object | None = None
+    # The disclosure policy this run chose: ``failed`` when the privacy step raised, and
+    # ``not_attempted`` only when the provider step stopped before reaching it.
+    privacy_outcome = "not_attempted"
 
     async def authorize_provider_channel() -> str | None:
-        nonlocal privacy_result
+        nonlocal privacy_outcome
         from finishup.cli.privacy_setup import run_privacy_setup
         from finishup.cli.unlock import HumanCeremonyCliError
         from finishup.ports.control import ControlError
@@ -2737,9 +2790,12 @@ async def run_provider_setup(
                 workspace_locator=project,
             )
         except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
+            privacy_outcome = "failed"
             typer.echo(f"privacy_setup_failed: {type(error).__name__}", err=True)
             return _privacy_block_reason(getattr(error, "reason", None))
-        if getattr(privacy_result, "outcome", "failed") in {"configured", "unchanged"}:
+        outcome = getattr(privacy_result, "outcome", "failed")
+        privacy_outcome = outcome if type(outcome) is str else "failed"
+        if privacy_outcome in _PRIVACY_READY:
             return None
         return _privacy_block_reason(getattr(privacy_result, "reason", None))
 
@@ -2748,6 +2804,7 @@ async def run_provider_setup(
         provider_choice=provider_choice,
         model=model,
         before_credential=authorize_provider_channel,
+        project=project,
     )
     service, provider_report = _provider_setup_result(service, provider_report)
     binding = provider_report.get("binding")
@@ -2771,8 +2828,18 @@ async def run_provider_setup(
             f"Model: {provider_report.get('model')} (suggested {model_fallback_from} is not "
             "listed by this Codex)"
         )
-    if binding != "configured" or not _provider_credential_ready(provider_report):
+    # A provider binding without the disclosure policy is not usable: on the API-key path the
+    # credential step never ran, and a Codex sign-in is already held, so the privacy outcome
+    # itself must gate success on every provider path.
+    privacy_ready = privacy_outcome in _PRIVACY_READY
+    if (
+        binding != "configured"
+        or not _provider_credential_ready(provider_report)
+        or not privacy_ready
+    ):
         reason = provider_report.get("credential_reason")
+        if type(reason) is not str and binding == "configured" and not privacy_ready:
+            reason = "privacy_setup_incomplete"
         if type(reason) is str:
             typer.echo(f"Reason: {reason}")
             from finishup.cli.codex_subscription import subscription_remediation
@@ -2780,13 +2847,14 @@ async def run_provider_setup(
             remediation = subscription_remediation(reason)
             if remediation is not None:
                 typer.echo(f"Next: {remediation}")
+        if binding == "configured" and not privacy_ready:
+            typer.echo(f"Privacy policy: {privacy_outcome}")
+            typer.echo(_NEXT_PRIVACY_AFTER_PROVIDER)
         return 20
-    privacy_outcome = (
-        "not_attempted" if privacy_result is None else getattr(privacy_result, "outcome", "failed")
-    )
-    _emit_provider_setup_layer_report(privacy_outcome=privacy_outcome)
-    if privacy_outcome == "failed":
-        return 20
+    if credential == "external_runtime_oauth":
+        _emit_codex_subscription_layer_report(privacy_outcome=privacy_outcome)
+    else:
+        _emit_provider_setup_layer_report(privacy_outcome=privacy_outcome)
     typer.echo(
         "AI-powered review configuration changed: start a fresh agent session so it uses it."
     )
@@ -2868,6 +2936,7 @@ async def _refresh_setup_recommendations(
     binary: HarnessBinary | None,
     codex_home: Path | None,
     allow_network: bool,
+    workspace: Path | None = None,
 ) -> dict[str, JsonValue]:
     """Refresh cached recommendations from current local and durable policy facts."""
 
@@ -2881,7 +2950,7 @@ async def _refresh_setup_recommendations(
         activation_state: str | None = None
         if binary is not None and codex_home is not None:
             activation_state = inspect_activation(
-                _integration_target(),
+                _integration_target(workspace),
                 executable_path=binary.executable_path,
                 codex_home=codex_home,
             ).state.value
@@ -2899,16 +2968,24 @@ async def _refresh_setup_recommendations(
         return {"outcome": "failed", "reason": type(error).__name__, "pending": []}
 
 
+def _path_codex_choice(executables: Sequence[Path | None]) -> int | None:
+    """The 1-based position of the Codex a plain ``codex`` command runs, if it is listed."""
+
+    on_path = shutil.which("codex")
+    if on_path is None:
+        return None
+    selected = Path(os.path.abspath(on_path))
+    for index, executable in enumerate(executables, 1):
+        if executable is not None and Path(os.path.abspath(executable)) == selected:
+            return index
+    return None
+
+
 def _default_installation_choice(installations: Sequence[HostInstallation]) -> int:
     """Offer the Codex a plain ``codex`` command runs, not merely the first path in sort order."""
 
-    on_path = shutil.which("codex")
-    if on_path is not None:
-        selected = Path(os.path.abspath(on_path))
-        for index, item in enumerate(installations, 1):
-            if item.host == "codex" and Path(os.path.abspath(item.executable)) == selected:
-                return index
-    return 1
+    codex = [item.executable if item.host == "codex" else None for item in installations]
+    return _path_codex_choice(codex) or 1
 
 
 async def run_setup_wizard(
@@ -2974,26 +3051,7 @@ async def run_setup_wizard(
     if host is not None:
         connected_project = _resolve_setup_project(project, interactive=interactive)
         if connected_project is None:
-            if json_output:
-                typer.echo(
-                    json.dumps(
-                        {
-                            "schema": "yoetz.host-connection-report/1",
-                            "host": host,
-                            "action": "connect",
-                            "connection_observed": False,
-                            "outcome": "incomplete",
-                            "reason": "workspace_locator_invalid",
-                            "next_step": _NEXT_PROJECT,
-                        },
-                        sort_keys=True,
-                    )
-                )
-            else:
-                typer.echo(f"{host}: incomplete")
-                typer.echo("workspace_locator_invalid")
-                typer.echo(_NEXT_PROJECT)
-            return 1
+            return _emit_unconnectable_project(host, json_output=json_output)
         # ADR-049: every interactive answer registers the policy route; the privacy policy, not
         # the route, decides what may be sent. A run that asks nothing keeps the strict default.
         host_review: ReviewChoice | None = (
@@ -3037,6 +3095,12 @@ async def run_setup_wizard(
             if result == 0:
                 _write_setup_marker("complete")
         return result
+
+    # The Codex wizard needs the same project folder before its first question; it is carried
+    # through registration, the privacy and provider steps, readiness and recommendations.
+    codex_project = _resolve_setup_project(project, interactive=interactive)
+    if codex_project is None:
+        return _emit_unconnectable_project("codex", json_output=json_output)
 
     binaries = discover_codex_binaries()
     try:
@@ -3102,6 +3166,7 @@ async def run_setup_wizard(
             accept=accept,
             route_profile=selected_route,
             codex_home=codex_home,
+            workspace=codex_project,
         )
 
     service = await _service_reachability(start_if_absent=interactive)
@@ -3150,6 +3215,7 @@ async def run_setup_wizard(
                         if review_choice is None
                         else review_choice_conversation_setting(review_choice)
                     ),
+                    workspace_locator=codex_project,
                 )
             except (ControlError, HumanCeremonyCliError, OSError, ValueError) as error:
                 reason = getattr(error, "reason", None)
@@ -3183,6 +3249,7 @@ async def run_setup_wizard(
         service, provider = await _interactive_provider_setup(
             service,
             before_credential=authorize_provider_channel,
+            project=codex_project,
         )
         service, provider = _provider_setup_result(service, provider)
         if service.get("state") == "ready" and provider.get("binding") == "configured":
@@ -3210,6 +3277,7 @@ async def run_setup_wizard(
                 update_checks_override=update_checks_choice,
                 # ADR-049: the owner's explicit "local only; agents may not opt in".
                 conversation_review=ConversationReview.LOCAL_ONLY,
+                workspace_locator=codex_project,
             )
             privacy = {
                 "outcome": privacy_result.outcome,
@@ -3342,7 +3410,7 @@ async def run_setup_wizard(
         hooks=hooks,
         consent_outcome=consent,
         service=service,
-        workspace=Path.cwd(),
+        workspace=codex_project,
         codex_home=selected_codex_home,
     )
     if semantic_status is not None:
@@ -3353,6 +3421,7 @@ async def run_setup_wizard(
         binary=chosen,
         codex_home=selected_codex_home,
         allow_network=interactive and update_checks_choice is True and update_choice_committed,
+        workspace=codex_project,
     )
 
     report: dict[str, JsonValue] = {
