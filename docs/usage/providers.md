@@ -52,8 +52,10 @@ New setups suggest `gpt-6.1-sol` with reasoning effort `medium` for final review
 for routine checkpoints. The suggestion is bound only when the Codex that FinishUP runs lists
 `gpt-6.1-sol` with those efforts. An older Codex such as `0.157.1` does not, so setup uses
 `gpt-6-luna` instead and says so before the sign-in. A model you type yourself is never
-substituted, and upgrading never changes the model an existing setup already uses. A check counts as final when your task has recorded a completion claim;
-every earlier check is a routine checkpoint, which can use a lower effort than final reviews. Use
+substituted, and upgrading never changes the model an existing setup already uses.
+
+A check counts as final when your task has recorded a completion claim; every earlier check is a
+routine checkpoint, which can use a lower effort than final reviews. Use
 `--reasoning-effort` and `--routine-reasoning-effort` to choose each one. When an existing
 subscription binding is targeted, omitting `--model` preserves its exact model. Omitting
 `--reasoning-effort` and `--routine-reasoning-effort` preserves its final and routine choices,
