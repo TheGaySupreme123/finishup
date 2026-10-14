@@ -1527,6 +1527,15 @@ classification: `installed_not_activated` when the managed plugin source at
 The command reports whether the skill tree remains; it does not remove it. Consent records and the
 observation store are intentionally left in place.
 
+While another connected project that still serves the exact Yoetz manifest remains in the home
+(see [Several projects in one Codex home](#several-projects-in-one-codex-home-issue-1058)), the
+preview's outcome is `detach` instead: it lists those projects in `shared_with`, names the project
+the binding moves to in `rebind_to` when it named this one, and plans neither host command nor any
+cache deletion (`--purge-cache` has no effect). Apply rewrites only the exact `[marketplaces.yoetz]`
+table in place, then removes this project's canonical `marketplace.json`, then updates the
+connected-projects record; the disconnected project then reads `installed_not_activated` while
+the remaining projects stay `active`.
+
 ### External MCP registration
 
 ```text
