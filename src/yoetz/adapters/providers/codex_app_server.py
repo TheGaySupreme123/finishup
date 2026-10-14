@@ -30,6 +30,7 @@ from yoetz.adapters.providers.codex_capability import (
     CODEX_CODE_MODE_HOST_NAME,
     CODEX_EVALUATOR_CAPABILITY_PROFILE,
     CODEX_EVALUATOR_RUNTIME_FLOOR,
+    CODEX_PROBE_CLEANUP_UNCONFIRMED,
     CodexCapabilityRecord,
     CodexPlatform,
     codex_version_key,
@@ -1101,8 +1102,13 @@ async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeSt
             await _close_predisclosure_window(runtime, 10.0)
         except _CodexRuntimeWarning as warning:
             raise ValueError("codex_app_server_predisclosure_event_forbidden") from warning
-    finally:
-        cleanup = await _cleanup_guaranteed(runtime)
+    except Exception as error:
+        await _cleanup_or_unconfirmed(runtime, error)
+        raise
+    except BaseException:
+        await _cleanup_guaranteed(runtime)
+        raise
+    cleanup = await _cleanup_guaranteed(runtime)
     return CodexRuntimeStatus(
         runtime_ready=runtime_ready,
         auth_mode=auth_mode,
@@ -1160,10 +1166,26 @@ async def codex_capability_probe(profile: CodexAppServerProfile) -> None:
             raise ValueError("codex_app_server_predisclosure_event_forbidden") from warning
         except TimeoutError as error:
             raise ValueError("codex_capability_probe_timeout") from error
-    finally:
-        cleanup = await _cleanup_guaranteed(runtime)
-    if cleanup == "failed":
-        raise ValueError("codex_capability_probe_cleanup_unconfirmed")
+    except Exception as error:
+        await _cleanup_or_unconfirmed(runtime, error)
+        raise
+    except BaseException:
+        await _cleanup_guaranteed(runtime)
+        raise
+    if await _cleanup_guaranteed(runtime) == "failed":
+        raise ValueError(CODEX_PROBE_CLEANUP_UNCONFIRMED)
+
+
+async def _cleanup_or_unconfirmed(runtime: _CodexProcess | None, failure: Exception) -> None:
+    """Clean up after a failed probe; an unconfirmed cleanup outranks, and chains, ``failure``.
+
+    The probe's own refusal stays the ``__cause__``, but the raised token is the unconfirmed
+    cleanup, which stops runtime selection instead of letting it fall back to another candidate
+    while a process group may still be running.
+    """
+
+    if await _cleanup_guaranteed(runtime) == "failed":
+        raise ValueError(CODEX_PROBE_CLEANUP_UNCONFIRMED) from failure
 
 
 def _login_challenge(result: Mapping[str, object]) -> CodexLoginChallenge:

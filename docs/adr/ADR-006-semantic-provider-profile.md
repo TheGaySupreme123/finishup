@@ -550,6 +550,11 @@ operations and the privacy gateway are unchanged.
    is adopted by the next `setup` or `repair` without a Yoetz release. Earlier retained releases
    stay as fallbacks until `runtime remove`, which now deletes every retained release the binding
    does not use. `runtime install --download` installs `@openai/codex@latest`.
+   *Amended 2026-10-14:* every check subprocess (version, schema, probe, readiness) leads its own
+   process group, which is killed as a whole and confirmed empty on exit, timeout or any failure.
+   An unconfirmed cleanup is `codex_capability_probe_cleanup_unconfirmed`; it outranks, and
+   chains, any failure the check already raised, and it is never a fallback: candidate discovery
+   and selection stop, nothing further is launched, and nothing is written.
 6. **Existing bindings.** A pinned-cell binding (`codex-evaluator/0.150.1/*` or
    `codex-evaluator/0.157.1/*`), or one checked under the unreleased first draft of this
    amendment (`codex-evaluator/capability/v1`, which did not yet check required request fields,

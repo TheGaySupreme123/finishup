@@ -85,6 +85,15 @@ lists those tokens. When no candidate passes, the first candidate's token is the
 nothing is written. Earlier retained releases stay available as fallbacks until
 `runtime remove`.
 
+Every check subprocess (`codex --version`, schema generation, the probe and the readiness probe)
+runs as the leader of its own process group. Whether it exits, times out or fails, Yoetz kills
+that whole group, so a descendant the candidate started is killed too, and then confirms no
+member remains. When that cannot be confirmed, the result is
+`codex_capability_probe_cleanup_unconfirmed`, even if the check had already failed for another
+reason (that reason is kept as its cause). This token is not a fallback: selection and discovery
+stop there, no further candidate is launched, and nothing is written. Inspect running processes,
+stop any leftover Codex check you own, then retry.
+
 Updating the everyday Codex (`npm install -g @openai/codex@latest`) never changes a working
 binding by itself. The retained copy and its record keep serving until the owner runs `repair`
 (or `setup`), which adopts the newer release when it passes.
