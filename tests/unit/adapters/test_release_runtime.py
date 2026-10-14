@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import os
 import shutil
 import sys
 from collections.abc import Callable, Generator
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -392,6 +394,92 @@ def test_installed_runtime_probe_ignores_other_refusals(
     (prefix / "lib/external.pth").write_text(str(tmp_path))
     (prefix / "lib/external.pth").chmod(0o644)
     assert runtimes.installed_runtime_refusal() is None
+
+
+# A runtime another account installed (root, in a container image) run by this account. The test
+# runner owns every file here, so "this account" is played by a different effective uid: every
+# file the runner made then belongs to another account, exactly as a root install does.
+def _as_another_account(monkeypatch: pytest.MonkeyPatch) -> None:
+    other = os.geteuid() + 4242
+    monkeypatch.setattr(runtimes.os, "geteuid", lambda: other)
+
+
+def _refuse_mkdir_beneath(monkeypatch: pytest.MonkeyPatch, parent: Path) -> None:
+    """The kernel's answer to a non-owner creating an entry in a 0755 directory."""
+
+    real_mkdir = os.mkdir
+
+    def refusing_mkdir(path: str | os.PathLike[str], mode: int = 0o777, **kwargs: object) -> None:
+        if Path(path).parent == parent:
+            raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
+        real_mkdir(path, mode, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(runtimes.os, "mkdir", refusing_mkdir)
+
+
+def test_a_retained_runtime_directory_another_account_owns_is_refused_by_name(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Root served first and made the directory; a non-root user is told why, not "unsafe"."""
+
+    manager = prefix.parent / f".{prefix.name}-releases"
+    manager.mkdir(mode=0o700)
+    _as_another_account(monkeypatch)
+    with pytest.raises(runtimes.ReleaseRuntimeError, match="release_runtime_not_owned"):
+        runtimes.prepare_release_runtime(prefix)
+    with pytest.raises(runtimes.ReleaseRuntimeError, match="release_runtime_not_owned"):
+        runtimes.prune_release_runtimes(prefix)
+    assert list(manager.iterdir()) == []
+
+
+def test_a_retained_runtime_directory_this_account_cannot_create_is_refused_by_name(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No directory yet, and the installation's parent belongs to another account."""
+
+    _as_another_account(monkeypatch)
+    _refuse_mkdir_beneath(monkeypatch, prefix.parent)
+    with pytest.raises(runtimes.ReleaseRuntimeError, match="release_runtime_not_owned"):
+        runtimes.prepare_release_runtime(prefix)
+    assert not (prefix.parent / f".{prefix.name}-releases").exists()
+
+
+def test_an_unwritable_parent_this_account_owns_stays_an_os_failure(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The token names another account's ownership only; the account's own read-only directory
+    keeps its bounded OS reason."""
+
+    _refuse_mkdir_beneath(monkeypatch, prefix.parent)
+    with pytest.raises(PermissionError):
+        runtimes.prepare_release_runtime(prefix)
+
+
+def test_installed_runtime_probe_reports_another_accounts_runtime_without_creating(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _as_installed(monkeypatch, prefix)
+    _as_another_account(monkeypatch)
+    manager = prefix.parent / f".{prefix.name}-releases"
+    # Absent, in a directory this account may still write (sticky, or its own): no refusal.
+    assert runtimes.installed_runtime_refusal() is None
+
+    def no_write_access(path: object, mode: int, **_kwargs: object) -> bool:
+        return Path(cast(str, path)) != prefix.parent
+
+    monkeypatch.setattr(runtimes.os, "access", no_write_access)
+    refusal = runtimes.installed_runtime_refusal()
+    assert refusal is not None and str(refusal) == "release_runtime_not_owned"
+    assert not manager.exists()
+
+    def write_access(_path: object, _mode: int, **_kwargs: object) -> bool:
+        return True
+
+    monkeypatch.setattr(runtimes.os, "access", write_access)
+    manager.mkdir(mode=0o700)
+    refusal = runtimes.installed_runtime_refusal()
+    assert refusal is not None and str(refusal) == "release_runtime_not_owned"
+    assert list(manager.iterdir()) == []
 
 
 @pytest.mark.parametrize("change", ["group_shared", "world_writable", "directory_shared"])

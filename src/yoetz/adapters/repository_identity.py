@@ -15,10 +15,15 @@ from yoetz.adapters.git_version import (
     git_version_async,
     git_version_supported,
 )
+from yoetz.config.foreign_write import (
+    project_root_admitted,
+    superuser_checkout_marker,
+    writable_by_others,
+)
 from yoetz.ports.control import RepositoryPrivacyContext, WorkspaceLocator
 from yoetz.ports.keys import REPOSITORY_PRIVACY_MAC_DOMAIN, MacKeyHandle
 
-__all__ = ["RepositoryIdentityError", "resolve_repository_privacy_context"]
+__all__ = ["RepositoryIdentityError", "resolve_repository_privacy_context", "root_owned_checkout"]
 
 _GIT_TIMEOUT_SECONDS: Final = 2.0
 _MAX_GIT_OUTPUT_BYTES: Final = 16_384
@@ -191,6 +196,58 @@ def _is_git_directory(candidate: Path) -> bool:
     return os.access(common / "objects", os.X_OK) and os.access(common / "refs", os.X_OK)
 
 
+def root_owned_checkout(directory: Path) -> Path | None:
+    """The top of the checkout holding ``directory`` when Git refuses it only because root owns it.
+
+    Git (2.35.2 and later) refuses a repository whose working tree or ``.git`` is not owned by
+    the running user ("dubious ownership"), and Yoetz runs Git without any configuration that
+    could set ``safe.directory``. A container image built as root keeps ``/app`` and
+    ``/app/.git`` root-owned and runs the agent as a non-root ``USER``; in a sticky root-owned
+    ``/app`` the agent's own ``git init`` is refused the same way, because the working tree is
+    root's. Returns the directory holding the nearest ``.git`` (found the way workspace binding
+    finds it: walking up, never past the home directory or the filesystem root) when that
+    directory is one the project-root rule admits, the marker is the user's own and unshared or
+    root's checkout marker (``superuser_checkout_marker``), and root owns at least one of the two;
+    otherwise ``None``. Such a checkout keeps the plain ``directory`` identity of that top, the
+    same from any directory beneath it and equal to the locator workspace binding gives hooks and
+    setup (ADR-007, 2026-10-14); Git is not run against it, and change capture refuses it as
+    ``unsafe_root``. Anything another non-root account owns is not matched and stays refused
+    when Git refuses it.
+    """
+
+    if not hasattr(os, "geteuid"):
+        return None
+    euid = os.geteuid()
+    home = Path.home()
+    candidate = directory
+    while candidate != Path(candidate.anchor) and candidate != home:
+        try:
+            marker = (candidate / ".git").lstat()
+        except FileNotFoundError:
+            if _is_git_directory(candidate):
+                return None
+            candidate = candidate.parent
+            continue
+        except OSError:
+            return None
+        try:
+            worktree = candidate.stat()
+        except OSError:
+            return None
+        if marker.st_uid == euid:
+            if stat.S_ISLNK(marker.st_mode) or writable_by_others(marker):
+                return None
+        elif not superuser_checkout_marker(marker):
+            return None
+        if not project_root_admitted(worktree):
+            return None
+        # Admitted owners are this user or root; Git refuses when either is root's.
+        if marker.st_uid != euid or worktree.st_uid != euid:
+            return candidate
+        return None
+    return None
+
+
 def _has_git_marker(directory: Path) -> bool:
     """Whether Git would find a repository at ``directory`` or any directory above it."""
 
@@ -288,9 +345,14 @@ async def resolve_repository_privacy_context(
     """Resolve a transient locator and retain only an installation-keyed commitment."""
 
     directory = _resolved_directory(locator)
-    common_directory = await _bounded_git_common_directory(directory)
-    identity_kind = "git_common_root" if common_directory is not None else "directory"
-    canonical_directory = common_directory if common_directory is not None else directory
+    checkout = root_owned_checkout(directory)
+    if checkout is not None:
+        # Git would refuse it; it keeps the plain identity of its top, from any subdirectory.
+        identity_kind, canonical_directory = "directory", checkout
+    else:
+        common_directory = await _bounded_git_common_directory(directory)
+        identity_kind = "git_common_root" if common_directory is not None else "directory"
+        canonical_directory = common_directory if common_directory is not None else directory
     message = identity_kind.encode("ascii") + b"\x00" + os.fsencode(canonical_directory)
     return RepositoryPrivacyContext(
         commitment=key.mac(REPOSITORY_PRIVACY_MAC_DOMAIN, message),

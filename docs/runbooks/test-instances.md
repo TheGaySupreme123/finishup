@@ -57,7 +57,12 @@ What happens, in order:
 4. The snapshot's own launcher runs `yoetz instance create --root <base>/<tag>/state --lifecycle
    ... --source-ref <sha> --package-digest <sha256> --bind-runtime`, which creates the root
    (owner-only), seals `state/instance-identity.json`, and writes `yoetz-instance-pin.json` into
-   the runtime's virtual environment.
+   the runtime's virtual environment. Creation is whole or nothing (ADR-028, 2026-10-14
+   amendment): if the pin cannot be written, for example because another account owns the
+   runtime, the command fails with `runtime_pin_unwritable` (exit 20) after removing the marker
+   and the directories it created, so the same command succeeds once the runtime is the
+   operator's own; it no longer leaves a half-created root that a retry reports as
+   `instance_exists`. The script removes its whole `<base>/<tag>` tree on any failure as before.
 5. `<base>/<tag>/provenance.json` records the tag, lifecycle, installation id, source revision and
    state, package version and digest, and digest-only identities of the runtime and root.
 

@@ -36,7 +36,7 @@ from yoetz.adapters.integrations.toml_tables import (
     exact_table_span,
     strip_exact_table,
 )
-from yoetz.config.foreign_write import writable_by_others
+from yoetz.config.foreign_write import project_root_admitted, writable_by_others
 from yoetz.ports.integrations import (
     IntegrationError,
     IntegrationReason,
@@ -445,9 +445,7 @@ def _validated_project(target: IntegrationTarget) -> Path:
         stat = root.stat()
     except OSError as exc:
         raise _error(IntegrationReason.TARGET_UNSAFE) from exc
-    if hasattr(os, "geteuid") and stat.st_uid != os.geteuid():
-        raise _error(IntegrationReason.TARGET_UNSAFE)
-    if writable_by_others(stat):
+    if not project_root_admitted(stat):
         raise _error(IntegrationReason.TARGET_UNSAFE)
     resolved = root.resolve()
     if root.absolute() != resolved:
@@ -2090,12 +2088,15 @@ def _open_anchored_directory(
     relative_directory: Path,
     *,
     missing_reason: IntegrationReason = IntegrationReason.TARGET_UNSAFE,
+    project_anchor: bool = False,
 ) -> int:
     """Open one descendant directory without following any path component.
 
     The returned descriptor is derived from the selected project/home descriptor,
     so swapping an intermediate pathname cannot redirect a later mutation outside
-    that authority root.
+    that authority root. A ``project_anchor`` is judged by the project-root rule (the
+    install side admits a root-owned project for a non-root user, so the way out must
+    too); a Codex home anchor and every descendant stay the running user's own.
     """
 
     if relative_directory.is_absolute() or any(
@@ -2109,7 +2110,12 @@ def _open_anchored_directory(
     except OSError as exc:
         raise _error(IntegrationReason.TARGET_UNSAFE) from exc
     try:
-        _owned_stat_not_writable(os.fstat(current_fd), directory=True)
+        anchor_facts = os.fstat(current_fd)
+        if project_anchor:
+            if not project_root_admitted(anchor_facts):
+                raise _error(IntegrationReason.TARGET_UNSAFE)
+        else:
+            _owned_stat_not_writable(anchor_facts, directory=True)
         for part in relative_directory.parts:
             try:
                 child_fd = os.open(part, _directory_open_flags(), dir_fd=current_fd)
@@ -2349,8 +2355,13 @@ def _remove_exact_managed_file(
     *,
     mismatch_reason: IntegrationReason,
     anchor_root: Path | None = None,
+    project_anchor: bool = False,
 ) -> None:
-    """Quarantine and unlink only the exact descriptor-bound approved file inode."""
+    """Quarantine and unlink only the exact descriptor-bound approved file inode.
+
+    ``project_anchor`` marks ``anchor_root`` as the project root (see
+    ``_open_anchored_directory``); the file and its parent must still be the user's own.
+    """
 
     if path.name in {"", ".", ".."} or "/" in path.name:
         raise _error(IntegrationReason.TARGET_UNSAFE)
@@ -2365,7 +2376,9 @@ def _remove_exact_managed_file(
             relative_parent = path.parent.relative_to(anchor_root)
         except ValueError as exc:
             raise _error(IntegrationReason.TARGET_UNSAFE) from exc
-        parent_fd = _open_anchored_directory(anchor_root, relative_parent)
+        parent_fd = _open_anchored_directory(
+            anchor_root, relative_parent, project_anchor=project_anchor
+        )
     descriptor: int | None = None
     try:
         _owned_stat_not_writable(os.fstat(parent_fd), directory=True)
@@ -2862,6 +2875,7 @@ def apply_removal(
                         else IntegrationReason.PREVIEW_STALE
                     ),
                     anchor_root=project,
+                    project_anchor=True,
                 )
             except IntegrationError as exc:
                 if mutation_started or exc.reason is IntegrationReason.WRITE_FAILED:

@@ -211,6 +211,37 @@ def test_failed_connection_names_a_runtime_another_account_can_write(
     assert "chmod -R go-w /x" in report["next_step"]
 
 
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor-cli"])
+def test_connect_preflight_names_a_runtime_another_account_installed(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    host: str,
+) -> None:
+    """Every host would launch a runtime that cannot serve this account: refuse by name."""
+
+    from yoetz.adapters import release_runtime
+
+    monkeypatch.setattr(
+        release_runtime,
+        "installed_runtime_refusal",
+        lambda: release_runtime.ReleaseRuntimeError("release_runtime_not_owned"),
+    )
+    code = cli.run_host_connection(
+        host=host,
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/example/project"),
+        json_output=True,
+    )
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    HostConnectionReport.model_validate(report)
+    assert (report["outcome"], report["reason"]) == ("incomplete", "release_runtime_not_owned")
+    assert "must belong to the account running Yoetz" in report["next_step"]
+    assert "plan" not in report
+
+
 def test_connect_preflight_refuses_but_disconnect_and_status_proceed(
     prepared: ConnectionPlan, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -257,3 +288,322 @@ def test_connect_preflight_refuses_but_disconnect_and_status_proceed(
         == 0
     )
     assert json.loads(capsys.readouterr().out)["outcome"] == "preview"
+
+
+# --- Every connect path refuses a runtime that cannot serve this account -------------------
+
+
+def _runtime_cannot_serve(monkeypatch: pytest.MonkeyPatch) -> None:
+    from yoetz.adapters import release_runtime
+
+    monkeypatch.setattr(
+        release_runtime,
+        "installed_runtime_refusal",
+        lambda: release_runtime.ReleaseRuntimeError("release_runtime_not_owned"),
+    )
+
+
+def test_bare_setup_run_registers_nothing_for_a_runtime_that_cannot_serve(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """``setup run`` without ``--host`` (the Codex wizard) used to register Codex anyway."""
+
+    import anyio
+
+    import yoetz.cli.setup as setup
+    from yoetz.adapters.integrations import host_discovery
+
+    _runtime_cannot_serve(monkeypatch)
+    monkeypatch.setattr(host_discovery, "discover_hosts", lambda: ())
+    from yoetz.ports.harness_mcp import HarnessBinary, HarnessId
+
+    executable = tmp_path / "codex"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o700)
+    binary = HarnessBinary(HarnessId.CODEX, str(executable), "0.162.1", "untested")
+    monkeypatch.setattr(setup, "discover_codex_binaries", lambda: (binary,))
+
+    def no_registration(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("the Codex integration went past the runtime refusal")
+
+    monkeypatch.setattr(setup, "CodexPluginService", no_registration)
+    monkeypatch.setattr(setup, "resolve_codex_home_for_binary", no_registration)
+
+    async def unreachable(**_kwargs: object) -> dict[str, object]:
+        return {"reachable": False, "state": None, "vault_mode": None}
+
+    monkeypatch.setattr(setup, "_service_reachability", unreachable)
+
+    def marker_written(*_args: object) -> bool:
+        return True
+
+    monkeypatch.setattr(setup, "_write_setup_marker", marker_written)
+
+    async def run() -> int:
+        return await setup.run_setup_wizard(
+            non_interactive=True,
+            codex_path=None,
+            codex_home=tmp_path / "codex-home",
+            accept=True,
+            json_output=True,
+            project=tmp_path,
+        )
+
+    anyio.run(run)
+    report = json.loads(capsys.readouterr().out)
+    registration = report["registration"]
+    assert (registration["outcome"], registration["reason"]) == (
+        "failed",
+        "release_runtime_not_owned",
+    )
+    assert any(
+        "must belong to the account running Yoetz" in str(step) for step in report["next_steps"]
+    )
+
+
+def test_apply_selected_refuses_a_connect_but_never_a_disconnect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard every front end's connect passes through, the TUI's included."""
+
+    from types import SimpleNamespace
+
+    from yoetz.application.host_connection import ConnectionError
+
+    _runtime_cannot_serve(monkeypatch)
+    applied: list[str] = []
+
+    def apply(plan: object, **_kwargs: object) -> dict[str, object]:
+        applied.append(cast_action(plan))
+        return {}
+
+    def cast_action(plan: object) -> str:
+        return str(getattr(plan, "body")["action"])
+
+    monkeypatch.setattr(cli, "apply_connection", apply)
+    connect = SimpleNamespace(
+        body={"action": "connect", "requires_os_presence": False, "changes": []},
+        unchanged=True,
+        digest="sha256:" + "0" * 64,
+    )
+    with pytest.raises(ConnectionError) as refused:
+        cli.apply_selected(connect, lambda: connect)  # type: ignore[arg-type]
+    assert str(refused.value) == "release_runtime_refused"
+    disconnect = SimpleNamespace(
+        body={"action": "disconnect", "requires_os_presence": False, "changes": []},
+        unchanged=True,
+        digest="sha256:" + "0" * 64,
+    )
+    cli.apply_selected(disconnect, lambda: disconnect)  # type: ignore[arg-type]
+    assert applied == ["disconnect"]
+
+
+# The documented direct commands (and the prompt-loop menu, which calls ``integrate_mcp``).
+
+
+@pytest.mark.parametrize("action", ["install", "preview"])
+def test_integrate_codex_mcp_refuses_a_runtime_that_cannot_serve(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], action: str
+) -> None:
+    import anyio
+
+    import yoetz.cli.setup as setup
+
+    _runtime_cannot_serve(monkeypatch)
+
+    def no_discovery() -> tuple[object, ...]:
+        raise AssertionError("the registration went past the runtime refusal")
+
+    monkeypatch.setattr(setup, "discover_codex_binaries", no_discovery)
+
+    async def run() -> int:
+        return await setup.integrate_mcp(
+            action, "codex", codex_path=None, accept=True, preview_digest=None, json_output=True
+        )
+
+    assert anyio.run(run) == 20
+    assert capsys.readouterr().err.startswith("release_runtime_not_owned: ")
+
+
+@pytest.mark.parametrize("action", ["status", "preview-remove", "remove"])
+def test_integrate_codex_mcp_status_and_removal_stay_open(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], action: str
+) -> None:
+    import anyio
+
+    import yoetz.cli.setup as setup
+
+    _runtime_cannot_serve(monkeypatch)
+    reached: list[bool] = []
+
+    def discovery() -> tuple[object, ...]:
+        reached.append(True)
+        return ()
+
+    monkeypatch.setattr(setup, "discover_codex_binaries", discovery)
+
+    async def run() -> int:
+        return await setup.integrate_mcp(
+            action, "codex", codex_path=None, accept=True, preview_digest=None, json_output=True
+        )
+
+    anyio.run(run)
+    assert reached == [True]
+    assert "release_runtime_not_owned" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("command", "requested", "refused"),
+    [
+        ("install", None, True),
+        ("update", None, True),
+        ("enable", None, True),
+        ("preview", None, True),
+        ("preview", "connect", True),
+        ("preview", "remove", False),
+        ("remove", None, False),
+        ("disable", None, False),
+        ("status", None, False),
+    ],
+)
+def test_integrate_claude_plugin_refuses_only_connects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    requested: str | None,
+    refused: bool,
+) -> None:
+    from yoetz.cli.claude_code_integration import run_claude_code_plugin_command
+
+    _runtime_cannot_serve(monkeypatch)
+    code = run_claude_code_plugin_command(
+        command,
+        harness="claude",
+        claude_path=tmp_path / "no-claude",
+        claude_config_root=tmp_path / "config",
+        cache_root=tmp_path / "config" / "plugins" / "cache",
+        marketplace_root=tmp_path / "marketplace",
+        project_root=tmp_path,
+        format_name="native",
+        ownership_name="plugin",
+        route_profile=None,
+        requested_action=requested,
+        request_value=None,
+        preview_digest=None,
+        accept=False,
+        json_output=True,
+    )
+    err = capsys.readouterr().err
+    assert (code == 20 and err.startswith("release_runtime_not_owned: ")) is refused
+    if not refused:
+        assert "release_runtime_not_owned" not in err
+
+
+@pytest.mark.parametrize(
+    ("command", "requested", "refused"),
+    [
+        ("install", None, True),
+        ("preview", None, True),
+        ("preview", "replace", True),
+        ("preview", "remove", False),
+        ("remove", None, False),
+        ("status", None, False),
+    ],
+)
+def test_integrate_cursor_plugin_refuses_only_connects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str,
+    requested: str | None,
+    refused: bool,
+) -> None:
+    from yoetz.cli.cursor_integration import run_cursor_plugin_command
+
+    _runtime_cannot_serve(monkeypatch)
+    config = tmp_path / "cursor"
+    config.mkdir(mode=0o700)
+    code = run_cursor_plugin_command(
+        command,
+        harness="cursor",
+        cursor_config_root=config,
+        project_root=None,
+        format_name="native",
+        ownership_name="plugin",
+        route_profile=None,
+        requested_action=requested,
+        request_value=None,
+        preview_digest=None,
+        accept=False,
+        json_output=True,
+    )
+    err = capsys.readouterr().err
+    assert (code == 20 and err.startswith("release_runtime_not_owned: ")) is refused
+    if not refused:
+        assert "release_runtime_not_owned" not in err
+
+
+@pytest.mark.parametrize(
+    ("action", "refused"),
+    [("install", True), ("preview", True), ("preview-remove", False), ("status", False)],
+)
+def test_integrate_cursor_project_mcp_refuses_only_connects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    action: str,
+    refused: bool,
+) -> None:
+    from yoetz.cli.cursor_project_mcp import run_cursor_project_mcp_command
+
+    _runtime_cannot_serve(monkeypatch)
+    project = tmp_path / "project"
+    project.mkdir(mode=0o700)
+    code = run_cursor_project_mcp_command(
+        action,
+        "cursor",
+        project_root=project,
+        cursor_config_root=tmp_path / "cursor",
+        route_profile=None,
+        accept=False,
+        preview_digest=None,
+        json_output=True,
+    )
+    body = json.loads(capsys.readouterr().out)
+    assert (code == 20 and body.get("reason_code") == "release_runtime_not_owned") is refused
+    if refused:
+        assert "must belong to the account running Yoetz" in body["next_step"]
+    else:
+        assert body.get("reason_code") != "release_runtime_not_owned"
+
+
+def test_recommend_accept_codex_activation_refuses_a_runtime_that_cannot_serve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``yoetz recommend accept codex-plugin-activation`` (setup's next command) enables the
+    Codex plugin and its hooks: it is a connect, refused before refreshing or previewing."""
+
+    from typer.testing import CliRunner
+
+    from yoetz.cli import recommend
+
+    _runtime_cannot_serve(monkeypatch)
+
+    async def no_refresh(**_kwargs: object) -> object:
+        raise AssertionError("the activation went past the runtime refusal")
+
+    monkeypatch.setattr(recommend, "refresh_pending", no_refresh)
+    result = CliRunner().invoke(
+        recommend.recommend_app,
+        [
+            "accept",
+            "codex-plugin-activation",
+            "--codex-path",
+            str(tmp_path / "codex"),
+            "--codex-home",
+            str(tmp_path / "codex-home"),
+        ],
+    )
+    assert result.exit_code == 20
+    assert result.stderr.startswith("release_runtime_not_owned: ")

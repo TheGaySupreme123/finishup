@@ -1223,6 +1223,75 @@ def test_preview_and_apply_removal_of_managed_activation(tmp_path: Path) -> None
     assert replay.outcome is RemovalOutcome.ALREADY_ABSENT
 
 
+@pytest.mark.parametrize("mode", [0o755, 0o1777], ids=["0755", "1777"])
+def test_removal_in_a_root_owned_project_completes_the_way_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int
+) -> None:
+    """Install admitted a root-owned project; removal refused it and stranded the marketplace.
+
+    Before, removal stripped the Codex config and then failed the repository marketplace with
+    write_failed (conflict repository_marketplace), and every retry failed the same way.
+    """
+
+    from tests.builders.ownership import root_owned_project
+
+    project = root_owned_project(
+        monkeypatch, tmp_path, mode=mode, made_for_user=(".agents",) if mode == 0o755 else ()
+    )
+    home = tmp_path / "codex"
+    home.mkdir(mode=0o700)
+    target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(project))
+    _install(target)
+    activation = preview_activation(target, codex_home=home)
+    apply_activation(target, codex_home=home, approved_digest=activation.preview_digest)
+    assert inspect_activation(target, codex_home=home).state is ActivationState.ACTIVE
+
+    preview = preview_removal(target, codex_home=home)
+    assert preview.marketplace_json_planned is True
+    result = apply_removal(target, codex_home=home, approved_digest=preview.preview_digest)
+    assert result.outcome is RemovalOutcome.REMOVE
+    assert not (project / ".agents/plugins/marketplace.json").exists()
+    again = preview_removal(target, codex_home=home)
+    assert again.outcome is RemovalOutcome.ALREADY_ABSENT
+
+
+def test_codex_home_anchor_keeps_the_owner_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a project anchor is judged by the project rule; a root-owned Codex home is not."""
+
+    from tests.builders.ownership import SUPERUSER, present_owners
+
+    from yoetz.adapters.integrations import codex_marketplace as module
+
+    home = tmp_path.resolve() / "root-codex"
+    (home / "plugins").mkdir(parents=True, mode=0o700)
+    home.chmod(0o755)
+    managed = home / "plugins" / "managed.json"
+    managed.write_bytes(b"{}\n")
+    managed.chmod(0o600)
+    present_owners(monkeypatch, {home: SUPERUSER})
+    target, _project, _home = _target(tmp_path)
+
+    with pytest.raises(IntegrationError) as refused:
+        preview_activation(target, codex_home=home)
+    assert refused.value.reason is IntegrationReason.TARGET_UNSAFE
+    with pytest.raises(IntegrationError) as anchored:
+        module._remove_exact_managed_file(  # pyright: ignore[reportPrivateUsage]
+            managed, b"{}\n", mismatch_reason=IntegrationReason.PREVIEW_STALE, anchor_root=home
+        )
+    assert anchored.value.reason is IntegrationReason.TARGET_UNSAFE
+    assert managed.exists()
+    module._remove_exact_managed_file(  # pyright: ignore[reportPrivateUsage]
+        managed,
+        b"{}\n",
+        mismatch_reason=IntegrationReason.PREVIEW_STALE,
+        anchor_root=home,
+        project_anchor=True,
+    )
+    assert not managed.exists()
+
+
 def test_removal_preview_digest_binds_the_exact_project_root(tmp_path: Path) -> None:
     from yoetz.adapters.integrations.codex_marketplace import (
         _canonical_marketplace_bytes,  # pyright: ignore[reportPrivateUsage]

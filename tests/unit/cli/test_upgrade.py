@@ -272,6 +272,21 @@ def test_cleanup_never_executes_a_package_upgrade(monkeypatch: pytest.MonkeyPatc
     assert result.exit_code == 2
 
 
+def test_cleanup_names_a_runtime_another_account_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yoetz.adapters.release_runtime import ReleaseRuntimeError
+
+    def prune(_prefix: Path) -> tuple[int, int]:
+        raise ReleaseRuntimeError("release_runtime_not_owned")
+
+    monkeypatch.setattr("yoetz.cli.upgrade.prune_release_runtimes", prune)
+    result = _RUNNER.invoke(app, ["upgrade", "--prune-runtimes"])
+    assert result.exit_code == 2
+    assert result.stderr.startswith("release_runtime_not_owned: ")
+    assert "could not safely complete" not in result.stderr
+
+
 def test_upgrade_preserves_recorded_python_selection(tmp_path: Path) -> None:
     (tmp_path / "uv-receipt.toml").write_text(
         '[tool]\nrequirements = [{name="yoetz"}]\npython = "3.14.6"\n'

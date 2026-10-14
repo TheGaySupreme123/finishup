@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from yoetz.adapters.integrations.launcher import valid_launcher
-from yoetz.config.foreign_write import writable_by_others
+from yoetz.config.foreign_write import project_root_admitted, writable_by_others
 from yoetz.protocol.canonical import (
     JsonValue,
     canonical_digest,
@@ -92,8 +92,16 @@ def _owned(info: os.stat_result) -> None:
         raise _fail("target_unsafe")
 
 
+def _project(info: os.stat_result) -> None:
+    """The project root itself: the running user's, or a root-owned one others cannot replace."""
+    if not project_root_admitted(info):
+        raise _fail("target_unsafe")
+
+
 @contextmanager
-def _directory(path: Path, *, optional: bool = False) -> Generator[int | None]:
+def _directory(
+    path: Path, *, optional: bool = False, project: bool = False
+) -> Generator[int | None]:
     """Walk absolute components through pinned descriptors, rejecting every symlink."""
     _path(path)
     if os.name != "posix" or not hasattr(os, "O_NOFOLLOW"):
@@ -112,7 +120,7 @@ def _directory(path: Path, *, optional: bool = False) -> Generator[int | None]:
                 raise _fail("target_unsafe") from None
             os.close(descriptor)
             descriptor = child
-        _owned(os.fstat(descriptor))
+        (_project if project else _owned)(os.fstat(descriptor))
         yield descriptor
     except OSError:
         raise _fail("target_unsafe") from None
@@ -260,7 +268,7 @@ def inspect_project_mcp_registration(
         project_binding=project_binding,
     )
     legacy_selector = _expected(launcher, isolation_root, route_profile)
-    with _directory(project_root) as project_descriptor:
+    with _directory(project_root, project=True) as project_descriptor:
         assert project_descriptor is not None
         project_identity = _identity(os.fstat(project_descriptor))
     config = project_root / ".cursor" / "mcp.json"
@@ -282,7 +290,7 @@ def inspect_project_mcp_registration(
         assert current_config_directory is not None
         if _identity(os.fstat(current_config_directory)) != config_directory_identity:
             raise _fail("preview_stale")
-    with _directory(project_root) as current_project_directory:
+    with _directory(project_root, project=True) as current_project_directory:
         assert current_project_directory is not None
         if _identity(os.fstat(current_project_directory)) != project_identity:
             raise _fail("preview_stale")
@@ -414,7 +422,13 @@ def _inspect(
     identities: list[JsonValue] = []
     project_identity: tuple[int, int] | None = None
     for path in (target.project_root, target.cursor_config_root):
-        with _directory(path, optional=path == target.cursor_config_root) as descriptor:
+        # The project root is judged by the project rule, as on the write path; the Cursor
+        # configuration root stays the running user's own.
+        with _directory(
+            path,
+            optional=path == target.cursor_config_root,
+            project=path == target.project_root,
+        ) as descriptor:
             if descriptor is None:
                 identities.append([str(path), None])
                 continue
@@ -591,7 +605,7 @@ def _write(
     project_config_directory_identity: tuple[int, int] | None,
 ) -> None:
     """Pinned-parent atomic replacement with a final preimage check; no host-wide CAS claim."""
-    with _directory(target.project_root) as root:
+    with _directory(target.project_root, project=True) as root:
         assert root is not None
         if _identity(os.fstat(root)) != project_identity:
             raise _fail("preview_stale")

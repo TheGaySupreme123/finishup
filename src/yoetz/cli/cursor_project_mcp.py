@@ -58,6 +58,18 @@ def run_cursor_project_mcp_command(
     if route_profile not in {None, "strict", "policy"}:
         _emit({"ok": False, "reason_code": "cursor_mcp_route_invalid"}, json_output=json_output)
         return 2
+    if action in {"preview", "install"}:
+        from yoetz.cli.runtime_refusal import connect_refusal
+
+        refusal = connect_refusal()
+        if refusal is not None:
+            # Cursor would launch this runtime and every launch would be refused; removal and
+            # status never ask.
+            _emit(
+                {"ok": False, "reason_code": refusal[0], "next_step": refusal[1]},
+                json_output=json_output,
+            )
+            return 20
     try:
         invocation = invoking_launcher()
         if invocation is None:

@@ -372,6 +372,32 @@ async def test_integration_preview_uses_activation_home_for_mcp(
     assert seen == [resolved]
 
 
+async def test_the_codex_integration_preview_refuses_a_runtime_that_cannot_serve(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The first-run and ``/connect`` Codex path previews nothing for such a runtime."""
+
+    from yoetz.adapters import release_runtime
+    from yoetz.cli import setup
+    from yoetz.tui.runtime import RuntimeError_
+
+    monkeypatch.setattr(
+        release_runtime,
+        "installed_runtime_refusal",
+        lambda: release_runtime.ReleaseRuntimeError("release_runtime_not_owned"),
+    )
+
+    def no_preview(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("previewed a registration for a runtime that cannot serve")
+
+    monkeypatch.setattr(setup, "codex_activation_preview", no_preview)
+    runtime = YoetzRuntime(cwd=tmp_path)
+    with pytest.raises(RuntimeError_) as refused:
+        await runtime.integration_plan(CLI, tmp_path / "codex-home", "strict")
+    assert refused.value.reason == "release_runtime_not_owned"
+    assert any("must belong to the account running Yoetz" in line for line in refused.value.details)
+
+
 def _isolated_observation_store(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> tuple[YoetzRuntime, Path]:

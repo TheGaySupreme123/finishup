@@ -8,7 +8,12 @@ from collections.abc import Mapping, Sequence
 import typer
 
 from yoetz.adapters.package_upgrade import execute_package_upgrade
-from yoetz.adapters.release_runtime import installation_prefix, prune_release_runtimes
+from yoetz.adapters.release_runtime import (
+    NOT_OWNED_TOKEN,
+    ReleaseRuntimeError,
+    installation_prefix,
+    prune_release_runtimes,
+)
 from yoetz.application.upgrade import HOSTS, build_upgrade_plan
 
 
@@ -25,6 +30,17 @@ def run_upgrade(
             return 2
         try:
             removed, retained = prune_release_runtimes(installation_prefix())
+        except ReleaseRuntimeError as error:
+            if str(error) != NOT_OWNED_TOKEN:
+                typer.echo(
+                    "Runtime cleanup could not safely complete; running sessions were not stopped.",
+                    err=True,
+                )
+                return 2
+            from yoetz.cli.runtime_refusal import not_owned_refusal
+
+            typer.echo(not_owned_refusal(hook=False).rstrip("\n"), err=True)
+            return 2
         except OSError, ValueError:
             typer.echo(
                 "Runtime cleanup could not safely complete; running sessions were not stopped.",

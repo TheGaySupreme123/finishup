@@ -28,6 +28,7 @@ from yoetz.config.installation import (
     InstanceLifecycle,
     SourceState,
     format_rfc3339_ms,
+    instance_identity_path,
     is_expired,
     new_instance_identity,
     parse_rfc3339_ms,
@@ -117,6 +118,11 @@ def create_instance(
     The root is created here (owner-only; its parent must already exist) under the same
     path-safety gate every private directory passes. The exact root is echoed once for local
     review, like an MCP registration preview; ``status`` afterwards is digest-only.
+
+    Creation is whole or nothing: when sealing the marker or writing the pin fails (for example
+    ``runtime_pin_unwritable`` on a runtime another account installed), the marker and the
+    directories this call made are removed before the refusal is raised, so the same command
+    succeeds once the cause is fixed instead of reporting ``instance_exists``.
     """
 
     when = now or datetime.now(UTC)
@@ -158,13 +164,20 @@ def create_instance(
         source_state=source_state,
         package_digest=package_digest,
     )
-    ensure_owner_only_dir(root)
-    ensure_owner_only_dir(root / _STATE_DIR_NAME)
-    write_instance_identity(root / _STATE_DIR_NAME, identity)
-    pin_state = "none"
-    if bind_runtime:
-        write_runtime_pin(prefix, root, identity.installation_id)
-        pin_state = "bound"
+    root_existed = root.exists()
+    try:
+        ensure_owner_only_dir(root)
+        ensure_owner_only_dir(root / _STATE_DIR_NAME)
+        write_instance_identity(root / _STATE_DIR_NAME, identity)
+        pin_state = "none"
+        if bind_runtime:
+            write_runtime_pin(prefix, root, identity.installation_id)
+            pin_state = "bound"
+    except BaseException:
+        # The marker may be in place even when sealing failed (its directory sync comes after
+        # the rename); the unwind removes it only while it still holds this identity.
+        _unwind_create(root, identity, root_existed=root_existed)
+        raise
     return {
         "created": True,
         "isolated_root": str(root),
@@ -172,6 +185,31 @@ def create_instance(
         "runtime_pin": pin_state,
         **_identity_fields(identity),
     }
+
+
+def _unwind_create(root: Path, identity: InstanceIdentity, *, root_existed: bool) -> None:
+    """Undo a create that failed part-way, removing only what that create made.
+
+    The marker is removed only while it still holds this create's identity, then the state
+    directory and (when this create made it) the root, each only if empty: a directory is never
+    removed with content in it. A root the operator made beforehand stays, empty as it was. Best
+    effort: the caller re-raises the original refusal either way, so a retry is clean whenever
+    the unwind completed and is refused with its own token otherwise.
+    """
+
+    state = root / _STATE_DIR_NAME
+    try:
+        if read_instance_identity(state) == identity:
+            instance_identity_path(state).unlink()
+    except InstanceIdentityError, OSError:
+        return
+    for directory in (state,) if root_existed else (state, root):
+        try:
+            directory.rmdir()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return
 
 
 def _identity_fields(identity: InstanceIdentity) -> dict[str, JsonValue]:
