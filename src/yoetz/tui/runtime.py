@@ -1050,12 +1050,19 @@ class YoetzRuntime:
     @asynccontextmanager
     async def _client(self) -> AsyncGenerator[Any]:
         from yoetz.cli.app import build_service_client
-        from yoetz.ports.control import ControlClientKind, ControlError, WorkspaceLocator
+        from yoetz.ports.control import (
+            ControlClientKind,
+            ControlError,
+            ProjectionRenderMode,
+            WorkspaceLocator,
+        )
 
         try:
             client = await build_service_client(
                 ControlClientKind.UI,
                 workspace_locator=WorkspaceLocator(str(self._cwd.resolve(strict=True))),
+                projection_render_mode=ProjectionRenderMode.HUMAN_READABLE,
+                output_is_controlling_tty=True,
             )
         except ControlError as error:
             raise RuntimeError_(error.reason, "the local Yoetz service is not reachable")

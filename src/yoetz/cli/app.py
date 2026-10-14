@@ -812,7 +812,21 @@ async def _call_workflow(
             request = cast(WorkflowRequest, _request_model(request_type, input_path, inline))
         if type(request) is CheckRequest:
             check_mode = request.mode
-        client = await build_service_client()
+        # Human receipt rendering is an owner-local view; machine output and host
+        # invocations retain agent-context policy. The fact comes from the output terminal.
+        human_receipt = False
+        if method == "receipt" and not json_output:
+            from yoetz.cli.privacy_setup import output_is_controlling_tty
+
+            human_receipt = output_is_controlling_tty()
+        client = (
+            await build_service_client(
+                projection_render_mode=ProjectionRenderMode.HUMAN_READABLE,
+                output_is_controlling_tty=True,
+            )
+            if human_receipt
+            else await build_service_client()
+        )
         try:
             call = getattr(client, method)
             result = cast(WorkflowResult, await call(request, deadline_ms=deadline_ms))

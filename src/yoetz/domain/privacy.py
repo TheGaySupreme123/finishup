@@ -30,6 +30,7 @@ __all__ = [
     "MAX_EGRESS_CASE_BYTES",
     "MAX_EGRESS_ITEM_BYTES",
     "MAX_RECEIPT_FINAL_BYTES",
+    "MAX_RECEIPT_NAME_AUTHORSHIP",
     "MAX_WITHHELD_ITEM_IDS",
     "MAX_PRIVACY_CHANGES",
     "MAX_PRIVACY_CHANGE_LABELS",
@@ -1669,10 +1670,15 @@ _IMPORT_CHANNELS: Final = frozenset(
 )
 _MAX_ITEM_AUTHORSHIP: Final = 100
 _MAX_ITEM_SOURCES: Final = 64
-# At most 16 referencing deliverables of at most 8 named paths each (status-result 1.4.0).
+# At most 16 referencing deliverables of at most 8 named paths each (status-result 1.4.0). A
+# receipt attributes each distinct name once, however many prose leaves spell it, under the same
+# bound; a name past it is simply never attributed (it stays withheld).
 _MAX_LEAF_AUTHORSHIP: Final = 128
+MAX_RECEIPT_NAME_AUTHORSHIP: Final = _MAX_LEAF_AUTHORSHIP
 _NAME_LEAF_POINTER: Final = re.compile(
-    r"/closure_readiness/undeclared_references/(?:0|[1-9][0-9]?)/paths/[0-7]", re.ASCII
+    r"(?:/closure_readiness/undeclared_references/(?:0|[1-9][0-9]?)/paths/[0-7]"
+    r"|/receipt_repository_names/(?:0|[1-9][0-9]*))",
+    re.ASCII,
 )
 
 
@@ -1771,9 +1777,10 @@ class ProjectionProvenanceContext:
     frontier: Frontier
     item_authorship: tuple[ProjectionItemAuthorship, ...] = ()
     # tb4n5 (ADR-035 amendment): exact-leaf authorship of the undeclared-reference names: the
-    # ledger authorship of the publication that spelled each path, keyed by the path leaf itself.
-    # Service-derived from the ledger at the page's frontier, never from a caller, and only ever
-    # that one leaf family; the ordinary authorship rule decides what it grants.
+    # ledger authorship of the publication that spelled each path, keyed by the status path leaf
+    # or by the receipt's canonical name index (``/receipt_repository_names/<n>``). Service-derived
+    # from the ledger, never from a caller, and only ever those two name families; the ordinary
+    # authorship rule decides what it grants.
     leaf_authorship: tuple[ProjectionItemAuthorship, ...] = ()
 
     def __post_init__(self) -> None:

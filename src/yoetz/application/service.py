@@ -442,7 +442,7 @@ def resolve_client_disclosure_sink(context: ClientProjectionContext) -> LocalDis
     if type(context) is not ClientProjectionContext:
         raise TypeError("projection_context_invalid")
     if (
-        context.client_kind is ControlClientKind.CLI
+        context.client_kind in {ControlClientKind.CLI, ControlClientKind.UI}
         and context.render_mode is ProjectionRenderMode.HUMAN_READABLE
         and context.output_is_controlling_tty
     ):
@@ -2981,13 +2981,45 @@ class Application:
             for item in items
             if item.item_id.startswith(("coordination-resource-", "coordination-advice-resource-"))
         )
-        # Receipt prose can quote repository content even when its ordinary category is
-        # finding_summary or obligation_text. Require BOTH decisions; a rendering/profile
-        # and a prose classification cannot grant repository-excerpt disclosure (ADR-009).
-        # Separate opaque candidate pointers keep the two decisions independently auditable.
-        # The ordinary-category item contains only the safe fallback; repository-bearing
-        # prose must not enter the authorized sink payload under that category either.
-        receipt_excerpt_items: dict[str, str] = {}
+        # Receipt prose is Yoetz-authored, but it can spell repository names (ADR-009, ADR-035).
+        # For an agent each name span is its own repository-excerpt item, so the excerpt ceiling
+        # and per-name provenance decide that span alone; the leaf's ordinary-category item
+        # carries the prose with every name span already withheld. Owner views skip this.
+        from yoetz.application.receipt_projection import (
+            ReceiptExcerpt,
+            bounded_omitted_pointers,
+            withheld_text,
+        )
+
+        receipt_excerpt_items: dict[str, ReceiptExcerpt] = {}
+        leaf_excerpts: dict[str, list[ReceiptExcerpt]] = {}
+        receipt_provenance: ProjectionProvenanceContext | None = None
+        if type(result) is ReceiptInternalResult and sink is LocalDisclosureSink.AGENT_CONTEXT:
+            from yoetz.application.receipt_projection import receipt_excerpts
+
+            excerpts, authorship, attribution_frontier = await receipt_excerpts(
+                self.runtime, result
+            )
+            if result.writer_id is not None:
+                receipt_provenance = ProjectionProvenanceContext(
+                    result.session_id,
+                    result.writer_id,
+                    attribution_frontier,
+                    (),
+                    authorship,
+                )
+            for index, excerpt in enumerate(excerpts):
+                receipt_excerpt_items[excerpt.origin] = excerpt
+                leaf_excerpts.setdefault(excerpt.pointer, []).append(excerpt)
+                items.append(
+                    CandidateContextItem(
+                        f"receipt-excerpt-{index}",
+                        DataCategory.REPOSITORY_EXCERPT,
+                        scope,
+                        excerpt.origin,
+                        canonical_encode(excerpt.path),
+                    )
+                )
         for ordinal, (pointer, value) in enumerate(_leaves(source), start=1):
             if any(pointer.startswith(prefix) for prefix in coordination_resource_prefixes):
                 continue
@@ -3004,19 +3036,7 @@ class Application:
             )
             if classification == "public_structural":
                 continue
-            receipt_prose = method is ControlMethod.RECEIPT and type(value) is str
-            if receipt_prose:
-                excerpt_id = f"leaf-{ordinal}-excerpt"
-                receipt_excerpt_items[f"/{excerpt_id}"] = pointer
-                items.append(
-                    CandidateContextItem(
-                        excerpt_id,
-                        DataCategory.REPOSITORY_EXCERPT,
-                        scope,
-                        excerpt_id,
-                        canonical_encode(value),
-                    )
-                )
+            spans = leaf_excerpts.get(pointer)
             items.append(
                 CandidateContextItem(
                     f"leaf-{ordinal}",
@@ -3024,7 +3044,7 @@ class Application:
                     scope,
                     pointer,
                     canonical_encode(
-                        "(receipt prose withheld: repository_excerpt)" if receipt_prose else value
+                        withheld_text(value, spans) if type(value) is str and spans else value
                     ),
                 )
             )
@@ -3032,7 +3052,7 @@ class Application:
         projection_request_id = (
             source_request_id if type(source_request_id) is str else self.ids.new(IdKind.REQUEST)
         )
-        provenance: ProjectionProvenanceContext | None = None
+        provenance: ProjectionProvenanceContext | None = receipt_provenance
         if all(source.get(key) is not None for key in ("session_id", "writer_id")) and (
             source.get("subject_frontier") is not None or source.get("frontier") is not None
         ):
@@ -3089,19 +3109,19 @@ class Application:
 
             assert self.project_application is not None
             await revalidate_status_advice_sources(self.project_application, source, sink)
-        excerpt_withheld = frozenset(
-            receipt_excerpt_items[omission.json_pointer]
-            for omission in completed.omissions
-            if omission.json_pointer in receipt_excerpt_items
-        )
+        withheld_spans: dict[str, list[ReceiptExcerpt]] = {}
+        for omission in completed.omissions:
+            excerpt = receipt_excerpt_items.get(omission.json_pointer)
+            if excerpt is not None:
+                withheld_spans.setdefault(excerpt.pointer, []).append(excerpt)
         marking_omissions = tuple(
             omission
             for omission in completed.omissions
             if omission.json_pointer not in receipt_excerpt_items
         )
-        # JSON receipt content denied in its ordinary category still fails closed. An
-        # excerpt-ceiling denial substitutes fixed prose strings instead of object markers,
-        # preserving the receipt document schema and structural coverage. The digest always
+        # JSON receipt content denied in its ordinary category still fails closed. A withheld
+        # name span is replaced by a fixed token inside its string, preserving the receipt
+        # document schema, the surrounding prose and structural coverage. The digest always
         # identifies the stored owner document, not the privacy-projected presentation.
         if (
             method is ControlMethod.RECEIPT
@@ -3115,10 +3135,15 @@ class Application:
             raise ControlError("privacy_projection_blocked", retryable=False)
         projected: JsonValue = source
         marked = {omission.json_pointer for omission in marking_omissions}
-        for pointer in sorted(excerpt_withheld - marked, key=str.encode):
-            projected = _replace_pointer(
-                projected, pointer, "(receipt prose withheld: repository_excerpt)"
-            )
+        if withheld_spans:
+            source_leaves = dict(_leaves(source))
+            for pointer in sorted(withheld_spans.keys() - marked, key=str.encode):
+                value = source_leaves[pointer]
+                if type(value) is not str:
+                    raise TypeError("receipt_projection_span_invalid")
+                projected = _replace_pointer(
+                    projected, pointer, withheld_text(value, withheld_spans[pointer])
+                )
         for omission in marking_omissions:
             # An omission whose pointer does not resolve means the privacy decision and the body
             # disagree. `_replace_pointer` raises a bounded, named ValueError rather than a bare
@@ -3144,18 +3169,16 @@ class Application:
             "policy_digest": receipt.policy.policy_digest,
             "included_categories": tuple(item.value for item in receipt.approved_categories),
             "blocked_categories": tuple(item.value for item in receipt.blocked_categories),
-            # Excerpt-ceiling omissions identify the real result leaf, never the opaque item.
-            "omitted_pointers": tuple(
-                sorted(
-                    {
-                        receipt_excerpt_items.get(item.json_pointer, item.json_pointer)
-                        for item in completed.omissions
-                    },
-                    key=str.encode,
+            # A withheld name span is reported at its real result leaf. Past the wire bound the
+            # list coalesces to containing pointers; the audit keeps every individual decision.
+            "omitted_pointers": bounded_omitted_pointers(
+                tuple(
+                    receipt_excerpt_items[item.json_pointer].pointer
+                    if item.json_pointer in receipt_excerpt_items
+                    else item.json_pointer
+                    for item in completed.omissions
                 )
-            )
-            if receipt_excerpt_items
-            else tuple(item.json_pointer for item in completed.omissions),
+            ),
             "projection_commitment": completed.case_or_projection_commitment,
         }
         complete = {**dict(projected.items()), "privacy_projection": projection}

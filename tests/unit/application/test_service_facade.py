@@ -437,7 +437,7 @@ async def test_publish_response_load_rejects_content_summary_and_identity_mismat
                 ProjectionRenderMode.HUMAN_READABLE,
                 True,
             ),
-            LocalDisclosureSink.AGENT_CONTEXT,
+            LocalDisclosureSink.LOCAL_HUMAN_VIEW,
         ),
     ),
 )

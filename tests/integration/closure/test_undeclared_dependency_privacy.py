@@ -518,6 +518,9 @@ async def test_redacting_the_publication_revokes_the_name(
     started, _checked = await _run(app, 9500, named=(_MODELS[0],))
     internal, projected = await _projected_status(app, started, 9550)
     assert _rows(projected)[0]["paths"] == [_MODELS[0], _OMITTED]
+    receipt_case, receipt = await _receipt_case(app, started, internal, 9555, "markdown")
+    before = await project_case(app, receipt_case, 9556)
+    assert _MODELS[0] in cast(str, before["human_text"])
 
     ledger, _objects = readback._ledger(app, started.task_id)
     records = [row async for row in ledger.load_events(started.session_id)]
@@ -543,7 +546,7 @@ async def test_redacting_the_publication_revokes_the_name(
         app,
         started,
         seed=9600,
-        expected_frontier=internal.result_frontier.sequence,
+        expected_frontier=receipt.result_frontier.sequence,
         writer=started.writer_id,
         author=readback._agent_actor("redaction-test"),
         channel=PublicationChannel.COOPERATIVE_MCP,
@@ -564,6 +567,14 @@ async def test_redacting_the_publication_revokes_the_name(
     internal, projected = await _projected_status(app, started, 9650)
     assert internal.leaf_authorship == ()
     _assert_withheld_with_continuation(projected)
+    replayed = await app.receipt(ReceiptRequest.model_validate(receipt_case.request_body))
+    assert replayed.receipt_digest == receipt.receipt_digest
+    after = await project_case(
+        app,
+        ProjectionCase("receipt", ControlMethod.RECEIPT, receipt_case.request_body, replayed),
+        9652,
+    )
+    _assert_receipt_names_withheld(after, "markdown")
 
 
 async def test_an_owner_who_granted_repository_excerpts_sees_every_name(
@@ -732,7 +743,7 @@ def _assert_receipt_names_withheld(projected: Mapping[str, JsonValue], fmt: str)
         ("mcp_bridge", "human_readable", True),
         ("cli", "machine_readable", True),
         ("cli", "human_readable", False),
-        ("ui", "human_readable", True),
+        ("ui", "machine_readable", False),
     ],
 )
 @pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
@@ -784,6 +795,7 @@ async def test_a_full_local_receipt_projected_to_an_agent_withholds_the_names(
         receipt_document_from_json(projected["document"])
     # The digest still names the stored owner receipt; nothing about it was rewritten.
     assert projected["receipt_digest"] == receipt.receipt_digest
+
     # The same request replays the stored receipt through the ledger read path (the one an
     # earlier build's stored receipt takes), and the replay is held to the same ceiling.
     replayed = await app.receipt(ReceiptRequest.model_validate(case.request_body))
@@ -797,6 +809,144 @@ async def test_a_full_local_receipt_projected_to_an_agent_withholds_the_names(
         ),
         fmt,
     )
+
+
+@pytest.mark.parametrize(
+    "surface,fmt",
+    [
+        ("cli", "json"),
+        ("cli", "markdown"),
+        ("cli", "text"),
+        ("tui", "markdown"),
+        ("cli_redirected", "markdown"),
+        ("cli_json_output", "json"),
+    ],
+)
+async def test_owner_receipt_surfaces_keep_full_human_local_prose(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    surface: str,
+    fmt: str,
+) -> None:
+    """r2 (item 2): ``yoetz receipt`` on the owner's foreground terminal and the terminal
+    interface are owner views (``local_human_view``) and show the full receipt; redirected or
+    ``--json`` CLI output stays an agent-context projection with the names withheld."""
+
+    import sys
+
+    import yoetz.cli.app as cli_app
+    import yoetz.cli.privacy_setup as privacy_setup
+    from yoetz.application.service import ClientProjectionContext
+    from yoetz.ports.control import ControlClientKind, ProjectionRenderMode
+    from yoetz.protocol.models import ReceiptResultModel
+    from yoetz.tui.runtime import YoetzRuntime, _WorkSession
+
+    owner = surface in {"cli", "tui"}
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20700)
+    started, _checked = await _run(app, 20700)
+    status, _projected = await _projected_status(app, started, 20750)
+    case, receipt = await _receipt_case(
+        app,
+        started,
+        status,
+        20760,
+        fmt,
+        "default_local_export" if surface == "tui" else "full_local",
+    )
+    contexts: list[ClientProjectionContext] = []
+    sinks: list[str] = []
+    delivered: list[str] = []
+
+    class Client:
+        async def receipt(self, _request: object, **_kwargs: object) -> ReceiptResultModel:
+            projected = await project_case(app, case, 20761, context=contexts[-1])
+            sinks.append(cast(Mapping[str, Any], projected["privacy_projection"])["sink"])
+            delivered.append(canonical_encode(cast(JsonValue, projected)).decode())
+            return ReceiptResultModel.model_validate(projected)
+
+        async def close(self) -> None:
+            pass
+
+    async def build(
+        client_kind: ControlClientKind = ControlClientKind.CLI,
+        *,
+        projection_render_mode: ProjectionRenderMode = ProjectionRenderMode.MACHINE_READABLE,
+        output_is_controlling_tty: bool = False,
+        **_kwargs: object,
+    ) -> Client:
+        contexts.append(
+            ClientProjectionContext(client_kind, projection_render_mode, output_is_controlling_tty)
+        )
+        return Client()
+
+    monkeypatch.setattr(cli_app, "build_service_client", build)
+    monkeypatch.setattr(
+        privacy_setup, "_output_is_controlling_tty", lambda: surface != "cli_redirected"
+    )
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: surface != "cli_redirected")
+    if surface == "tui":
+        runtime = YoetzRuntime(cwd=repository)
+        runtime._sessions["owner"] = _WorkSession(
+            started.task_id, started.session_id, started.writer_id, status.result_frontier
+        )
+        shown = "\n".join((await runtime.build_receipt("owner", "markdown")).rendered_lines)
+    else:
+        assert (
+            await cli_app._call_workflow(
+                "receipt",
+                ReceiptRequest,
+                None,
+                canonical_encode(case.request_body).decode(),
+                surface == "cli_json_output",
+                None,
+            )
+            == 0
+        )
+        shown = capsys.readouterr().out.rstrip()
+    assert sinks == ["local_human_view" if owner else "agent_context"]
+    if surface == "tui":
+        assert receipt.human_text is not None and receipt.human_text in shown
+    elif owner:
+        assert all(path in delivered[0] for path in _MODELS)
+        if fmt == "json":
+            # The human rendering of a JSON receipt prints its conclusion and limitations; the
+            # document it was handed is the owner's unwithheld one.
+            assert shown.startswith(f"Conclusion: {receipt.conclusion}")
+        else:
+            assert receipt.human_text is not None and receipt.human_text in shown
+            assert all(path in shown for path in _MODELS)
+    else:
+        assert not any(path in delivered[0] for path in _MODELS)
+        assert not any(path in shown for path in _MODELS)
+        assert "(receipt prose withheld: repository_excerpt)" in shown
+
+
+async def test_receipt_name_provenance_is_per_name_and_auditable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20800)
+    started, _checked = await _run(app, 20800, named=(_MODELS[0],))
+    status, _projected = await _projected_status(app, started, 20850)
+    case, receipt = await _receipt_case(app, started, status, 20860, "markdown")
+    projected = await project_case(app, case, 20861)
+    text = cast(str, projected["human_text"])
+    assert _MODELS[0] in text
+    assert _MODELS[1] not in text
+    assert "Summary" in text and "(receipt prose withheld: repository_excerpt)" in text
+    assert receipt.human_text != text
+    subject = _projection_subject(app, projected)
+    denied = [
+        pointer for pointer, _category, allowed, _reason in subject.field_decisions if not allowed
+    ]
+    assert denied == ["/human_text/@repository_name/1"]
+    assert cast(Mapping[str, Any], projected["privacy_projection"])["omitted_pointers"] == [
+        "/human_text"
+    ]
 
 
 @pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
@@ -850,7 +1000,8 @@ async def test_the_owner_local_view_and_a_granted_policy_keep_the_receipt_names(
 async def test_receipt_prose_of_any_category_cannot_carry_a_name_to_an_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Obligation and finding prose obey the excerpt ceiling, including bare basenames."""
+    """Obligation and section prose obey the excerpt ceiling, including a bare basename; only
+    the name spans are withheld, never the sentence around them."""
 
     repository, base = _workspace(tmp_path)
     _bind_workspace(monkeypatch, repository, base)
@@ -861,7 +1012,8 @@ async def test_receipt_prose_of_any_category_cannot_carry_a_name_to_an_agent(
     document = cast(dict[str, Any], receipt.document)
     assert not any(model in canonical_encode(document).decode() for model in _MODELS)
     document["obligations"][0]["summary"] = f"Loads {_MODELS[1]} at start."
-    document["sections"][0]["body"] += " It also reads english_ngrams.npz."
+    body = document["sections"][0]["body"]
+    document["sections"][0]["body"] = body + " It also reads english_ngrams.npz."
     projected = await project_case(
         app, ProjectionCase("receipt", ControlMethod.RECEIPT, case.request_body, receipt), 20161
     )
@@ -869,8 +1021,8 @@ async def test_receipt_prose_of_any_category_cannot_carry_a_name_to_an_agent(
     assert "english_ngrams" not in text and "english_words" not in text
     projected_document = cast(Mapping[str, Any], projected["document"])
     token = "(receipt prose withheld: repository_excerpt)"
-    assert projected_document["obligations"][0]["summary"] == token
-    assert projected_document["sections"][0]["body"] == token
+    assert projected_document["obligations"][0]["summary"] == f"Loads {token} at start."
+    assert projected_document["sections"][0]["body"] == body + f" It also reads {token}."
     privacy = cast(Mapping[str, Any], projected["privacy_projection"])
     assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
     assert "/document/sections/0/body" in privacy["omitted_pointers"]
@@ -911,26 +1063,56 @@ async def test_excerpt_grant_does_not_grant_a_denied_receipt_prose_category(
 
 
 @pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
-async def test_receipt_unrecorded_repository_prose_cannot_bypass_excerpt_ceiling(
+async def test_receipt_prose_around_a_withheld_name_stays_visible(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
 ) -> None:
+    """r2 (item 1): the r1 gate blanked every prose string; only the name span is withheld."""
+
     repository, base = _workspace(tmp_path)
     _bind_workspace(monkeypatch, repository, base)
     app, _policy = await build_projection_application(seed=20300)
     started, _checked = await _run(app, 20300)
     status, _projected = await _projected_status(app, started, 20350)
     case, receipt = await _receipt_case(app, started, status, 20360, fmt)
-    # Content not listed in any undeclared-reference record must still be fenced.
-    canary = "UNPUBLISHED_REPOSITORY_CONTENT_94712"
-    document = cast(dict[str, Any], receipt.document) if fmt == "json" else None
-    if document is not None:
-        document["sections"][0]["body"] += " " + canary
+    stored = canonical_encode(
+        cast(JsonValue, receipt.document if fmt == "json" else receipt.human_text)
+    ).decode()
+    assert all(model in stored for model in _MODELS)
+    projected = await project_case(app, case, 20361)
+    _assert_receipt_names_withheld(projected, fmt)
+    if fmt == "json":
+        document = cast(Mapping[str, Any], projected["document"])
+        stored_document = cast(Mapping[str, Any], receipt.document)
+        # Every section title and every prose string that names no file is unchanged.
+        for shown, kept in zip(document["sections"], stored_document["sections"], strict=True):
+            assert shown["title"] == kept["title"]
+        unchanged = [
+            leaf
+            for leaf in _string_leaves(stored_document)
+            if not any(model in leaf for model in _MODELS)
+        ]
+        assert unchanged and set(unchanged) <= set(_string_leaves(document))
     else:
-        receipt = replace(receipt, human_text=cast(str, receipt.human_text) + " " + canary)
-    projected = await project_case(
-        app, ProjectionCase("receipt", ControlMethod.RECEIPT, case.request_body, receipt), 20361
-    )
-    assert canary not in canonical_encode(cast(JsonValue, projected)).decode()
+        text = cast(str, projected["human_text"])
+        kept_lines = [
+            line
+            for line in cast(str, receipt.human_text).splitlines()
+            if not any(model in line for model in _MODELS)
+        ]
+        assert kept_lines and all(line in text.splitlines() for line in kept_lines)
+        withheld = [line for line in text.splitlines() if "(receipt prose withheld" in line]
+        # The sentence naming the files keeps its words; only the names became the token.
+        assert withheld and all(len(line) > len("(receipt prose withheld: x)") for line in withheld)
+
+
+def _string_leaves(value: object) -> list[str]:
+    if isinstance(value, Mapping):
+        children: list[object] = list(cast(Mapping[str, object], value).values())
+    elif isinstance(value, (list, tuple)):
+        children = list(cast(Sequence[object], value))
+    else:
+        return [value] if type(value) is str else []
+    return [leaf for child in children for leaf in _string_leaves(child)]
 
 
 async def test_withheld_receipt_content_is_absent_from_the_authorized_sink_payload(
@@ -967,3 +1149,102 @@ async def test_withheld_receipt_content_is_absent_from_the_authorized_sink_paylo
         body = cast(Mapping[str, Any], strict_json_parse(payload))
         content = b"\n".join(base64.b64decode(item["content_base64"]) for item in body["items"])
         assert all(path.encode() not in content for path in _MODELS)
+
+
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_clean_receipt_keeps_normal_agent_prose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20500)
+    started, _checked = await _run(app, 20500, delivered=(_CRACKER, *_MODELS), expect_gap=False)
+    status, _projected = await _projected_status(app, started, 20550)
+    case, receipt = await _receipt_case(app, started, status, 20560, fmt, "default_local_export")
+    projected = await project_case(app, case, 20561)
+    assert projected["human_text"] == receipt.human_text
+    assert projected["document"] == receipt.document
+    assert cast(Mapping[str, Any], projected["privacy_projection"])["omitted_pointers"] == []
+
+
+async def test_large_receipt_coalesces_omissions_without_losing_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hundreds of prose leaves that spell a withheld name still project (r1 review item 3).
+
+    Each leaf is its own omission; past the 512-pointer wire bound the list coalesces to the
+    containing fields instead of failing with ``projection_pointer_limit``. Only the name spans
+    are withheld: every leaf keeps its own surrounding words.
+    """
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20600)
+    started, _checked = await _run(app, 20600)
+    status, _projected = await _projected_status(app, started, 20650)
+    case, receipt = await _receipt_case(app, started, status, 20660, "json")
+    document = cast(dict[str, Any], receipt.document)
+    import copy
+
+    # Fill the document to its schema bounds with prose that spells a withheld name: 64 items
+    # in each section, 100 obligation summaries and 64 gap details, each leaf its own omission.
+    for section_index, section in enumerate(document["sections"]):
+        section["items"] = [
+            f'Row {section_index}.{n} loads "{_MODELS[n % 2]}" before the solver.'
+            for n in range(64)
+        ]
+    template = document["obligations"][0]
+    document["obligations"] = [
+        {
+            **copy.deepcopy(template),
+            "obligation_id": protocol_id("obl_", 60000 + n),
+            "summary": f"Obligation {n} reads {_MODELS[n % 2]} once.",
+        }
+        for n in range(100)
+    ]
+    gap = next(gap for gap in document["gaps"] if gap.get("detail"))
+    document["gaps"] = [
+        {**copy.deepcopy(gap), "detail": f"Gap {n} names {_MODELS[n % 2]}."} for n in range(64)
+    ]
+    leaf_count = 64 * len(document["sections"]) + 100 + 64
+    assert leaf_count > 512
+    projected = await project_case(app, case, 20661)
+    pointers = cast(Mapping[str, Any], projected["privacy_projection"])["omitted_pointers"]
+    assert 0 < len(pointers) <= 512
+    subject = _projection_subject(app, projected)
+    assert subject.omitted_count >= leaf_count
+    denied = [
+        pointer for pointer, _category, allowed, _reason in subject.field_decisions if not allowed
+    ]
+    for origin in denied:
+        leaf = origin.split("/@repository_name/", 1)[0]
+        assert any(leaf == pointer or leaf.startswith(pointer + "/") for pointer in pointers)
+    encoded = canonical_encode(projected).decode()
+    assert all(model not in encoded for model in _MODELS)
+    projected_sections = cast(Mapping[str, Any], projected["document"])["sections"]
+    assert projected_sections[0]["items"][3] == (
+        "Row 0.3 loads (receipt prose withheld: repository_excerpt) before the solver."
+    )
+    assert projected["coverage"] == receipt.as_json()["coverage"]
+    assert projected["receipt_digest"] == receipt.receipt_digest
+
+
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_a_repository_name_cannot_withhold_fixed_receipt_headings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    repository, base = _workspace(tmp_path)
+    (repository / _MODELS[0]).rename(repository / "artifacts/Summary")
+    (repository / _CRACKER).write_text(_LOADER.replace("english_ngrams.npz", "Summary"))
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20900)
+    started, _checked = await _run(app, 20900)
+    status, _projected = await _projected_status(app, started, 20950)
+    case, _receipt = await _receipt_case(app, started, status, 20960, fmt)
+    projected = await project_case(app, case, 20961)
+    if fmt == "json":
+        assert cast(Mapping[str, Any], projected["document"])["sections"][0]["title"] == "Summary"
+    else:
+        heading = "## Summary" if fmt == "markdown" else "Summary"
+        assert cast(str, projected["human_text"]).startswith(heading + "\n")
+    assert "artifacts/Summary" not in canonical_encode(projected).decode()

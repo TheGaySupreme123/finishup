@@ -1340,6 +1340,14 @@ async def _published_name_authorship(
         for path_index, path in enumerate(row.paths)
         if type(path) is str
     ]
+    return await published_name_authorship(runtime, frontier, wanted)
+
+
+async def published_name_authorship(
+    runtime: TaskRuntime, frontier: Frontier, wanted: Sequence[tuple[str, str]]
+) -> tuple[ProjectionItemAuthorship, ...]:
+    """Attribute exact requested names using current, unredacted cooperative publications."""
+
     if not wanted:
         return ()
     try:
