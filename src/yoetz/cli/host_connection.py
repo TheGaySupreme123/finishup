@@ -385,25 +385,25 @@ def _refusal_step(reason: str, status: dict[str, JsonValue]) -> str | None:
         )
     if reason == "connection_other_projects_need_registration":
         partial = isinstance(status.get("admission_other_projects_known"), int)
-        return (
-            "Nothing was changed. "
-            + (
+        return " ".join(
+            part
+            for part in (
+                "Nothing was changed.",
                 "Other projects' Codex configuration uses the Yoetz MCP registration (listed "
                 "in status), so removing it for every project would stop Codex loading there. "
                 "Revoke or remove their Yoetz approval tables first (status shows the command "
                 "where Yoetz can do it), or disconnect without --remove-shared."
                 if status.get("admission_other_projects")
-                else ""
-            )
-            + (
-                f" Only {status.get('admission_other_projects_inspected')} of "
+                else "",
+                f"Only {status.get('admission_other_projects_inspected')} of "
                 f"{status.get('admission_other_projects_known')} projects this Codex home "
                 "knows were checked, so removing the registration for every project cannot be "
                 "shown safe. Remove trust entries for projects you no longer use from the "
                 "Codex home's config.toml, or disconnect without --remove-shared."
                 if partial
-                else ""
+                else "",
             )
+            if part
         )
     return None
 
