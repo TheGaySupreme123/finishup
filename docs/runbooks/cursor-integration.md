@@ -2145,3 +2145,39 @@ and `tests/integration/application/test_tb4n4_decision_id_replay.py` replay the 
 through the bridge validation, `read_guidance` dispatch, the kernel and the real publish operation;
 the tb4n4 exports themselves were not replayed, and a live Cursor transcript on macOS, Linux and
 WSL 2 is not recorded for this change.
+
+## Setup refresh and suggested reviewer model (FinishUP 0.3, #1067)
+
+Decision for Cursor (IDE and Agent CLI): supported. The shared setup path changed, and every
+item below applies on macOS, Linux and Windows through WSL 2.
+
+- **Plan summary.** The connection preview describes each change in a plain sentence, as Codex
+  plans already did; the plan body's change tokens and its digest are unchanged.
+- **Choosing a Cursor surface.** When both Cursor surfaces are present and none is named, the
+  next step says to rerun with `--host cursor-ide` or `--host cursor-cli`.
+- **Agent list.** The guided list shows each installation's executable path and says one agent is
+  connected per run. The default is the Codex a plain `codex` command runs when one is
+  installed, otherwise the first entry.
+- **Suggested reviewer model.** Codex-subscription AI-powered review suggests `gpt-6.1-sol` at
+  `medium` (final and routine) for a new binding, falling back to `gpt-6-luna` with a printed
+  reason when the Codex FinishUP runs does not list it (ADR-006 amendment of 2026-10-14). The
+  evaluator is a separate Codex runtime, never the connected agent, so this is the same path on
+  every host. An explicit `--model` and an existing binding are never substituted.
+- **Before any question.** `finishup setup run` checks the project folder first. Run from the home
+  folder, the filesystem root or a symlinked path, a terminal user may type a project folder;
+  otherwise setup stops with `workspace_locator_invalid` and a next step (it used to fail as
+  `internal_error` after every answer).
+- **After a Codex-subscription sign-in.** The guided provider step reports the Codex-held
+  credential (`external_runtime_oauth`) as ready instead of `Credential: unknown` with exit 20,
+  shows the bound model and any fallback, and asks no API-key verification question. It ends
+  with "start a fresh agent session" instead of the former Codex-only "Preview Codex MCP
+  registration again".
+- **Ambiguous or missing installation.** Connect and disconnect name the installations to pass
+  with `--host-path` (or say none was found) instead of the misleading "trusted local terminal"
+  step.
+
+Verification: `tests/unit/cli/test_setup_wizard_smoothness.py`,
+`tests/unit/cli/test_host_connection.py` and `tests/unit/cli/test_codex_subscription.py`. The vault
+and provider steps of `finishup setup run` were not walked end to end for this change (the
+sandbox walk had no macOS keychain), and no native Cursor IDE or Agent CLI session was recorded
+for it.
