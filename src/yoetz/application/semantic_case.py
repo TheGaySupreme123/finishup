@@ -6972,11 +6972,23 @@ def assemble_filtered_review_packet(
     # metadata only; no source prose is copied into either manifest.
     composed_manifest = packet_obj.get("review_input_manifest")
     if isinstance(composed_manifest, dict):
+        withheld_excerpt_refs = frozenset(
+            ref
+            for meta in catalog
+            if meta.get("item_id") not in included
+            for ref in _excerpt_row_content_refs(
+                meta.get("section"),
+                meta.get("category"),
+                meta.get("source_ref"),
+                meta.get("linked_subject_refs"),
+            )
+        )
         provider_manifest = _provider_bound_input_manifest(
             composed_manifest,
             content_rows,
             omissions,
             redacted_item_ids=redacted,
+            privacy_withheld_refs=withheld_excerpt_refs,
         )
         packet_obj["provider_input_manifest"] = provider_manifest
 
@@ -7310,6 +7322,7 @@ def _provider_bound_input_manifest(
     omissions: Sequence[JsonValue],
     *,
     redacted_item_ids: frozenset[str] | set[str] = frozenset(),
+    privacy_withheld_refs: frozenset[str] = frozenset(),
 ) -> dict[str, JsonValue]:
     """Project a composed input manifest onto the exact provider-bound rows.
 
@@ -7556,14 +7569,20 @@ def _provider_bound_input_manifest(
             if not isinstance(raw, dict):
                 continue
             row = dict(cast(dict[str, JsonValue], raw))
-            supplied = [
-                ref
-                for ref in cast(list[object], row.get("supplied_refs", []))
-                if type(ref) is str and ref in admitted_refs
+            composed_supplied = [
+                ref for ref in cast(list[object], row.get("supplied_refs", [])) if type(ref) is str
             ]
+            supplied = [ref for ref in composed_supplied if ref in admitted_refs]
             row["supplied_refs"] = cast(JsonValue, supplied)
             if row.get("status") == "supplied" and not supplied:
-                row["status"] = "pending"
+                # Admission cuts can still be supplied later; privacy-withheld sources cannot.
+                # Keep the dispatched round counted, but never present its exhausted request as
+                # pending work or as content the provider saw.
+                row["status"] = (
+                    "unavailable"
+                    if composed_supplied and set(composed_supplied) <= privacy_withheld_refs
+                    else "pending"
+                )
             missing_rows.append(cast(JsonValue, row))
     projected["missing_inputs"] = missing_rows
     return projected

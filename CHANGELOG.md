@@ -30,6 +30,17 @@ reverse-chronological released versions.
 
 ### Added
 
+- Codex stream parsing defers ledger mapping imports until needed, reducing cold hook startup
+  work while preserving public import names, parser profiles and wire bytes.
+
+- Provider packet supply markers now have a packaged row schema and golden vectors. A follow-up
+  round whose requested excerpts are entirely withheld reports them unavailable with empty
+  supply refs; room cuts still report pending. The dispatch remains counted.
+
+- Codex admission commands accept `--codex-path` and `--codex-home`. Multiple installed versions
+  can read an agreeing registration without manual selection; disagreement has an explicit
+  continuation and cannot grant admission; the refusal is `host_admission_codex_binary_inconsistent`.
+
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap
   in Yoetz's own observation), what the host's hooks observed since the last check, and whether each

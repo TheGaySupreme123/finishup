@@ -187,6 +187,18 @@ def _write_pass(repo_root: Path) -> bool:
         ):
             return False
     steps = (
+        # Fixture builders validate public requests through the packaged schema catalog. Add
+        # the new row contract and heal current builder-owned schemas before refreshing that
+        # catalog. Mirroring a stale current schema first would make request validation fail
+        # before the later generation step could repair it. Frozen historical schemas stay put.
+        (
+            "generate_schemas.py",
+            "--write",
+            "--include-builder-owned",
+            "--only",
+            "privacy/review-packet-row-2.0.0.schema.json",
+        ),
+        ("verify_resource_manifest.py", "--sync"),
         ("generate_project_policy_fixture.py", "--write"),
         ("generate_check_conclusion_fixture.py", "--write"),
         ("generate_check_totals_fixture.py", "--write"),

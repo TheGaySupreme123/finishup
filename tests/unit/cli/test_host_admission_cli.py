@@ -305,3 +305,51 @@ def test_reverse_sweep_and_its_preview_disclosure_touch_only_yoetz_entries(tmp_p
     assert module.reverse_sweep("claude", tmp_path)["outcome"] == "absent"
     assert module.admission_cleanup_preview("cursor", tmp_path)["state"] == "absent"
     assert module.admission_cleanup_preview("claude", tmp_path / "missing")["state"] == "unknown"
+
+
+def test_codex_admission_selectors_round_trip_and_are_path_free(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: list[dict[str, object]] = []
+
+    async def gather(*_args: object, **kwargs: object) -> module.AdmissionFacts:
+        seen.append(kwargs)
+        return _facts(owner="external")
+
+    monkeypatch.setattr(module, "gather_admission_facts", gather)
+    executable = tmp_path / "private-codex"
+    home = tmp_path / "private-home"
+    code, out, err = _run(
+        monkeypatch,
+        tmp_path,
+        "codex",
+        "admission",
+        "preview",
+        "--codex-path",
+        str(executable),
+        "--codex-home",
+        str(home),
+    )
+    assert code == 0, err
+    assert seen[0]["codex_path"] == executable
+    assert seen[0]["codex_home"] == home
+    assert "--codex-path <codex-path>" in json.loads(out)["next_command"]
+    assert "--codex-home <codex-home>" in json.loads(out)["next_command"]
+    assert str(tmp_path) not in out + err
+
+
+def test_disagreeing_codex_readings_cannot_grant_without_a_selector(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from dataclasses import replace
+
+    _stub_facts(
+        monkeypatch, replace(_facts(owner="external"), codex_binary_selection="inconsistent")
+    )
+    code, out, err = _run(monkeypatch, tmp_path, "codex", "admission", "preview")
+    assert code == 1
+    assert "host_admission_codex_binary_inconsistent" in err
+    assert "host_admission_route_unobserved" not in err
+    assert "--codex-path <exact-codex-executable>" in err
+    assert str(tmp_path) not in out + err
+    assert not (tmp_path / ".codex").exists()

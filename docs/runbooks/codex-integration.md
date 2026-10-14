@@ -140,10 +140,15 @@ cell, preflight must show no external/global `yoetz` registration, bind strict o
 preview, and install the full digest-bound artifact without invoking `codex mcp add`. Dual,
 foreign, or unobservable ownership stops the operation. `yoetz provider status --json` reports
 `owner_source`, `ownership_state`, and the observed route profile; only one exclusively observed
-policy owner can make `agent_route_semantic_ready` true. If more than one Codex executable is
-discovered, provide `--codex-path <exact-executable>` so the report can inspect one selected
-installation; the report keeps the route unread and supplies a bounded continuation retaining the
-selected home, launcher and isolation root when no selector is given.
+policy owner can make `agent_route_semantic_ready` true. When several Codex versions are installed, the report reads the registration through each
+against the selected home. Agreeing readings are usable without a selector. It reads the configured
+Codex runtime first when discoverable, otherwise the newest reported release; this preference does
+not prove which executable a host session launched. Disagreeing or failed readings require
+`--codex-path <exact-executable>` and retain the selected home, launcher and isolation root in the
+continuation. `integrate codex admission status|preview|grant|revoke` accepts both `--codex-path`
+and `--codex-home`; preview/grant refuse disagreement with `host_admission_codex_binary_inconsistent`,
+and revoke remains available. Admission
+output uses path-free placeholders for these selectors; repeat the exact values from your preview.
 
 ## 2. Prerequisites and exact supported scope
 
@@ -1011,6 +1016,22 @@ run `yoetz observe drain --workspace . --json` after the agent stops and require
 `terminal: drained` with `pending_after: 0`; `retry_pending` names the retryable head cause in
 `reasons` (a check barrier's `operation_pending` clears when the check completes), and
 `pass_limit` means a producer is still adding rows.
+
+### Cold parser startup (N5 robustness)
+
+The native stream parser imports its structural values and exact profiles without loading ledger
+publication models. `yoetz.adapters.importers.codex_jsonl` and `yoetz.ports.importer` retain their
+public names and lazily load mapping/publication implementations when those names are requested.
+The original class lookup paths remain usable for older serialized values. No profile, parser
+rule, stream-reconciliation cadence, capture scope, privacy decision or wire byte changes.
+
+The cold-hook process regression still enforces 1.5 seconds including startup and verifies that
+the realistic observation store changed. Its temporary home and workspace are mode 0700, so a
+shared-group umask does not turn the measurement into a workspace-safety refusal. A separate
+fresh-process regression parses a malformed rollout and checks that ledger events, ledger ports
+and public request models were not loaded. Parser and mapper suites still exercise both paths.
+The measured profiled pass fell from 1.39 seconds to 0.67 seconds on the development Mac; these
+are individual observations, not a latency guarantee for every host or installed package path.
 
 ### Legacy synchronous-hook latency
 

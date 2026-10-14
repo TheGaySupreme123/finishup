@@ -31,6 +31,7 @@ from yoetz.config.models import (
 from yoetz.config.paths import PathSafetyError, bundle_root
 from yoetz.domain.values import JsonObject
 from yoetz.ports.control import ControlClientKind, ControlError, WorkspaceLocator
+from yoetz.ports.harness_mcp import HarnessBinary
 from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 from yoetz.protocol.ids import IdKind, validate_id
 from yoetz.service.client import connect_service
@@ -319,6 +320,55 @@ def _codex_binary_selection_command(selected_home: Path) -> str:
     )
 
 
+def _configured_runtime_executable() -> str | None:
+    """The Codex executable Yoetz's review runtime is bound to, when one is configured."""
+
+    try:
+        runtime = load_config({}, os.environ, None).external_runtime
+    except Exception:
+        return None
+    return None if runtime is None else runtime.executable_path
+
+
+def _codex_version_rank(version: str | None) -> tuple[int, ...]:
+    """Order reported versions newest first; a release outranks its prerelease, unknown is last."""
+
+    if version is None:
+        return (0,)
+    core, _, prerelease = version.partition("+")[0].partition("-")
+    parts = core.split(".")
+    if len(parts) != 3 or not all(part.isdecimal() for part in parts):
+        return (0,)
+    return (1, *(int(part) for part in parts), 0 if prerelease else 1)
+
+
+def _preferred_codex_order(
+    binaries: tuple[HarnessBinary, ...], configured: str | None
+) -> tuple[HarnessBinary, ...]:
+    """Discovered installations, the preferred one first: the bound runtime, then the newest."""
+
+    def same_file(path: str) -> bool:
+        if configured is None:
+            return False
+        try:
+            return os.path.samefile(path, configured)
+        except OSError:
+            return False
+
+    by_path = sorted(binaries, key=lambda binary: binary.executable_path)
+    # ``sort(reverse=True)`` is stable, so equal ranks keep their path order.
+    return tuple(
+        sorted(
+            by_path,
+            key=lambda binary: (
+                same_file(binary.executable_path),
+                _codex_version_rank(binary.reported_version),
+            ),
+            reverse=True,
+        )
+    )
+
+
 async def mcp_route_observation(
     workspace_locator: Path | None = None,
     *,
@@ -357,10 +407,14 @@ async def mcp_route_observation(
     external_profile: str | None = None
     external_observed = False
     binary_selection: str | None = None
+    selected_version: str | None = None
     try:
         from yoetz.adapters.integrations.codex_session_stream import resolve_codex_home
 
         binaries = discover_codex_binaries()
+        service = HarnessMcpService(
+            CodexMcpAdapter(codex_home=resolve_codex_home(codex_home).absolute())
+        )
         if codex_path is not None:
             binary = cli_setup._explicit_binary(codex_path)  # pyright: ignore[reportPrivateUsage]
             if binary is None:
@@ -368,17 +422,36 @@ async def mcp_route_observation(
         elif len(binaries) == 1:
             binary = binaries[0]
         elif len(binaries) > 1:
-            # A readiness report must never silently inspect an arbitrary installation when the
-            # operator has not selected one. Keep the route unreadable and provide the exact
-            # selector in the composed report below.
+            # Several installed Codex versions read the same Codex home. Never report an
+            # arbitrary one: read the registration through every installation. When they all
+            # agree the route holds whichever one runs ("consistent"); when they differ, the
+            # preferred installation (the one Yoetz's review runtime is bound to, else the
+            # newest version) is read and the difference stays a visible selection blocker.
             binary = None
-            binary_selection = "multiple"
+            readings: list[tuple[HarnessBinary, tuple[str, str | None]]] = []
+            for candidate in _preferred_codex_order(binaries, _configured_runtime_executable()):
+                try:
+                    reading = await service.observe(candidate)
+                except Exception:
+                    binary_selection = "inconsistent"
+                    continue
+                readings.append((candidate, (reading.state.value, reading.route_profile)))
+            if not readings:
+                binary_selection = "multiple"
+            else:
+                external_state, external_profile = readings[0][1]
+                external_observed = True
+                if binary_selection is None and all(
+                    facts == readings[0][1] for _candidate, facts in readings
+                ):
+                    binary_selection = "consistent"
+                else:
+                    binary_selection = "inconsistent"
+                selected_version = readings[0][0].reported_version
         else:
             binary = None
         if binary is not None:
-            observation = await HarnessMcpService(
-                CodexMcpAdapter(codex_home=resolve_codex_home(codex_home).absolute())
-            ).observe(binary)
+            observation = await service.observe(binary)
             external_state = observation.state.value
             external_profile = observation.route_profile
             external_observed = True
@@ -462,6 +535,8 @@ async def mcp_route_observation(
     }
     if binary_selection is not None:
         result["binary_selection"] = binary_selection
+    if selected_version is not None:
+        result["selected_codex_version"] = selected_version
     return result
 
 
@@ -830,7 +905,8 @@ async def provider_status_report(
     grant_known = llm_inference_enabled is not None and repository_grant_state is not None
     binary_selection_command = (
         _codex_binary_selection_command(selected_home)
-        if mcp_route.get("binary_selection") in {"multiple", "explicit_path_unresolved"}
+        if mcp_route.get("binary_selection")
+        in {"multiple", "inconsistent", "explicit_path_unresolved"}
         else None
     )
 
@@ -962,6 +1038,17 @@ async def provider_status_report(
                 "next_command": binary_selection_command,
             }
         )
+    elif mcp_route.get("binary_selection") == "inconsistent":
+        # The route was read through the preferred installation, but another installed Codex
+        # reads the same home differently (or could not be read); say so and offer the selector.
+        blockers.append(
+            {
+                "condition": "codex_binary_selection",
+                "state": "inconsistent",
+                "scope": "agent_route",
+                "next_command": binary_selection_command,
+            }
+        )
     elif mcp_route.get("binary_selection") == "explicit_path_unresolved":
         blockers.append(
             {
@@ -1050,6 +1137,7 @@ async def provider_status_report(
             and route_observed
             and ownership_state in {"external", "plugin"}
             and registered_profile == "policy"
+            and mcp_route.get("binary_selection") != "inconsistent"
         ),
         "blockers": tuple(blockers),
         "next_commands": next_commands,
