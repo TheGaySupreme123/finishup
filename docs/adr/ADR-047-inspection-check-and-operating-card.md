@@ -286,3 +286,38 @@ Mandatory surface after the change (budget 8,192): Codex 7,766 (was 8,186), Curs
 portable 7,711 (8,157), Claude Code 7,252 (7,744). No rule left any host's mandatory surface;
 `tests/conformance/surfaces/test_session_start_start_first.py` checks that failed-start recovery
 and the read-only skip remain in the initialize bodies and the card.
+
+## Amendment 2026-10-14: repeated status reads (tb4 n5)
+
+In the tb4 n5 S arm (Codex 0.159.0, `mvcc-lsm-compaction`) the agent called `status` 45+ times
+over an hour with no `publish_work`, `check`, `respond` or `receipt` while five obligations stayed
+open and both test targets had passed. Two causes, two changes:
+
+- **Self-observation (bug).** The Codex rollout's completed `McpToolCall` item had no hook phase,
+  so the #564 delivery policy delivered every successful Yoetz `status` read: each read appended
+  action, result and evidence and moved the frontier the agent was polling. The item is now read in
+  the `PostToolUse` phase, held items are settled locally on release, and Cursor's ordinary
+  `MCP:<workflow tool>` spelling is read as Yoetz's own. Explicit failures and denials, Yoetz
+  writes and other tools are delivered as before. Host runbooks record the per-host decision.
+- **Status loop (text only).** The MCP bridge keeps, per process (one host session), the number of
+  consecutive first-page `status` reads per `(session_id, actor_id)` since that session's last
+  write call (`start`, `publish_work`, `check`, `respond`, `receipt`, whatever the outcome).
+  Continuation pages (`cursor`) and `view: operation` neither count nor nudge. From the third such
+  read, the text channel leads with "Status read N times in a row with no write. No status read
+  is needed." and one next write derived from the same result's `closure_readiness` (`state`,
+  `agent_actionable`) and its first open obligation id: resolve that obligation with
+  `resolution_evidence_refs`, `respond`, run the planned verification then `check`, `check` with
+  `final_review: true`, or `receipt`. No line is added while `check_in_progress` is listed. The
+  structured result and every schema are unchanged; on the Cursor profile, whose text block is the
+  exact canonical JSON copy, the line is a separate leading block. A read appends nothing, so the
+  count cannot be derived from the ledger; a bridge restart only restarts the count. All three
+  hosts share the bridge, so the rule applies to Codex, Claude Code and Cursor alike.
+
+The `status` descriptor and the mapped SessionStart context now say "After resume or compaction,
+read status once; keep the returned obligations and findings, then do the work — do not reread
+status between ordinary steps." The mandatory startup surface is unchanged (Codex 7,766, Cursor
+7,694, portable 7,711, Claude Code 7,252 of 8,192); the mapped SessionStart context, shared by the
+three hosts, grows from 1,048 to 1,193 bytes, inside its 2,000-character hook bound.
+
+A protocol-level alternative (a typed `next_write` on the status result) was not taken: it would
+need a status-result schema change, and the text line carries the same instruction.

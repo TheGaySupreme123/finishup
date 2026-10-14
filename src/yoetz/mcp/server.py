@@ -82,6 +82,11 @@ from yoetz.mcp.semantic_destination import (
     SemanticDestinationDisclosure,
     read_semantic_destination_disclosure,
 )
+from yoetz.mcp.status_streak import (
+    STATUS_STREAK_NUDGE_THRESHOLD,
+    StatusReadStreaks,
+    status_streak_nudge,
+)
 from yoetz.mcp.summaries import (
     render_check_reviewer_output,
     render_publish_action_notices,
@@ -499,6 +504,10 @@ class BridgeRuntime:
     cursor_launcher: tuple[str, ...] | None = field(default=None, repr=False, compare=False)
     cursor_isolation_root: str | None = field(default=None, repr=False, compare=False)
     cursor_project_binding: Literal["mcp-roots", "registered-project"] = "mcp-roots"
+    # tb4 n5: consecutive status reads per (session, actor) since the session's last write call.
+    status_streaks: StatusReadStreaks = field(
+        default_factory=StatusReadStreaks, repr=False, compare=False
+    )
 
 
 def _valid_runtime_launcher(value: object) -> bool:
@@ -3590,12 +3599,48 @@ async def call_tool(
             types.ErrorData(code=types.INVALID_PARAMS, message=sanitize_unknown_tool_name(name))
         )
     if name == "closure_prepare":
-        return await dispatch_closure_prepare(
+        result = await dispatch_closure_prepare(
             arguments,
             runtime,
             transport_request_id=transport_request_id,
         )
-    return await dispatcher(arguments, runtime)
+    else:
+        result = await dispatcher(arguments, runtime)
+    return _with_status_streak_nudge(name, arguments, result, runtime)
+
+
+def _with_status_streak_nudge(
+    name: str,
+    arguments: Mapping[str, object],
+    result: types.CallToolResult,
+    runtime: BridgeRuntime,
+) -> types.CallToolResult:
+    """Lead a repeated status read's text with one concrete next write (tb4 n5).
+
+    The structured result is unchanged; only the model-visible text gains one leading line. The
+    Cursor profile's text block is the exact canonical JSON of the result, so there the line is a
+    separate first block. A failure here never fails the call: the result is returned as served.
+    """
+
+    try:
+        streak = runtime.status_streaks.note_call(name, arguments)
+        if streak < STATUS_STREAK_NUDGE_THRESHOLD or result.isError is True:
+            return result
+        wire = result.structuredContent
+        if not isinstance(wire, Mapping):
+            return result
+        nudge = status_streak_nudge(cast(Mapping[str, object], wire), streak)
+        if not nudge:
+            return result
+        content = list(result.content)
+        first = content[0] if content else None
+        if runtime.host_profile != "cursor" and isinstance(first, types.TextContent):
+            content[0] = first.model_copy(update={"text": f"{nudge}\n{first.text}"})
+        else:
+            content.insert(0, types.TextContent(type="text", text=nudge))
+        return result.model_copy(update={"content": content})
+    except Exception:  # noqa: BLE001 - the nudge is advisory text; the served result stands
+        return result
 
 
 async def _handle_call_tool_request(

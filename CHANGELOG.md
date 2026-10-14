@@ -219,6 +219,17 @@ reverse-chronological released versions.
 
 ### Changed
 
+- Rereading `status` without writing now gets a direct answer. From the third first-page `status`
+  read in a row by the same agent on the same task with no `publish_work`, `check`, `respond`,
+  `receipt` or `start` in between, the result's text leads with one line: no status read is
+  needed, and the one next write the result's own closure state names (for example resolving the
+  first open obligation with `resolution_evidence_refs`, `respond`, `check`, or `receipt`). Paging
+  and polling a running check do not count. The structured result is unchanged, so no schema
+  changes; on Cursor the line is a separate block before the exact result copy. The start-of-session
+  text and the `status` tool description now say: after resume or compaction, read status once,
+  keep the returned obligations and findings, then do the work, and do not reread status between
+  ordinary steps (tb4 n5).
+
 - Agent guidance now routes reads to the one section an agent needs. The request templates,
   workflow, coverage and publication pages each open with a map from situation to section anchor,
   so a whole-page read (which returns only the first 4 KiB page of an 80 KiB document) leads
@@ -411,6 +422,14 @@ reverse-chronological released versions.
   budget without dropping any rule.
 
 ### Fixed
+
+- Yoetz no longer records an agent's own successful `status`, `receipt` or `read_guidance` call
+  that Codex wrote to its session log. Each such read was added to the task as an action, result
+  and evidence, so the task the agent was reading changed under every read and a closing loop could
+  keep growing it; on the tb4 n5 trial one hour of `status` polling grew the record by about twelve
+  events per read. A failed or denied Yoetz call, Yoetz's own writes and every other server's tools
+  are still recorded as before. The same applies to Cursor's ordinary-work hooks, which name a
+  Yoetz call `MCP:status`, and to a held Codex log entry released later (tb4 n5).
 
 - In a repository holding another Git repository inside it (an `api` directory with its own
   `.git`), Yoetz's local, names-only read of what changed no longer fails: it reads the nested
