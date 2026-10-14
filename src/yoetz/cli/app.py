@@ -790,6 +790,7 @@ async def _call_workflow(
     *,
     task_statement_file: str | None = None,
     await_observations: bool = False,
+    owner_view: bool = False,
 ) -> int:
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read.
     check_mode: object = None
@@ -812,22 +813,17 @@ async def _call_workflow(
             request = cast(WorkflowRequest, _request_model(request_type, input_path, inline))
         if type(request) is CheckRequest:
             check_mode = request.mode
-        # Human receipt rendering is an owner-local view; machine output and host
-        # invocations retain agent-context policy. The fact comes from the output terminal.
-        human_receipt = False
-        if method == "receipt" and not json_output:
-            from yoetz.cli.privacy_setup import output_is_controlling_tty
-
-            human_receipt = output_is_controlling_tty()
-        client = (
-            await build_service_client(
-                projection_render_mode=ProjectionRenderMode.HUMAN_READABLE,
-                output_is_controlling_tty=True,
-            )
-            if human_receipt
-            else await build_service_client()
-        )
+        # Every result is the agent-facing projection (ADR-009 round 3): a terminal is not
+        # proof that the owner is reading. ``--owner-view`` asks the service for the full
+        # receipt, which it grants only after the owner reauthenticates for this exact request.
+        if owner_view and type(request) is not ReceiptRequest:
+            raise ProtocolValueError("unsupported_json_type")
+        client = await build_service_client()
         try:
+            if owner_view:
+                refused = await _authorize_owner_receipt_view(client, cast(ReceiptRequest, request))
+                if refused is not None:
+                    return refused
             call = getattr(client, method)
             result = cast(WorkflowResult, await call(request, deadline_ms=deadline_ms))
         finally:
@@ -1507,6 +1503,56 @@ def observe_checks_run_cmd(
     _finish(_observe_operation("observe_checks_run")(workspace=workspace, json_output=json_output))
 
 
+_OWNER_VIEW_REFUSALS: Final = MappingProxyType(
+    {
+        "presence_unavailable": (
+            "owner_view_unavailable: Yoetz cannot confirm it is you on this installation. It has "
+            "no operating-system presence check here and the vault has no passphrase, so the "
+            "full receipt stays closed. Nothing changed. Without --owner-view you get the "
+            "receipt your agents get, with repository names withheld; to see what your change "
+            "created, run 'git status --short' in your repository."
+        ),
+        "state_forbidden": (
+            "owner_view_unavailable: the vault is locked or not set up. Run 'yoetz service "
+            "unlock' in your terminal, then ask again. Nothing changed."
+        ),
+        "trusted_console_required": (
+            "owner_view_requires_terminal: the full receipt asks you to confirm in a foreground "
+            "terminal that Yoetz owns. Run 'yoetz receipt --owner-view' yourself in your own "
+            "terminal; an agent cannot complete this step. Nothing changed."
+        ),
+        "secret_rejected": (
+            "owner_view_refused: the passphrase did not match. Nothing was shown and nothing "
+            "changed; run the command again to retry."
+        ),
+    }
+)
+
+
+async def _authorize_owner_receipt_view(client: object, request: ReceiptRequest) -> int | None:
+    """Run the owner-view ceremony for this request on this connection; None when granted."""
+
+    from yoetz.cli.unlock import HumanCeremonyCliError, authorize_owner_receipt_view
+    from yoetz.service.confidential_client import ConfidentialClientError
+
+    target_for = getattr(client, "owner_receipt_view_target", None)
+    if target_for is None:
+        _stderr(_OWNER_VIEW_REFUSALS["presence_unavailable"])
+        return exit_code_for(PublicErrorCode.PRIVACY_AUTHORITY_REQUIRED)
+    try:
+        await authorize_owner_receipt_view(target_for(request))
+    except (ConfidentialClientError, HumanCeremonyCliError) as error:
+        reason = error.reason
+        key = "presence_unavailable" if reason == "reauthentication_unavailable" else reason
+        line = _OWNER_VIEW_REFUSALS.get(key)
+        if line is not None:
+            _stderr(line)
+            return exit_code_for(PublicErrorCode.PRIVACY_AUTHORITY_REQUIRED)
+        failure = _trusted_exception_failure(error)
+        return failure if failure is not None else _usage_failure()
+    return None
+
+
 def _workflow_command(method: str, request_type: type[BaseModel]) -> Callable[..., None]:
     def command(
         input_path: _INPUT = None,
@@ -1597,7 +1643,39 @@ def check_command(
 
 app.command("respond")(_workflow_command("respond", RespondRequest))
 app.command("status")(_workflow_command("status", StatusRequest))
-app.command("receipt")(_workflow_command("receipt", ReceiptRequest))
+
+
+@app.command("receipt")
+def receipt_command(
+    input_path: _INPUT = None,
+    request: _INLINE = None,
+    json_output: _JSON = False,
+    deadline_ms: _DEADLINE = None,
+    owner_view: Annotated[
+        bool,
+        typer.Option(
+            "--owner-view",
+            help=(
+                "Show the full receipt, including repository names your agents do not see. "
+                "You confirm in your own foreground terminal (OS presence or your vault "
+                "passphrase) for this one request; nothing else changes."
+            ),
+        ),
+    ] = False,
+) -> None:
+    _finish(
+        run_async(
+            lambda: _call_workflow(
+                "receipt",
+                ReceiptRequest,
+                input_path,
+                request,
+                json_output,
+                deadline_ms,
+                owner_view=owner_view,
+            )
+        )
+    )
 
 
 @app.command("closure-prepare")

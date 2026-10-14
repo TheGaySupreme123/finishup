@@ -744,6 +744,9 @@ def _assert_receipt_names_withheld(projected: Mapping[str, JsonValue], fmt: str)
         ("cli", "machine_readable", True),
         ("cli", "human_readable", False),
         ("ui", "machine_readable", False),
+        # r3 F1: a forged or merely true terminal presentation is never owner authority.
+        ("cli", "human_readable", True),
+        ("ui", "human_readable", True),
     ],
 )
 @pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
@@ -811,58 +814,55 @@ async def test_a_full_local_receipt_projected_to_an_agent_withholds_the_names(
     )
 
 
-@pytest.mark.parametrize(
-    "surface,fmt",
-    [
-        ("cli", "json"),
-        ("cli", "markdown"),
-        ("cli", "text"),
-        ("tui", "markdown"),
-        ("cli_redirected", "markdown"),
-        ("cli_json_output", "json"),
-    ],
-)
-async def test_owner_receipt_surfaces_keep_full_human_local_prose(
+@pytest.mark.parametrize("surface", ["cli", "cli_pty_facts", "cli_json_output", "tui"])
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_ordinary_cli_and_tui_receipts_are_agent_facing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     surface: str,
     fmt: str,
 ) -> None:
-    """r2 (item 2): ``yoetz receipt`` on the owner's foreground terminal and the terminal
-    interface are owner views (``local_human_view``) and show the full receipt; redirected or
-    ``--json`` CLI output stays an agent-context projection with the names withheld."""
+    """r3 F1: without a ceremony grant every CLI and TUI receipt is the agent projection.
 
-    import sys
+    The client context is the one the real command builds; even a context that claims a
+    human-readable controlling terminal (what a pseudo-terminal produces) stays agent-facing.
+    """
 
     import yoetz.cli.app as cli_app
-    import yoetz.cli.privacy_setup as privacy_setup
     from yoetz.application.service import ClientProjectionContext
     from yoetz.ports.control import ControlClientKind, ProjectionRenderMode
     from yoetz.protocol.models import ReceiptResultModel
     from yoetz.tui.runtime import YoetzRuntime, _WorkSession
 
-    owner = surface in {"cli", "tui"}
     repository, base = _workspace(tmp_path)
     _bind_workspace(monkeypatch, repository, base)
     app, _policy = await build_projection_application(seed=20700)
     started, _checked = await _run(app, 20700)
     status, _projected = await _projected_status(app, started, 20750)
-    case, receipt = await _receipt_case(
-        app,
-        started,
-        status,
-        20760,
-        fmt,
-        "default_local_export" if surface == "tui" else "full_local",
-    )
-    contexts: list[ClientProjectionContext] = []
+    case, _receipt = await _receipt_case(app, started, status, 20760, fmt)
     sinks: list[str] = []
     delivered: list[str] = []
 
     class Client:
-        async def receipt(self, _request: object, **_kwargs: object) -> ReceiptResultModel:
-            projected = await project_case(app, case, 20761, context=contexts[-1])
+        def __init__(self, context: ClientProjectionContext) -> None:
+            self.context = context
+
+        async def receipt(self, request: Any, **_kwargs: object) -> ReceiptResultModel:
+            body = {**case.request_body, **request.model_dump(mode="json", exclude_none=True)}
+            projected = await project_case(
+                app,
+                ProjectionCase("receipt", ControlMethod.RECEIPT, case.request_body, case.internal)
+                if surface != "tui"
+                else ProjectionCase(
+                    "receipt",
+                    ControlMethod.RECEIPT,
+                    body,
+                    await app.receipt(ReceiptRequest.model_validate(body)),
+                ),
+                20761,
+                context=self.context,
+            )
             sinks.append(cast(Mapping[str, Any], projected["privacy_projection"])["sink"])
             delivered.append(canonical_encode(cast(JsonValue, projected)).decode())
             return ReceiptResultModel.model_validate(projected)
@@ -877,22 +877,21 @@ async def test_owner_receipt_surfaces_keep_full_human_local_prose(
         output_is_controlling_tty: bool = False,
         **_kwargs: object,
     ) -> Client:
-        contexts.append(
+        if surface == "cli_pty_facts":
+            # What a hello from inside an agent's pseudo-terminal can claim.
+            projection_render_mode = ProjectionRenderMode.HUMAN_READABLE
+            output_is_controlling_tty = True
+        return Client(
             ClientProjectionContext(client_kind, projection_render_mode, output_is_controlling_tty)
         )
-        return Client()
 
     monkeypatch.setattr(cli_app, "build_service_client", build)
-    monkeypatch.setattr(
-        privacy_setup, "_output_is_controlling_tty", lambda: surface != "cli_redirected"
-    )
-    monkeypatch.setattr(sys.stdout, "isatty", lambda: surface != "cli_redirected")
     if surface == "tui":
         runtime = YoetzRuntime(cwd=repository)
         runtime._sessions["owner"] = _WorkSession(
             started.task_id, started.session_id, started.writer_id, status.result_frontier
         )
-        shown = "\n".join((await runtime.build_receipt("owner", "markdown")).rendered_lines)
+        shown = "\n".join((await runtime.build_receipt("owner", fmt)).rendered_lines)
     else:
         assert (
             await cli_app._call_workflow(
@@ -905,23 +904,90 @@ async def test_owner_receipt_surfaces_keep_full_human_local_prose(
             )
             == 0
         )
-        shown = capsys.readouterr().out.rstrip()
-    assert sinks == ["local_human_view" if owner else "agent_context"]
-    if surface == "tui":
-        assert receipt.human_text is not None and receipt.human_text in shown
-    elif owner:
-        assert all(path in delivered[0] for path in _MODELS)
-        if fmt == "json":
-            # The human rendering of a JSON receipt prints its conclusion and limitations; the
-            # document it was handed is the owner's unwithheld one.
-            assert shown.startswith(f"Conclusion: {receipt.conclusion}")
-        else:
-            assert receipt.human_text is not None and receipt.human_text in shown
-            assert all(path in shown for path in _MODELS)
-    else:
-        assert not any(path in delivered[0] for path in _MODELS)
-        assert not any(path in shown for path in _MODELS)
-        assert "(receipt prose withheld: repository_excerpt)" in shown
+        shown = capsys.readouterr().out
+    assert sinks == ["agent_context"]
+    assert not any(path in delivered[0] for path in _MODELS)
+    assert not any(path in shown for path in _MODELS)
+
+
+async def test_owner_view_request_runs_the_ceremony_on_its_own_connection_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``--owner-view`` binds the ceremony to this request and this client's connection, and
+    sends the receipt call only after the ceremony succeeded; a refusal sends nothing."""
+
+    import yoetz.cli.app as cli_app
+    import yoetz.cli.unlock as unlock
+    from yoetz.protocol.models import ReceiptResultModel
+    from yoetz.service.confidential_client import ConfidentialClientError
+    from yoetz.service.owner_view import owner_receipt_view_target
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=20770)
+    started, _checked = await _run(app, 20770)
+    status, _projected = await _projected_status(app, started, 20775)
+    case, _receipt = await _receipt_case(app, started, status, 20780, "markdown")
+    nonce = "a" * 64
+    calls: list[str] = []
+
+    class Client:
+        def owner_receipt_view_target(self, request: Any) -> Any:
+            return owner_receipt_view_target(request, nonce)
+
+        async def receipt(self, _request: object, **_kwargs: object) -> ReceiptResultModel:
+            calls.append("receipt")
+            projected = await project_case(app, case, 20781)
+            return ReceiptResultModel.model_validate(projected)
+
+        async def close(self) -> None:
+            pass
+
+    async def build(*_args: object, **_kwargs: object) -> Client:
+        return Client()
+
+    ceremonies: list[Any] = []
+
+    async def refuse(target: Any) -> Any:
+        ceremonies.append(target)
+        raise ConfidentialClientError("reauthentication_unavailable")
+
+    monkeypatch.setattr(cli_app, "build_service_client", build)
+    monkeypatch.setattr(unlock, "authorize_owner_receipt_view", refuse)
+    code = await cli_app._call_workflow(
+        "receipt",
+        ReceiptRequest,
+        None,
+        canonical_encode(case.request_body).decode(),
+        False,
+        None,
+        owner_view=True,
+    )
+    assert code != 0
+    assert calls == []
+    captured = capsys.readouterr()
+    assert "owner_view_unavailable" in captured.err
+    assert "git status --short" in captured.err
+    assert all(path not in captured.out + captured.err for path in _MODELS)
+    request = ReceiptRequest.model_validate(case.request_body)
+    assert ceremonies == [owner_receipt_view_target(request, nonce)]
+
+    async def grant(target: Any) -> Any:
+        ceremonies.append(target)
+        calls.append("ceremony")
+
+    monkeypatch.setattr(unlock, "authorize_owner_receipt_view", grant)
+    code = await cli_app._call_workflow(
+        "receipt",
+        ReceiptRequest,
+        None,
+        canonical_encode(case.request_body).decode(),
+        False,
+        None,
+        owner_view=True,
+    )
+    assert code == 0
+    assert calls == ["ceremony", "receipt"]
 
 
 async def test_receipt_name_provenance_is_per_name_and_auditable(
@@ -966,8 +1032,9 @@ async def test_the_owner_local_view_and_a_granted_policy_keep_the_receipt_names(
         app,
         case,
         19961,
+        # The service sets ``owner_view`` only after consuming a ceremony grant.
         context=ClientProjectionContext(
-            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, True
+            ControlClientKind.CLI, ProjectionRenderMode.HUMAN_READABLE, False, owner_view=True
         ),
     )
     assert cast(Mapping[str, Any], human["privacy_projection"])["sink"] == "local_human_view"

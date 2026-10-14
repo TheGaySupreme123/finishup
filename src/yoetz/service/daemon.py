@@ -159,6 +159,7 @@ from yoetz.service.confidential_protocol import (
     HUMAN_PROTOCOL_MAGIC,
     HUMAN_PROTOCOL_VERSION,
     MAX_HUMAN_CONTROL_FRAME_BYTES,
+    OWNER_RECEIPT_VIEW_GRANT_SECONDS,
     ClientActionEnvelope,
     ClientCancelEnvelope,
     ClientOpenEnvelope,
@@ -171,6 +172,9 @@ from yoetz.service.confidential_protocol import (
     InstallationRecoveryResult,
     InstallationRecoveryTarget,
     KeyringRetryPreview,
+    OwnerReceiptViewPreview,
+    OwnerReceiptViewResult,
+    OwnerReceiptViewTarget,
     PortableRecoveryResult,
     PortableRecoveryTarget,
     PrivacyDecisionResult,
@@ -222,6 +226,11 @@ from yoetz.service.lifecycle import (
     SessionSecurityEvent,
 )
 from yoetz.service.loop_health import ControlPlaneWatchdog
+from yoetz.service.owner_view import (
+    OwnerViewGrants,
+    owner_receipt_view_target,
+    owner_receipt_view_target_digest,
+)
 from yoetz.service.ready_composition import build_ready_application_factory
 from yoetz.service.secret_ingress import SecretIngressService
 from yoetz.service.session_routes import SESSION_ROUTE_FILE_NAME, SessionRouteMemory
@@ -757,6 +766,8 @@ class ServiceComposition:
     # sweeper is blocked on a different row; structural calls take both in observation-then-
     # maintenance order.
     observation_gate: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    # One-use owner receipt views minted only by the human-control ceremony (ADR-009 round 3).
+    owner_view_grants: OwnerViewGrants = field(default_factory=OwnerViewGrants, repr=False)
 
     def __repr__(self) -> str:
         return "ServiceComposition(<redacted>)"
@@ -1873,6 +1884,20 @@ class ServiceDaemon:
                 await asyncio.gather(read_task, return_exceptions=True)
             raise
 
+    def _consume_owner_view(self, session: ControlSession, request: ControlCallRequest) -> bool:
+        """True only when a live ceremony grant matches this receipt call and connection."""
+
+        if request.method is not ControlMethod.RECEIPT or session.client_kind not in {
+            ControlClientKind.CLI,
+            ControlClientKind.UI,
+        }:
+            return False
+        try:
+            target = owner_receipt_view_target(request.body, session.connection_nonce)
+        except AttributeError, TypeError, ValueError:
+            return False
+        return self._composition.owner_view_grants.consume(owner_receipt_view_target_digest(target))
+
     async def _serve_call(
         self,
         stream: ControlStream,
@@ -1881,26 +1906,27 @@ class ServiceDaemon:
         write_lock: asyncio.Lock,
     ) -> None:
         call_started = time.monotonic()
+        # Presentation facts from the hello describe rendering only. The owner view is the one
+        # service-verified exception: a grant the human-control ceremony minted for this exact
+        # receipt request on this exact connection (ADR-009 round 3).
+        projection_context = ClientProjectionContext(
+            session.client_kind,
+            session.projection_render_mode,
+            session.output_is_controlling_tty,
+            owner_view=self._consume_owner_view(session, request),
+        )
         if session.repository_privacy_context is None:
             result = await self.dispatch(
                 session.client_kind,
                 request,
-                projection_context=ClientProjectionContext(
-                    session.client_kind,
-                    session.projection_render_mode,
-                    session.output_is_controlling_tty,
-                ),
+                projection_context=projection_context,
                 _defer_stop=True,
             )
         else:
             result = await self.dispatch(
                 session.client_kind,
                 request,
-                projection_context=ClientProjectionContext(
-                    session.client_kind,
-                    session.projection_render_mode,
-                    session.output_is_controlling_tty,
-                ),
+                projection_context=projection_context,
                 repository_privacy_context=session.repository_privacy_context,
                 _defer_stop=True,
             )
@@ -3396,10 +3422,12 @@ class _LockedHumanEffects:
         unlock: UnlockCoordinator | None = None,
         maintenance_gate: asyncio.Lock | None = None,
         observation_gate: asyncio.Lock | None = None,
+        owner_view_grants: OwnerViewGrants | None = None,
     ) -> None:
         self._lifecycle = lifecycle
         self._vault = vault
         self._privacy_relay = privacy_relay
+        self._owner_view_grants = owner_view_grants
         self._recovery_sets = recovery_sets
         self._unlock = unlock
         self._maintenance_gate = maintenance_gate or asyncio.Lock()
@@ -3584,6 +3612,25 @@ class _LockedHumanEffects:
                     False,
                 ),
                 confirmed_plan_digest,
+                None,
+            )
+        if type(target) is OwnerReceiptViewTarget:
+            if request.ceremony_kind is not HumanCeremonyKind.OWNER_RECEIPT_VIEW:
+                raise HumanControlError("kind_forbidden")
+            if self._owner_view_grants is None:
+                raise HumanControlError("ceremony_unsupported")
+            if not self._vault.ready:
+                raise HumanControlError("state_forbidden")
+            digest = owner_receipt_view_target_digest(target)
+            return (
+                OwnerReceiptViewPreview(
+                    target.task_id,
+                    target.format,
+                    target.redaction_profile,
+                    OWNER_RECEIPT_VIEW_GRANT_SECONDS,
+                    digest,
+                ),
+                digest,
                 None,
             )
         if type(target) is PrivacyPendingTarget:
@@ -4285,6 +4332,31 @@ class _LockedHumanEffects:
         del target, now_monotonic
         raise HumanControlError("kind_forbidden")
 
+    async def authorize_owner_receipt_view(
+        self,
+        target: OwnerReceiptViewTarget,
+        proof: HumanAuthorizationProof,
+        now_monotonic: float,
+    ) -> OwnerReceiptViewResult:
+        """Consume the reauthentication proof for this exact view and mint its one-use grant."""
+
+        grants = self._owner_view_grants
+        if grants is None:
+            raise HumanControlError("ceremony_unsupported")
+        digest = owner_receipt_view_target_digest(target)
+        try:
+            proof.consume(
+                "owner_receipt_view",
+                digest,
+                self._lifecycle.instance.generation,
+                self._vault.generation,
+                None,
+                now_monotonic,
+            )
+        except SecretMemoryError as exc:
+            raise HumanControlError("stale_generation") from exc
+        return OwnerReceiptViewResult("authorized", digest, grants.issue(digest))
+
 
 class _HumanConnectionServer:
     def __init__(self, service: HumanControlService) -> None:
@@ -4596,6 +4668,7 @@ async def _production_composition(
             activate_ready=relay,
         )
         privacy_relay = _PrivacyPolicyAppRelay()
+        owner_view_grants = OwnerViewGrants()
         human = HumanControlService(
             clock=clock,
             lifecycle=lifecycle,
@@ -4610,6 +4683,7 @@ async def _production_composition(
                 unlock,
                 maintenance_gate,
                 observation_gate,
+                owner_view_grants,
             ),
             user_presence=None,
         )
@@ -4635,6 +4709,7 @@ async def _production_composition(
             auto_unlock_bundle=paths.bundle,
             session_route_path=paths.state / SESSION_ROUTE_FILE_NAME,
             observation_gate=observation_gate,
+            owner_view_grants=owner_view_grants,
         )
     except BaseException:
         await listeners.close()

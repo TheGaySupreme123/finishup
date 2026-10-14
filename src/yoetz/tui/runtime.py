@@ -1050,19 +1050,14 @@ class YoetzRuntime:
     @asynccontextmanager
     async def _client(self) -> AsyncGenerator[Any]:
         from yoetz.cli.app import build_service_client
-        from yoetz.ports.control import (
-            ControlClientKind,
-            ControlError,
-            ProjectionRenderMode,
-            WorkspaceLocator,
-        )
+        from yoetz.ports.control import ControlClientKind, ControlError, WorkspaceLocator
 
+        # Agent-facing like every client (ADR-009 round 3); the owner's full receipt is the
+        # explicit, reauthenticated ``build_receipt(..., owner_view=True)`` path.
         try:
             client = await build_service_client(
                 ControlClientKind.UI,
                 workspace_locator=WorkspaceLocator(str(self._cwd.resolve(strict=True))),
-                projection_render_mode=ProjectionRenderMode.HUMAN_READABLE,
-                output_is_controlling_tty=True,
             )
         except ControlError as error:
             raise RuntimeError_(error.reason, "the local Yoetz service is not reachable")
@@ -2071,7 +2066,16 @@ class YoetzRuntime:
         self._pending_checks.pop(title, None)
         return str(success.verdict), tuple(render_human_check(success).splitlines())
 
-    async def build_receipt(self, title: str, output_format: str) -> ReceiptSummary:
+    async def build_receipt(
+        self, title: str, output_format: str, *, owner_view: bool = False
+    ) -> ReceiptSummary:
+        """Build the agent-facing receipt, or with ``owner_view`` the owner's full one.
+
+        The owner view runs the human-control reauthentication ceremony for this exact request
+        on this client's own connection, so the caller must already have handed the terminal
+        over (``hand_over_terminal``); the service, not this process, decides.
+        """
+
         from yoetz.cli.render import render_human_receipt
         from yoetz.protocol.canonical import canonical_encode
         from yoetz.protocol.coverage import CheckType
@@ -2088,11 +2092,13 @@ class YoetzRuntime:
                 "writer_id": session.writer_id,
                 "expected_frontier": self._frontier(session),
                 "format": output_format,
-                "include": "standard",
-                "redaction_profile": "default_local_export",
+                "include": "full" if owner_view else "standard",
+                "redaction_profile": "full_local" if owner_view else "default_local_export",
             }
         )
         async with self._client() as client:
+            if owner_view:
+                await self._authorize_owner_receipt_view(client, request)
             result = await client.receipt(request)
         success = self._unwrap(result, "the receipt could not be built")
         session.frontier = success.result_frontier
@@ -2115,6 +2121,23 @@ class YoetzRuntime:
             verified=("local checks recorded in this receipt",),
             not_verified=("external AI-powered review did not contribute to this receipt",),
         )
+
+    async def _authorize_owner_receipt_view(self, client: Any, request: object) -> None:
+        from yoetz.cli.unlock import HumanCeremonyCliError, authorize_owner_receipt_view
+        from yoetz.service.confidential_client import ConfidentialClientError
+
+        try:
+            await authorize_owner_receipt_view(client.owner_receipt_view_target(request))
+        except (ConfidentialClientError, HumanCeremonyCliError) as error:
+            reason = error.reason
+            if reason in {"presence_unavailable", "reauthentication_unavailable"}:
+                raise RuntimeError_(
+                    "owner_view_unavailable",
+                    "Yoetz cannot confirm it is you on this installation (no OS presence "
+                    "check, no vault passphrase), so the full receipt stays closed; the "
+                    "ordinary receipt is unchanged",
+                ) from error
+            raise RuntimeError_(reason, "the full receipt was not authorized") from error
 
     def _frontier(self, session: _WorkSession) -> object:
         frontier = session.frontier

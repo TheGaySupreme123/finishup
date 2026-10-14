@@ -36,6 +36,8 @@ from yoetz.service.confidential_protocol import (
     InstallationRecoveryTarget,
     KeyringRetryPhase,
     KeyringRetryResult,
+    OwnerReceiptViewResult,
+    OwnerReceiptViewTarget,
     PortableRecoveryResult,
     PortableRecoveryTarget,
     PrivacyDecisionResult,
@@ -170,6 +172,13 @@ class _HumanEffects(Protocol):
         target: IdleRelockPolicyTarget,
         now_monotonic: float,
     ) -> IdleRelockPolicyResult: ...
+
+    async def authorize_owner_receipt_view(
+        self,
+        target: OwnerReceiptViewTarget,
+        proof: HumanAuthorizationProof,
+        now_monotonic: float,
+    ) -> OwnerReceiptViewResult: ...
 
 
 class _InstallationRecoveryEffects(Protocol):
@@ -604,6 +613,9 @@ class HumanControlService:
         if kind in {
             HumanCeremonyKind.PROVIDER_CREDENTIAL_SET,
             HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE,
+            # The owner asked for this exact view by running the command; the decision is the
+            # reauthentication itself (ADR-009 round 3, ADR-016 decision 4).
+            HumanCeremonyKind.OWNER_RECEIPT_VIEW,
         }:
             return self._authorization_phase()
         if kind in {
@@ -722,6 +734,12 @@ class HumanControlService:
         elif session.request.ceremony_kind is HumanCeremonyKind.IDLE_RELOCK_POLICY_CHANGE:
             result = await self._effects.change_idle_relock_policy(
                 cast(IdleRelockPolicyTarget, session.request.target),
+                proof,
+                self._sample_monotonic(),
+            )
+        elif session.request.ceremony_kind is HumanCeremonyKind.OWNER_RECEIPT_VIEW:
+            result = await self._effects.authorize_owner_receipt_view(
+                cast(OwnerReceiptViewTarget, session.request.target),
                 proof,
                 self._sample_monotonic(),
             )
@@ -934,6 +952,10 @@ class HumanControlService:
             HumanCeremonyKind.IDLE_RELOCK_POLICY_CHANGE: (
                 "idle_relock_policy_change",
                 SecretPurpose.SECURITY_REAUTHENTICATION,
+            ),
+            HumanCeremonyKind.OWNER_RECEIPT_VIEW: (
+                "owner_receipt_view",
+                SecretPurpose.PRIVACY_REAUTHENTICATION,
             ),
             HumanCeremonyKind.INSTALLATION_RECOVERY: (
                 "installation_recovery_change",

@@ -353,6 +353,9 @@ class ClientProjectionContext:
     client_kind: ControlClientKind
     render_mode: ProjectionRenderMode
     output_is_controlling_tty: bool
+    # Set only by the service after it consumed a human-control owner-view grant for this exact
+    # receipt call (``service/owner_view.py``); never derived from a client assertion.
+    owner_view: bool = False
 
     def __post_init__(self) -> None:
         if type(self.client_kind) is not ControlClientKind:
@@ -361,6 +364,8 @@ class ClientProjectionContext:
             raise TypeError("projection_render_mode_invalid")
         if type(self.output_is_controlling_tty) is not bool:
             raise TypeError("projection_tty_fact_invalid")
+        if type(self.owner_view) is not bool:
+            raise TypeError("projection_owner_view_invalid")
 
     @classmethod
     def fail_safe(cls, client_kind: ControlClientKind) -> ClientProjectionContext:
@@ -441,11 +446,12 @@ def resolve_client_disclosure_sink(context: ClientProjectionContext) -> LocalDis
 
     if type(context) is not ClientProjectionContext:
         raise TypeError("projection_context_invalid")
-    if (
-        context.client_kind in {ControlClientKind.CLI, ControlClientKind.UI}
-        and context.render_mode is ProjectionRenderMode.HUMAN_READABLE
-        and context.output_is_controlling_tty
-    ):
+    # Every surface is agent-facing by default (ADR-009 round 3). A terminal, a human-readable
+    # rendering or a client kind is a presentation fact an agent can produce (a pseudo-terminal
+    # satisfies every terminal test), so none of them selects the owner's view. Only a grant the
+    # human-control ceremony minted after reauthentication does, and only for a CLI or terminal
+    # interface receipt call that the service matched to it.
+    if context.owner_view and context.client_kind in {ControlClientKind.CLI, ControlClientKind.UI}:
         return LocalDisclosureSink.LOCAL_HUMAN_VIEW
     return LocalDisclosureSink.AGENT_CONTEXT
 
@@ -3142,7 +3148,9 @@ class Application:
                 if type(value) is not str:
                     raise TypeError("receipt_projection_span_invalid")
                 projected = _replace_pointer(
-                    projected, pointer, withheld_text(value, withheld_spans[pointer])
+                    projected,
+                    pointer,
+                    withheld_text(value, withheld_spans[pointer]),
                 )
         for omission in marking_omissions:
             # An omission whose pointer does not resolve means the privacy decision and the body

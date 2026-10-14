@@ -67,6 +67,10 @@ __all__ = [
     "InstallationRecoveryPreview",
     "InstallationRecoveryResult",
     "InstallationRecoveryTarget",
+    "OWNER_RECEIPT_VIEW_GRANT_SECONDS",
+    "OwnerReceiptViewPreview",
+    "OwnerReceiptViewResult",
+    "OwnerReceiptViewTarget",
     "KeyringRetryPhase",
     "KeyringRetryPreview",
     "KeyringRetryResult",
@@ -126,6 +130,9 @@ CEREMONY_EXPIRY_SECONDS: Final = 300
 # preview anywhere near this is malformed rather than merely large, and refusing it here keeps
 # the failure at the protocol boundary instead of at frame encoding.
 MAX_PRIVACY_PREVIEW_CHANGE_BYTES: Final = 32_768
+# How long an authorized owner receipt view waits for its one receipt call on the same control
+# connection. The grant is one-use and in memory only, so this is a window, never a standing grant.
+OWNER_RECEIPT_VIEW_GRANT_SECONDS: Final = 60
 
 _HUMAN_HEADER = struct.Struct(">4sBBI")
 _SECRET_HEADER = struct.Struct(">4sBBHI")
@@ -172,6 +179,7 @@ class HumanCeremonyKind(str, Enum):  # noqa: UP042 - fixed wire strings
     PRIVACY_POLICY_DECISION = "privacy_policy_decision"
     PRIVACY_DISCLOSURE_DECISION = "privacy_disclosure_decision"
     IDLE_RELOCK_POLICY_CHANGE = "idle_relock_policy_change"
+    OWNER_RECEIPT_VIEW = "owner_receipt_view"
 
 
 class ConfidentialSecretPurpose(IntEnum):
@@ -381,6 +389,45 @@ class IdleRelockPolicyTarget:
             raise ValueError("idle_relock_policy_target_invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class OwnerReceiptViewTarget:
+    """One exact receipt request, on one control connection, that the owner asks to see whole.
+
+    ``control_connection_digest`` binds the view to the ordinary control connection the owner's
+    own command opened; the receipt call that consumes the grant must arrive on that connection
+    with these exact request fields. Nothing here is authority until the ceremony's
+    reauthentication succeeds.
+    """
+
+    task_id: str
+    session_id: str
+    receipt_request_id: str
+    format: Literal["json", "markdown", "text"]
+    include: Literal["summary", "standard", "full"]
+    redaction_profile: Literal["full_local", "default_local_export", "redacted_share"]
+    control_connection_digest: str
+    kind: Literal["owner_receipt_view"] = "owner_receipt_view"
+
+    def __post_init__(self) -> None:
+        reason = "owner_receipt_view_target_invalid"
+        if self.kind != "owner_receipt_view":
+            raise ValueError(reason)
+        try:
+            validate_id(IdKind.TASK, self.task_id)
+            validate_id(IdKind.SESSION, self.session_id)
+            validate_id(IdKind.REQUEST, self.receipt_request_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(reason) from exc
+        if (
+            self.format not in {"json", "markdown", "text"}
+            or self.include not in {"summary", "standard", "full"}
+            or self.redaction_profile
+            not in {"full_local", "default_local_export", "redacted_share"}
+        ):
+            raise ValueError(reason)
+        _require_digest(self.control_connection_digest, reason)
+
+
 type HumanOpenTarget = (
     EmptyVaultTarget
     | PortableRecoveryTarget
@@ -388,6 +435,7 @@ type HumanOpenTarget = (
     | ProviderCredentialTarget
     | PrivacyPendingTarget
     | IdleRelockPolicyTarget
+    | OwnerReceiptViewTarget
 )
 
 
@@ -743,6 +791,33 @@ class IdleRelockPolicyChangePreview:
         _require_digest(self.target_digest, "idle_relock_policy_preview_invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class OwnerReceiptViewPreview:
+    """What the owner is about to see: one task's receipt, in this format and profile."""
+
+    task_id: str
+    format: Literal["json", "markdown", "text"]
+    redaction_profile: Literal["full_local", "default_local_export", "redacted_share"]
+    grant_seconds: int
+    target_digest: str
+    kind: Literal["owner_receipt_view"] = "owner_receipt_view"
+
+    def __post_init__(self) -> None:
+        reason = "owner_receipt_view_preview_invalid"
+        try:
+            validate_id(IdKind.TASK, self.task_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(reason) from exc
+        if self.format not in {"json", "markdown", "text"} or self.redaction_profile not in {
+            "full_local",
+            "default_local_export",
+            "redacted_share",
+        }:
+            raise ValueError(reason)
+        _require_positive(self.grant_seconds, reason)
+        _require_digest(self.target_digest, reason)
+
+
 type HumanPreview = (
     VaultInitializePreview
     | VaultPassphraseRotatePreview
@@ -755,6 +830,7 @@ type HumanPreview = (
     | PrivacyPolicyDecisionPreview
     | PrivacyDisclosureDecisionPreview
     | IdleRelockPolicyChangePreview
+    | OwnerReceiptViewPreview
 )
 
 
@@ -959,6 +1035,22 @@ class IdleRelockPolicyResult:
             raise ValueError("idle_relock_policy_result_invalid")
 
 
+@dataclass(frozen=True, slots=True)
+class OwnerReceiptViewResult:
+    """The one-use owner view is authorized for ``grant_seconds`` on the bound connection."""
+
+    status: Literal["authorized"]
+    target_digest: str
+    grant_seconds: int
+    kind: Literal["owner_receipt_view"] = "owner_receipt_view"
+
+    def __post_init__(self) -> None:
+        if self.status != "authorized":
+            raise ValueError("owner_receipt_view_result_invalid")
+        _require_digest(self.target_digest, "owner_receipt_view_result_invalid")
+        _require_positive(self.grant_seconds, "owner_receipt_view_result_invalid")
+
+
 type HumanResult = (
     VaultStateResult
     | KeyringRetryResult
@@ -967,6 +1059,7 @@ type HumanResult = (
     | ProviderCredentialResult
     | PrivacyDecisionResult
     | IdleRelockPolicyResult
+    | OwnerReceiptViewResult
 )
 
 
@@ -1197,6 +1290,8 @@ def _validate_open_combination(kind: HumanCeremonyKind, target: HumanOpenTarget)
         HumanCeremonyKind.PRIVACY_DISCLOSURE_DECISION,
     }:
         expected = PrivacyPendingTarget
+    elif kind is HumanCeremonyKind.OWNER_RECEIPT_VIEW:
+        expected = OwnerReceiptViewTarget
     else:
         expected = IdleRelockPolicyTarget
     if type(target) is not expected:
@@ -1450,6 +1545,17 @@ def human_target_json(target: HumanOpenTarget) -> dict[str, JsonValue]:
         if target.seconds is not None:
             result["seconds"] = target.seconds
         return result
+    if type(target) is OwnerReceiptViewTarget:
+        return {
+            "control_connection_digest": target.control_connection_digest,
+            "format": target.format,
+            "include": target.include,
+            "kind": target.kind,
+            "receipt_request_id": target.receipt_request_id,
+            "redaction_profile": target.redaction_profile,
+            "session_id": target.session_id,
+            "task_id": target.task_id,
+        }
     raise TypeError("human_target_invalid")
 
 
@@ -1541,6 +1647,32 @@ def _target_from_json(value: JsonValue) -> HumanOpenTarget:
         _keys(source, expected)
         return IdleRelockPolicyTarget(
             operation=operation, seconds=cast(int | None, source.get("seconds"))
+        )
+    if kind == "owner_receipt_view":
+        _keys(
+            source,
+            {
+                "control_connection_digest",
+                "format",
+                "include",
+                "kind",
+                "receipt_request_id",
+                "redaction_profile",
+                "session_id",
+                "task_id",
+            },
+        )
+        return OwnerReceiptViewTarget(
+            task_id=cast(str, source["task_id"]),
+            session_id=cast(str, source["session_id"]),
+            receipt_request_id=cast(str, source["receipt_request_id"]),
+            format=cast(Literal["json", "markdown", "text"], source["format"]),
+            include=cast(Literal["summary", "standard", "full"], source["include"]),
+            redaction_profile=cast(
+                Literal["full_local", "default_local_export", "redacted_share"],
+                source["redaction_profile"],
+            ),
+            control_connection_digest=cast(str, source["control_connection_digest"]),
         )
     raise ValueError("human_target_invalid")
 
@@ -1928,6 +2060,15 @@ def _preview_to_json(value: HumanPreview) -> dict[str, JsonValue]:
             "service_generation": value.service_generation,
             "target_digest": value.target_digest,
         }
+    if type(value) is OwnerReceiptViewPreview:
+        return {
+            "format": value.format,
+            "grant_seconds": value.grant_seconds,
+            "kind": value.kind,
+            "redaction_profile": value.redaction_profile,
+            "target_digest": value.target_digest,
+            "task_id": value.task_id,
+        }
     raise TypeError("human_preview_invalid")
 
 
@@ -2084,6 +2225,21 @@ def _preview_from_json(value: JsonValue) -> HumanPreview:
             service_generation=cast(int, source["service_generation"]),
             target_digest=cast(str, source["target_digest"]),
         )
+    if kind == "owner_receipt_view":
+        _keys(
+            source,
+            {"format", "grant_seconds", "kind", "redaction_profile", "target_digest", "task_id"},
+        )
+        return OwnerReceiptViewPreview(
+            task_id=cast(str, source["task_id"]),
+            format=cast(Literal["json", "markdown", "text"], source["format"]),
+            redaction_profile=cast(
+                Literal["full_local", "default_local_export", "redacted_share"],
+                source["redaction_profile"],
+            ),
+            grant_seconds=cast(int, source["grant_seconds"]),
+            target_digest=cast(str, source["target_digest"]),
+        )
     raise ValueError("human_preview_invalid")
 
 
@@ -2192,6 +2348,13 @@ def _result_to_json(value: HumanResult) -> dict[str, JsonValue]:
             "scope": value.scope,
             "service_generation": value.service_generation,
         }
+    if type(value) is OwnerReceiptViewResult:
+        return {
+            "grant_seconds": value.grant_seconds,
+            "kind": value.kind,
+            "status": value.status,
+            "target_digest": value.target_digest,
+        }
     raise TypeError("human_result_invalid")
 
 
@@ -2249,6 +2412,13 @@ def _result_from_json(value: JsonValue) -> HumanResult:
             cast(IdlePolicyValue, source["effective"]),
             cast(int, source["service_generation"]),
             cast(Literal["service_generation"], source["scope"]),
+        )
+    if kind == "owner_receipt_view":
+        _keys(source, {"grant_seconds", "kind", "status", "target_digest"})
+        return OwnerReceiptViewResult(
+            cast(Literal["authorized"], source["status"]),
+            cast(str, source["target_digest"]),
+            cast(int, source["grant_seconds"]),
         )
     raise ValueError("human_result_invalid")
 

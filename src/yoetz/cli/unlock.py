@@ -37,6 +37,9 @@ from yoetz.service.confidential_protocol import (
     KeyringRetryPhase,
     KeyringRetryPreview,
     KeyringRetryResult,
+    OwnerReceiptViewPreview,
+    OwnerReceiptViewResult,
+    OwnerReceiptViewTarget,
     PortableRecoveryPreview,
     PortableRecoveryResult,
     PortableRecoveryTarget,
@@ -67,6 +70,7 @@ __all__ = [
     "IdleRelockCliPolicyValue",
     "IdleRelockCliResult",
     "InstallationRecoveryImportResult",
+    "authorize_owner_receipt_view",
     "change_idle_relock_policy",
     "export_installation_recovery_set",
     "initialize_passphrase_vault",
@@ -353,6 +357,15 @@ def _verify_preview(
             and type(target) is IdleRelockPolicyTarget
             and preview.proposed == proposed
             and preview.service_generation == opened.binding.service_generation
+            and preview.target_digest == opened.binding.target_digest
+        )
+    elif kind is HumanCeremonyKind.OWNER_RECEIPT_VIEW:
+        valid = (
+            type(preview) is OwnerReceiptViewPreview
+            and type(target) is OwnerReceiptViewTarget
+            and preview.task_id == target.task_id
+            and preview.format == target.format
+            and preview.redaction_profile == target.redaction_profile
             and preview.target_digest == opened.binding.target_digest
         )
     if not valid:
@@ -754,6 +767,15 @@ def _render_preview(terminal: _CeremonyTerminal, preview: HumanPreview) -> None:
             "Restart restores the 3600-second default. Explicit lock, session lock, suspend, "
             "and monitor loss still relock the service.\n"
         )
+    elif type(preview) is OwnerReceiptViewPreview:
+        terminal.write(
+            "Action: show you the full receipt, including repository file names your agents "
+            "do not see\n"
+            f"Task: {preview.task_id}\n"
+            f"Format: {preview.format}; profile: {preview.redaction_profile}\n"
+            f"Scope: this one receipt request, on this command's own connection, once, within "
+            f"{preview.grant_seconds} seconds. No policy or standing access changes.\n"
+        )
     else:
         raise HumanCeremonyCliError("preview_invalid")
 
@@ -919,6 +941,8 @@ def _expected_result_type(kind: HumanCeremonyKind) -> type[HumanResult]:
         HumanCeremonyKind.PRIVACY_DISCLOSURE_DECISION,
     }:
         return PrivacyDecisionResult
+    if kind is HumanCeremonyKind.OWNER_RECEIPT_VIEW:
+        return OwnerReceiptViewResult
     return IdleRelockPolicyResult
 
 
@@ -1628,3 +1652,18 @@ async def change_idle_relock_policy(
         scope=typed.scope,
         service_generation=typed.service_generation,
     )
+
+
+async def authorize_owner_receipt_view(target: OwnerReceiptViewTarget) -> OwnerReceiptViewResult:
+    """Reauthenticate the owner for one exact receipt view on the foreground terminal.
+
+    The ceremony asks for OS user presence or the vault passphrase; it never accepts a
+    supplied secret, so nothing an agent passes on the command line can complete it.
+    """
+
+    if type(target) is not OwnerReceiptViewTarget:
+        raise TypeError("owner_receipt_view_target_invalid")
+    result = await run_human_ceremony(HumanCeremonyKind.OWNER_RECEIPT_VIEW, target)
+    if type(result) is not OwnerReceiptViewResult:
+        raise HumanCeremonyCliError("result_invalid")
+    return result

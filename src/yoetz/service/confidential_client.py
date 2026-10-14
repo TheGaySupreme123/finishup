@@ -106,6 +106,9 @@ _SECRET_PURPOSES_BY_KIND: Final[
     HumanCeremonyKind.IDLE_RELOCK_POLICY_CHANGE: frozenset(
         {ConfidentialSecretPurpose.SECURITY_REAUTHENTICATION}
     ),
+    HumanCeremonyKind.OWNER_RECEIPT_VIEW: frozenset(
+        {ConfidentialSecretPurpose.PRIVACY_REAUTHENTICATION}
+    ),
 }
 _ERROR_REASONS: Final = frozenset(
     {
@@ -120,7 +123,9 @@ _ERROR_REASONS: Final = frozenset(
         "peer_untrusted",
         "pending_not_actionable",
         "pending_unavailable",
+        "presence_unavailable",
         "protocol_error",
+        "reauthentication_unavailable",
         "response_bytes",
         "secret_rejected",
         "service_unavailable",
@@ -140,6 +145,10 @@ _PASS_THROUGH_SERVER_CODES: Final = frozenset(
         "kind_forbidden",
         "pending_not_actionable",
         "pending_unavailable",
+        # No way to confirm the owner on this installation (no OS presence, no passphrase
+        # vault): the caller needs the typed reason to say so, not a transport failure.
+        "presence_unavailable",
+        "reauthentication_unavailable",
         "state_forbidden",
     }
 )

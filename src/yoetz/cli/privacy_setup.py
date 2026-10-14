@@ -391,12 +391,6 @@ def _output_is_controlling_tty() -> bool:
         return False
 
 
-def output_is_controlling_tty() -> bool:
-    """Presentation fact shared with owner-facing receipt commands."""
-
-    return _output_is_controlling_tty()
-
-
 _RECIPE_SUMMARIES: Final[dict[PrivacyRecipe, str]] = {
     "private": "maximum confidentiality; no network egress or external AI-powered review",
     "metadata_only": (

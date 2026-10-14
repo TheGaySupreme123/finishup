@@ -129,8 +129,9 @@ async def test_service_client_uses_ui_kind_and_runtime_cwd(
         output_is_controlling_tty: bool = False,
     ) -> Client:
         assert workspace_locator is not None
-        assert projection_render_mode is ProjectionRenderMode.HUMAN_READABLE
-        assert output_is_controlling_tty
+        # Agent-facing by default (ADR-009 round 3): the TUI asserts no terminal authority.
+        assert projection_render_mode is ProjectionRenderMode.MACHINE_READABLE
+        assert not output_is_controlling_tty
         observed.append((client_kind, workspace_locator))
         return Client()
 

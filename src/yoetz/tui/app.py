@@ -2597,8 +2597,39 @@ class YoetzTui(App[int]):
         )
         if chosen is None:
             return
+        audience = await self.ask(
+            SelectionView(
+                name="receipt-audience",
+                title="Which receipt",
+                options=[
+                    Option(
+                        "agent",
+                        "The receipt your agents see",
+                        "Repository names your privacy policy keeps from agents are withheld.",
+                    ),
+                    Option(
+                        "owner",
+                        "Your full receipt",
+                        "Confirm it is you in this terminal first; shown once, nothing else "
+                        "changes.",
+                    ),
+                ],
+                hint="enter to choose · esc to cancel",
+            )
+        )
+        if audience is None:
+            return
         self.say(Level.ACTIVE, f"Building a receipt for {title}")
-        summary = await self.runtime.build_receipt(title, chosen)
+        if audience == "owner":
+            summary = await self._run_confidential(
+                "Confirm it is you to see the full receipt",
+                lambda: self.runtime.build_receipt(title, chosen, owner_view=True),
+                fallback_command="yoetz receipt --owner-view --request '<receipt request JSON>'",
+            )
+            if summary is None:
+                return
+        else:
+            summary = await self.runtime.build_receipt(title, chosen)
         self.settle(
             Level.ACTIVE,
             f"Receipt for {title}",
