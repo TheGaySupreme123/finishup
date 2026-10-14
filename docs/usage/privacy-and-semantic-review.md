@@ -566,8 +566,10 @@ Your agent reads its receipts in JSON, markdown and text under your privacy poli
 prose, section titles, counts and coverage codes stay readable. When a receipt names a repository
 file that your policy keeps from agents (for example a file the check found but no participant
 published), only that name becomes `(receipt prose withheld: repository_excerpt)`; the rest of the
-sentence stays. The same file written as `./artifacts/model.npz`, or as an absolute path (in quotes when a folder
-name has spaces), is withheld too. A name your agent published itself in the same session returns to it. The list of omitted
+sentence stays. The same file written as `./artifacts/model.npz`, or as a full path (starting at
+`/`, `~`, `$HOME` or `file://`, in quotes when a folder name has spaces), is withheld too, and so
+is a file at the top of your repository written that way, even without an extension. A plain word
+that happens to match a file name stays readable. A name your agent published itself in the same session returns to it. The list of omitted
 fields tells your agent where something was withheld; for a very large receipt it names the
 containing sections, and a field that would grow too long ends with a visible
 `[receipt text truncated after withholding: ...]` note. Asking for a full local profile or another
@@ -578,14 +580,25 @@ look like yours. To see your full receipt, run `yoetz receipt --owner-view` your
 *Your full receipt* in the terminal interface. Yoetz then asks you to confirm it is you, for that
 one receipt only, and shows it once; your privacy policy and your agents' access do not change.
 
-On a Mac, Yoetz confirms it is you with a system dialog: Touch ID, or your login password. The
-dialog shows a confirmation code, and your terminal prints the same code; approve only a dialog
-whose code matches a request you just made yourself. An agent that runs the command can make the
-dialog appear, but it cannot answer it for you. Cancelling it, or leaving it unanswered for a
-minute, shows nothing. This works with either secure storage choice, including the system
-keychain, whose vault passphrase you were never shown. If your vault has a passphrase you chose,
-you can still use it: when no dialog can be shown (for example over SSH), Yoetz asks for that
-passphrase instead.
+On a Mac, Yoetz confirms it is you with a system dialog: Touch ID, or your login password. Your
+terminal prints a confirmation code first, and the dialog shows the same code; approve only a
+dialog whose code matches a request you just made yourself. An agent that runs the command in a
+terminal of its own can make the dialog appear, but it cannot answer it for you. Cancelling the
+dialog, or leaving it unanswered for a minute, shows nothing, and Yoetz then waits a few seconds
+(longer after repeated misses) before it raises another one. If another confirmation is already
+open, perhaps one an agent started, the command says so and names its own code instead of
+opening a second dialog: cancel any dialog whose code you do not recognise.
+
+This works with either secure storage choice, including the system keychain, whose vault
+passphrase you were never shown. The dialog appears on the screen of the Mac session where the
+Yoetz service runs, not where you typed the command. If you are connected over SSH while the
+service runs in your desktop session, the dialog appears on the Mac's own screen; if you chose
+your vault passphrase yourself, run `yoetz receipt --owner-view --use-passphrase` to type it
+instead. A Yoetz service that cannot show a dialog at all (for example one started from an SSH
+session) is expected to report that, and then Yoetz asks for a passphrase you chose. It does not
+ask on its own for a passphrase kept in the system keychain, since you may never have seen it:
+there it says the full receipt is unavailable, and `--use-passphrase` lets you type one you chose.
+These SSH cases have not yet been checked on a real Mac.
 
 On Linux and on Windows through WSL 2 there is no system dialog yet, so Yoetz confirms it is you
 only with a vault passphrase you type. A system-keychain installation there keeps a generated

@@ -251,6 +251,7 @@ _PROVIDER_SETUP_CONFIDENTIAL_REASONS: Final = frozenset(
     {
         "ambiguous",
         "cancelled",
+        "ceremony_busy",
         "ceremony_unsupported",
         "correlation_mismatch",
         "kind_forbidden",
@@ -258,6 +259,7 @@ _PROVIDER_SETUP_CONFIDENTIAL_REASONS: Final = frozenset(
         "pending_not_actionable",
         "pending_unavailable",
         "protocol_error",
+        "reauthentication_rate_limited",
         "response_bytes",
         "secret_rejected",
         "service_unavailable",

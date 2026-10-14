@@ -216,9 +216,9 @@ service-side macOS presence provider behind `yoetz receipt --owner-view` (ADR-00
 ADR-016 decision 4 amendment). Run it on a Mac logged in at the desktop, from Terminal or iTerm,
 against a disposable instance and never the everyday installation. Run it once with Touch ID and
 once using the dialog's password option (or on a Mac without Touch ID). Record the macOS version,
-the chip, and each observed result on the owning issue. This environment's independent reviewer
-stands in for the Codex check the owner asked for; that check, and this one, are still owed by a
-person with a Mac.
+the chip, and each observed result on the owning issue. Status: this check has not been run, and
+the Codex check the owner asked for has not been run either; an independent Claude review
+(2026-10-14) ran in its place.
 
 1. From a clean checkout at the revision under test, provision and verify an instance:
 
@@ -238,25 +238,41 @@ person with a Mac.
    `redaction_profile: full_local`. `$L receipt --request '<receipt JSON>' --json` is the agents'
    view: any undeclared repository name the check found reads
    `(receipt prose withheld: repository_excerpt)`.
-4. Run `$L receipt --owner-view --request '<receipt JSON with a new request_id>'`. Expect the
-   preview (task, format, profile, scope), `Authorization: os_user_presence`, and a line naming
-   Touch ID or your login password with `confirmation code xxxx-xxxx`. A system dialog appears that
-   names your full Yoetz receipt and shows the same code. Approve it: the full receipt prints with
-   the names spelled out, and the command exits 0.
+4. Run `$L receipt --owner-view --request '<receipt JSON with a new request_id>'`. Expect
+   `Confirmation code for this request: xxxx-xxxx` first, then the preview (task, format, profile,
+   scope), `Authorization: os_user_presence`, and a line naming Touch ID or your login password
+   with the same code. A system dialog appears that names your full Yoetz receipt and shows that
+   code. Approve it: the full receipt prints with the names spelled out, and the command exits 0.
 5. Repeat step 4 and choose Cancel in the dialog. Expect `owner_view_refused: the
    operating-system confirmation was cancelled or did not confirm it is you`, nothing on stdout,
-   and a nonzero exit.
+   and a nonzero exit. Run step 4 again at once: expect `owner_view_refused: too many recent
+   confirmations did not succeed` and no dialog; after 5 seconds a dialog appears again.
 6. Repeat step 4 and leave the dialog unanswered. After about a minute it closes by itself;
    expect `owner_view_refused: ... was not answered within a minute`.
 7. Repeat step 4 and press Ctrl-C in the terminal while the dialog is up. The dialog should close
-   at once and nothing is shown; a new `$L receipt --owner-view` must raise a fresh dialog.
-8. From a Claude Code, Codex or Cursor agent session pointed at this instance's launcher, ask the
-   agent to run the step-4 command. The dialog appears on your screen; cancel it. The agent gets
-   `owner_view_refused` and no withheld name.
-9. Optional, to record what happens: `$L service stop`, then run step 4 from an SSH session to
-   the same Mac. A service started outside the desktop session is expected to report
-   `owner_view_unavailable` because it cannot show a dialog.
-10. `$L service stop` and dispose of the instance
+   at once and nothing is shown; after the 5-second wait a new `$L receipt --owner-view` raises a
+   fresh dialog.
+8. With a dialog from step 4 on screen, run step 4 again in a second terminal. Expect
+   `owner_view_busy` naming that second command's code, which differs from the dialog's, and no
+   second dialog. Cancel the dialog.
+9. Agent shells, per host, each pointed at this instance's launcher (approve nothing):
+   - Claude Code: ask the agent to run the step-4 command through its Bash tool. Expect
+     `owner_view_requires_terminal` and no dialog.
+   - Codex: ask the agent to run it through `exec_command` with a pseudo-terminal. Expect a
+     dialog on your screen; cancel it, and the agent gets `owner_view_refused` and no withheld
+     name. Without a pseudo-terminal, expect `owner_view_requires_terminal`.
+   - Cursor: ask the agent to run it in its terminal. If that terminal is a pseudo-terminal,
+     expect the Codex result; otherwise `owner_view_requires_terminal`. Record which.
+10. Over SSH, to record what happens:
+    - With the service still running from the desktop session, run step 4 from an SSH session to
+      the same Mac. Expect the dialog on the Mac's own screen, not in the SSH terminal; cancel it
+      there. `$L receipt --owner-view --use-passphrase ...` asks for the passphrase instead;
+      this vault's passphrase was generated, so press Ctrl-C at the prompt.
+    - `$L service stop`, then run step 4 from the SSH session, which starts the service there.
+      Expected, unverified: the service cannot show a dialog, and because this vault's
+      passphrase is kept in the credential store the command ends with `owner_view_unavailable`
+      naming `--use-passphrase`, with no passphrase prompt.
+11. `$L service stop` and dispose of the instance
     (`uv run python scripts/provision_test_instance.py dispose --base ~/.yz-instances --tag
     touchid`). If Keychain Access still lists that instance's `bundle-…` auto-unlock entry, delete
     it; it is scoped to the disposed instance's path.

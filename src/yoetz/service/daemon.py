@@ -4393,6 +4393,14 @@ class _LockedHumanEffects:
         return OwnerReceiptViewResult("authorized", digest, seconds)
 
 
+class _PresenceCancelledByPeer(Exception):
+    """The ceremony client cancelled while an OS presence prompt was up (its cancel frame step)."""
+
+    def __init__(self, step: int) -> None:
+        super().__init__("cancelled")
+        self.step = step
+
+
 class _HumanConnectionServer:
     def __init__(self, service: HumanControlService) -> None:
         self._service = service
@@ -4426,7 +4434,11 @@ class _HumanConnectionServer:
                             type(incoming.action) is SelectAuthorizationSourceAction
                             and incoming.action.source == "os_user_presence"
                         ):
-                            response = await self._advance_presence_action(stream, incoming)
+                            try:
+                                response = await self._advance_presence_action(stream, incoming)
+                            except _PresenceCancelledByPeer as cancelled:
+                                error_step = cancelled.step + 1
+                                raise HumanControlError("cancelled") from None
                         else:
                             response = await self._service.submit_action(incoming)
                     elif type(incoming) is ClientCancelEnvelope:
@@ -4524,11 +4536,11 @@ class _HumanConnectionServer:
         except HumanControlError:
             outcome = None
         if type(peer) is ClientCancelEnvelope:
-            if closed is not None:
-                return closed
-            if outcome is not None:
+            if outcome is not None and closed is None:
                 return outcome
-            raise HumanControlError("cancelled")
+            # Answer the client's cancel frame (its in-flight action already counted a step):
+            # a ``cancelled`` error correlated to that frame, then the close.
+            raise _PresenceCancelledByPeer(peer.step)
         if peer is None:
             raise HumanControlError("cancelled")
         raise HumanControlError("kind_forbidden")
@@ -4985,6 +4997,8 @@ def _human_error_code(exc: Exception) -> str:
         if reason in {
             "binding_expired",
             "cancelled",
+            "ceremony_busy",
+            "reauthentication_rate_limited",
             # Without these three the mapper collapses them to internal_error, and the bounded
             # ceremony reasons never reach the client that has to act on them.
             "ceremony_unsupported",

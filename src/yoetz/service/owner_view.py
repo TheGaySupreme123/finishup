@@ -96,7 +96,8 @@ class OwnerViewGrants:
         self._lock = threading.Lock()
         # connection digest -> live admission id
         self._live: dict[str, str] = {}
-        # every connection digest ever admitted by this service (bounded, oldest first)
+        # digests of closed connections, never admitted again (bounded, oldest evicted first);
+        # a digest is in exactly one of ``_live`` and ``_seen``
         self._seen: dict[str, None] = {}
         # (admission id, target digest) -> expiry
         self._grants: dict[tuple[str, str], float] = {}
@@ -106,14 +107,8 @@ class OwnerViewGrants:
 
         digest = control_connection_digest(connection_nonce)
         with self._lock:
-            if digest in self._seen:
+            if digest in self._seen or digest in self._live:
                 raise OwnerViewConnectionRefused("connection_nonce_reused")
-            self._seen[digest] = None
-            while len(self._seen) > _MAX_SEEN_CONNECTIONS:
-                oldest = next(iter(self._seen))
-                if oldest in self._live:
-                    break
-                del self._seen[oldest]
             admission = secrets.token_hex(32)
             self._live[digest] = admission
             return admission
@@ -124,6 +119,12 @@ class OwnerViewGrants:
         with self._lock:
             for digest in [digest for digest, live in self._live.items() if live == admission]:
                 del self._live[digest]
+                # A closed connection's nonce stays refused. Only closed ones are remembered here
+                # (a live one is in ``_live``), so evicting the oldest keeps the bound even while
+                # an early connection stays open.
+                self._seen[digest] = None
+                while len(self._seen) > _MAX_SEEN_CONNECTIONS:
+                    del self._seen[next(iter(self._seen))]
             for key in [key for key in self._grants if key[0] == admission]:
                 del self._grants[key]
 
@@ -157,7 +158,11 @@ class OwnerViewGrants:
     def clear(self) -> None:
         with self._lock:
             self._grants.clear()
+            for digest in self._live:
+                self._seen[digest] = None
             self._live.clear()
+            while len(self._seen) > _MAX_SEEN_CONNECTIONS:
+                del self._seen[next(iter(self._seen))]
 
     def _expire(self, now: float) -> None:
         for key in [key for key, expiry in self._grants.items() if expiry <= now]:

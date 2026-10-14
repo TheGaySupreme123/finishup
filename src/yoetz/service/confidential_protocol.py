@@ -1133,6 +1133,11 @@ _SERVER_ERROR_CODES: Final = frozenset(
         "frame_too_large",
         "peer_untrusted",
         "kind_forbidden",
+        # Another ceremony is already open on this service; nothing was opened (#1073).
+        "ceremony_busy",
+        # Too many recent failed confirmations (passphrase throttle, or OS presence prompts
+        # that did not approve); wait and try again.
+        "reauthentication_rate_limited",
         # Bounded structural outcomes for a disclosure decision that cannot proceed. They say
         # what the caller can do next without revealing proposal content or reflecting input:
         # the proposal is gone/expired, it is not in a decidable state, or this build cannot

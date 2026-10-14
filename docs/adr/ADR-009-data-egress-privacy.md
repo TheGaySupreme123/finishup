@@ -196,21 +196,26 @@ case → single-use authorization → bounded gateway → bound sink/provider �
 
    Receipt prose is Yoetz-authored and keeps its ordinary category policy in an `agent_context`
    projection: section titles, sentences, codes, counts, IDs and coverage remain readable. The one
-   thing it can carry that the excerpt ceiling covers is a repository file name the check found and no
-   participant published (an undeclared-reference name, ADR-035), which a `full_local` receipt spells.
-   Each such name span is offered as its own `repository_excerpt` candidate. Unless the policy grants
-   repository excerpts, or the requesting writer published that exact name in this session through an
-   accepted, unredacted cooperative publication, the whole path token becomes
-   `(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the quoted
-   path the receipt prints, the bare path when it has a directory, or a basename with an extension,
-   with any leading `./` (quoted or not) or an absolute directory prefix counted as the same file;
-   a path in single quotes, double quotes or backticks may run through directories with spaces and
-   the whole quoted token is withheld. An unquoted absolute path through a directory with spaces
-   has no token boundary in prose and is not recognised as one path. A different relative
-   directory, a longer name, a suffix, a plain word such as `Summary`, and a different letter case
-   stay readable: spellings are compared exactly, because folding case or Unicode would conflate
-   distinct files on a case-sensitive filesystem. The rule applies to JSON, markdown and text and
-   to every profile, `full_local` included: a format or profile is not a disclosure grant.
+   thing it can carry that the excerpt ceiling covers is a repository file name the check found and
+   no participant published (an undeclared-reference name, ADR-035), which a `full_local` receipt
+   spells. Each such name span is offered as its own `repository_excerpt` candidate. Unless the
+   policy grants repository excerpts, or the requesting writer published that exact name in this
+   session through an accepted, unredacted cooperative publication, the whole path token becomes
+   `(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the
+   quoted path the receipt prints, the bare path when it has a directory, or a basename with an
+   extension. Any name, a top-level one without an extension included, is also a span behind a
+   leading `./` or an absolute directory prefix, quoted or not: the prefix may start at `/`, `~`,
+   `~user`, `$VAR` or `${VAR}`, optionally behind `file://`, and empty or `.` segments (`//`, `/./`)
+   inside the prefix or the name still spell the same file. The whole prefixed token is withheld. A
+   path in single quotes, double quotes or backticks may run through directories with spaces and the
+   whole quoted token is withheld. An unquoted absolute path through a directory with spaces has no
+   token boundary in prose and is not recognised as one path. A different relative directory (`../`,
+   `x/`), a longer name, a suffix, a plain word such as `Summary` (or a top-level name written
+   without a prefix or quotes), and a different letter case stay readable: spellings are compared
+   exactly, because folding case or Unicode would conflate distinct files on a case-sensitive
+   filesystem. Every bound in the span pattern is fixed, so a search stays linear in the prose it
+   reads. The rule applies to JSON, markdown and text and to every profile, `full_local` included: a
+   format or profile is not a disclosure grant.
 
    The token can be longer than the name it replaces. A field that would then pass its wire bound
    (32,768 characters for `human_text`, at least its original length for a document field) or the
@@ -243,8 +248,10 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    included; the boundary is a passphrase or presence check the agent cannot pass. On macOS the
    packaged service composes one operating-system presence provider, Apple LocalAuthentication
    (Touch ID or the device password), scoped to this ceremony (round 5 below). Linux and WSL 2
-   compose none: there only a vault passphrase completes the ceremony, and a vault without one
-   fails closed with `owner_view_unavailable`. A command with no foreground terminal to prompt on
+   compose none: there only a vault passphrase the owner types completes the ceremony. A vault
+   without one, or whose passphrase is kept in the platform credential store (setup's
+   system-keychain choice, never shown to its owner), fails closed with `owner_view_unavailable`;
+   an owner who chose a stored passphrase can still type it with `--use-passphrase`. A command with no foreground terminal to prompt on
    (for example a headless session) fails with `owner_view_requires_terminal`. Either way it shows
    nothing and points to the next step. Linux and WSL 2 use the same code but were not exercised
    for this change. A process running as the owner's account that can already read the vault
@@ -285,33 +292,53 @@ case → single-use authorization → bounded gateway → bound sink/provider �
      `user_presence_cells` row; this provider's capability names the release cell
      `unqualified` and never matches one.
    - *Passphrase vaults.* A passphrase stays offered beside the dialog. The command asks for the
-     dialog first; when the service reports that no dialog can be shown here
-     (`presence_unavailable`) and the vault offered its passphrase, it asks once for the
-     passphrase in a fresh ceremony. A cancelled, failed or unanswered dialog is not retried.
-     Offering presence beside an owner-chosen passphrase adds no secret an agent can learn; its
-     cost is the residual risk below.
+     dialog first. When the service reports that it cannot show one (`presence_unavailable`;
+     where the service runs decides this, not where the command runs) and the vault offered its
+     passphrase, the command asks once for the passphrase in a fresh ceremony. A cancelled,
+     failed or unanswered dialog is not retried. The command never asks for a passphrase that is
+     kept in the platform credential store (setup's system-keychain choice generates one its
+     owner never saw): there it ends with `owner_view_unavailable`, naming `--use-passphrase`,
+     which an owner who chose that passphrase uses to type it. `--use-passphrase` also skips the
+     dialog, for an owner connected over SSH whose service would raise the dialog on the Mac's
+     own screen. Offering presence beside an owner-chosen passphrase adds no secret an agent can
+     learn; its cost is the residual risks below.
    - *No held lock.* The ceremony releases the human-control mutex while the dialog waits, as it
      already does while a secret is entered, so `cancel`, `service stop` and a disappearing
      ceremony client end the dialog at once instead of waiting out its deadline. One prompt runs
-     at a time, and a second action on the same ceremony is refused while it is up.
+     at a time, and a second action on the same ceremony is refused while it is up. A ceremony
+     opened while another is active fails with the closed `ceremony_busy` code, never with the
+     locked-vault `state_forbidden`; a throttled passphrase is `reauthentication_rate_limited`.
+   - *Backoff.* After a prompt that did not approve (refused, unanswered, or cancelled while it
+     was up), the next prompt waits 5 seconds, then 15, 30, 60, 120 and at most 300 seconds per
+     consecutive miss; an approval resets it. Within the wait no dialog is raised and the
+     ceremony fails with `reauthentication_rate_limited`, so a same-account caller cannot raise
+     dialogs without limit.
    - *Why a helper process, not ctypes.* The same Apple executable and program shape already
      serve the `plugin_artifact_apply` cell (ADR-016, issue #409), so this adds no dependency and
      no new native surface. ctypes against `libobjc` and LocalAuthentication would need a
      hand-built Objective-C reply block running native code inside the long-lived service, and a
      wedged prompt could not be killed without killing the service; a child process can.
-   - *Residual risks, stated.* An agent that can run the command can make the dialog appear but
-     cannot answer it: that takes the owner's fingerprint or device password. An owner who
-     approves a dialog they did not ask for gives that command the view, so the dialog says what
-     it shows, shows the code the owner's own terminal prints, and says to cancel unless they just
-     asked. The dialog appears in the desktop session the service runs in; a service started
-     outside one (for example over SSH) is expected to report that no dialog can be shown.
-     Same-account code tampering with the installed runtime is outside this boundary, as for
-     every presence and passphrase check (ADR-008).
-   - *Evidence.* Unit and integration tests drive the real adapter, scope, ceremony, vault proof
-     and daemon handler with a stub helper. No real Touch ID prompt was exercised by automation;
-     the manual check on a real Mac is in the test-instance runbook (*Owner view with Touch ID:
-     manual check on a real Mac*) and has not been run yet. An independent reviewer checks this
-     round in place of the Codex check the owner asked for, which this environment cannot run.
+   - *Residual risks, stated.* An agent that can run the command from a pseudo-terminal can make
+     the dialog appear but cannot answer it: that takes the owner's fingerprint or device
+     password. (An agent shell without a terminal, such as Claude Code's Bash tool, is refused
+     with `owner_view_requires_terminal` before any dialog.) An owner who approves a dialog they
+     did not ask for gives that command the view, so the dialog says what it shows, shows the
+     code the owner's own terminal prints, and says to cancel unless they just asked. An agent
+     can also open its own ceremony just before the owner runs the command. The service runs one
+     ceremony at a time, so the owner's command then fails with `owner_view_busy` and names its
+     own confirmation code (on macOS it prints that code before anything opens), and the dialog
+     on screen shows a different one: the owner cancels it. The code is the first eight hex
+     digits of a digest of the exact request and its connection, so it is request-specific but
+     short; it is a cross-check, not a secret. The dialog appears in the desktop session the
+     service runs in; a service started outside one (for example over SSH) is expected to report
+     that no dialog can be shown. Same-account code tampering with the installed runtime is
+     outside this boundary, as for every presence and passphrase check (ADR-008).
+   - *Evidence.* Unit and integration tests drive the real adapter, scope, ceremony, vault proof,
+     daemon handler and ceremony client with a stub helper; no real Touch ID prompt has been
+     exercised. The manual check on a real Mac in the test-instance runbook (*Owner view with
+     Touch ID: manual check on a real Mac*) has not been run. The owner asked for a Codex check
+     of this round; it has not been run. An independent Claude review ran on 2026-10-14 instead,
+     and this round addresses its findings.
 
 4. **Data classes:** structural public data, ordinary task/user content, sensitive/confidential
    content, and secrets/cryptographic material are distinct. Classification combines source-owned

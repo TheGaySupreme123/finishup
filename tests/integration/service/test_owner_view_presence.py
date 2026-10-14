@@ -12,6 +12,7 @@ step in the integration runbooks.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Buffer, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -331,8 +332,9 @@ async def test_a_second_action_cannot_ride_on_a_pending_prompt(tmp_path: Path) -
     for action in (_PRESENCE, SelectAuthorizationSourceAction("secret_reauthentication")):
         with pytest.raises(HumanControlError, match="phase_invalid"):
             await service.submit_action(ClientActionEnvelope(opened.ceremony_id, 2, action))
-    # Another connection cannot open a ceremony while this one is live.
-    with pytest.raises(HumanControlError, match="state_forbidden"):
+    # Another connection cannot open a ceremony while this one is live, and is told so plainly
+    # rather than that the vault is locked (#1073 review P2-2).
+    with pytest.raises(HumanControlError, match="ceremony_busy"):
         await _open(service, "9")
 
     runner.release.set()
@@ -497,3 +499,167 @@ async def test_tearing_down_the_connection_during_the_prompt_ends_it(tmp_path: P
     await asyncio.wait_for(service.close(), 5.0)
     assert runner.cancelled
     assert grants.consume(admission, _DIGEST) is False
+
+
+async def test_prompts_that_do_not_approve_back_off_before_the_next_one(tmp_path: Path) -> None:
+    """#1073 review P3: a caller cannot re-raise system dialogs without limit."""
+
+    from yoetz.service.human_control import PRESENCE_BACKOFF_SECONDS
+
+    runner = _Runner(stdout=b"cancelled\n")
+    service, grants, admission, clock, _ = _owner(tmp_path, "os_keyring", runner)
+
+    async def attempt(nonce: str) -> str:
+        opened = await _open(service, nonce)
+        try:
+            await service.submit_action(ClientActionEnvelope(opened.ceremony_id, 2, _PRESENCE))
+        except HumanControlError as error:
+            return error.reason
+        return "authorized"
+
+    assert await attempt("1") == "presence_refused"
+    assert len(runner.calls) == 1
+    # Within the first delay no dialog is raised at all.
+    assert await attempt("2") == "reauthentication_rate_limited"
+    assert len(runner.calls) == 1
+    clock.monotonic += PRESENCE_BACKOFF_SECONDS[0]
+    assert await attempt("3") == "presence_refused"
+    assert len(runner.calls) == 2
+    # The second miss waits longer.
+    clock.monotonic += PRESENCE_BACKOFF_SECONDS[0]
+    assert await attempt("4") == "reauthentication_rate_limited"
+    clock.monotonic += PRESENCE_BACKOFF_SECONDS[1]
+    runner.stdout = b"approved\n"
+    assert await attempt("5") == "authorized"
+    assert grants.consume(admission, _DIGEST) is True
+    # An approval resets the schedule.
+    runner.stdout = b"timeout\n"
+    assert await attempt("6") == "presence_timeout"
+    clock.monotonic += PRESENCE_BACKOFF_SECONDS[0]
+    assert await attempt("7") == "presence_timeout"
+    assert len(runner.calls) == 5
+
+
+async def test_a_prompt_cancelled_while_it_is_up_counts_as_a_miss(tmp_path: Path) -> None:
+    runner = _Runner(hold=True)
+    service, _grants, _admission, _clock, _ = _owner(tmp_path, "os_keyring", runner)
+    opened = await _open(service)
+    action = asyncio.create_task(
+        service.submit_action(ClientActionEnvelope(opened.ceremony_id, 2, _PRESENCE))
+    )
+    await asyncio.wait_for(runner.started.wait(), 5.0)
+    await service.cancel(opened.ceremony_id)
+    with pytest.raises(HumanControlError, match="cancelled"):
+        await asyncio.wait_for(action, 5.0)
+    reopened = await _open(service, "8")
+    with pytest.raises(HumanControlError, match="reauthentication_rate_limited"):
+        await service.submit_action(ClientActionEnvelope(reopened.ceremony_id, 2, _PRESENCE))
+    assert len(runner.calls) == 1
+
+
+def test_a_throttled_passphrase_is_not_reported_as_a_locked_vault() -> None:
+    from yoetz.service.unlock import UnlockError
+
+    mapped = HumanControlService._map_error(UnlockError("unlock_rate_limited"))
+    assert mapped == "reauthentication_rate_limited"
+
+
+class _End:
+    """One end of an in-memory duplex standing in for the human-control socket."""
+
+    def __init__(self) -> None:
+        self.peer: _End | None = None
+        self.peer_identity = object()
+        self._buffer = bytearray()
+        self._eof = False
+        self._ready = asyncio.Condition()
+
+    async def _feed(self, data: bytes) -> None:
+        async with self._ready:
+            self._buffer.extend(data)
+            self._ready.notify_all()
+
+    async def _end(self) -> None:
+        async with self._ready:
+            self._eof = True
+            self._ready.notify_all()
+
+    async def receive(self, max_bytes: int) -> bytes:
+        async with self._ready:
+            while not self._buffer and not self._eof:
+                await self._ready.wait()
+            chunk = bytes(self._buffer[:max_bytes])
+            del self._buffer[:max_bytes]
+            return chunk
+
+    async def send_all(self, data: Buffer) -> None:
+        assert self.peer is not None
+        await self.peer._feed(bytes(data))
+
+    async def shutdown_write(self) -> None:
+        assert self.peer is not None
+        await self.peer._end()
+
+    async def aclose(self) -> None:
+        await self._end()
+        if self.peer is not None:
+            await self.peer._end()
+
+
+def _real_client(service: HumanControlService) -> tuple[Any, list[asyncio.Task[None]]]:
+    from yoetz.service.confidential_client import HumanControlClient
+
+    servers: list[asyncio.Task[None]] = []
+    handler = daemon_module._HumanConnectionServer(service)
+
+    async def connect_human() -> Any:
+        client_end, server_end = _End(), _End()
+        client_end.peer, server_end.peer = server_end, client_end
+        servers.append(asyncio.create_task(handler(cast(Any, server_end))))
+        return client_end
+
+    async def connect_secret() -> Any:
+        raise AssertionError("the presence path sends no secret")
+
+    factory = getattr(HumanControlClient, "_with_connectors")
+    return factory(connect_human, connect_secret, timeout_seconds=5.0), servers
+
+
+async def test_the_real_ceremony_client_drives_presence_end_to_end(tmp_path: Path) -> None:
+    """#1073 review: the presence flow through HumanControlClient and the daemon handler."""
+
+    from yoetz.service.confidential_client import ConfidentialClientError
+
+    runner = _Runner(stdout=b"unavailable\n")
+    service, grants, admission, clock, _ = _owner(tmp_path, "os_keyring", runner)
+    # The client checks the binding's expiry against the real monotonic clock.
+    clock.monotonic = time.monotonic()
+    client, servers = _real_client(service)
+
+    # No dialog could be shown: a typed refusal, and the ceremony is free again at once.
+    session = await client.open(HumanCeremonyKind.OWNER_RECEIPT_VIEW, _TARGET)
+    assert session.opened.phase == AuthorizationRequiredPhase(("os_user_presence",))
+    await session.send_action(_PRESENCE)
+    with pytest.raises(ConfidentialClientError) as unavailable:
+        await session.wait_phase_or_result()
+    assert unavailable.value.reason == "presence_unavailable"
+
+    runner.stdout = b"approved\n"
+    session = await client.open(HumanCeremonyKind.OWNER_RECEIPT_VIEW, _TARGET)
+    await session.send_action(_PRESENCE)
+    result = await session.wait_phase_or_result()
+    assert result == OwnerReceiptViewResult("authorized", _DIGEST, 60)
+    assert grants.consume(admission, _DIGEST) is True
+
+    # Cancelled from the terminal while the dialog is up: the dialog ends, nothing is granted.
+    runner.hold = True
+    runner.started.clear()
+    session = await client.open(HumanCeremonyKind.OWNER_RECEIPT_VIEW, _TARGET)
+    await session.send_action(_PRESENCE)
+    await asyncio.wait_for(runner.started.wait(), 5.0)
+    await asyncio.wait_for(session.cancel(), 5.0)
+    await asyncio.wait_for(asyncio.gather(*servers), 5.0)
+    assert runner.cancelled
+    assert service._active is None
+    assert grants.consume(admission, _DIGEST) is False
+    await client.close()

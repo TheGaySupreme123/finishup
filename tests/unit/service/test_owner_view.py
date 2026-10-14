@@ -146,3 +146,33 @@ def test_the_daemon_consumes_a_grant_only_for_its_exact_request_and_admission() 
     assert consume(_daemon(grants), owner, receipt, owner_admission) is True
     # One use: the same call again is the agent projection.
     assert consume(_daemon(grants), owner, receipt, owner_admission) is False
+
+
+def test_closed_connection_memory_stays_bounded_while_an_early_connection_lives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1073 review P3: a long-lived first connection must not unbound the refused set."""
+
+    import secrets
+
+    from yoetz.service import owner_view
+
+    monkeypatch.setattr(owner_view, "_MAX_SEEN_CONNECTIONS", 100)
+    grants = OwnerViewGrants()
+    early_nonce = secrets.token_hex(32)
+    early = grants.admit(early_nonce)  # an MCP bridge or the TUI holding its connection
+    recent: list[str] = []
+    for _ in range(500):
+        nonce = secrets.token_hex(32)
+        grants.release(grants.admit(nonce))
+        recent.append(nonce)
+    assert len(grants._seen) <= 100  # pyright: ignore[reportPrivateUsage]
+    # The early connection is still live, and still cannot be admitted twice.
+    with pytest.raises(OwnerViewConnectionRefused):
+        grants.admit(early_nonce)
+    # A recently closed connection's nonce stays refused.
+    with pytest.raises(OwnerViewConnectionRefused):
+        grants.admit(recent[-1])
+    digest = owner_receipt_view_target_digest(owner_receipt_view_target(_REQUEST, early_nonce))
+    grants.issue(digest, control_connection_digest(early_nonce))
+    assert grants.consume(early, digest) is True

@@ -713,6 +713,10 @@ _LOCAL_REASON_CONTINUATIONS: Final[Mapping[str, str]] = MappingProxyType(
         "unknown_config_env_var": "config_correction_required",
         "unknown_config_key": "config_correction_required",
         # Human ceremony and consent (issues #147, #489, #519).
+        # Another ceremony is open (#1073): wait for it to finish instead of opening a second.
+        "ceremony_busy": "pending_decision_in_flight",
+        # Recent confirmations did not succeed (#1073): retrying sooner gets the same answer.
+        "reauthentication_rate_limited": "ceremony_refusal_terminal",
         "ceremony_service_unavailable": "local_service_unavailable",
         "ceremony_unsupported": "ceremony_refusal_terminal",
         "chat_user_attestation_invalid": "consent_relay_correction",

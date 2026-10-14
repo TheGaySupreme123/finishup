@@ -2143,6 +2143,25 @@ class YoetzRuntime:
                     "the system confirmation was cancelled, did not confirm it is you, or was "
                     "not answered in time; nothing was shown",
                 ) from error
+            if reason == "passphrase_in_credential_store":
+                raise RuntimeError_(
+                    "owner_view_unavailable",
+                    "no system dialog can be shown here and this vault's passphrase is kept in "
+                    "the system credential store, so the full receipt stays closed; if you chose "
+                    "that passphrase yourself, run 'yoetz receipt --owner-view --use-passphrase'",
+                ) from error
+            if reason == "ceremony_busy":
+                raise RuntimeError_(
+                    "owner_view_busy",
+                    "another confirmation is already open, perhaps one an agent started; if a "
+                    "system dialog is on screen it is not for this request, so cancel it and try "
+                    "again",
+                ) from error
+            if reason == "reauthentication_rate_limited":
+                raise RuntimeError_(
+                    "owner_view_refused",
+                    "too many recent confirmations did not succeed; wait a little, then try again",
+                ) from error
             raise RuntimeError_(reason, "the full receipt was not authorized") from error
 
     def _frontier(self, session: _WorkSession) -> object:

@@ -82,6 +82,10 @@ documents that Yoetz cannot independently authenticate its chat provenance.
    Cancellation or failure is `presence_refused`, no answer within the 60-second dialog
    deadline is `presence_timeout`, and no dialog (not macOS, no LocalAuthentication, no desktop
    session, or any unreadable helper result) is `presence_unavailable`; none grants anything.
+   Prompts that do not approve back off (5 seconds rising to 5 minutes,
+   `reauthentication_rate_limited`), and a ceremony opened while another is active is
+   `ceremony_busy`, so an agent can neither flood the owner with dialogs nor make the owner's
+   command read as a locked vault.
    This decision's console review is unchanged: `yoetz consent review` does not use this
    adapter and still returns `human_authority_unavailable`, and the adapter authorizes no vault,
    credential, privacy-policy, setup, keyring or plugin operation.

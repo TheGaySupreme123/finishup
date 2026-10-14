@@ -791,6 +791,7 @@ async def _call_workflow(
     task_statement_file: str | None = None,
     await_observations: bool = False,
     owner_view: bool = False,
+    use_passphrase: bool = False,
 ) -> int:
     # ADR-047: a ``check`` whose mode records nothing (``inspect``) fails as a read.
     check_mode: object = None
@@ -816,12 +817,16 @@ async def _call_workflow(
         # Every result is the agent-facing projection (ADR-009 round 3): a terminal is not
         # proof that the owner is reading. ``--owner-view`` asks the service for the full
         # receipt, which it grants only after the owner reauthenticates for this exact request.
-        if owner_view and type(request) is not ReceiptRequest:
+        if (owner_view or use_passphrase) and type(request) is not ReceiptRequest:
+            raise ProtocolValueError("unsupported_json_type")
+        if use_passphrase and not owner_view:
             raise ProtocolValueError("unsupported_json_type")
         client = await build_service_client()
         try:
             if owner_view:
-                refused = await _authorize_owner_receipt_view(client, cast(ReceiptRequest, request))
+                refused = await _authorize_owner_receipt_view(
+                    client, cast(ReceiptRequest, request), use_passphrase=use_passphrase
+                )
                 if refused is not None:
                     return refused
             call = getattr(client, method)
@@ -1509,11 +1514,34 @@ _OWNER_VIEW_REFUSALS: Final = MappingProxyType(
             "owner_view_unavailable: Yoetz cannot confirm it is you on this installation. The "
             "vault has no passphrase, and no operating-system confirmation could be shown: "
             "Touch ID or your login password needs macOS and a Yoetz service running in your "
-            "desktop session (one started over SSH may not be able to show it), and Linux and "
+            "desktop session (one started over SSH is expected not to show it), and Linux and "
             "WSL have none yet. "
             "The full receipt stays closed and nothing changed. Without --owner-view you get "
             "the receipt your agents get, with repository names withheld; to see what your "
             "change created, run 'git status --short' in your repository."
+        ),
+        "passphrase_in_credential_store": (
+            "owner_view_unavailable: no system confirmation dialog can be shown here, and this "
+            "vault's passphrase is kept in the system credential store (Yoetz setup's system "
+            "keychain choice generates one you were never shown), so Yoetz does not ask you to "
+            "type it. Nothing was shown and nothing changed. If you chose that passphrase "
+            "yourself, run the command again with --use-passphrase. To see what your change "
+            "created, run 'git status --short' in your repository."
+        ),
+        "passphrase_unavailable": (
+            "owner_view_unavailable: this vault has no passphrase to confirm with, so "
+            "--use-passphrase cannot be used here. Run the command without it. Nothing changed."
+        ),
+        "ceremony_busy": (
+            "owner_view_busy: another confirmation is already open on this computer, perhaps "
+            "one an agent started, so this one did not start. If a system dialog is on screen, "
+            "it is not for this command: cancel it, then run the command again. Nothing was "
+            "shown and nothing changed."
+        ),
+        "reauthentication_rate_limited": (
+            "owner_view_refused: too many recent confirmations did not succeed, so Yoetz waits "
+            "before asking again (from a few seconds, growing to five minutes after repeated "
+            "misses). Nothing was shown and nothing changed; run the command again shortly."
         ),
         "presence_refused": (
             "owner_view_refused: the operating-system confirmation was cancelled or did not "
@@ -1530,9 +1558,10 @@ _OWNER_VIEW_REFUSALS: Final = MappingProxyType(
             "unlock' in your terminal, then ask again. Nothing changed."
         ),
         "trusted_console_required": (
-            "owner_view_requires_terminal: the full receipt asks you to confirm with your vault "
-            "passphrase in a foreground terminal, and this command has none. Run 'yoetz receipt "
-            "--owner-view' yourself in your own terminal. Nothing changed."
+            "owner_view_requires_terminal: the full receipt asks you to confirm it is you (Touch "
+            "ID or your login password on a Mac, otherwise your vault passphrase) from a "
+            "foreground terminal, and this command has none. Run 'yoetz receipt --owner-view' "
+            "yourself in your own terminal. Nothing changed."
         ),
         "target_invalid": (
             "owner_view_refused: this command's connection to Yoetz closed before the "
@@ -1547,24 +1576,37 @@ _OWNER_VIEW_REFUSALS: Final = MappingProxyType(
 )
 
 
-async def _authorize_owner_receipt_view(client: object, request: ReceiptRequest) -> int | None:
+async def _authorize_owner_receipt_view(
+    client: object, request: ReceiptRequest, *, use_passphrase: bool = False
+) -> int | None:
     """Run the owner-view ceremony for this request on this connection; None when granted."""
 
-    from yoetz.cli.unlock import HumanCeremonyCliError, authorize_owner_receipt_view
+    from yoetz.cli.unlock import (
+        HumanCeremonyCliError,
+        authorize_owner_receipt_view,
+        owner_view_confirmation_code,
+    )
     from yoetz.service.confidential_client import ConfidentialClientError
 
     target_for = getattr(client, "owner_receipt_view_target", None)
     if target_for is None:
         _stderr(_OWNER_VIEW_REFUSALS["presence_unavailable"])
         return exit_code_for(PublicErrorCode.PRIVACY_AUTHORITY_REQUIRED)
+    target = target_for(request)
     try:
-        await authorize_owner_receipt_view(target_for(request))
+        await authorize_owner_receipt_view(target, use_passphrase=use_passphrase)
     except (ConfidentialClientError, HumanCeremonyCliError) as error:
         reason = error.reason
         key = "presence_unavailable" if reason == "reauthentication_unavailable" else reason
         line = _OWNER_VIEW_REFUSALS.get(key)
         if line is not None:
             _stderr(line)
+            if key == "ceremony_busy":
+                # The code a dialog for this command would show; any other code is not ours.
+                _stderr(
+                    "This command's confirmation code would be "
+                    f"{owner_view_confirmation_code(target)}."
+                )
             return exit_code_for(PublicErrorCode.PRIVACY_AUTHORITY_REQUIRED)
         failure = _trusted_exception_failure(error)
         return failure if failure is not None else _usage_failure()
@@ -1681,6 +1723,18 @@ def receipt_command(
             ),
         ),
     ] = False,
+    use_passphrase: Annotated[
+        bool,
+        typer.Option(
+            "--use-passphrase",
+            help=(
+                "With --owner-view: confirm with your vault passphrase instead of a system "
+                "dialog, for example when you are connected over SSH and the dialog would appear "
+                "on the Mac's own screen. You type it at a hidden prompt, never on the command "
+                "line."
+            ),
+        ),
+    ] = False,
 ) -> None:
     _finish(
         run_async(
@@ -1692,6 +1746,7 @@ def receipt_command(
                 json_output,
                 deadline_ms,
                 owner_view=owner_view,
+                use_passphrase=use_passphrase,
             )
         )
     )

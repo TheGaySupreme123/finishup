@@ -114,6 +114,7 @@ _ERROR_REASONS: Final = frozenset(
     {
         "ambiguous",
         "cancelled",
+        "ceremony_busy",
         # Structural ceremony refusals. They are deliberately distinct from
         # "service_unavailable": the service answered and declined, and collapsing them told
         # the operator to restart a service that was running fine.
@@ -127,6 +128,7 @@ _ERROR_REASONS: Final = frozenset(
         "presence_timeout",
         "presence_unavailable",
         "protocol_error",
+        "reauthentication_rate_limited",
         "reauthentication_unavailable",
         "response_bytes",
         "secret_rejected",
@@ -144,6 +146,8 @@ _ERROR_REASONS: Final = frozenset(
 # intact rather than degrading to a generic transport failure.
 _PASS_THROUGH_SERVER_CODES: Final = frozenset(
     {
+        # Another ceremony is open (perhaps one an agent started): not a locked vault.
+        "ceremony_busy",
         "ceremony_unsupported",
         "kind_forbidden",
         "pending_not_actionable",
@@ -155,6 +159,7 @@ _PASS_THROUGH_SERVER_CODES: Final = frozenset(
         # retry, not a transport failure.
         "presence_refused",
         "presence_timeout",
+        "reauthentication_rate_limited",
         "reauthentication_unavailable",
         "state_forbidden",
         "target_invalid",

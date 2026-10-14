@@ -120,6 +120,11 @@ async def test_presence_is_requested_from_the_service_never_asserted_by_the_cli(
         ("presence_timeout", "owner_view_refused", "not answered within a minute"),
         ("presence_unavailable", "owner_view_unavailable", "Touch ID or your login password"),
         ("reauthentication_unavailable", "owner_view_unavailable", "Linux and WSL have none"),
+        ("passphrase_in_credential_store", "owner_view_unavailable", "--use-passphrase"),
+        ("passphrase_unavailable", "owner_view_unavailable", "no passphrase"),
+        ("ceremony_busy", "owner_view_busy", "it is not for this command"),
+        ("reauthentication_rate_limited", "owner_view_refused", "waits before asking again"),
+        ("trusted_console_required", "owner_view_requires_terminal", "Touch ID"),
     ],
 )
 async def test_each_presence_refusal_shows_nothing_and_says_what_to_do(
@@ -133,8 +138,14 @@ async def test_each_presence_refusal_shows_nothing_and_says_what_to_do(
         def owner_receipt_view_target(self, request: Any) -> Any:
             return owner_receipt_view_target(request, "e" * 64)
 
-    async def refuse(target: Any) -> Any:
+    async def refuse(target: Any, **_kwargs: Any) -> Any:
         del target
+        if reason in {
+            "passphrase_in_credential_store",
+            "passphrase_unavailable",
+            "trusted_console_required",
+        }:
+            raise unlock.HumanCeremonyCliError(reason)
         raise ConfidentialClientError(reason)
 
     monkeypatch.setattr(unlock, "authorize_owner_receipt_view", refuse)
@@ -222,3 +233,186 @@ async def test_the_passphrase_fallback_names_the_passphrase_source() -> None:
     assert session.actions == [SelectAuthorizationSourceAction("secret_reauthentication")]
     assert choice.offered == _BOTH
     assert "No system confirmation dialog can be shown from here" in "".join(terminal.text)
+
+
+async def test_a_busy_service_names_this_commands_code_not_a_locked_vault(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#1073 review P2-2: an agent's open ceremony must not read as a locked vault."""
+
+    target = owner_receipt_view_target(_REQUEST, "e" * 64)
+
+    class _Client:
+        def owner_receipt_view_target(self, request: Any) -> Any:
+            del request
+            return target
+
+    async def busy(target: Any, **_kwargs: Any) -> Any:
+        del target
+        raise ConfidentialClientError("ceremony_busy")
+
+    monkeypatch.setattr(unlock, "authorize_owner_receipt_view", busy)
+    await cli_app._authorize_owner_receipt_view(_Client(), _REQUEST)  # pyright: ignore[reportArgumentType]
+    err = capsys.readouterr().err
+    assert "locked" not in err and "service unlock" not in err
+    assert f"would be {unlock.owner_view_confirmation_code(target)}." in err
+
+
+async def test_on_macos_the_code_is_printed_before_anything_opens(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = owner_receipt_view_target(_REQUEST, "e" * 64)
+    seen_before_open: list[str] = []
+
+    async def run(kind: object, target_: object, **kwargs: Any) -> object:
+        del kind, target_, kwargs
+        seen_before_open.append(capsys.readouterr().err)
+        return _GRANTED
+
+    monkeypatch.setattr(unlock, "run_human_ceremony", run)
+    monkeypatch.setattr(unlock.sys, "platform", "darwin")
+    await unlock.authorize_owner_receipt_view(target)
+    code = unlock.owner_view_confirmation_code(target)
+    assert seen_before_open == [f"Confirmation code for this request: {code}\n"]
+
+
+async def test_a_credential_store_passphrase_is_never_prompted_for() -> None:
+    """#1073 review P2-3: setup's system-keychain passphrase was never shown to its owner."""
+
+    terminal = _Terminal()  # read_secret would fail the test
+    session = _Session()
+    target = owner_receipt_view_target(_REQUEST, "e" * 64)
+    choice = unlock._AuthorizationChoice(passphrase_allowed=lambda: False)
+    with pytest.raises(unlock.HumanCeremonyCliError) as raised:
+        await unlock._drive_session(
+            session,  # pyright: ignore[reportArgumentType]
+            terminal,
+            HumanCeremonyKind.OWNER_RECEIPT_VIEW,
+            target,
+            AuthorizationRequiredPhase(("secret_reauthentication",)),
+            authorization=choice,
+        )
+    assert raised.value.reason == "passphrase_in_credential_store"
+    assert session.actions == []
+    # Asked for explicitly, the passphrase is the only source used, never the dialog.
+    explicit = unlock._AuthorizationChoice(
+        prefer="secret_reauthentication", passphrase_only=True, passphrase_allowed=lambda: False
+    )
+    await unlock._drive_session(
+        session,  # pyright: ignore[reportArgumentType]
+        terminal,
+        HumanCeremonyKind.OWNER_RECEIPT_VIEW,
+        target,
+        AuthorizationRequiredPhase(_BOTH),
+        authorization=explicit,
+    )
+    assert session.actions == [SelectAuthorizationSourceAction("secret_reauthentication")]
+    session.actions.clear()
+    with pytest.raises(unlock.HumanCeremonyCliError) as unavailable:
+        await unlock._drive_session(
+            session,  # pyright: ignore[reportArgumentType]
+            terminal,
+            HumanCeremonyKind.OWNER_RECEIPT_VIEW,
+            target,
+            AuthorizationRequiredPhase(("os_user_presence",)),
+            authorization=explicit,
+        )
+    assert unavailable.value.reason == "passphrase_unavailable"
+
+
+async def test_use_passphrase_runs_one_passphrase_only_ceremony(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choices: list[Any] = []
+
+    async def run(kind: object, target: object, **kwargs: Any) -> object:
+        del kind, target
+        choices.append(kwargs["authorization"])
+        return _GRANTED
+
+    monkeypatch.setattr(unlock, "run_human_ceremony", run)
+    target = owner_receipt_view_target(_REQUEST, "e" * 64)
+    assert await unlock.authorize_owner_receipt_view(target, use_passphrase=True) == _GRANTED
+    (choice,) = choices
+    assert choice.passphrase_only and choice.prefer == "secret_reauthentication"
+
+
+async def test_the_dialog_fallback_keeps_the_credential_store_rule(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    choices: list[Any] = []
+    outcomes: list[object] = [ConfidentialClientError("presence_unavailable"), _GRANTED]
+
+    async def run(kind: object, target: object, **kwargs: Any) -> object:
+        del kind, target
+        choice = kwargs["authorization"]
+        choice.offered = _BOTH
+        choices.append(choice)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(unlock, "run_human_ceremony", run)
+    monkeypatch.setattr(unlock, "vault_passphrase_held_by_credential_store", lambda: True)
+    target = owner_receipt_view_target(_REQUEST, "e" * 64)
+    await unlock.authorize_owner_receipt_view(target)
+    first, second = choices
+    assert first.passphrase_allowed is not None and first.passphrase_allowed() is False
+    assert second.prefer == "secret_reauthentication"
+    assert second.passphrase_allowed is first.passphrase_allowed
+
+
+def test_the_credential_store_check_reads_one_slot_and_wipes_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from yoetz.adapters.keys import os_keyring
+
+    loaded: list[bytearray] = []
+
+    def present(self: object) -> tuple[bytearray | None, str]:
+        del self
+        value = bytearray(b"generated-passphrase-value")
+        loaded.append(value)
+        return value, "ok"
+
+    monkeypatch.setattr(os_keyring.AutoUnlockPassphraseStore, "load_with_reason", present)
+    assert unlock.vault_passphrase_held_by_credential_store() is True
+    assert loaded and loaded[0] == bytearray(len(loaded[0]))  # overwritten
+
+    def absent(self: object) -> tuple[bytearray | None, str]:
+        del self
+        return None, "auto_unlock_absent"
+
+    monkeypatch.setattr(os_keyring.AutoUnlockPassphraseStore, "load_with_reason", absent)
+    assert unlock.vault_passphrase_held_by_credential_store() is False
+
+    def broken(self: object) -> tuple[bytearray | None, str]:
+        del self
+        raise RuntimeError("backend")
+
+    monkeypatch.setattr(os_keyring.AutoUnlockPassphraseStore, "load_with_reason", broken)
+    assert unlock.vault_passphrase_held_by_credential_store() is False
+
+
+async def test_a_passphrase_the_owner_typed_is_still_asked_for() -> None:
+    """The other vault kind: no credential-store entry, so the passphrase source is used."""
+
+    session = _Session()
+    target = owner_receipt_view_target(_REQUEST, "e" * 64)
+    asked: list[bool] = []
+
+    def allowed() -> bool:
+        asked.append(True)
+        return True
+
+    await unlock._drive_session(
+        session,  # pyright: ignore[reportArgumentType]
+        _Terminal(),
+        HumanCeremonyKind.OWNER_RECEIPT_VIEW,
+        target,
+        AuthorizationRequiredPhase(("secret_reauthentication",)),
+        authorization=unlock._AuthorizationChoice(passphrase_allowed=allowed),
+    )
+    assert asked == [True]
+    assert session.actions == [SelectAuthorizationSourceAction("secret_reauthentication")]

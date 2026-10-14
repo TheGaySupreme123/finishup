@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hmac
 import os
+import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal, Protocol, cast
@@ -89,6 +91,8 @@ __all__ = [
     "set_provider_credential",
     "unlock_vault",
     "overwrite_secret_buffer",
+    "owner_view_confirmation_code",
+    "vault_passphrase_held_by_credential_store",
 ]
 
 _FIXED_ERROR_REASONS: Final = frozenset(
@@ -99,6 +103,11 @@ _FIXED_ERROR_REASONS: Final = frozenset(
         "eof",
         "input_invalid",
         "interrupted",
+        # Owner view (#1073): the vault's passphrase is kept in the platform credential store,
+        # so its owner may never have seen it; it is used only when asked for explicitly.
+        "passphrase_in_credential_store",
+        # Owner view with an explicit passphrase request on a vault without one.
+        "passphrase_unavailable",
         "preview_invalid",
         "result_invalid",
         "trusted_console_required",
@@ -258,6 +267,10 @@ class _AuthorizationChoice:
     prefer: Literal["os_user_presence", "secret_reauthentication"] = "os_user_presence"
     offered: tuple[str, ...] = ()
     after_unavailable_dialog: bool = False
+    # Use the passphrase and nothing else (the owner asked for it explicitly).
+    passphrase_only: bool = False
+    # Whether a passphrase prompt may be shown without an explicit request; None: always.
+    passphrase_allowed: Callable[[], bool] | None = None
 
 
 class _RotationStore(Protocol):
@@ -1070,6 +1083,10 @@ async def _drive_session(
                 provider_reauthentication is not None or passphrase is not None
             ) and "secret_reauthentication" in current.available_sources:
                 authorization_source = "secret_reauthentication"
+            elif authorization is not None and authorization.passphrase_only:
+                if "secret_reauthentication" not in current.available_sources:
+                    raise HumanCeremonyCliError("passphrase_unavailable")
+                authorization_source = "secret_reauthentication"
             elif authorization is not None and authorization.prefer in current.available_sources:
                 authorization_source = authorization.prefer
             elif "os_user_presence" in current.available_sources:
@@ -1078,6 +1095,15 @@ async def _drive_session(
                 authorization_source = "secret_reauthentication"
             else:
                 raise HumanCeremonyCliError("preview_invalid")
+            if (
+                authorization is not None
+                and authorization_source == "secret_reauthentication"
+                and not authorization.passphrase_only
+                and authorization.passphrase_allowed is not None
+                and not authorization.passphrase_allowed()
+            ):
+                # Never ask for a passphrase the owner may never have been shown.
+                raise HumanCeremonyCliError("passphrase_in_credential_store")
             terminal.write(f"Authorization: {authorization_source}\n")
             if (
                 authorization is not None
@@ -1694,40 +1720,99 @@ async def change_idle_relock_policy(
     )
 
 
-async def authorize_owner_receipt_view(target: OwnerReceiptViewTarget) -> OwnerReceiptViewResult:
+def _owner_view_target_digest(target: OwnerReceiptViewTarget) -> str:
+    from yoetz.service.owner_view import owner_receipt_view_target_digest
+
+    return owner_receipt_view_target_digest(target)
+
+
+def owner_view_confirmation_code(target: OwnerReceiptViewTarget) -> str:
+    """The code a system dialog for exactly this request shows, derived on this side."""
+
+    return presence_confirmation_code(_owner_view_target_digest(target))
+
+
+def vault_passphrase_held_by_credential_store() -> bool:
+    """True when this installation's vault passphrase is kept in the platform credential store.
+
+    Setup's system-keychain choice generates that passphrase and stores it there, so its owner
+    was never shown it. An unreadable store answers False: the passphrase was then typed by a
+    person, the only other way a vault gets one.
+    """
+
+    from yoetz.adapters.keys.os_keyring import AutoUnlockPassphraseStore
+    from yoetz.config.load import load_config
+    from yoetz.config.paths import bundle_root
+
+    try:
+        config = load_config({}, os.environ, None)
+        store = AutoUnlockPassphraseStore(bundle_root(_data_dir=config.storage.data_dir))
+        value, _reason = store.load_with_reason()
+    except Exception:
+        return False
+    if value is None:
+        return False
+    overwrite_secret_buffer(value)
+    return True
+
+
+async def authorize_owner_receipt_view(
+    target: OwnerReceiptViewTarget, *, use_passphrase: bool = False
+) -> OwnerReceiptViewResult:
     """Reauthenticate the owner for one exact receipt view on the foreground terminal.
 
     The ceremony asks for OS user presence (on macOS, Touch ID or the login password in a
     system dialog the service raises) or the vault passphrase, and never accepts a secret on the
     command line. Whoever holds the terminal can type into the prompt (a pseudo-terminal too),
     so the boundary is the service verifying a passphrase or presence an agent does not have,
-    not who is typing.
+    not who is typing. A passphrase kept in the platform credential store (setup's
+    system-keychain choice) is asked for only when the owner requests it with
+    ``use_passphrase``: its owner may never have seen it.
     """
 
     if type(target) is not OwnerReceiptViewTarget:
         raise TypeError("owner_receipt_view_target_invalid")
-    choice = _AuthorizationChoice()
-    try:
-        result = await run_human_ceremony(
-            HumanCeremonyKind.OWNER_RECEIPT_VIEW, target, authorization=choice
-        )
-    except (ConfidentialClientError, HumanCeremonyCliError) as error:
-        # The service could not show an operating-system dialog here (for example a service
-        # started over SSH). When the vault also offered its passphrase, ask for that instead,
-        # once, in a fresh ceremony; a cancelled, failed or unanswered dialog is not retried.
-        if (
-            error.reason != "presence_unavailable"
-            or choice.prefer != "os_user_presence"
-            or "secret_reauthentication" not in choice.offered
-        ):
-            raise
+    if use_passphrase:
         result = await run_human_ceremony(
             HumanCeremonyKind.OWNER_RECEIPT_VIEW,
             target,
             authorization=_AuthorizationChoice(
-                prefer="secret_reauthentication", after_unavailable_dialog=True
+                prefer="secret_reauthentication", passphrase_only=True
             ),
         )
+    else:
+        if sys.platform == "darwin":
+            # Before anything opens, so a dialog that is already on screen can be told apart.
+            sys.stderr.write(
+                f"Confirmation code for this request: {owner_view_confirmation_code(target)}\n"
+            )
+            sys.stderr.flush()
+        choice = _AuthorizationChoice(
+            passphrase_allowed=lambda: not vault_passphrase_held_by_credential_store()
+        )
+        try:
+            result = await run_human_ceremony(
+                HumanCeremonyKind.OWNER_RECEIPT_VIEW, target, authorization=choice
+            )
+        except (ConfidentialClientError, HumanCeremonyCliError) as error:
+            # The service could not show an operating-system dialog (where the service runs
+            # decides that, not where this command runs). When the vault also offered a
+            # passphrase its owner typed, ask for that instead, once, in a fresh ceremony; a
+            # cancelled, failed or unanswered dialog is not retried.
+            if (
+                error.reason != "presence_unavailable"
+                or "secret_reauthentication" not in choice.offered
+            ):
+                raise
+            result = await run_human_ceremony(
+                HumanCeremonyKind.OWNER_RECEIPT_VIEW,
+                target,
+                authorization=_AuthorizationChoice(
+                    prefer="secret_reauthentication",
+                    after_unavailable_dialog=True,
+                    passphrase_allowed=choice.passphrase_allowed,
+                ),
+            )
     if type(result) is not OwnerReceiptViewResult:
         raise HumanCeremonyCliError("result_invalid")
     return result
