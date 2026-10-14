@@ -3394,6 +3394,9 @@ async def integrate_mcp(
                     json_output=json_output,
                 )
                 return 0
+            # Sweep the project admission first: once the user-level transport is gone, a
+            # trusted project's leftover `mcp_servers.yoetz` table stops Codex loading there.
+            admission_cleanup = _admission_reverse_sweep(project_root)
             result = await service.unregister(
                 chosen,
                 McpRegistrationConfirmation(
@@ -3406,7 +3409,7 @@ async def integrate_mcp(
             _emit(
                 {
                     "action": result.action.value,
-                    "admission_cleanup": _admission_reverse_sweep(project_root),
+                    "admission_cleanup": admission_cleanup,
                     "harness": harness,
                     "inspected_codex_home": str(selected_home),
                     "state_after": result.state_after.value,

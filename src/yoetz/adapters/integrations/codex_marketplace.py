@@ -274,6 +274,9 @@ def _run_bounded_command(
             shell=False,
             env=dict(env),
             close_fds=True,
+            # User-scope plugin commands run from the selected Codex home so a broken
+            # trusted-project `.codex` layer in the invoking directory cannot fail them.
+            cwd=_neutral_cwd(env),
         )
         if process.stdout is None or process.stderr is None:
             raise OSError("missing_subprocess_pipe")
@@ -316,6 +319,11 @@ def _run_bounded_command(
                 process.stdout.close()
             if process.stderr is not None:
                 process.stderr.close()
+
+
+def _neutral_cwd(env: Mapping[str, str]) -> str | None:
+    home = env.get("CODEX_HOME")
+    return home if home and Path(home).is_dir() else None
 
 
 def _command_output(

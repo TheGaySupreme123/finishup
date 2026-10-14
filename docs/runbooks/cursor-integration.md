@@ -494,7 +494,10 @@ writer in the final syscall window. If the second surface drifts after the first
 operation reports `write_failed` rather than claiming a transaction-wide rollback.
 
 Reverse: `admission revoke`; `plugin remove` and an install/replace onto the strict route sweep
-the entry when `--project-root` is given and report `admission_cleanup`; a privacy commit that
+the entry when `--project-root` is given and report `admission_cleanup`; `setup disconnect --host
+cursor-ide|cursor-cli` plans `remove_project_admission` for `--project` (both Cursor surfaces),
+sweeps it before the plugin and project MCP removal and reports `status.admission_cleanup`
+(other projects are not enumerated); a privacy commit that
 stops external review sweeps it; `provider status` reports `host_admission_drift`. That report
 walks from the launch directory to the repository root, so a subdirectory cwd does not read as
 `absent`. Cursor publishes no hook for a classifier denial. A held `check` is visible only through

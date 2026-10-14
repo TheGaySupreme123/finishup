@@ -6417,9 +6417,19 @@ only a grant whose requested mode is already set is `noop`. Revoke needs no rout
 current owner and removes every exact external/plugin form Yoetz can write.
 `sweep_host_admission` is the reverse transition (outcome `removed|absent|retained_foreign|
 unknown|write_failed` per host) used by the privacy ceremony, `integrate <host> plugin remove`,
-strict plugin re-renders, `integrate codex plugin remove`, and `integrate codex mcp
-install|remove --project-root`; each reports it as `admission_cleanup` and its preview discloses
-the same, including when the primary MCP registration action is already a `noop`. CLI:
+strict plugin re-renders, `integrate codex plugin remove`, `integrate codex mcp
+install|remove --project-root`, and `setup disconnect --host <host>` for its `--project`; each
+reports it as `admission_cleanup` and its preview discloses the same, including when the primary
+MCP registration action is already a `noop`. A disconnect plan lists the change token
+`remove_project_admission`; because the released `yoetz.host-connection-plan/1` body is closed,
+the cleanup detail (`admission_cleanup`: per-surface state and file digest) and, for Codex,
+`admission_other_projects` travel in the preview report's `status` and are folded into
+`preview_digest` (a grant or revoke after preview makes the plan stale). Apply sweeps before any
+registration removal; a sweep that ends `unknown|write_failed` stops the disconnect as
+`connection_admission_cleanup_failed` before anything else changes. Codex adds the warning token
+`admission_present_in_other_projects` and reports `status.project_config_load:
+loads|fails|unknown`; `fails` is `connection_project_config_unloadable`. `setup status --host codex` reports a transport-less project
+`mcp_servers.yoetz` table as `project_mcp_leftover: "tools_only"` with its revoke `next_command`. CLI:
 `yoetz integrate <host> admission status|preview|grant|revoke --project-root`
 (preview `--action grant|revoke`; Claude `--checkpoint`; the host roots the route observation
 needs; `--accept --preview-digest` for the apply verbs, exit 3 without them, exit 1

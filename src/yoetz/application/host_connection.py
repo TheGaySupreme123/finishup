@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from yoetz.adapters.integrations import claude_code_integration as claude
 from yoetz.adapters.integrations import cursor_integration as cursor
 from yoetz.adapters.integrations import cursor_project_mcp as mcp
+from yoetz.adapters.integrations.host_admission import (
+    HostAdmissionError,
+    HostAdmissionHost,
+    HostAdmissionState,
+    observe_host_admission,
+    sweep_host_admission,
+)
 from yoetz.adapters.integrations.host_discovery import HostInstallation
 from yoetz.domain.values import RequestId
 from yoetz.ports.plugin_artifacts import (
@@ -54,11 +61,136 @@ class _ReviewedStep:
         raise ConnectionError("connection_step_authority_invalid")
 
 
+def admission_cleanup_plan(host: HostAdmissionHost, project: Path) -> dict[str, JsonValue]:
+    """Disclose the project's host-admission entries a disconnect removes (issue #467 reverse).
+
+    The returned body is part of the digest-bound connection plan: it carries each surface's
+    observed file digest, so a grant or revoke between preview and apply makes the plan stale.
+    """
+
+    try:
+        observation = observe_host_admission(host, project)
+    except HostAdmissionError as error:
+        return {"host": host, "state": "unknown", "reason": error.reason.value, "surfaces": []}
+    return {
+        "host": host,
+        "state": observation.state.value,
+        "surfaces": cast(
+            list[JsonValue],
+            [
+                {
+                    "surface": entry.surface,
+                    "state": entry.state.value,
+                    "file_digest": entry.file_digest,
+                }
+                for entry in sorted(observation.entries, key=lambda item: item.surface)
+            ],
+        ),
+    }
+
+
+def admission_cleanup_needed(plan: dict[str, JsonValue]) -> bool:
+    """True when at least one surface carries an exact Yoetz entry the sweep removes."""
+
+    surfaces = plan.get("surfaces")
+    return isinstance(surfaces, list) and any(
+        isinstance(item, dict) and item.get("state") == HostAdmissionState.PRESENT.value
+        for item in surfaces
+    )
+
+
+def admission_revoke_arguments(host: HostAdmissionHost, project: Path) -> list[str]:
+    """The exact manual repair a CLI renders through its pinned continuation."""
+
+    return [
+        "integrate",
+        host,
+        "admission",
+        "preview",
+        "--project-root",
+        str(project),
+        "--action",
+        "revoke",
+    ]
+
+
+def sweep_project_admission(host: HostAdmissionHost, project: Path) -> dict[str, JsonValue]:
+    """Remove exactly the Yoetz-written admission entries for ``host`` under ``project``.
+
+    Runs before any registration removal: a Codex project table that outlives the user-level
+    ``mcp_servers.yoetz`` transport makes Codex refuse to load configuration in that project.
+    A sweep that cannot finish stops the disconnect before anything else changes.
+    """
+
+    (outcome,) = sweep_host_admission(project, (host,))
+    report = outcome.as_json()
+    if outcome.outcome in {"unknown", "write_failed"}:
+        raise ConnectionError(
+            "connection_admission_cleanup_failed",
+            status={
+                "admission_cleanup": report,
+                "next_arguments": cast(
+                    list[JsonValue], list(admission_revoke_arguments(host, project))
+                ),
+            },
+        )
+    return report
+
+
+def plan_digest(body: dict[str, JsonValue], disclosure: dict[str, JsonValue]) -> str:
+    """Digest the plan body plus any disclosure, keeping a disclosure-free digest unchanged."""
+
+    return canonical_digest(body if not disclosure else {**body, "disclosure": disclosure})
+
+
+class AdmissionCleanupStep:
+    """One disconnect's project admission sweep: planned in preview, run first in apply."""
+
+    def __init__(self, project: Path) -> None:
+        self._project = project
+        self._host: HostAdmissionHost | None = None
+        self._report: dict[str, JsonValue] | None = None
+        self.disclosure: dict[str, JsonValue] = {}
+
+    def plan(
+        self, body: dict[str, JsonValue], host: HostAdmissionHost, action: ConnectionAction
+    ) -> bool:
+        """Record the cleanup in ``body`` (digest-bound) and say whether apply must sweep."""
+
+        if action != "disconnect":
+            return False
+        self._host = host
+        cleanup = admission_cleanup_plan(host, self._project)
+        self.disclosure["admission_cleanup"] = cleanup
+        needed = admission_cleanup_needed(cleanup)
+        if needed:
+            cast(list[JsonValue], body["changes"]).append("remove_project_admission")
+        return needed
+
+    def apply(self, needed: bool) -> None:
+        if needed and self._host is not None:
+            self._report = sweep_project_admission(self._host, self._project)
+
+    def status(self) -> dict[str, JsonValue]:
+        if self._host is None:
+            return {}
+        return {
+            "admission_cleanup": (
+                self._report
+                if self._report is not None
+                else admission_cleanup_plan(self._host, self._project)
+            )
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectionPlan:
     body: dict[str, JsonValue]
     status: Callable[[], dict[str, JsonValue]]
     _apply: Callable[[], None]
+    # Preview facts outside the released `yoetz.host-connection-plan/1` body (for example the
+    # project admission cleanup). They are bound into ``preview_digest`` all the same.
+    disclosure: dict[str, JsonValue] = field(default_factory=dict[str, JsonValue])
 
     @property
     def digest(self) -> str:
@@ -102,6 +234,7 @@ def prepare_connection(
             "provider_and_disclosure_authority_separate",
         ],
     }
+    admission = AdmissionCleanupStep(project)
     if installation.host == "claude":
         target = claude.ClaudeCodePluginTarget(
             str(project),
@@ -143,6 +276,7 @@ def prepare_connection(
                 else ["uninstall_plugin", "remove_marketplace", "remove_plugin_mcp"]
             )
         )
+        sweep_admission = admission.plan(body, "claude", action)
 
         def status() -> dict[str, JsonValue]:
             observed = claude.status_claude_code_plugin(target, artifact)
@@ -153,9 +287,11 @@ def prepare_connection(
                 "state": observed.state.value,
                 "connection_observed": False,
                 "reload_required": action == "connect",
+                **admission.status(),
             }
 
         def apply() -> None:
+            admission.apply(sweep_admission)
             if noop or preview is None:
                 return
             result = claude.apply_claude_code_plugin(
@@ -229,6 +365,7 @@ def prepare_connection(
                 "scope": "user_plugin_and_selected_project_mcp",
             }
         )
+        sweep_admission = admission.plan(body, "cursor", action)
 
         def status() -> dict[str, JsonValue]:
             current = cursor.status_cursor_plugin(
@@ -245,9 +382,11 @@ def prepare_connection(
                 "connection_observed": False,
                 "reload_required": action == "connect",
                 "project_mcp": registration,
+                **admission.status(),
             }
 
         def apply() -> None:
+            admission.apply(sweep_admission)
             # External-registration artifacts do not change any MCP preimage. Removing or
             # installing that plugin first therefore preserves the approved MCP digest.
             if not plugin_noop and cursor_preview is not None:
@@ -311,8 +450,8 @@ def prepare_connection(
             )
     else:
         raise ConnectionError("connection_host_unsupported")
-    body["preview_digest"] = canonical_digest(body)
-    return ConnectionPlan(body, status, apply)
+    body["preview_digest"] = plan_digest(body, admission.disclosure)
+    return ConnectionPlan(body, status, apply, admission.disclosure)
 
 
 def apply_connection(

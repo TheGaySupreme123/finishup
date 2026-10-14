@@ -8,6 +8,17 @@ reverse-chronological released versions.
 
 ### Fixed
 
+- `yoetz setup disconnect` now removes the selected project's Yoetz tool-approval entry (the one
+  `integrate <host> admission grant` writes) as part of the same previewed plan, before the
+  registration itself. Previously a Codex disconnect left `[mcp_servers.yoetz.tools.check]` in the
+  project's `.codex/config.toml`; Codex then refused to start in that project
+  ("invalid transport in `mcp_servers.yoetz`"), and the disconnect ended `incomplete` with the
+  project skill still installed. Claude Code and Cursor disconnects remove their entries the same
+  way. After a Codex disconnect, Yoetz checks that Codex still loads its configuration in the
+  project. `setup status --host codex` explains such a leftover and prints the exact command
+  that removes it, and Yoetz's own Codex registration commands no longer fail because of it. A
+  Codex disconnect preview lists other projects that still carry an approval entry.
+
 - MCP input schemas now target 4,800 bytes per tool so Codex does not apply its size-triggered
   schema rewrite. Required fields, enums and event envelopes stay inline; full payload examples
   and variant rules are available through `read_guidance` in request templates. Claude Code and
