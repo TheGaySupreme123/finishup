@@ -18,7 +18,23 @@ The historical `--codex-path`/`--codex-home` wizard remains a compatibility path
 
 `setup status|disconnect --host codex` uses the same target options. Disconnect removes activation,
 the owned MCP entry and exact project skill, retaining inactive plugin sources and Yoetz data.
-Modified or foreign integration state is refused. Record native installation, fresh-session
+Modified or foreign integration state is refused. When the selected project carries the Yoetz
+admission table (`integrate codex admission grant`), the plan adds `remove_project_admission` and
+apply sweeps it *first*, then reports `status.admission_cleanup`: a trusted project's
+`[mcp_servers.yoetz.tools.check]` that outlives the user-level `[mcp_servers.yoetz]` transport makes
+Codex 0.162.1 refuse to load configuration there (`invalid transport in mcp_servers.yoetz` on
+`codex exec`, `failed to load bootstrap configuration` on `codex mcp list`). After apply, Yoetz
+runs `codex mcp list --json` from the project with the selected home and reports
+`status.project_config_load` (`loads|fails|unknown`); `fails` ends `incomplete`
+(`connection_project_config_unloadable`) with the exact admission revoke continuation. Yoetz runs
+its own user-scope `codex mcp …` and `codex plugin …` commands from the selected Codex home, so a
+broken project layer in the invoking directory cannot fail status or a repeated disconnect. A
+transport-less leftover is reported by `setup status --host codex` (and on any failed Codex
+setup command) as `status.project_mcp_leftover: "tools_only"` with the revoke continuation.
+Disconnect also reads the home's `[projects."<path>"]` entries and Yoetz marketplace source and
+lists other projects that still carry an admission table in the preview's
+`status.admission_other_projects`, warning `admission_present_in_other_projects`; it does not
+edit them. The preview's `status.admission_cleanup` names the selected project's surfaces. Record native installation, fresh-session
 discovery/start, disconnect and reconnect for macOS, Linux and WSL 2 separately in #767. Desktop
 app availability and CLI availability remain distinct; an untested version/platform does not
 inherit certification from executable discovery or unit tests.
@@ -395,8 +411,10 @@ Reverse: `integrate codex mcp install --route-profile strict --project-root <pro
 `--project-root` nothing is swept and `provider status` reports `host_admission_drift` — that
 report walks from the launch directory to the repository root, so a subdirectory cwd does not
 read as `absent`);
-`integrate codex plugin remove` sweeps it for the bound project; a privacy commit that stops
-external review sweeps it in the ceremony. The sweep still runs when MCP install/remove is already
+`integrate codex plugin remove` sweeps it for the bound project; `setup disconnect --host codex`
+sweeps it for `--project` (default: the current directory) before the registration is removed;
+a privacy commit that stops external review sweeps it in the ceremony. `mcp remove` likewise
+sweeps before unregistering. The sweep still runs when MCP install/remove is already
 a no-op, because the route state and the project admission state are independent.
 
 Codex exposes no typed denial signal for a guardian refusal: its `PermissionRequest` hook fires

@@ -1094,7 +1094,9 @@ rules until the folder is trusted; Yoetz itself refuses to edit through the syml
 
 Reverse: `admission revoke` removes both exact owner forms; `plugin remove` and a `plugin
 install|update` onto the strict route sweep it for `--project-root` and report
-`admission_cleanup`; a privacy commit that stops external review sweeps it; a leftover entry
+`admission_cleanup`; `setup disconnect --host claude` plans `remove_project_admission` for
+`--project`, sweeps it before the plugin removal and reports `status.admission_cleanup`
+(other projects are not enumerated; inspect them with `admission status --project-root`); a privacy commit that stops external review sweeps it; a leftover entry
 shows as `host_admission_drift` in `provider status`. That report walks from the launch
 directory to the repository root, so a subdirectory cwd does not read as `absent`.
 

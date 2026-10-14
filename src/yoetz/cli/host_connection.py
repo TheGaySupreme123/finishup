@@ -30,6 +30,7 @@ from yoetz.application.host_connection import (
     apply_connection,
     prepare_connection,
 )
+from yoetz.cli.setup_readiness import continuation
 from yoetz.config.paths import isolated_root
 from yoetz.domain.values import request_id
 from yoetz.ports.integrations import IntegrationError
@@ -149,7 +150,7 @@ def select_installation(
 
 
 def connection_summary(plan: ConnectionPlan) -> tuple[str, ...]:
-    body = plan.body
+    body = {**plan.body, **plan.disclosure}
     warnings = body.get("warnings")
     removal_warning = (
         (
@@ -173,6 +174,65 @@ def connection_summary(plan: ConnectionPlan) -> tuple[str, ...]:
         "Your host must open a fresh session to observe the connection.",
         "Observation and provider permissions are separate.",
         *removal_warning,
+        *_admission_summary(body),
+    )
+
+
+def _admission_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
+    lines: list[str] = []
+    changes = body.get("changes")
+    if isinstance(changes, list) and "remove_project_admission" in changes:
+        lines.append(
+            "This project's Yoetz tool-approval entry is removed first, so the host still "
+            "loads its configuration here afterwards."
+        )
+    others = body.get("admission_other_projects")
+    if isinstance(others, list) and others:
+        lines.append(
+            "Other projects still carry a Yoetz tool-approval entry; after this removal Codex "
+            "will not start there until it is revoked:"
+        )
+        for item in others:
+            if isinstance(item, dict) and isinstance(item.get("next_arguments"), list):
+                lines.append(
+                    "  "
+                    + continuation([str(a) for a in cast(list[JsonValue], item["next_arguments"])])
+                )
+    return tuple(lines)
+
+
+def _rendered_status(status: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Render structural ``next_arguments`` through the pinned launcher continuation."""
+
+    arguments = status.get("next_arguments")
+    if not isinstance(arguments, list):
+        return status
+    rendered = {key: value for key, value in status.items() if key != "next_arguments"}
+    rendered["next_command"] = continuation([str(item) for item in arguments])
+    return rendered
+
+
+def _codex_leftover(config_root: Path | None, project: Path) -> dict[str, JsonValue]:
+    from yoetz.cli.codex_connection import project_mcp_leftover_status
+
+    try:
+        selected = config_root.expanduser().absolute() if config_root is not None else None
+        return _rendered_status(
+            project_mcp_leftover_status(
+                selected if selected is not None else host_config_root("codex"), project
+            )
+        )
+    except OSError, ValueError:
+        return {}
+
+
+def _leftover_next_step(status: dict[str, JsonValue]) -> str | None:
+    if status.get("project_mcp_leftover") != "tools_only":
+        return None
+    return (
+        "This project's .codex/config.toml keeps a Yoetz tool-approval table for a server that "
+        "is no longer registered, so Codex cannot load its configuration here. Revoke it, then "
+        "accept the shown digest: " + str(status.get("next_command"))
     )
 
 
@@ -262,11 +322,15 @@ def run_host_connection(
         plan = prepare()
         report["plan"] = plan.body
         if status_only:
-            report.update({"outcome": "status", "status": plan.status()})
+            report.update({"outcome": "status", "status": _rendered_status(plan.status())})
+            leftover_step = _leftover_next_step(cast(dict[str, JsonValue], report["status"]))
+            if leftover_step is not None:
+                report["next_step"] = leftover_step
             typer.echo(
                 json.dumps(report, sort_keys=True)
                 if json_output
                 else f"{selected.label}: {report['status']}\nA fresh session is required to observe the connection."
+                + (f"\n{report['next_step']}" if "next_step" in report else "")
             )
             return 0
         if preview_digest is not None and preview_digest != plan.digest:
@@ -281,10 +345,15 @@ def run_host_connection(
             report.update({"outcome": "unchanged", "status": plan.status()})
             code = 0
         elif approved:
-            report.update({"outcome": "completed", "status": apply_selected(plan, prepare)})
+            report.update(
+                {"outcome": "completed", "status": _rendered_status(apply_selected(plan, prepare))}
+            )
             code = 0
         else:
             report.update({"outcome": "preview", "next_step": connection_continuation(plan)})
+            if plan.disclosure:
+                # The released plan schema is closed; preview facts beyond it ride in `status`.
+                report["status"] = dict(plan.disclosure)
             code = 3 if accept or interactive else 0
         if report["outcome"] in {"completed", "unchanged"}:
             launch = launch_details(selected, project)
@@ -330,12 +399,18 @@ def run_host_connection(
                 "project's marketplace, inspect that file first; a new home cannot repair it."
             )
         if isinstance(error, ConnectionError) and error.status is not None:
-            report["status"] = error.status
-            next_command = error.status.get("next_command")
+            rendered_status = _rendered_status(error.status)
+            report["status"] = rendered_status
+            next_command = rendered_status.get("next_command")
             if isinstance(next_command, str):
                 report["next_step"] = (
                     "Inspect the selected registration before a fresh preview: " + next_command
                 )
+        if host == "codex" and "status" not in report:
+            leftover = _codex_leftover(config_root, project)
+            if leftover:
+                report["status"] = leftover
+                report["next_step"] = _leftover_next_step(leftover)
         code = 1
     if json_output:
         typer.echo(json.dumps(report, sort_keys=True))
