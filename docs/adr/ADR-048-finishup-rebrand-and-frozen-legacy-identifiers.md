@@ -134,7 +134,8 @@ MCP deadline variables are checked in the bridge before service discovery or inv
 closure preparation's status reads and the recovery read for an invalid real publication. A
 conflict between the two spellings raises `ConfigError("config_env_conflict")` locally and returns
 `INVALID_REQUEST` with `config_correction_required`; it never falls back to a default or an
-all-tools override. A per-tool override cannot hide conflicting all-tools spellings. Unparsable
+all-tools override. A per-tool override cannot hide conflicting all-tools spellings, including
+for a writing `check`, whose numeric deadline still ignores the all-tools value. Unparsable
 numeric values retain their existing default behavior.
 
 | Surface | New | Legacy still read | Precedence and conflicts | Lifetime |

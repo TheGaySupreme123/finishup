@@ -2273,16 +2273,17 @@ def _rpc_deadline_ms(tool: str, environ: Mapping[str, str] | None = None) -> int
     """Return the bridge-to-service deadline for one workflow tool, honouring env overrides."""
 
     source = os.environ if environ is None else environ
-    suffixes = [f"{_RPC_DEADLINE_ENV_SUFFIX}_{tool.upper()}"]
-    if tool != "check":
-        suffixes.append(_RPC_DEADLINE_ENV_SUFFIX)
+    suffixes = [f"{_RPC_DEADLINE_ENV_SUFFIX}_{tool.upper()}", _RPC_DEADLINE_ENV_SUFFIX]
     values: list[str | None] = []
     for suffix in suffixes:
         try:
             values.append(read_env(suffix, source))
         except EnvNameConflictError as exc:
             raise ConfigError("config_env_conflict", safe_name=exc.name) from None
-    for raw in values:
+    # A writing check keeps its own budget, but the ignored global numeric value
+    # must not hide conflicting spellings of that shared setting (ADR-048).
+    deadline_values = values[:1] if tool == "check" else values
+    for raw in deadline_values:
         if raw is None:
             continue
         text = raw.strip()

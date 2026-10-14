@@ -208,16 +208,33 @@ def test_conflicting_deadline_spellings_never_fall_back(global_override: str | N
     assert caught.value.safe_name == "FINISHUP_MCP_DEADLINE_MS_STATUS"
 
 
-def test_a_per_tool_override_does_not_hide_a_global_deadline_conflict() -> None:
+@pytest.mark.parametrize("tool", ["status", "check"])
+@pytest.mark.parametrize("per_tool_override", [None, "45000"])
+def test_a_per_tool_override_does_not_hide_a_global_deadline_conflict(
+    tool: str, per_tool_override: str | None
+) -> None:
+    environ = {
+        "FINISHUP_MCP_DEADLINE_MS": "30000",
+        "YOETZ_MCP_DEADLINE_MS": "2000",
+    }
+    if per_tool_override is not None:
+        environ[f"FINISHUP_MCP_DEADLINE_MS_{tool.upper()}"] = per_tool_override
     with pytest.raises(ConfigError):
         mcp_server._rpc_deadline_ms(  # pyright: ignore[reportPrivateUsage]
-            "status",
-            {
-                "FINISHUP_MCP_DEADLINE_MS_STATUS": "45000",
-                "FINISHUP_MCP_DEADLINE_MS": "30000",
-                "YOETZ_MCP_DEADLINE_MS": "2000",
-            },
+            tool, environ
         )
+
+
+@pytest.mark.parametrize("per_tool_override", [None, "45000"])
+def test_an_agreed_global_deadline_does_not_control_a_writing_check(
+    per_tool_override: str | None,
+) -> None:
+    environ = {"FINISHUP_MCP_DEADLINE_MS": "2000", "YOETZ_MCP_DEADLINE_MS": "2000"}
+    expected = mcp_server._DEFAULT_RPC_DEADLINES_MS["check"]  # pyright: ignore[reportPrivateUsage]
+    if per_tool_override is not None:
+        environ["FINISHUP_MCP_DEADLINE_MS_CHECK"] = per_tool_override
+        expected = int(per_tool_override)
+    assert mcp_server._rpc_deadline_ms("check", environ) == expected  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.anyio
@@ -229,6 +246,7 @@ def test_a_per_tool_override_does_not_hide_a_global_deadline_conflict() -> None:
         ("status", None, "MCP_DEADLINE_MS_STATUS"),
         ("check", "inspect", "MCP_DEADLINE_MS_STATUS"),
         ("check", "deterministic_only", "MCP_DEADLINE_MS_CHECK"),
+        ("check", "deterministic_only", "MCP_DEADLINE_MS"),
         ("closure_prepare", None, "MCP_DEADLINE_MS_STATUS"),
         ("publish_work", None, "MCP_DEADLINE_MS_PUBLISH_WORK"),
     ],
