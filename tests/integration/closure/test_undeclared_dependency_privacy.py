@@ -948,7 +948,7 @@ async def test_owner_view_request_runs_the_ceremony_on_its_own_connection_first(
 
     ceremonies: list[Any] = []
 
-    async def refuse(target: Any) -> Any:
+    async def refuse(target: Any, **_kwargs: Any) -> Any:
         ceremonies.append(target)
         raise ConfidentialClientError("reauthentication_unavailable")
 
@@ -972,7 +972,7 @@ async def test_owner_view_request_runs_the_ceremony_on_its_own_connection_first(
     request = ReceiptRequest.model_validate(case.request_body)
     assert ceremonies == [owner_receipt_view_target(request, nonce)]
 
-    async def grant(target: Any) -> Any:
+    async def grant(target: Any, **_kwargs: Any) -> Any:
         ceremonies.append(target)
         calls.append("ceremony")
 
@@ -1349,6 +1349,69 @@ async def test_dot_slash_spellings_in_receipt_prose_are_withheld(
     privacy = cast(Mapping[str, Any], projected["privacy_projection"])
     assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
     assert "/document/sections/0/coverage_note" in privacy["omitted_pointers"]
+
+
+_TOP_LEVEL_LOADER = """import os
+
+import numpy as np
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TABLE = np.load(os.path.join(ROOT, "vocab_table"))
+"""
+
+
+async def test_a_top_level_extensionless_name_is_withheld_behind_any_path_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#1073 review P2-1: ``./vocab_table`` and ``/abs/repo/vocab_table`` in prose."""
+
+    repository = tmp_path / "app"
+    repository.mkdir(mode=0o700)
+    _git(repository, "init", "--quiet")
+    (repository / "README.md").write_text("Cracker\n", encoding="utf-8")
+    _git(repository, "add", "--", "README.md")
+    _git(
+        repository,
+        "-c",
+        "user.name=Yoetz Test",
+        "-c",
+        "user.email=yoetz@example.invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "baseline",
+    )
+    (repository / "artifacts").mkdir()
+    base = GitChangeCaptureAdapter().read_task_base(os.fspath(repository))
+    (repository / "artifacts" / "cracker.py").write_text(_TOP_LEVEL_LOADER, encoding="utf-8")
+    (repository / "vocab_table").write_bytes(b"\x93NUMPY\x00\x01table")
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=31000)
+    started, _checked = await _run(app, 31000)
+    status, _projected = await _projected_status(app, started, 31050)
+    case, receipt = await _receipt_case(app, started, status, 31060, "json", "default_local_export")
+    document = cast(dict[str, Any], receipt.document)
+    document["obligations"][0]["summary"] = "Loads ./vocab_table at start."
+    document["sections"][0]["coverage_note"] = f"Checked {repository}//vocab_table too."
+    body = document["sections"][0]["body"]
+    # The quoted control proves the check recorded the undeclared top-level file.
+    document["sections"][0]["body"] = (
+        body + ' Control: "vocab_table". The vocab_table word alone stays.'
+    )
+    projected = await project_case(app, case, 31061)
+    token = "(receipt prose withheld: repository_excerpt)"
+    projected_document = cast(Mapping[str, Any], projected["document"])
+    assert projected_document["obligations"][0]["summary"] == f"Loads {token} at start."
+    assert projected_document["sections"][0]["coverage_note"] == f"Checked {token} too."
+    privacy = cast(Mapping[str, Any], projected["privacy_projection"])
+    assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
+    assert "/document/sections/0/coverage_note" in privacy["omitted_pointers"]
+    text = canonical_encode(cast(JsonValue, projected)).decode()
+    # Only the plain word the test appended survives; every path spelling of the name is gone.
+    assert text.count("vocab_table") == 1
+    assert projected_document["sections"][0]["body"] == (
+        body + f" Control: {token}. The vocab_table word alone stays."
+    )
 
 
 @pytest.mark.parametrize("fmt", ["json", "markdown", "text"])

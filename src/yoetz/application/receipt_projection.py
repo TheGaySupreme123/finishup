@@ -80,7 +80,10 @@ def _spellings(path: str) -> tuple[str, ...]:
     # "Summary" or "1" must not withhold a heading or a count that uses the same word. Case and
     # Unicode spellings are compared exactly: folding them would conflate distinct files on a
     # case-sensitive filesystem, and Yoetz has no per-platform path-equivalence fact here.
-    forms = {quoted_path(path)}
+    # ``./path`` stands for the path behind a mandatory ``./`` or absolute prefix: every name,
+    # including a top-level one without an extension (``vocab_table``), is a path when a prefix
+    # marks it as one, while the bare word stays readable.
+    forms = {quoted_path(path), "./" + path}
     if "/" in path:
         forms.add(path)
     basename = path.rsplit("/", 1)[-1]
@@ -90,15 +93,42 @@ def _spellings(path: str) -> tuple[str, ...]:
     return tuple(sorted(forms, key=lambda spelling: (-len(spelling), spelling)))
 
 
-# A harmless spelling of the same repository-relative path: any number of leading ``./``, or an
-# absolute path that ends in it. Either prefix is part of the matched token, so the whole path
-# token is withheld. A different relative directory (``x/artifacts/a.npz``) never matches.
-_SAME_PATH_PREFIX: Final = r"(?:(?:\./)+|/(?:[^\s/\"'`<>|]+/)*)?"
+# A harmless spelling of the same repository-relative path: leading ``./`` segments, or an
+# absolute directory prefix that ends where the name starts. The absolute prefix may start at
+# ``/``, ``~`` (``~/`` or ``~user/``), ``$VAR/`` or ``${VAR}/``, optionally behind ``file://``, and
+# may hold empty or ``.`` segments (``//``, ``/./``). Either prefix is part of the matched token,
+# so the whole path token is withheld. A different relative directory (``x/artifacts/a.npz``,
+# ``../repo/a.npz``) never matches.
+#
+# Every quantifier is bounded and a segment is matched possessively (a segment never contains
+# the ``/`` that ends it), so a search is linear in the text with a small constant: participant
+# prose reaches this pattern on the service event loop (#1073 review, P3).
+_MAX_PREFIX_SEGMENTS: Final = 64
+_MAX_SEGMENT_CHARS: Final = 255
+_MAX_DOT_SLASHES: Final = 16
+_ROOTS: Final = r"(?:file://)?(?:~[\w.-]{0,64}|\$\w{1,64}|\$\{\w{1,64}\})?/"
+_DOT_SLASHES: Final = rf"(?:\./){{1,{_MAX_DOT_SLASHES}}}"
+
+
+def _same_path_prefix(segment: str) -> str:
+    return (
+        rf"(?:{_DOT_SLASHES}|{_ROOTS}"
+        rf"(?:{segment}{{0,{_MAX_SEGMENT_CHARS}}}+/){{0,{_MAX_PREFIX_SEGMENTS}}})"
+    )
+
+
+# Unquoted prose has no token bound, so an unquoted segment stops at whitespace and at prose
+# delimiters; an unquoted absolute path through a directory with spaces is not one token there.
+_SAME_PATH_PREFIX: Final = _same_path_prefix(r"[^\s/\"'`<>|]")
 # Inside one pair of quotes or backticks a path may contain spaces
-# (``"/Users/u/My Project/a.npz"``); the quotes bound the token, so the absolute prefix there may
-# hold any character but a quote, a backtick, a line break or a slash. Unquoted prose has no such
-# bound, so an unquoted absolute path through a directory with spaces is not one token there.
-_QUOTED_SAME_PATH_PREFIX: Final = r"(?:(?:\./)+|/(?:[^\"'`\n/]+/)*)?"
+# (``"/Users/u/My Project/a.npz"``); the quotes bound the token, so a segment there may hold any
+# character but a quote, a backtick, a line break or a slash.
+_QUOTED_SAME_PATH_PREFIX: Final = _same_path_prefix(r"[^\"'`\n/]")
+
+
+def _spelled(name: str) -> str:
+    # ``a/b`` also matches ``a//b`` and ``a/./b``: the same path with empty or ``.`` segments.
+    return r"/(?:\.?/){0,8}".join(re.escape(segment) for segment in name.split("/"))
 
 
 def _pattern(spellings: Iterable[str]) -> re.Pattern[str]:
@@ -106,24 +136,39 @@ def _pattern(spellings: Iterable[str]) -> re.Pattern[str]:
     # ``data.npz`` or ``x/a.npz.bak``, so unrelated names and prose stay readable.
     ordered = sorted(set(spellings), key=lambda s: (-len(s), s))
     quoted = [s for s in ordered if len(s) >= 2 and s[0] == '"' and s[-1] == '"']
-    bare = [s for s in ordered if s not in quoted]
+    # ``./name`` (from ``_spellings``) is a name that counts only behind a ``./`` or absolute
+    # prefix, so a plain word (``Summary``) without such a prefix stays readable.
+    prefixed = sorted(
+        {s[2:] for s in ordered if s.startswith("./") and len(s) > 2},
+        key=lambda spelling: (-len(spelling), spelling),
+    )
+    bare = [s for s in ordered if s not in quoted and not s.startswith("./")]
     inner = sorted(
-        {*(s[1:-1] for s in quoted), *bare}, key=lambda spelling: (-len(spelling), spelling)
+        {*(s[1:-1] for s in quoted), *bare, *prefixed},
+        key=lambda spelling: (-len(spelling), spelling),
     )
     alternatives: list[str] = [
         # A whole single-, double- or backtick-quoted path token, quotes included.
-        r"(?P<quote>[\"'`])"
+        r"(?P<quote>[\"'`])(?:"
         + _QUOTED_SAME_PATH_PREFIX
-        + "(?:"
-        + "|".join(re.escape(spelling) for spelling in inner)
+        + ")?(?:"
+        + "|".join(_spelled(spelling) for spelling in inner)
         + r")(?P=quote)"
     ]
     if bare:
         alternatives.append(
-            r"(?<![\w./-])"
+            r"(?<![\w./~$}-])(?:"
+            + _SAME_PATH_PREFIX
+            + ")?(?:"
+            + "|".join(_spelled(spelling) for spelling in bare)
+            + r")(?![\w/-]|\.\w)"
+        )
+    if prefixed:
+        alternatives.append(
+            r"(?<![\w./~$}-])"
             + _SAME_PATH_PREFIX
             + "(?:"
-            + "|".join(re.escape(spelling) for spelling in bare)
+            + "|".join(_spelled(spelling) for spelling in prefixed)
             + r")(?![\w/-]|\.\w)"
         )
     return re.compile("|".join(f"(?:{alternative})" for alternative in alternatives))

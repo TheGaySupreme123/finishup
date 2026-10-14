@@ -119,3 +119,82 @@ def test_quoted_absolute_paths_with_spaces_are_withheld_whole() -> None:
         'Say "hello world" twice.',
     ):
         assert withheld_text(text, (excerpt,)) == text, text
+
+
+def test_every_name_behind_a_path_prefix_is_withheld_top_level_and_extensionless_too() -> None:
+    """#1073 review P2-1: ``./``, absolute, ``~``, ``$VAR``, ``file://``, ``//`` and ``/./``."""
+
+    cases = {
+        "vocab_table": (
+            "Loads ./vocab_table now.",
+            "Loads ././vocab_table now.",
+            "Loads /Users/u/repo/vocab_table now.",
+            "Loads /Users/u//repo/./vocab_table now.",
+            "Loads ~/repo/vocab_table now.",
+            "Loads ~u/repo/vocab_table now.",
+            "Loads $PWD/vocab_table now.",
+            "Loads ${HOME}/repo/vocab_table now.",
+            "Loads file:///Users/u/repo/vocab_table now.",
+            "Loads 'vocab_table' now.",
+            "Loads `./vocab_table` now.",
+            'Loads "/Users/u/My Project/vocab_table" now.',
+            'Loads "~/My Project/vocab_table" now.',
+        ),
+        "artifacts/english_words.npz": (
+            "Loads file:///Users/u/repo/artifacts/english_words.npz now.",
+            "Loads /Users/u/repo//artifacts/english_words.npz now.",
+            "Loads ./artifacts/./english_words.npz now.",
+            "Loads artifacts//english_words.npz now.",
+            "Loads $PWD/artifacts/english_words.npz now.",
+            "Loads ${PWD}/artifacts/english_words.npz now.",
+            "Loads ~/repo/artifacts/english_words.npz now.",
+            'Loads "$PWD/artifacts/english_words.npz" now.',
+            'Loads "~/My Project/artifacts/english_words.npz" now.',
+        ),
+    }
+    for path, texts in cases.items():
+        stem = path.rsplit("/", 1)[-1].split(".")[0]
+        for text in texts:
+            shown = withheld_text(text, (_named(path),))
+            assert shown == f"Loads {WITHHELD} now.", (text, shown)
+            assert stem not in shown
+
+
+def test_plain_words_and_other_relative_directories_stay_readable() -> None:
+    # A top-level name without an extension is a path only behind a prefix or in quotes.
+    excerpt = _named("Summary")
+    text = "Summary\nThe Summary has 2 findings; ./Summary is the file."
+    assert withheld_text(text, (excerpt,)) == (
+        f"Summary\nThe Summary has 2 findings; {WITHHELD} is the file."
+    )
+    for path, text in (
+        ("vocab_table", "Loads vocab_table and my_vocab_table and ./vocab_table.bak now."),
+        ("artifacts/wordlist", "Loads wordlist and 'wordlist' now."),
+        ("artifacts/english_words.npz", "Loads ../repo/artifacts/english_words.npz now."),
+        ("artifacts/english_words.npz", 'Loads "./My Project/artifacts/english_words.npz" now.'),
+    ):
+        assert withheld_text(text, (_named(path),)) == text, text
+
+
+def test_span_search_stays_linear_on_adversarial_prose() -> None:
+    """#1073 review P3: participant prose reaches this pattern on the service event loop."""
+
+    import time
+
+    excerpts = tuple(_named(f"artifacts/m{index}.npz") for index in range(8)) + (
+        _named("vocab_table"),
+    )
+    for text in (
+        "/," * 16_384,
+        ",/" * 16_384,
+        " ./" * 10_000,
+        " ~/" * 10_000,
+        " $A/" * 8_000,
+        '"' + "/a" * 16_000,
+        " " + "/" * 32_000,
+    ):
+        started = time.perf_counter()
+        withheld_text(text, excerpts, max_chars=32_768)
+        # Quadratic search took about 7 s on 32 K characters before the bound; linear takes
+        # well under a second. The bound is generous so a loaded runner cannot flake it.
+        assert time.perf_counter() - started < 3.0, text[:8]
