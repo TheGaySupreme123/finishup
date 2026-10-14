@@ -1322,7 +1322,10 @@ async def test_dot_slash_spellings_in_receipt_prose_are_withheld(
 ) -> None:
     """r3 F2: the reviewer's ``./`` repro through the production projection."""
 
-    repository, base = _workspace(tmp_path)
+    # A real repository under a directory whose name has a space (R3-F2).
+    spaced = tmp_path / "My Project"
+    spaced.mkdir(mode=0o700)
+    repository, base = _workspace(spaced)
     _bind_workspace(monkeypatch, repository, base)
     app, _policy = await build_projection_application(seed=21000)
     started, _checked = await _run(app, 21000)
@@ -1332,6 +1335,9 @@ async def test_dot_slash_spellings_in_receipt_prose_are_withheld(
     document["obligations"][0]["summary"] = "Loads ./artifacts/english_words.npz at start."
     body = document["sections"][0]["body"]
     document["sections"][0]["body"] = body + ' It also reads "./artifacts/english_ngrams.npz".'
+    # R3-F2: an absolute spelling through a directory with spaces, single-quoted.
+    absolute = f"'{repository}/artifacts/english_words.npz'"
+    document["sections"][0]["coverage_note"] = f"Checked {absolute} too."
     projected = await project_case(app, case, 21061)
     text = canonical_encode(cast(JsonValue, projected)).decode()
     assert "english_ngrams" not in text and "english_words" not in text
@@ -1339,8 +1345,10 @@ async def test_dot_slash_spellings_in_receipt_prose_are_withheld(
     projected_document = cast(Mapping[str, Any], projected["document"])
     assert projected_document["obligations"][0]["summary"] == f"Loads {token} at start."
     assert projected_document["sections"][0]["body"] == body + f" It also reads {token}."
+    assert projected_document["sections"][0]["coverage_note"] == f"Checked {token} too."
     privacy = cast(Mapping[str, Any], projected["privacy_projection"])
     assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
+    assert "/document/sections/0/coverage_note" in privacy["omitted_pointers"]
 
 
 @pytest.mark.parametrize("fmt", ["json", "markdown", "text"])

@@ -102,3 +102,20 @@ def test_expansion_is_bounded_visibly_without_splitting_a_token() -> None:
         assert body.replace(WITHHELD, "").strip() == ""
     # A short text that fits is never truncated.
     assert withheld_text("Reads english_ngrams.npz.", (excerpt,)) == f"Reads {WITHHELD}."
+
+
+def test_quoted_absolute_paths_with_spaces_are_withheld_whole() -> None:
+    """R3-F2: quotes bound the token, so a directory with spaces is still one path."""
+
+    excerpt = _named("artifacts/english_words.npz")
+    for quote in ('"', "'", "`"):
+        text = f"Loads {quote}/Users/u/My Project/artifacts/english_words.npz{quote} at start."
+        assert withheld_text(text, (excerpt,)) == f"Loads {WITHHELD} at start.", quote
+    # Quote-bounded, so distinct names and suffixes inside quotes stay readable.
+    for text in (
+        '"/Users/u/My Project/x/artifacts/english_words.npz.bak"',
+        '"x/artifacts/english_words.npz"',
+        '"/Users/u/My Project/artifacts/English_words.npz"',
+        'Say "hello world" twice.',
+    ):
+        assert withheld_text(text, (excerpt,)) == text, text

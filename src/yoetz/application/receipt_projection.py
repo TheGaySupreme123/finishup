@@ -94,6 +94,11 @@ def _spellings(path: str) -> tuple[str, ...]:
 # absolute path that ends in it. Either prefix is part of the matched token, so the whole path
 # token is withheld. A different relative directory (``x/artifacts/a.npz``) never matches.
 _SAME_PATH_PREFIX: Final = r"(?:(?:\./)+|/(?:[^\s/\"'`<>|]+/)*)?"
+# Inside one pair of quotes or backticks a path may contain spaces
+# (``"/Users/u/My Project/a.npz"``); the quotes bound the token, so the absolute prefix there may
+# hold any character but a quote, a backtick, a line break or a slash. Unquoted prose has no such
+# bound, so an unquoted absolute path through a directory with spaces is not one token there.
+_QUOTED_SAME_PATH_PREFIX: Final = r"(?:(?:\./)+|/(?:[^\"'`\n/]+/)*)?"
 
 
 def _pattern(spellings: Iterable[str]) -> re.Pattern[str]:
@@ -102,8 +107,16 @@ def _pattern(spellings: Iterable[str]) -> re.Pattern[str]:
     ordered = sorted(set(spellings), key=lambda s: (-len(s), s))
     quoted = [s for s in ordered if len(s) >= 2 and s[0] == '"' and s[-1] == '"']
     bare = [s for s in ordered if s not in quoted]
+    inner = sorted(
+        {*(s[1:-1] for s in quoted), *bare}, key=lambda spelling: (-len(spelling), spelling)
+    )
     alternatives: list[str] = [
-        '"' + r"(?:\./)*" + re.escape(spelling[1:-1]) + '"' for spelling in quoted
+        # A whole single-, double- or backtick-quoted path token, quotes included.
+        r"(?P<quote>[\"'`])"
+        + _QUOTED_SAME_PATH_PREFIX
+        + "(?:"
+        + "|".join(re.escape(spelling) for spelling in inner)
+        + r")(?P=quote)"
     ]
     if bare:
         alternatives.append(
