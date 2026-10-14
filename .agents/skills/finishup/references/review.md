@@ -99,7 +99,9 @@ result says what to do: `owner_local_only` (the owner chose local checks only; c
 and do not ask again), `ai_review_not_set_up` (the owner sets it up once; continue locally
 meanwhile), or `route_local_only` (this host connection is registered local-only until the owner
 re-registers it). Under `local_owner_approval` each review waits for the owner: treat
-`awaiting_human` as above.
+`awaiting_human` as above. A task that already ran AI-powered review still owes its closing review
+even after switching back to local: run that `final_review: true` check with
+`mode: semantic_if_configured`.
 
 **Worked example.** A task changes token refresh in `auth/` and the session cache in `cache/`.
 After the first local check, you publish the switch ("Turn on AI-powered review for the rest of

@@ -1422,7 +1422,9 @@ switch (the upgrade rule: those checks keep their released behaviour and bytes).
 check that names no mode runs `deterministic_only` and records `semantic_route_required: false`.
 `status-result` 1.4.0 carries optional `review_mode` (`mode`, `requested`, `setting`,
 `ai_review_available`, optional `local_reason`, `switch_event_id`, `switch_sequence`), read from
-the head projection on the serving route. The receipt's `limitations_and_coverage` body ends with
+the head projection on the serving route. Closure readiness (`execute_status`,
+`current_closure_readiness`) passes `semantic_review_required` false for a task that runs local by
+an explicit setting or its own switch (`_task_local_by_choice`). The receipt's `limitations_and_coverage` body ends with
 one sentence ("Review mode switches recorded for this task: ...") only when the task recorded a
 switch. Renderings share `domain/review_mode_render.py`. CLI: `finishup privacy conversations
 agent-opt-in | owner-approval | local-only | ai-powered | status` (repository scope; widening needs

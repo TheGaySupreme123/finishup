@@ -30,6 +30,7 @@ from finishup.application.status_faults import (
     status_stage,
 )
 from finishup.application.task_views import LineageStatusSnapshot, ProjectStatusSnapshot
+from finishup.domain.events import ReviewMode
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingOrigin
 from finishup.domain.observation import AdviceSnapshot
 from finishup.domain.privacy import ProjectionItemAuthorship
@@ -61,6 +62,7 @@ from finishup.kernel.projections import ProjectionState
 from finishup.kernel.receipt_prediction import predict_receipt_conclusion
 from finishup.kernel.review_mode import (
     ConversationReviewContext,
+    ConversationReviewMode,
     conversation_review_mode_from_switches,
     review_mode_switches,
 )
@@ -327,18 +329,16 @@ class StatusInternalResult:
         }
 
 
-async def status_review_mode(
+async def _task_review_mode(
     app: object,
     runtime: TaskRuntime,
-    *,
-    route_profile: Literal["policy", "strict"] | None = None,
-) -> dict[str, JsonValue] | None:
-    """The conversation's review mode for status (ADR-049); ``None`` when it cannot be read.
+    route_profile: Literal["policy", "strict"] | None,
+) -> tuple[ConversationReviewMode, ConversationReviewContext] | None:
+    """The task's review mode at the head on this route (ADR-049); ``None`` when unreadable.
 
     Read-only: the owner's setting and review availability from the application's reader, and
-    the switches from the head projection (status reads the head, never ``at_frontier``).
-    ``mode`` is what the next check that names no mode runs in on this route. A read failure
-    leaves status readable.
+    the switches from the head projection (status reads the head, never ``at_frontier``). A read
+    failure leaves status readable.
     """
 
     reader = getattr(app, "conversation_review_context", None)
@@ -371,6 +371,15 @@ async def status_review_mode(
         setting_explicit=context.setting_explicit,
         route_allows_review=route_profile != "strict",
     )
+    return conversation, context
+
+
+def _status_review_mode_body(
+    resolved: tuple[ConversationReviewMode, ConversationReviewContext] | None,
+) -> dict[str, JsonValue] | None:
+    if resolved is None:
+        return None
+    conversation, context = resolved
     body: dict[str, JsonValue] = {
         "mode": conversation.mode.value,
         "requested": conversation.requested.value,
@@ -384,6 +393,38 @@ async def status_review_mode(
         body["switch_event_id"] = latest.event_id
         body["switch_sequence"] = str(latest.sequence)
     return body
+
+
+async def status_review_mode(
+    app: object,
+    runtime: TaskRuntime,
+    *,
+    route_profile: Literal["policy", "strict"] | None = None,
+) -> dict[str, JsonValue] | None:
+    """The task's review mode for status (ADR-049); ``None`` when it cannot be read.
+
+    ``mode`` is what the next check that names no mode runs in on this route.
+    """
+
+    return _status_review_mode_body(await _task_review_mode(app, runtime, route_profile))
+
+
+def _task_local_by_choice(
+    resolved: tuple[ConversationReviewMode, ConversationReviewContext] | None,
+) -> bool:
+    """Whether the task's next check runs local by its owner's setting or its own switch.
+
+    Such a check records a route that did not require AI-powered review (ADR-049), so closure
+    readiness must not ask for a review it will never run. A policy that predates the setting,
+    with no switch, keeps the released requirement, exactly as its checks do.
+    """
+
+    if resolved is None:
+        return False
+    conversation, context = resolved
+    return conversation.mode is ReviewMode.LOCAL and (
+        context.setting_explicit or bool(conversation.switches)
+    )
 
 
 def _error(code: PublicErrorCode, message: str) -> PublicOperationError:
@@ -1832,7 +1873,8 @@ async def current_closure_readiness(
         request_id,
         lineage_gaps=lineage_gaps,
         lineage_self_verified=lineage_self_verified,
-        semantic_review_required=_semantic_review_required(app, route_profile),
+        semantic_review_required=_semantic_review_required(app, route_profile)
+        and not _task_local_by_choice(await _task_review_mode(app, runtime, route_profile)),
         check_in_flight=frontier == head and await _check_in_flight(runtime),
     )
     return frontier, readiness
@@ -2245,6 +2287,7 @@ async def execute_status(
                     else coverage.ledger_freshness
                 ),
             )
+        task_review_mode = await _task_review_mode(app, runtime, route_profile)
         closure_readiness = await _closure_readiness(
             runtime,
             frontier,
@@ -2252,10 +2295,11 @@ async def execute_status(
             request.request_id,
             lineage_gaps=lineage_gaps,
             lineage_self_verified=lineage_self_verified,
-            semantic_review_required=_semantic_review_required(app, route_profile),
+            semantic_review_required=_semantic_review_required(app, route_profile)
+            and not _task_local_by_choice(task_review_mode),
             check_in_flight=frontier == head and await _check_in_flight(runtime),
         )
-        review_mode = await status_review_mode(app, runtime, route_profile=route_profile)
+        review_mode = _status_review_mode_body(task_review_mode)
         return StatusInternalResult(
             "0.1",
             "1.0.0",

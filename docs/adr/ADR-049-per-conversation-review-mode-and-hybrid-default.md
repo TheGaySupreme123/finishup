@@ -106,7 +106,13 @@ host already has.
 7. **Status shows the mode** (`status-result` 1.4.0 `review_mode`: `mode`, `requested`, `setting`,
    `ai_review_available`, optional `local_reason`, `switch_event_id`, `switch_sequence`), read from
    the head projection on the serving route, never at `at_frontier`. `mode` is what the next check
-   that names no mode runs in.
+   that names no mode runs in. Closure readiness (status, the inspection check, the Stop gate)
+   follows the same rule as the check: a task that runs local by its owner's explicit setting or
+   its own switch is not asked for an AI-powered review it will never run (neither
+   `semantic_review_not_requested` nor `closing_review_required` as agent work), while a task under
+   a policy that predates the setting keeps the released requirement. A task that already ran
+   AI-powered review still owes its closing review after switching back; it names an AI-powered
+   mode on that `final_review` check.
 
 8. **Every rendering says which mode and why.** CLI check, status and JSON receipt, the terminal
    interface (which uses the CLI renderers), and the MCP summaries print one "Review mode: local

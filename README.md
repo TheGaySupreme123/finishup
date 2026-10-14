@@ -172,6 +172,11 @@ user content, and it never upgrades the package for you; decline it for a zero-n
 Rerunning setup does not suspend or revoke an existing standing policy: ordinary activity remains
 governed by that policy until the user commits a replacement.
 
+Every task starts with FinishUP's local checks. Setup's recommended answer lets your agent turn on
+AI-powered review for one task when it helps, with a single recorded decision; you can instead keep
+every task local or review every task, and change it later with `finishup privacy conversations`.
+The agent's switch is a request: what may be sent is still decided by your privacy policy.
+
 External AI-powered review is a separate explicit decision. When you choose it, the CLI's
 recommended `assisted-review` recipe shows and confirms a standing policy that sends the reviewer a
 structured packet built from the ledger — goal, obligations, claims, timeline, local findings and

@@ -330,3 +330,33 @@ async def test_the_composed_reader_keeps_a_legacy_install_released(tmp_path: Pat
         status = cast(Mapping[str, object], (await task.status_projected())["review_mode"])
         assert status["local_reason"] == "ai_review_not_set_up"
         assert status["requested"] == "ai_powered"
+
+
+async def test_a_local_task_is_not_asked_for_a_review_it_will_never_run(tmp_path: Path) -> None:
+    """Under the hybrid setting a local task's closure needs no AI-powered review (ADR-049).
+
+    The installation's verification default is ``required``; that requirement now belongs to the
+    tasks that run AI-powered review, so a local task's readiness lists neither the missing review
+    nor a closing review, while a legacy task (no setting, no switch) keeps both as released.
+    """
+
+    workspace = _workspace(tmp_path / "workspace")
+    async with multi_agent_service(tmp_path / "state") as service:
+        assert service.config.verification.semantic == "required"
+        legacy = await _start(service, workspace, "Legacy task")
+        await legacy.check()
+        legacy_readiness = cast(
+            Mapping[str, object], (await legacy.status_projected())["closure_readiness"]
+        )
+        legacy_actionable = cast(list[str], legacy_readiness.get("agent_actionable") or [])
+        assert "semantic_review_not_requested" in legacy_actionable
+
+        _hybrid(service)
+        local = await _start(service, workspace, "Local task")
+        await local.check()
+        readiness = cast(
+            Mapping[str, object], (await local.status_projected())["closure_readiness"]
+        )
+        actionable = cast(list[str], readiness.get("agent_actionable") or [])
+        assert "semantic_review_not_requested" not in actionable
+        assert "closing_review_required" not in actionable
