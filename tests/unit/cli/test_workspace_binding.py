@@ -307,3 +307,47 @@ def _private_group_is(value: bool) -> Callable[[int, int], bool]:
         return value
 
     return answer
+
+
+def _as_other_user_under_superuser(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run as another account while the test runner's own uid plays the superuser (``/app``)."""
+    from yoetz.config import foreign_write
+
+    real = os.geteuid()
+    monkeypatch.setattr(foreign_write, "_SUPERUSER_UID", real)
+    monkeypatch.setattr(os, "geteuid", lambda: real + 1)
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+@pytest.mark.parametrize(("mode", "admitted"), [(0o755, True), (0o1777, True), (0o777, False)])
+def test_superuser_owned_workspace_is_a_non_root_users_project(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: int, admitted: bool
+) -> None:
+    # A container image keeps /app root-owned (0755, or sticky 1777) and runs the agent as a
+    # non-root USER; the workspace is still that user's project unless others can replace it.
+    home = tmp_path / "home"
+    workspace = tmp_path / "app"
+    workspace.mkdir()
+    workspace.chmod(mode)
+    _as_other_user_under_superuser(monkeypatch)
+
+    expected = os.fspath(workspace) if admitted else None
+    assert resolve_workspace_locator(explicit=workspace, payload={}, env=_env(home)) == expected
+    assert canonical_workspace_locator(workspace, env=_env(home)) == expected
+
+
+@pytest.mark.skipif(not hasattr(os, "geteuid"), reason="POSIX ownership")
+def test_another_non_root_users_workspace_stays_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from yoetz.config import foreign_write
+
+    home = tmp_path / "home"
+    workspace = tmp_path / "theirs"
+    workspace.mkdir(mode=0o755)
+    real = os.geteuid()
+    monkeypatch.setattr(foreign_write, "_SUPERUSER_UID", real + 7)
+    monkeypatch.setattr(os, "geteuid", lambda: real + 1)
+
+    assert resolve_workspace_locator(explicit=workspace, payload={}, env=_env(home)) is None
+    assert canonical_workspace_locator(workspace, env=_env(home)) is None

@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Final, cast
 
-from yoetz.config.foreign_write import writable_by_others
+from yoetz.config.foreign_write import project_root_admitted, writable_by_others
 
 __all__ = [
     "MAX_WORKSPACE_LOCATOR_BYTES",
@@ -128,12 +128,7 @@ def _candidate_path(raw: object, *, cwd: Path, home: Path) -> Path | None:
         return None
     except OSError:
         return None
-    if (
-        stat.S_ISLNK(facts.st_mode)
-        or not stat.S_ISDIR(facts.st_mode)
-        or (hasattr(os, "geteuid") and facts.st_uid != os.geteuid())
-        or writable_by_others(facts)
-    ):
+    if not project_root_admitted(facts):
         return None
     return path
 
@@ -201,12 +196,7 @@ def _canonical_selected_workspace(selected: Path, *, home: Path) -> str | None:
         facts = root.lstat()
     except OSError:
         return None
-    if (
-        stat.S_ISLNK(facts.st_mode)
-        or not stat.S_ISDIR(facts.st_mode)
-        or (hasattr(os, "geteuid") and facts.st_uid != os.geteuid())
-        or writable_by_others(facts)
-    ):
+    if not project_root_admitted(facts):
         return None
     return os.fspath(root)
 

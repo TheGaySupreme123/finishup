@@ -8,6 +8,14 @@ reverse-chronological released versions.
 
 ### Fixed
 
+- A non-root user can now use Yoetz in a project directory that root owns, as container images
+  commonly set up (`/app` owned by root, the agent running as `nobody` or `agent`). Setup, hooks
+  and MCP tools accept such a project root when no other account can write it, or when it is a
+  sticky directory, for Codex, Claude Code and Cursor alike. Before, `setup run` failed with
+  `internal_error` and host connections with `target_unsafe`. Files Yoetz writes inside the
+  project must still belong to the user, and a root-owned Git worktree is used as a plain
+  directory, because Git itself refuses another owner's worktree.
+
 - The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
   in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find
   bubblewrap on PATH" warning is admitted the same way as its user-namespace warning: the reviewer

@@ -2504,6 +2504,13 @@ work. A foreground-cancelled call that may have started names its provider on th
 (usage unknown). This is service-side and identical on every host and supported OS; hook advice
 rendering is unchanged.
 
+## Root-owned project roots (non-root container users)
+
+Codex project setup, hooks and MCP use the shared project-root rule (ADR-007, 2026-10-14): a
+non-root user may use a root-owned project root that no other account can write, or a sticky one.
+Files Yoetz writes inside the project must still be the user's own. Verified for Codex in a Boat
+container as `nobody` and `agent`; Claude Code and Cursor are unit-tested on the same rule.
+
 ## Response and receipt timeout recovery
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the

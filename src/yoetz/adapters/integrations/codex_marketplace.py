@@ -36,7 +36,7 @@ from yoetz.adapters.integrations.toml_tables import (
     exact_table_span,
     strip_exact_table,
 )
-from yoetz.config.foreign_write import writable_by_others
+from yoetz.config.foreign_write import project_root_admitted, writable_by_others
 from yoetz.ports.integrations import (
     IntegrationError,
     IntegrationReason,
@@ -445,9 +445,7 @@ def _validated_project(target: IntegrationTarget) -> Path:
         stat = root.stat()
     except OSError as exc:
         raise _error(IntegrationReason.TARGET_UNSAFE) from exc
-    if hasattr(os, "geteuid") and stat.st_uid != os.geteuid():
-        raise _error(IntegrationReason.TARGET_UNSAFE)
-    if writable_by_others(stat):
+    if not project_root_admitted(stat):
         raise _error(IntegrationReason.TARGET_UNSAFE)
     resolved = root.resolve()
     if root.absolute() != resolved:

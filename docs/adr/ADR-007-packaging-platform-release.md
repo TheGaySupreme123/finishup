@@ -286,6 +286,42 @@ the five-second handshake and services the restart budget.
    unchanged: hook auto-attach keeps its one-second fail-open budget and on-demand start its 30
    seconds; with bytecode, a generation starts as fast as the ordinary environment.
 
+## Amendment — a root-owned project root is a non-root user's project (2026-10-14, owner decision)
+
+The owner decided that the Terminal-Bench 4 Yoetz arms must run as each task image's own non-root
+`USER`, as the official run does, instead of skipping those tasks. Container images commonly keep
+the working directory root-owned (`/app` with mode 0755, or sticky 1777) and run the agent as
+`nobody` or `agent`. Every project-root check refused that directory because it required the
+running user to own it: workspace binding refused the locator (`setup run` then failed as
+`internal_error` from `workspace_locator_invalid`), and the Codex skill, plugin and marketplace,
+the portable plugin, Claude Code's project target and Cursor's project MCP registration refused it
+as `target_unsafe`.
+
+1. **One project-root rule** (`config.foreign_write.project_root_admitted`). A project root is
+   admitted when it is a real directory and either the running user owns it and no other account
+   can write it (unchanged), or, for a non-root user, root owns it and no other account can write
+   it, or root owns it and it is sticky. Root is already trusted with everything the user runs; in
+   a sticky directory no other account can rename or remove the entries the user creates. Any
+   other owner is refused, sticky or not, and so is a non-sticky root-owned directory others can
+   write.
+2. **Only the root itself.** Every file and directory Yoetz writes or reads inside the project
+   (`.agents/…`, `.cursor/…`, `.git`, captured files) is still checked against the running user.
+   A root-owned worktree is therefore not a Git repository Yoetz will read: Git refuses another
+   owner's worktree ("dubious ownership") and Yoetz runs Git with no system or global
+   configuration, so no `safe.directory` can be configured around it. Such a project keeps its
+   plain-directory identity; subject-state and change capture report their existing limitations.
+3. **All hosts.** Workspace binding is shared by hooks, MCP and the CLI for Codex, Claude Code and
+   Cursor, and the same rule replaces each host's project-root ownership check.
+
+Known limits, unchanged here: the runtime prefix must be writable by the user who binds an
+instance to it (`instance create --bind-runtime` writes the pin there), and a serving start needs
+the user's own 0700 `.<prefix>-releases` sibling, so a root-installed runtime serves only root.
+
+Verification: synthetic-stat unit tests of the rule; per-host tests in which the test runner's
+uid plays root and the process another account; a Boat container run of the full benchmark
+bootstrap and an MCP `start`/`publish_work`/`receipt` lifecycle as `nobody` in a root-owned
+`/app` (risk-scorer-replay) and as `agent` in a sticky root-owned `/app` (rs-archive-clone).
+
 ## Implementation-lock identities
 
 The 2026-07-17 implementation lock freezes the direct dependency declarations below. All are

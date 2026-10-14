@@ -5129,7 +5129,10 @@ captured-content selection does not require an approved-check policy.
 Observation consent is one workspace-level confirmation recorded as a private workspace commitment.
 Consent, status, pause, resume, revoke, setup probes, and hook ingress all canonicalize an explicit
 Git subdirectory to the same nearest safe Git project root; a non-Git directory remains its exact
-safe locator. There is no ancestor-commitment fallback. A legacy grant recorded against an exact
+safe locator. A safe project root is the running user's own directory that no other account can
+write or, for a non-root user, a root-owned directory that no other account can write or that is
+sticky (ADR-007, 2026-10-14); anything Yoetz writes inside it must still be the user's own. There
+is no ancestor-commitment fallback. A legacy grant recorded against an exact
 Git subdirectory does not authorize its ancestor and must be explicitly granted again.
 The normalized locator is authenticated encrypted content; plaintext keeps only commitment and
 object ID. Revocation disables/removes the active locator and trust binding while retaining already

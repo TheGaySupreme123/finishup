@@ -179,6 +179,19 @@ root-owned Claude Code executable, which the separate executable-ownership rule 
 `target_unsafe` regardless of umask. The interpreter a retained generation links to is
 re-checked on every reuse, so a later group change is refused then too.
 
+## Root-owned project directories (containers)
+
+Container images often keep the working directory root-owned and run the agent as a non-root
+`USER` (for example `/app` as `root:root 0755`, or sticky `1777`, with `USER nobody`). Yoetz
+admits such a project root for the non-root user when no other account can write it, or when it is
+sticky (ADR-007, 2026-10-14); a directory another non-root account owns stays refused. Everything
+Yoetz creates inside it (`.agents/`, `.cursor/`) must belong to the user, so when the user cannot
+create entries there, have root pre-create that directory owned by the user. Git refuses a
+root-owned worktree for another user, so such a project is used as a plain directory, not a
+repository. For the runtime itself in such an image: install it as the user (or give the user its
+prefix and a 0700 `.<prefix>-releases` sibling), because binding an instance writes into the
+prefix and every serving start uses that sibling.
+
 ## Retained-runtime bytecode and slow starts
 
 Serving processes (`service run`, `mcp serve`, every hook, `upgrade`) run from a sealed,
