@@ -167,16 +167,20 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
         # payload's evidence/result oneOf: +3 branches, +1 definition, and about 1.7 KB for that
         # payload (directory kind, item role, acknowledged_not_done status and its reason). The
         # branch cannot be shared with 1.0.0, which must keep refusing those additions.
+        # decision_recorded 1.1.0 (ADR-049, the per-task review-mode switch) adds one more draft
+        # branch and its payload definition (+1 branch, +1 definition, about 2 KB with its
+        # example), for the same reason: 1.0.0 must keep refusing ``review_mode``.
         "publish-work-request": MappingProxyType(
             {
                 "max_oneof_nodes": 8,
-                "max_oneof_branches": 41,
+                "max_oneof_branches": 42,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 24,
+                "max_defs_count": 25,
                 "max_defs_nest_depth": 1,
-                # obligation_published 1.1.0 (#1002, #997) and blocker notices (#985).
-                "max_encoded_bytes": 55_000,
+                # obligation_published 1.1.0 (#1002, #997), blocker notices (#985) and
+                # decision_recorded 1.1.0 (ADR-049).
+                "max_encoded_bytes": 57_000,
             }
         ),
         "check-request": MappingProxyType(

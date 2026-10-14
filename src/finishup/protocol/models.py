@@ -3932,7 +3932,9 @@ class CheckReviewModeModel(_ClosedModel):
 
     mode: Literal["ai_powered", "local"]
     source: Literal["check_request", "conversation_default", "conversation_switch"]
-    local_reason: Literal["ai_review_not_set_up", "owner_local_only"] | None = None
+    local_reason: Literal["ai_review_not_set_up", "owner_local_only", "route_local_only"] | None = (
+        None
+    )
     switch_event_id: EventIdWire | None = None
 
     @model_validator(mode="after")
@@ -5078,6 +5080,7 @@ class StatusReviewModeModel(_ClosedModel):
             "ai_review_not_set_up",
             "conversation_default",
             "owner_local_only",
+            "route_local_only",
             "switched_to_local",
         ]
         | None

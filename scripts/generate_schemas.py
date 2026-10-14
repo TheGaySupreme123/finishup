@@ -3401,7 +3401,7 @@ def _add_check_review_mode(
         ],
         "properties": {
             "local_reason": {
-                "enum": ["ai_review_not_set_up", "owner_local_only"],
+                "enum": ["ai_review_not_set_up", "owner_local_only", "route_local_only"],
                 "type": "string",
             },
             "mode": {"enum": ["ai_powered", "local"], "type": "string"},
@@ -5047,6 +5047,7 @@ def _add_status_review_mode(definitions: dict[str, JsonValue]) -> None:
                     "ai_review_not_set_up",
                     "conversation_default",
                     "owner_local_only",
+                    "route_local_only",
                     "switched_to_local",
                 ],
                 "type": "string",

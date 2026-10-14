@@ -21,6 +21,7 @@ from finishup.config.models import OFFICIAL_OPENAI_ENDPOINT_PROFILE_ID, FinishUp
 from finishup.config.write import codex_subscription_runtime
 from finishup.domain.privacy import (
     AuthorizationScopeKind,
+    ConversationReview,
     DataClass,
     EgressChannel,
     PrivacyPolicy,
@@ -485,10 +486,14 @@ def _install_setup_stubs(
         "first_repository_available",
         "consumed",
     ] = "not_applicable",
+    conversations: list[ConversationReview] | None = None,
 ) -> None:
     """Stub only the I/O edges, leaving the real recipe and branch selection under test."""
 
     import finishup.cli.privacy_setup as module
+
+    if conversations is None:
+        conversations = []
 
     async def snapshot(_workspace_locator: object = None) -> object:
         return module.PrivacySetupSnapshot(
@@ -537,6 +542,13 @@ def _install_setup_stubs(
     monkeypatch.setattr(module.typer, "confirm", confirm)
     monkeypatch.setattr(module, "_propose", propose)
     monkeypatch.setattr(module, "_decide", decide)
+
+    def conversation_prompt(default: ConversationReview) -> ConversationReview:
+        # ADR-049: a first AI-powered review grant asks how tasks use it; enter keeps the default.
+        conversations.append(default)
+        return default
+
+    monkeypatch.setattr(module, "_conversation_review_prompt", conversation_prompt)
 
 
 def _forbid_custom_sections(monkeypatch: pytest.MonkeyPatch, reason: str) -> None:

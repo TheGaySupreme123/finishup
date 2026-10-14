@@ -291,9 +291,10 @@ def _lineage_status_wire() -> dict[str, Any]:
     """The lineage status as wire JSON: optional non-null fields absent, never ``null`` (F3)."""
 
     wire = _lineage_status_result().model_dump(mode="json")
-    # An unset optional field dumps as null here; the public wire omits it (issue #982).
-    if wire.get("credential_heuristic") is None:
-        wire.pop("credential_heuristic", None)
+    # An unset optional field dumps as null here; the public wire omits it (issues #982, ADR-049).
+    for optional in ("credential_heuristic", "review_mode"):
+        if wire.get(optional) is None:
+            wire.pop(optional, None)
     readiness = wire.get("closure_readiness")
     if isinstance(readiness, dict):
         typed = cast(dict[str, object], readiness)

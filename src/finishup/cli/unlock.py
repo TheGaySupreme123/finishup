@@ -436,7 +436,7 @@ _CHANGE_LABELS: Final[dict[tuple[str, str], str]] = {
     ("global", "effective_scope"): "Policy applies to",
     ("global", "provider_data_use_evidence"): "Current provider data-use evidence",
     ("global", "credential_heuristic"): "Possible-credential filter",
-    ("global", "conversation_review"): "Conversations",
+    ("global", "conversation_review"): "Tasks and AI-powered review",
     ("channel", "enabled"): "Channel",
     ("channel", "provider"): "Provider and model",
     ("channel", "fallback_provider"): "Fallback provider and model",
@@ -496,14 +496,14 @@ _FLAG_WORDS: Final[dict[tuple[str, str], tuple[str, str]]] = {
 
 # Fixed local wording for the conversation setting (ADR-049); the service sends only the token.
 CONVERSATION_REVIEW_WORDS: Final[dict[str, str]] = {
-    "local_only": "Local only; agents may not turn on AI-powered review",
+    "local_only": "Local checks only; agents may not turn on AI-powered review",
     "local_owner_approval": (
-        "Start local; AI-powered review in a conversation waits for your approval of each review"
+        "Tasks start local; each AI-powered review an agent turns on waits for your approval"
     ),
     "local_agent_opt_in": (
-        "Start local; an agent may turn on AI-powered review in a conversation without asking"
+        "Tasks start local; an agent may turn on AI-powered review for a task without asking"
     ),
-    "ai_powered": "AI-powered review in every conversation",
+    "ai_powered": "AI-powered review on every task",
 }
 
 

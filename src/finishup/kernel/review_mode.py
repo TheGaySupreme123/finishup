@@ -7,9 +7,10 @@ the setting the caller resolved, and says which mode a check in that conversatio
 
 A switch is a request. It never grants disclosure: the effective privacy policy still decides
 what may leave, and ``local_owner_approval`` still makes every AI-powered review wait for the
-owner's per-request decision. Under ``local_only`` the owner has said agents may not opt in, and
-where AI-powered review is not set up nothing can run, so a switch there leaves the conversation
-local and says why.
+owner's per-request decision. Under an explicit ``local_only`` the owner has said agents may not
+opt in; a host connection registered on the strict route can never request AI-powered review; and
+where AI-powered review is not set up nothing can run. A switch in any of those leaves the
+conversation local and says which one applied.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ __all__ = [
     "ConversationReviewContext",
     "ConversationReviewMode",
     "LocalReason",
+    "REQUESTED_BUT_LOCAL_REASONS",
     "ReviewModeSwitch",
     "conversation_review_mode",
     "conversation_review_mode_from_switches",
@@ -36,8 +38,15 @@ type LocalReason = Literal[
     "conversation_default",
     "switched_to_local",
     "owner_local_only",
+    "route_local_only",
     "ai_review_not_set_up",
 ]
+
+# The reasons a conversation that asked for AI-powered review still runs local. Closed tokens
+# shared by the check's recorded mode and status (ADR-049).
+REQUESTED_BUT_LOCAL_REASONS: Final = frozenset(
+    {"owner_local_only", "route_local_only", "ai_review_not_set_up"}
+)
 
 # A conversation whose owner setting is unknown keeps the released behaviour: every conversation
 # may use AI-powered review under the effective privacy policy.
@@ -49,12 +58,16 @@ class ConversationReviewContext:
     """What the service knows about a task's repository when a check starts (ADR-049).
 
     ``setting`` is the owner's effective conversation setting, or ``None`` when it could not be
-    read. ``ai_review_available`` is whether AI-powered review is set up for the task: a provider
-    is configured and the repository's privacy grant has its inference channel on.
+    read. ``ai_review_available`` is whether AI-powered review is set up for the task: a reviewer
+    is configured with its credential or login present, and the repository's privacy grant has its
+    inference channel on. ``setting_explicit`` is whether the owner chose ``setting`` (a policy
+    written before the field existed has the released reading instead): only an explicit
+    ``local_only`` tells an agent the owner chose local checks.
     """
 
     setting: ConversationReview | None
     ai_review_available: bool
+    setting_explicit: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,8 +85,9 @@ class ConversationReviewMode:
     """The mode a check runs in, and the structural reason for it.
 
     ``requested`` is what the conversation asked for (its default or its latest switch);
-    ``mode`` is what runs. They differ only when the owner set the repository to local only or
-    AI-powered review is not set up (``local_reason`` says which).
+    ``mode`` is what runs. They differ only when the owner set the repository to local only, the
+    host connection is registered on the strict route, or AI-powered review is not set up
+    (``local_reason`` says which).
     """
 
     mode: ReviewMode
@@ -123,17 +137,24 @@ def conversation_review_mode(
     setting: ConversationReview | None,
     *,
     ai_review_available: bool = True,
+    setting_explicit: bool = False,
+    route_allows_review: bool = True,
 ) -> ConversationReviewMode:
     """The review mode of the conversation at *projection*'s frontier.
 
     ``setting`` is the owner's effective conversation setting for the task's repository, or
     ``None`` when it could not be read (the released behaviour applies). ``ai_review_available``
-    is whether AI-powered review is set up for the task at all (a provider and a repository grant
-    whose inference channel is on).
+    is whether AI-powered review is set up for the task at all (a reviewer and a repository grant
+    whose inference channel is on). ``setting_explicit`` is whether the owner chose the setting;
+    ``route_allows_review`` is ``False`` on a host connection registered on the strict route.
     """
 
     return conversation_review_mode_from_switches(
-        review_mode_switches(projection), setting, ai_review_available=ai_review_available
+        review_mode_switches(projection),
+        setting,
+        ai_review_available=ai_review_available,
+        setting_explicit=setting_explicit,
+        route_allows_review=route_allows_review,
     )
 
 
@@ -142,8 +163,17 @@ def conversation_review_mode_from_switches(
     setting: ConversationReview | None,
     *,
     ai_review_available: bool = True,
+    setting_explicit: bool = False,
+    route_allows_review: bool = True,
 ) -> ConversationReviewMode:
-    """``conversation_review_mode`` over switches already read in ledger order."""
+    """``conversation_review_mode`` over switches already read in ledger order.
+
+    A conversation that asked for AI-powered review under a setting that starts it local runs
+    local when, in this order, the owner explicitly chose local only (``owner_local_only``), the
+    host connection is on the strict route (``route_local_only``), or AI-powered review is not
+    set up (``ai_review_not_set_up``). The released ``ai_powered`` setting keeps its released
+    behaviour: an unavailable review stays an honest required-review gap.
+    """
 
     effective = _RELEASED_SETTING if setting is None else setting
     if switches:
@@ -165,13 +195,16 @@ def conversation_review_mode_from_switches(
     if effective is ConversationReview.AI_POWERED:
         # The released setting: an unavailable review keeps its honest required-review gap.
         return ConversationReviewMode(ReviewMode.AI_POWERED, requested, effective, switches)
-    if not ai_review_available:
+    reason: LocalReason | None = None
+    if effective is ConversationReview.LOCAL_ONLY and (setting_explicit or ai_review_available):
+        # The owner chose local checks for this repository: agents may not opt in.
+        reason = "owner_local_only"
+    elif not route_allows_review:
+        # This host connection can never request AI-powered review until it is re-registered.
+        reason = "route_local_only"
+    elif not ai_review_available or effective is ConversationReview.LOCAL_ONLY:
         # A conversation that opted in where nothing is set up stays local and says so.
-        return ConversationReviewMode(
-            ReviewMode.LOCAL, requested, effective, switches, "ai_review_not_set_up"
-        )
-    if effective is ConversationReview.LOCAL_ONLY:
-        return ConversationReviewMode(
-            ReviewMode.LOCAL, requested, effective, switches, "owner_local_only"
-        )
+        reason = "ai_review_not_set_up"
+    if reason is not None:
+        return ConversationReviewMode(ReviewMode.LOCAL, requested, effective, switches, reason)
     return ConversationReviewMode(ReviewMode.AI_POWERED, requested, effective, switches)

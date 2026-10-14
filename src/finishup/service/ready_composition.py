@@ -7452,22 +7452,50 @@ async def provide_service_ready_context(
     import_publication_authority = ImportPublicationAuthority(state_path=paths.state)
     reviewer_bound = semantic_configured and provider_endpoint_bound
 
+    async def reviewer_credential_present() -> bool:
+        """Whether the bound reviewer's credential or subscription login is present (ADR-049).
+
+        The same structural facts provider status reads: an API credential in the vault, or a
+        structurally ready subscription runtime (memoized). An unreadable fact counts as present,
+        so a locked vault never strands an opted-in conversation locally; the check then reports
+        the provider outcome honestly.
+        """
+
+        try:
+            return (
+                await configured_provider_credential_present()
+                or await configured_fallback_credential_present()
+            )
+        except Exception:
+            return True
+
     async def conversation_review_context(
         task_runtime: TaskRuntime,
     ) -> ConversationReviewContext | None:
         """The owner's conversation setting and review availability for one task (ADR-049).
 
         Read-only: the task route's repository commitment selects the effective policy the
-        reviewer would run under. ``None`` when the task has no repository-bound route or this
-        composition has no policy application; the check then keeps the released behaviour.
+        reviewer would run under. A task with no repository-bound route can never send work for
+        review, so it reads the installation-wide setting and reports review unavailable. ``None``
+        when the task has no route or this composition has no policy application; the check then
+        keeps the released behaviour.
         """
 
         policy_application = getattr(privacy, "policy_application", None)
         if policy_application is None:
             return None
         route = await catalog.resolve_route(task_runtime.session_id)
-        if route is None or route.repository_privacy_commitment is None:
+        if route is None:
             return None
+        if route.repository_privacy_commitment is None:
+            machine = await policy_application.policy_store.effective_policy(
+                AuthorizationScope(AuthorizationScopeKind.MACHINE, installation_id)
+            )
+            return ConversationReviewContext(
+                machine.policy.effective_conversation_review,
+                False,
+                machine.policy.conversation_review is not None,
+            )
         scope = AuthorizationScope(
             AuthorizationScopeKind.TASK,
             installation_id,
@@ -7483,9 +7511,16 @@ async def provide_service_ready_context(
             ),
             None,
         )
+        available = (
+            reviewer_bound
+            and llm is not None
+            and llm.enabled
+            and await reviewer_credential_present()
+        )
         return ConversationReviewContext(
             effective.policy.effective_conversation_review,
-            reviewer_bound and llm is not None and llm.enabled,
+            available,
+            effective.policy.conversation_review is not None,
         )
 
     return ServiceReadyContext(

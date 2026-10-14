@@ -3154,7 +3154,9 @@ def validate_deliverable_states(value: object) -> tuple[DeliverableState, ...]:
 CHECK_REVIEW_MODE_SOURCES: Final = frozenset(
     {"conversation_default", "conversation_switch", "check_request"}
 )
-CHECK_REVIEW_MODE_LOCAL_REASONS: Final = frozenset({"owner_local_only", "ai_review_not_set_up"})
+CHECK_REVIEW_MODE_LOCAL_REASONS: Final = frozenset(
+    {"owner_local_only", "route_local_only", "ai_review_not_set_up"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3165,7 +3167,8 @@ class CheckReviewMode:
     chose it: the conversation's default from the owner's setting, the conversation's latest
     ``decision_recorded`` switch (``switch_event_id``), or the check's own explicit mode.
     ``local_reason`` is present only when AI-powered review was asked for and the check still ran
-    local: the owner set the repository to local only, or AI-powered review is not set up.
+    local: the owner set the repository to local only, the host connection is registered on the
+    strict route, or AI-powered review is not set up.
     Closed tokens and an event id only; never prose.
     """
 

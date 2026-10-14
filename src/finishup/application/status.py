@@ -327,11 +327,17 @@ class StatusInternalResult:
         }
 
 
-async def status_review_mode(app: object, runtime: TaskRuntime) -> dict[str, JsonValue] | None:
+async def status_review_mode(
+    app: object,
+    runtime: TaskRuntime,
+    *,
+    route_profile: Literal["policy", "strict"] | None = None,
+) -> dict[str, JsonValue] | None:
     """The conversation's review mode for status (ADR-049); ``None`` when it cannot be read.
 
     Read-only: the owner's setting and review availability from the application's reader, and
-    the switches from the head compact projection. A read failure leaves status readable.
+    the switches from the head compact projection. ``mode`` is what the next check that names no
+    mode runs in on this route. A read failure leaves status readable.
     """
 
     reader = getattr(app, "conversation_review_context", None)
@@ -355,7 +361,11 @@ async def status_review_mode(app: object, runtime: TaskRuntime) -> dict[str, Jso
         )
         return None
     conversation = conversation_review_mode_from_switches(
-        switches, context.setting, ai_review_available=context.ai_review_available
+        switches,
+        context.setting,
+        ai_review_available=context.ai_review_available,
+        setting_explicit=context.setting_explicit,
+        route_allows_review=route_profile != "strict",
     )
     body: dict[str, JsonValue] = {
         "mode": conversation.mode.value,
@@ -2241,7 +2251,7 @@ async def execute_status(
             semantic_review_required=_semantic_review_required(app, route_profile),
             check_in_flight=frontier == head and await _check_in_flight(runtime),
         )
-        review_mode = await status_review_mode(app, runtime)
+        review_mode = await status_review_mode(app, runtime, route_profile=route_profile)
         return StatusInternalResult(
             "0.1",
             "1.0.0",
