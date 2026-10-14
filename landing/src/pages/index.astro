@@ -59,7 +59,8 @@ const STORY_SCREENS = plan.reduce((sum, [, len]) => sum + (len as number), 0) + 
 // second as the reader scrolls (see particles.js); the scene also writes them out as text for
 // screen readers and the static story. The page reads the figures from here only.
 // PLACEHOLDER BENCHMARK NUMBERS: the owner replaces them by hand before launch. 60/80 are
-// stand-ins, not results; fill in the run's model, suite and scores.
+// stand-ins, not results; fill in the run's model, suite and scores. tests/page.test.mjs keeps
+// this marker required while any of the restored values is unchanged.
 const BENCH = { model: "GPT 6.1 Sol", suite: "DeepSWE", scores: ["60", "80"] };
 // PLACEHOLDER PAPER LINK: the owner replaces it by hand before launch.
 const PAPER_URL = "[PAPER URL]";

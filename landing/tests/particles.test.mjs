@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mountParticles } from "../src/scripts/particles.js";
 
-function environment(t, { opaqueSamples = false } = {}) {
+function environment(t, { opaqueSamples = false, size = [1024, 768] } = {}) {
   const names = ["window", "document", "IntersectionObserver", "requestAnimationFrame", "cancelAnimationFrame"];
   const originals = names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
   const queue = new Map();
@@ -28,8 +28,9 @@ function environment(t, { opaqueSamples = false } = {}) {
     frames: 0,
     draws: [],
     tierDraws: [],
+    inkDraws: [],
     setTransform() {},
-    clearRect() { if (main) { this.frames++; this.draws = []; this.tierDraws = []; } },
+    clearRect() { if (main) { this.frames++; this.draws = []; this.tierDraws = []; this.inkDraws = []; } },
     beginPath() {}, arc() {}, arcTo() {}, moveTo() {}, lineTo() {},
     quadraticCurveTo() {}, closePath() {}, stroke() {}, fill() {}, fillRect() {},
     strokeText() {},
@@ -49,12 +50,13 @@ function environment(t, { opaqueSamples = false } = {}) {
       if (main) {
         this.draws.push(geometry);
         if (sprite.getContext("2d").fillStyle === "#C48A0E") this.tierDraws.push(geometry);
+        if (sprite.getContext("2d").fillStyle === "#064E3B") this.inkDraws.push(geometry);
       }
     },
   });
   const ctx = context(true);
-  const canvas = { clientWidth: 1024, clientHeight: 768, width: 0, height: 0, getContext: () => ctx };
-  const win = { ...eventTarget(), innerWidth: 1024, devicePixelRatio: 1 };
+  const canvas = { clientWidth: size[0], clientHeight: size[1], width: 0, height: 0, getContext: () => ctx };
+  const win = { ...eventTarget(), innerWidth: size[0], devicePixelRatio: 1 };
   const doc = {
     ...eventTarget(), hidden: false, fonts: { load: () => fonts },
     createElement: () => {
@@ -271,3 +273,72 @@ test("reduced tier particles use the final camera on the first render and unchan
   env.flush(5000);
   assert.deepEqual(env.ctx.draws, blended, "a blended camera also renders stable pixel anchors");
 });
+
+for (const reducedMotion of [false, true]) {
+  test(`the artwork draws decimal scores verbatim at both stops (reduced motion: ${reducedMotion})`, (t) => {
+    const env = environment(t);
+    const art = env.mount({ reducedMotion, scores: ["62.4", "81.7"] });
+    env.intersect(true);
+    art.setScene("sun", 0.25);
+    env.flush(0);
+    art.setScene("sun", 0.75);
+    env.flush(1000);
+    assert.deepEqual(env.texts.filter((text) => text.endsWith("%")), ["62.4%", "81.7%"]);
+  });
+}
+
+test("the count-up keeps the supplied precision and samples a bounded set of figures", (t) => {
+  const env = environment(t);
+  const art = env.mount({ scores: ["62.4", "81.7"] });
+  env.intersect(true);
+  for (let k = 0; k <= 400; k++) {
+    art.setScene("sun", 0.35 + (0.3 * k) / 400);
+    env.flush(k * 20);
+  }
+  const scores = env.texts.filter((text) => text.endsWith("%"));
+  assert.equal(scores[0], "62.4%");
+  assert.equal(scores.at(-1), "81.7%");
+  for (const score of scores) assert.match(score, /^\d+\.\d%$/, "every figure keeps one decimal");
+  assert.ok(scores.length <= 41, `a bounded count-up (${scores.length} figures sampled)`);
+});
+
+// The engine's scale and camera for a canvas (see frame() in particles.js): the ink dots
+// above the horizon in the sunrise are the score's.
+function scoreDots(env, [w, h]) {
+  const S = w < 720 ? w * 0.42 : Math.min(w, h) * 0.46;
+  const cy = w < 720 ? h * 0.36 : h / 2;
+  return env.ctx.inkDraws.filter(([, y, , size]) => y + size / 2 < cy + 0.4 * S);
+}
+
+for (const size of [[768, 1024], [720, 900], [820, 1180], [900, 1000], [1024, 1366], [1024, 768], [1440, 900], [390, 844]]) {
+  test(`the score stays inside a ${size[0]}x${size[1]} canvas at both stops`, (t) => {
+    const env = environment(t, { opaqueSamples: true, size });
+    const art = env.mount({ reducedMotion: true, count: 5500, scores: ["60", "80"] });
+    env.intersect(true);
+    for (const [phase, now] of [[0.25, 0], [0.75, 1000]]) {
+      art.setScene("sun", phase);
+      env.flush(now);
+      const dots = scoreDots(env, size);
+      assert.ok(dots.length > 100, "the score is drawn");
+      for (const [x, , w] of dots) assert.ok(x >= 0 && x + w <= size[0], `dot at ${x.toFixed(1)} stays inside 0..${size[0]}`);
+    }
+  });
+}
+
+// A landscape canvas keeps the side score at its full size: at the same scale (the canvas
+// height sets it) the score spans the same width on a 1440 and a 2560 wide canvas, and
+// that span is the full-size figure's (0.6 scene units per sample unit).
+for (const size of [[1440, 900], [2560, 900]]) {
+  test(`a ${size[0]}x${size[1]} canvas keeps the side score at its full size`, (t) => {
+    const env = environment(t, { opaqueSamples: true, size });
+    const art = env.mount({ reducedMotion: true, count: 5500, scores: ["60", "80"] });
+    env.intersect(true);
+    art.setScene("sun", 0.25);
+    env.flush(0);
+    const xs = scoreDots(env, size).map(([x, , w]) => x + w / 2);
+    // The test mask spans sample x 120..778 of 900, so walked dots span at most 658/450 units.
+    const span = Math.max(...xs) - Math.min(...xs);
+    const full = 0.6 * (658 / 450) * Math.min(...size) * 0.46;
+    assert.ok(span > full * 0.85 && span <= full + 1, `span ${span.toFixed(1)} of a full-size ${full.toFixed(1)}`);
+  });
+}

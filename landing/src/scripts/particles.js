@@ -25,6 +25,9 @@ const HERO_HOLD_AT = 0.56;
 const PLAN = [["hero", 0.82], ["alone", 1.5], ["swarm", 1.5], ["robot", 3.6], ["sun", 3], ["end", 1]];
 const BLEND = 0.3;
 const clamp01 = (v) => Math.max(0, Math.min(1, v));
+// The benchmark count-up takes at most this many steps, so it samples a bounded set of figures.
+const COUNT_STEPS = 40;
+const decimalsOf = (figure) => (/\.(\d+)$/.exec(String(figure).trim()) || ["", ""])[1].length;
 const smooth = (v) => { const u = clamp01(v); return u * u * (3 - 2 * u); };
 function timeline(s, plan) {
   let acc = 0;
@@ -126,6 +129,7 @@ export function mountParticles(canvas, options = {}) {
   let narrowLayout = false; // phone: artwork up top, score above the sun
   const defaultTier = { x: 0.9, y: 0.55, w: 0.7, h: 0.3 };
   let tierN = defaultTier;
+  let scoreRoom = Infinity; // scene units left of the camera centre the side score may use
   let tilt = 0;
   let ox = 0;
   let orb = 0;
@@ -291,6 +295,8 @@ export function mountParticles(canvas, options = {}) {
     for (let j = 0; j < n; j++) order[j] = j;
     order.sort((p, q) => ang[p] - ang[q]);
     pts.width = Math.max(0.2, hi - lo);
+    pts.lo = lo;
+    pts.hi = hi;
     pts.dep = dep;
     pts.order = order;
     cache[key] = pts;
@@ -486,11 +492,27 @@ export function mountParticles(canvas, options = {}) {
         // two stops: Codex alone, then with FinishUP's AI-powered review
         const stop = phase < 0.5 ? 0 : 1;
         // the score counts up from the first figure to the last as the sun crosses the middle;
-        // with reduced motion each stop shows its own figure, with none in between
-        const lo = parseFloat(scores[0]), hi = parseFloat(scores[scores.length - 1]);
+        // with reduced motion each stop shows its own figure, with none in between. The stops
+        // show the supplied figures verbatim; the figures between keep their precision.
+        const first = scores[0], last = scores[scores.length - 1];
+        const lo = parseFloat(first), hi = parseFloat(last);
         const counts = !reduced && isFinite(lo) && isFinite(hi);
-        const shown = counts ? String(Math.round(lo + (hi - lo) * smooth((phase - 0.42) / 0.16))) : scores[Math.min(scores.length - 1, stop)] || "";
+        let shown = scores[Math.min(scores.length - 1, stop)] || "";
+        if (counts) {
+          const u = Math.round(smooth((phase - 0.42) / 0.16) * COUNT_STEPS) / COUNT_STEPS;
+          shown = u <= 0 ? String(first) : u >= 1 ? String(last) : (lo + (hi - lo) * u).toFixed(Math.max(decimalsOf(first), decimalsOf(last)));
+        }
         const digits = shown ? wordSet(shown + "%") : null;
+        // Beside the sun on wide screens. Its sun-side edge stays put; where the canvas is too
+        // narrow for the full-size figure (portrait and square tablets), the figure shrinks
+        // toward the sun so its far edge keeps a gutter inside the canvas.
+        let digitScale = 0.6, digitX = -0.66;
+        if (digits && digits.length && !narrowLayout) {
+          const right = -0.66 + 0.6 * digits.hi;
+          const left = Math.min(right - 0.2, Math.max(-0.66 + 0.6 * digits.lo, -scoreRoom));
+          digitScale = (right - left) / (digits.hi - digits.lo);
+          digitX = right - digitScale * digits.hi;
+        }
         // the tier word, drawn densely in dots where the copy leaves room for it, its dots
         // sized to the word so it reads at every width
         const tier = stop === 1 && drawTier ? wordSet("AI-powered", true) : null;
@@ -516,7 +538,7 @@ export function mountParticles(canvas, options = {}) {
             // figure evenly, like the tier word's, so it reads within the phone's dot budget.
             const d0 = Math.floor(N * 0.37), d1 = Math.floor(N * 0.45);
             if (narrowLayout) fromSetEven(i, d0, d1, digits, 0.5, 0.02, Math.max(-0.75, Math.min(-0.2, sy - 0.5)), 0);
-            else fromSetEven(i, d0, d1, digits, 0.6, -0.66, Math.max(-0.2, Math.min(0, sy)), 0);
+            else fromSetEven(i, d0, d1, digits, digitScale, digitX, Math.max(-0.2, Math.min(0, sy)), 0);
             tbig[i] = 1.6;
             continue;
           }
@@ -576,6 +598,9 @@ export function mountParticles(canvas, options = {}) {
     if (anchor) anchorN = { x: (anchor.x - cxo) / S, y: (anchor.y - cyo) / S };
     if (tierPx) tierN = { x: (tierPx.x - cxo) / S, y: (tierPx.y - cyo) / S, w: tierPx.w / S, h: tierPx.h / S };
     else tierN = defaultTier;
+    // the side score's room: from the camera centre to a gutter inside the canvas's left edge,
+    // wide enough to absorb the sunrise's slight yaw and perspective
+    scoreRoom = (cxo - Math.max(24, cw * 0.04)) / S;
     let spec;
     if (tl) {
       spec = build(tl.a, t, tl.pa, tl.ia);
