@@ -3989,9 +3989,9 @@ def provider_codex_subscription_setup(
         typer.Option(
             "--executable",
             help=(
-                "Codex CLI/native executable to take the admitted runtime from. Defaults to "
-                "Yoetz's retained runtime, then an existing binding or discovered installation "
-                "that holds the exact admitted bytes."
+                "Codex CLI/native executable to check and bind. Defaults to the newest Codex at "
+                "or above the evaluator minimum among Yoetz's retained copies, the existing "
+                "binding, and discovered installations, falling back to older ones that pass."
             ),
         ),
     ] = None,
@@ -4055,11 +4055,12 @@ def provider_codex_subscription_setup(
     ] = False,
     json_output: _JSON = False,
 ) -> None:
-    """Prove an existing Codex login (or obtain one) via app-server, then bind the exact runtime."""
+    """Capability-check the newest Codex, prove or obtain its login, then bind it."""
 
-    import platform
-
-    from yoetz.adapters.providers.codex_app_server import codex_evaluator_cell_for_platform
+    from yoetz.adapters.providers.codex_app_server import (
+        CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
+        CODEX_EVALUATOR_RUNTIME_FLOOR,
+    )
     from yoetz.adapters.providers.codex_evaluator_runtime import managed_runtime_path
     from yoetz.cli.codex_subscription import (
         codex_subscription_setup,
@@ -4068,23 +4069,17 @@ def provider_codex_subscription_setup(
         default_codex_subscription_model,
         default_codex_subscription_reasoning_effort,
         default_codex_subscription_routine_effort,
-        resolve_supported_codex_executable,
+        resolve_codex_executable,
         runtime_bundle,
     )
 
     try:
-        selected_executable = (
+        shown_executable = (
             default_codex_evaluator_executable() if executable is None else executable
         )
-        if selected_executable is None:
+        if shown_executable is None:
             raise ValueError("codex_evaluator_runtime_unavailable")
-        native, digest, source = resolve_supported_codex_executable(selected_executable)
-        cell = codex_evaluator_cell_for_platform(
-            "linux" if sys.platform.startswith("linux") else sys.platform,
-            platform.machine(),
-        )
-        if source != cell.source_identity or digest != cell.executable_sha256:
-            raise ValueError("codex_runtime_capability_unsupported")
+        resolved = resolve_codex_executable(shown_executable)
         destination = default_codex_home() if codex_home is None else codex_home
         selected_model = default_codex_subscription_model() if model is None else model
         selected_routine = (
@@ -4098,16 +4093,22 @@ def provider_codex_subscription_setup(
             else reasoning_effort
         )
         typer.echo("Codex with ChatGPT subscription")
-        typer.echo(f"  runtime source: {native}")
+        typer.echo(f"  runtime source: {resolved.native}")
         typer.echo(
-            f"  bound runtime: {managed_runtime_path(runtime_bundle(), cell)} (Yoetz's verified "
-            "private copy; updating your everyday Codex leaves it unchanged)"
+            f"  Codex version: {resolved.version} (minimum {CODEX_EVALUATOR_RUNTIME_FLOOR}), "
+            "capability-checked before it is bound"
+            + (
+                "; an older installed release is used if this one fails the check"
+                if executable is None
+                else ""
+            )
         )
-        typer.echo(f"  executable_sha256: {digest}")
-        typer.echo(f"  code-mode host sha256: {cell.code_mode_host_sha256}")
-        typer.echo(f"  source: {source}")
-        typer.echo(f"  capability cell: {cell.capability_cell_sha256}")
-        typer.echo(f"  cell evidence expires: {cell.capability_evidence_expires_at}")
+        typer.echo(
+            f"  bound runtime: {managed_runtime_path(runtime_bundle(), resolved.source_identity)} "
+            "(Yoetz's private copy; a later Codex update is adopted on the next repair)"
+        )
+        typer.echo(f"  source: {resolved.source_identity}")
+        typer.echo(f"  evidence expires: {CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT}")
         typer.echo(f"  dedicated CODEX_HOME: {destination}")
         typer.echo(f"  model: {selected_model}")
         typer.echo(
@@ -4142,7 +4143,7 @@ def provider_codex_subscription_setup(
         payload = run_async(
             lambda: _codex_subscription_mutate(
                 lambda: codex_subscription_setup(
-                    executable=selected_executable,
+                    executable=executable,
                     codex_home=destination,
                     model=selected_model,
                     reasoning_effort=selected_effort,
@@ -4163,7 +4164,7 @@ def provider_codex_subscription_setup(
 
 @codex_subscription_app.command("status")
 def provider_codex_subscription_status(json_output: _JSON = False) -> None:
-    """Read exact runtime, login, plan, model, and cleanup state without task content."""
+    """Read bound runtime, login, plan, model, and cleanup state without task content."""
 
     from yoetz.cli.codex_subscription import codex_subscription_status
 
@@ -4239,8 +4240,8 @@ def provider_codex_subscription_repair(
         typer.Option(
             "--executable",
             help=(
-                "Codex CLI/native executable to take the admitted runtime from when Yoetz has no "
-                "retained copy yet. It must hold the exact admitted bytes."
+                "Codex CLI/native executable to check and bind instead of the newest eligible "
+                "installation. It must pass the capability check."
             ),
         ),
     ] = None,
@@ -4249,7 +4250,7 @@ def provider_codex_subscription_repair(
     ] = False,
     json_output: _JSON = False,
 ) -> None:
-    """Rebind a stranded or outdated binding to the admitted runtime; keep its login and choices.
+    """Rebind to the newest Codex that passes the capability check; keep login and choices.
 
     Model, reasoning effort, timeout, retries, dedicated home, endpoint role, and privacy grants
     are preserved. The existing sign-in is reused only when Codex reports the dedicated home
@@ -4263,20 +4264,26 @@ def provider_codex_subscription_repair(
 
     try:
         plan = codex_subscription_repair_plan(executable=executable)
-        changed = cast(list[str], plan["changed_fields"])
+        candidates = cast(list[Mapping[str, object]], plan["candidates"])
         if not json_output:
             typer.echo("Repair the Codex subscription evaluator binding")
             typer.echo(f"  current state: {plan['state_before']}")
-            typer.echo(f"  runtime source: {plan['source_path']} ({plan['source']})")
             typer.echo(
-                f"  bound runtime: {plan['executable_path_after']} (Yoetz's verified private "
-                "copy; updating your everyday Codex leaves it unchanged)"
+                f"  Codex: {plan['runtime_version_before']} -> {plan['runtime_version_after']} "
+                f"from {plan['source_path']} ({plan['source']})"
+            )
+            typer.echo(
+                f"  bound runtime: {plan['executable_path_after']} (Yoetz's private copy; a "
+                "later Codex update is adopted on the next repair)"
             )
             typer.echo(
                 f"  capability profile: {plan['capability_profile_before']} -> "
                 f"{plan['capability_profile_after']}"
             )
-            typer.echo(f"  changed fields: {', '.join(changed) if changed else 'none'}")
+            typer.echo(
+                "  capability check: runs before anything is written; fallbacks if it fails: "
+                + (", ".join(str(item["runtime_version"]) for item in candidates[1:]) or "none")
+            )
             typer.echo(
                 "  preserved: model, reasoning effort, timeout, retries, dedicated home, "
                 "endpoint role, and privacy grants"
@@ -4323,7 +4330,7 @@ def provider_codex_evaluator_runtime_install(
         Path | None,
         typer.Option(
             "--from",
-            help="Codex CLI/native executable holding the exact admitted bytes to retain.",
+            help="Codex CLI/native executable to retain and capability-check.",
         ),
     ] = None,
     download: Annotated[
@@ -4331,8 +4338,8 @@ def provider_codex_evaluator_runtime_install(
         typer.Option(
             "--download",
             help=(
-                "Allow downloading the exact admitted release with your npm when no local copy "
-                "holds the admitted bytes."
+                "Allow downloading the newest stable Codex with your npm when no eligible local "
+                "Codex exists."
             ),
         ),
     ] = False,
@@ -4344,7 +4351,7 @@ def provider_codex_evaluator_runtime_install(
     ] = False,
     json_output: _JSON = False,
 ) -> None:
-    """Keep a verified private copy of the admitted evaluator runtime; never edits the binding."""
+    """Keep a capability-checked private copy of the newest Codex; never edits the binding."""
 
     from yoetz.cli.codex_subscription import (
         codex_evaluator_runtime_install,
@@ -4362,9 +4369,16 @@ def provider_codex_evaluator_runtime_install(
                     typer.echo(f"  {line}")
             else:
                 typer.echo(f"  source: {plan['source_path']} ({plan['source']})")
-            typer.echo(f"  runtime: Codex {plan['runtime_version']} {plan['executable_sha256']}")
-            typer.echo(f"  retained at: {plan['managed_runtime_path']}")
-            typer.echo(f"  current copy: {plan['managed_runtime_state']}")
+            typer.echo(
+                f"  runtime: Codex {plan['runtime_version']} (minimum {plan['runtime_floor']})"
+            )
+            if plan["managed_runtime_path"] is not None:
+                typer.echo(f"  retained at: {plan['managed_runtime_path']}")
+                typer.echo(f"  current copy: {plan['managed_runtime_state']}")
+            typer.echo(
+                "  the copy is capability-checked without any sign-in or task content before "
+                "it is kept as admitted"
+            )
             typer.echo("  the binding is not changed; run repair or setup to bind this copy")
         question = (
             "Download and retain the evaluator runtime?"
@@ -4374,10 +4388,12 @@ def provider_codex_evaluator_runtime_install(
         if not _confirm_or_refuse(accept, question):
             _finish(20)
             return
-        payload = codex_evaluator_runtime_install(source=source, npm=npm, download=download)
+        payload = run_async(
+            lambda: codex_evaluator_runtime_install(source=source, npm=npm, download=download)
+        )
         _human_or_json(payload, json_output=json_output)
         _finish(0)
-    except (OSError, ValueError) as error:
+    except (OSError, TimeoutError, ValueError) as error:
         _codex_subscription_cli_failure(error)
         _finish(20)
 
@@ -4385,16 +4401,18 @@ def provider_codex_evaluator_runtime_install(
 @codex_evaluator_runtime_app.command("remove")
 def provider_codex_evaluator_runtime_remove(
     accept: Annotated[
-        bool, typer.Option("--accept", help="Confirm removal of the unreferenced retained copy.")
+        bool, typer.Option("--accept", help="Confirm removal of the unreferenced retained copies.")
     ] = False,
     json_output: _JSON = False,
 ) -> None:
-    """Delete only Yoetz's retained runtime copy; refused while the binding still uses it."""
+    """Delete Yoetz's retained runtime copies the binding does not use; never the bound one."""
 
     from yoetz.cli.codex_subscription import codex_evaluator_runtime_remove
 
     if not _confirm_or_refuse(
-        accept, "Remove Yoetz's retained evaluator runtime copy (not your Codex installation)?"
+        accept,
+        "Remove Yoetz's retained evaluator runtime copies the binding does not use (not your "
+        "Codex installation)?",
     ):
         _finish(20)
         return

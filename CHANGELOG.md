@@ -245,6 +245,27 @@ reverse-chronological released versions.
   `yield_time_ms` setting for that cell, as does the status explanation when a code-mode cell made
   the check stale (tb4n5).
 
+- The Codex subscription AI-powered reviewer now uses the newest Codex you have installed instead
+  of one pinned build, so updating Codex is enough. Any stable release from `0.157.1` on is used
+  once it passes a capability check, which runs with no sign-in and sends nothing to a model:
+  - the app-server protocol still carries everything the reviewer uses;
+  - Codex starts a read-only, network-off review thread;
+  - nothing unreviewed is reported before a review;
+  - your ChatGPT sign-in lists the chosen model.
+
+  `setup` and `repair` try installed releases newest first and fall back to the previous release
+  that passes (guided setup keeps this when you accept the Codex it offers; typing another path
+  uses only that one). They report the releases they skipped and why. This lets reviews use models only
+  newer Codex releases list, such as `gpt-6.1-sol`. A signed-in home whose model no installed
+  Codex lists now reports `codex_model_unavailable` instead of opening a new sign-in. Bindings
+  made with the pinned `0.157.1` (or `0.150.1`) build report `codex_runtime_profile_outdated`;
+  `yoetz provider codex-subscription repair` moves them and keeps the sign-in and settings.
+  `runtime install --download` fetches the newest Codex, and `runtime remove` deletes the copies
+  no binding uses. Receipts keep recording the Codex release, executable digest and capability
+  record that ran. Newer Codex output (`partial_answer` messages, new plan names, the
+  `flexUnavailable` error) is handled, and unreviewed events still fail closed.
+  Authenticated live evidence through a capability-admitted release is pending.
+
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
   a data table) now stops closure instead of being only disclosed: the Stop hook continues the agent
   and names each such file, `status` lists them (`closure_readiness.undeclared_references`), the

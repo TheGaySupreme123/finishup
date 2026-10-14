@@ -2,7 +2,9 @@
 
 **Status:** Working decision revised 2026-08-30 (issue #404 external-runtime authority). Amended
 2026-09-23 for issue #742 (adapter-boundary failure tokens, credential-retry exclusion, and
-attempt-status projection). Ratification requires the privacy/egress gates in
+attempt-status projection). Amended 2026-10-13: the Codex subscription evaluator is admitted by a
+capability check instead of one pinned build (see *Capability-checked evaluator admission*).
+Ratification requires the privacy/egress gates in
 ADR-009 plus recorded capability fixtures against every advertised provider/model/endpoint profile.
 **Implemented by:** `src/yoetz/ports/semantic.py`,
 `src/yoetz/ports/privacy.py`, `src/yoetz/application/egress.py`,
@@ -372,6 +374,9 @@ exact-version admission and separates the **evaluator runtime** from the **host 
    executable digest. No newer Codex release is admitted, and nothing is inferred from a version
    string, path, or discovery order. Capability-based admission of further releases stays future
    work that needs its own evidence and amendment.
+   *Superseded 2026-10-13 by the capability-checked admission amendment below. Decisions 2, 3, 5,
+   6 and 7 stand, with the store keyed per checked release and "admitted" meaning "passed the
+   capability check"; decision 4's selection is replaced by newest-first with fallback.*
 2. **A retained runtime per data bundle.** Setup and repair bind an owner-private copy at
    `<data bundle>/external-runtimes/codex-evaluator/<source identity>/codex` (directory `0700`,
    file `0500`). Bytes are hashed while they are copied and committed by atomic replace only when
@@ -419,6 +424,9 @@ step.
 
 ### Codex 0.157.1 cell amendment (2026-09-27, issue #871)
 
+*Superseded 2026-10-13 by the capability-checked admission amendment below; 0.157.1 is now the
+floor, not the one admitted build.*
+
 The admitted release moves from Codex npm `0.150.1` to `0.157.1` on both platform cells. Each
 cell still admits exactly one reviewed native executable, so decision 1 of the #855 amendment
 holds. `0.150.1` cannot list or run the `gpt-6-luna` new-binding default on a ChatGPT account;
@@ -465,6 +473,129 @@ The isolated configuration is unchanged, so dedicated homes and sign-ins carry o
 moves through `repair`. Warnings keep failing closed, and disabling the host by configuration is
 not a substitute: it produces a different warning. Retaining Codex's bundled `bwrap` stays a
 separate decision on #874.
+
+### Capability-checked evaluator admission (2026-10-13)
+
+The owner decided on 2026-10-13 that the subscription evaluator uses the newest Codex available,
+not one pinned build. Pinning cost a Yoetz release for every Codex release, and it blocked models
+that only newer Codex catalogs list: with a ChatGPT login, Codex 0.157.1's `model/list` does not
+offer `gpt-6.1-sol`, Codex 0.159.0 does. Setup then refused the binding (#534 reuse needs the model
+listed), and the fallback login on a signed-in home ended as `codex_login_event_invalid`. This
+amendment supersedes decision 1 of the #855 amendment and the exact-version admission of the #871
+amendment. Retention, the mutation lock, `repair` as the explicit identity transition, the reverse
+operations and the privacy gateway are unchanged.
+
+1. **Admission by capability.** Any stable Codex npm release (`X.Y.Z`, no prerelease) at or above
+   the floor `0.157.1`, on macOS arm64 or Linux x86_64, is admitted when the bytes Yoetz will
+   launch pass the capability check. The floor is the oldest release whose evaluator-facing
+   behaviour was reviewed end to end (code-mode host, remote-control notice, `normalModelSlug`).
+   Native Windows still has no evaluator platform. ADR-005's exact-cell rule for the *host*
+   integration is not changed by this amendment.
+2. **The check** (profile `codex-evaluator/capability/v2`) runs against Yoetz's retained copy, so
+   the bytes checked are the bytes launched. In order, the first failure being one closed token:
+   - the release is at or above the floor (`codex_runtime_version_unsupported`); it comes from
+     the npm manifests, or from `codex --version` under a scratch home for a native path;
+   - `codex-code-mode-host` sits beside the executable (`codex_runtime_code_mode_host_missing`);
+   - **reviewed protocol subset**: the binary writes its app-server v2 schema
+     (`codex app-server generate-json-schema`), and every method, field, JSON type and value the
+     evaluator sends or reads must be present with a compatible shape, checked structurally, never
+     by a whole-schema digest. Additive methods, notifications and fields pass, because the
+     runtime allowlists still fail closed on anything unreviewed. Closed values the evaluator
+     interprets, such as `MessagePhase`, must not gain an unreviewed member. Every request the
+     evaluator sends must not require a field it does not send (a new required `turn/start`
+     field would otherwise fail only after the packet arrived), and every closed value it sends
+     (`approvalPolicy` `never`, `sandbox` `read-only`, `summary` `none`, ...) must still be
+     admitted by its field. The required sets and admitted sent values enter the subset digest
+     (`codex_runtime_protocol_incompatible`);
+   - **zero-inference probe** under a scratch home holding only the isolated config, with no
+     sign-in, and the same argv, `--strict-config`, overrides and environment allowlist as a
+     review. `initialize` must report exactly the release being checked and the bound home.
+     `account/read` must answer. `thread/start` must prove an ephemeral, read-only,
+     network-off thread in a new empty cwd with no instruction sources. Every notification seen
+     must be inside the reviewed pre-disclosure allowlist: remote control `disabled`; native
+     warnings, `configWarning`, unknown methods and server requests fail closed. A reply is
+     returned as soon as it is read, so the window is closed by a barrier `account/read`: Codex
+     writes stdout in order, so every line it wrote before the barrier reply (including events
+     still buffered behind the `thread/start` reply) is read and checked first. No `turn/start`
+     is sent, so nothing is sampled and no task content exists.
+   - **model**: the dedicated home's readiness probe (`account/read`, `model/list`, then the
+     same barrier and allowlist check, so a release that warns only under the signed-in home is
+     passed over) must list the configured model with every configured effort before the binding
+     is written
+     (`codex_model_unavailable` for a signed-in home whose model no admitted release lists; setup
+     no longer opens a sign-in in that case).
+3. **Provenance, not an admission list.** A passed check commits `capability.json`
+   (`yoetz.codex-evaluator-capability/1`) beside the retained runtime. It records the profile,
+   floor, release, source identity, platform, executable and code-mode-host SHA-256, the digest
+   of the checked subset facts, the isolated-config digest and the checks run. It holds no time,
+   path, account or model, so re-checking the same bytes is idempotent. The binding keeps its field
+   set: `runtime_version` is the resolved release, `app_server_schema_sha256` the subset-facts
+   digest, `capability_cell_sha256` the record digest, and `capability_profile` the profile above.
+   Receipts' `runtime_evidence` carries the same fields with an unchanged shape. No configuration
+   or receipt schema changes.
+4. **Launch fence.** Before every child, the executable and code-mode host must still match the
+   committed record, and the record must match the binding; a runtime replaced after its check
+   never starts. Every attempt still re-proves the `initialize` release, login, model and efforts,
+   thread isolation and pre-disclosure events (through the same barrier) before the case crosses
+   stdin. The full check is not
+   repeated per attempt; `repair` and `setup` run it.
+5. **Newest first, with fallback.** Setup and repair gather candidates: Yoetz's retained releases,
+   the binding's host installation, discovered everyday Codex installs, or one `--executable`.
+   They keep one candidate per release (the retained copy first) and try them newest first. A
+   candidate that fails the check, or whose catalog lacks the configured model for a signed-in
+   home, is passed over; the result names those as `runtimes_passed_over`. If none passes, the
+   first candidate's token is the refusal (or `codex_model_unavailable`). Interactive setup
+   (prompt and terminal interface) keeps this fallback when the owner accepts the offered
+   default; only a different, explicitly typed path pins setup to one runtime. A newer everyday Codex
+   is adopted by the next `setup` or `repair` without a Yoetz release. Earlier retained releases
+   stay as fallbacks until `runtime remove`, which now deletes every retained release the binding
+   does not use. `runtime install --download` installs `@openai/codex@latest`.
+6. **Existing bindings.** A pinned-cell binding (`codex-evaluator/0.150.1/*` or
+   `codex-evaluator/0.157.1/*`), or one checked under the unreleased first draft of this
+   amendment (`codex-evaluator/capability/v1`, which did not yet check required request fields,
+   sent values or the buffered pre-disclosure window), reports `codex_runtime_profile_outdated`, and its bytes are still
+   compared with the digest it names, so replaced bytes stay visible. `repair` re-checks and
+   rebinds it, keeping the sign-in and every owner choice. No privacy authority migrates.
+7. **Packaged cells removed.** `support/codex-evaluator/0.157.1/cell.json` and
+   `cell-linux-x64.json` are deleted; the isolated config moves to
+   `support/codex-evaluator/config.toml`. Keeping exact cells as known-good references would leave
+   two admission paths with two trust models. The 0.157.1 build simply passes the same check.
+8. **Unchanged.** The isolated config, launch argv, OAuth authority, cleanup fences, the
+   `2026-11-30T00:00:00Z` evidence expiry (now the review window of this Yoetz release's subset and
+   probe, not of a Codex build) and the `implementation_candidate` / pending release posture.
+
+**Tradeoff.** Yoetz no longer holds an exact binary identity for the evaluator. Trust now comes
+from the capability check plus the provenance record. The record proves which bytes were checked
+and launched; it does not prove they are benign. A new release can change behaviour that neither
+its schema nor a zero-inference probe shows, for example a new default-on feature or a hosted
+tool. What still holds for every admitted release, on every attempt:
+- the dedicated home, the environment allowlist, and `--strict-config` with the critical deny
+  overrides (a removed config key fails the launch);
+- the read-only, network-off thread posture proven before disclosure;
+- fail-closed handling of every tool request, tool item, unknown event and unknown phase.
+
+An unreviewed event that appears only after `turn/start` still fails closed. The privacy fence
+holds, and the review ends `unavailable`.
+
+**Evidence (2026-10-13, macOS arm64, unauthenticated, zero inference).**
+- The real check admitted npm `0.157.1`, `0.159.0` and `0.162.1`, including the machine's global
+  `0.162.1` install, retained into an isolated bundle. An installed `0.153.4` was refused by the
+  floor.
+- Subset diff, 0.157.1 to 0.159.0: `PlanType` adds `promax`; `CodexErrorInfo` adds
+  `flexUnavailable` and `tooManyDenials`; no method or notification changes.
+- Subset diff, 0.159.0 to 0.162.1:
+  - `MessagePhase` adds `partial_answer`;
+  - `ServerNotification` adds `thread/prediction/updated`, which stays outside every allowlist;
+  - `ClientRequest` adds `thread/attachmentOwner/list`;
+  - `TurnStartParams` and `Turn` add the optional `parentTurnId` and `rootTurnId`;
+  - `CodexErrorInfo` gains a catch-all variant.
+- Adaptations:
+  - `partial_answer` is discarded like `commentary`, so only `final_answer` is a judgment;
+  - rate-limit plan names are accepted as bounded identifiers and discarded;
+  - `promax` is a known account plan;
+  - `flexUnavailable` classifies as `provider_outage`.
+- Authenticated evidence, with `gpt-6.1-sol` listed on 0.159.0 under a ChatGPT login, is
+  pending. The runbook records the boundary.
 
 ## Fallback endpoint amendment (2026-09-04, issue #582)
 

@@ -436,6 +436,8 @@ class YoetzRuntime:
         # The request id of the latest check per task, kept so its structural progress can be
         # read while it runs and recovered after a client wait ends (issue #571 A2).
         self._check_request_ids: dict[str, str] = {}
+        # The evaluator runtime setup last offered as its default (see setup_codex_subscription).
+        self._offered_codex_executable: Path | None = None
 
     # -- discovery ------------------------------------------------------
 
@@ -1217,11 +1219,11 @@ class YoetzRuntime:
         return tuple(options)
 
     def codex_subscription_defaults(self) -> tuple[str, str, str, str]:
-        """Return eligible nonsecret defaults; setup still digest-validates the exact binary.
+        """Return eligible nonsecret defaults; setup still capability-checks the runtime.
 
-        The executable default is an admitted evaluator runtime only (#855) — Yoetz's retained
-        copy first — never merely the first discovered host binary. An existing binding's model
-        and reasoning effort are offered unchanged.
+        The executable default is the newest eligible evaluator runtime (a Codex release at or
+        above the floor, Yoetz's retained copy first on equal releases), never a binary below the
+        floor. An existing binding's model and reasoning effort are offered unchanged.
         """
 
         from yoetz.cli.codex_subscription import (
@@ -1232,6 +1234,8 @@ class YoetzRuntime:
         )
 
         selected = default_codex_evaluator_executable()
+        # Remembered so accepting this default keeps newest-first discovery with fallback.
+        self._offered_codex_executable = selected
         executable = "" if selected is None else str(selected)
         return (
             executable,
@@ -1255,7 +1259,7 @@ class YoetzRuntime:
         reasoning_effort: str,
         routine_reasoning_effort: str | None = None,
     ) -> Mapping[str, object]:
-        """Validate and render the exact subscription cell without logging in or writing state."""
+        """Resolve and render the subscription binding without logging in or writing state."""
 
         from yoetz.cli.codex_subscription import codex_subscription_preview
 
@@ -1268,7 +1272,9 @@ class YoetzRuntime:
                 routine_reasoning_effort=routine_reasoning_effort,
             )
         except (OSError, ValueError) as error:
-            raise _subscription_error(error, "that Codex evaluator cell is not supported") from None
+            raise _subscription_error(
+                error, "that Codex is not a supported evaluator runtime"
+            ) from None
 
     async def setup_codex_subscription(
         self,
@@ -1282,12 +1288,17 @@ class YoetzRuntime:
     ) -> Mapping[str, object]:
         """Run Codex-owned login, then recompose the service around the exact binding."""
 
-        from yoetz.cli.codex_subscription import codex_subscription_setup
+        from yoetz.cli.codex_subscription import (
+            codex_subscription_setup,
+            setup_executable_selection,
+        )
         from yoetz.cli.setup import restart_service_for_semantic_composition
 
         try:
             result = await codex_subscription_setup(
-                executable=Path(executable),
+                # The offered default keeps newest-first discovery with fallback (ADR-006);
+                # only a path the owner typed instead pins setup to that one runtime.
+                executable=setup_executable_selection(executable, self._offered_codex_executable),
                 codex_home=Path(codex_home),
                 model=model,
                 reasoning_effort=reasoning_effort,
