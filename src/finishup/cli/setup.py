@@ -13,14 +13,16 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import shlex
+import shutil
 import sys
 import tempfile
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 import anyio
 import typer
@@ -83,6 +85,9 @@ from finishup.ports.integrations import (
 from finishup.protocol.canonical import JsonValue, canonical_encode
 from finishup.protocol.ids import IdKind, new_id
 
+if TYPE_CHECKING:
+    from finishup.adapters.integrations.host_discovery import HostInstallation
+
 __all__ = [
     "SETUP_MARKER_SCHEMA",
     "codex_activation_preview",
@@ -141,6 +146,8 @@ _PROVIDER_SETUP_DIRECT_REASONS: Final = frozenset(
         "trusted_console_required",
         "codex_runtime_not_found",
         "codex_runtime_unavailable",
+        "codex_model_unavailable",
+        "codex_reasoning_effort_unavailable",
         "codex_subscription_timeout",
         "codex_subscription_failed",
         # Evaluator-runtime selection and retention (#855): each names its own next step.
@@ -160,6 +167,43 @@ def _canonical_setup_workspace(workspace: Path | None = None) -> Path:
     if canonical is None:
         raise ValueError("workspace_locator_invalid")
     return Path(canonical)
+
+
+_NEXT_PROJECT: Final = (
+    "Run 'finishup setup run' from inside the project folder you want to connect, or pass "
+    "--project <folder>. Your home folder and the filesystem root cannot be connected."
+)
+
+
+def _resolve_setup_project(project: Path | None, *, interactive: bool) -> Path | None:
+    """Return the canonical project to connect, asking once per attempt in a terminal.
+
+    Setup used to discover an unusable folder (the home folder, ``/``, or a symlinked path) only
+    after every question had been answered, and then failed as ``internal_error``. Now the
+    folder is checked first; a terminal user may name another one, and an empty answer stops
+    with a plain next step.
+    """
+
+    try:
+        return _canonical_setup_workspace(project)
+    except ValueError:
+        pass
+    if not interactive:
+        return None
+    typer.echo(
+        "FinishUP connects an agent to one project folder. This folder cannot be connected "
+        "(your home folder, the filesystem root, and symlinked paths are refused)."
+    )
+    while True:
+        answer = typer.prompt(
+            "Project folder to connect (Enter to stop)", default="", show_default=False
+        ).strip()
+        if not answer:
+            return None
+        try:
+            return _canonical_setup_workspace(Path(answer).expanduser())
+        except ValueError:
+            typer.echo("That folder cannot be connected either; choose a project folder.")
 
 
 _PROVIDER_SETUP_PRIVACY_REASONS: Final = frozenset(
@@ -2376,6 +2420,12 @@ async def _interactive_provider_setup(
                 "model_available": status.get("model_available"),
                 "process_cleanup": status.get("process_cleanup"),
                 "login_reused": status.get("login_reused") is True,
+                "model": status.get("model"),
+                **(
+                    {"model_fallback_from": status["model_fallback_from"]}
+                    if type(status.get("model_fallback_from")) is str
+                    else {}
+                ),
             }
         )
         service = await _restart_service_for_semantic_composition()
@@ -2575,8 +2625,11 @@ async def run_provider_setup(
             return _usage_failure("--provider must name a reviewed provider preset")
     if not _is_interactive_terminal():
         return _usage_failure("--set requires a local terminal for hidden credential input")
-    typer.echo("FinishUP LLM setup")
-    typer.echo("The API key is entered with hidden input and stored only in the local vault.")
+    typer.echo("FinishUP AI-powered review setup")
+    typer.echo(
+        "Choose a provider next. An API key, when the provider needs one, is entered with hidden "
+        "input and stored only in the local vault; Codex with a ChatGPT subscription needs none."
+    )
     service = await _service_reachability(start_if_absent=True)
     if not service.get("reachable"):
         typer.echo("provider_setup_failed: service_unavailable", err=True)
@@ -2589,9 +2642,23 @@ async def run_provider_setup(
         from finishup.cli.unlock import HumanCeremonyCliError
         from finishup.ports.control import ControlError
 
+        try:
+            external_runtime_configured = (
+                load_config({}, os.environ, None).external_runtime is not None
+            )
+        except ConfigError:
+            # Same rule as the first-run wizard: an unreadable configuration keeps the API-key
+            # prompt path, and the owning provider step reports the configuration error.
+            external_runtime_configured = False
         typer.echo("")
-        typer.echo("Choose the exact disclosure policy before the API key can be tested.")
-        credential_probe_authorized = _prompt_credential_probe_authorization()
+        if external_runtime_configured:
+            # Codex with a ChatGPT subscription has no API key, so no key-verification request
+            # is offered; only the disclosure policy is chosen here.
+            typer.echo("Choose the exact disclosure policy for AI-powered review.")
+            credential_probe_authorized = False
+        else:
+            typer.echo("Choose the exact disclosure policy before the API key can be tested.")
+            credential_probe_authorized = _prompt_credential_probe_authorization()
         try:
             privacy_result = await run_privacy_setup(
                 recipe_hint="assisted_review",
@@ -2618,16 +2685,30 @@ async def run_provider_setup(
     typer.echo(f"Provider binding: {binding}")
     from finishup.cli.provider_status import credential_human_display
 
-    typer.echo(
-        "Credential: "
-        + credential_human_display(
-            True if credential == "stored" else (False if credential == "failed" else None)
+    if credential == "external_runtime_oauth":
+        typer.echo("Credential: held by Codex's own ChatGPT sign-in; FinishUP stores none")
+    else:
+        typer.echo(
+            "Credential: "
+            + credential_human_display(
+                True if credential == "stored" else (False if credential == "failed" else None)
+            )
         )
-    )
-    if binding != "configured" or credential != "stored":
+    model_fallback_from = provider_report.get("model_fallback_from")
+    if type(model_fallback_from) is str:
+        typer.echo(
+            f"Model: {provider_report.get('model')} (suggested {model_fallback_from} is not "
+            "listed by this Codex)"
+        )
+    if binding != "configured" or not _provider_credential_ready(provider_report):
         reason = provider_report.get("credential_reason")
         if type(reason) is str:
             typer.echo(f"Reason: {reason}")
+            from finishup.cli.codex_subscription import subscription_remediation
+
+            remediation = subscription_remediation(reason)
+            if remediation is not None:
+                typer.echo(f"Next: {remediation}")
         return 20
     privacy_outcome = (
         "not_attempted" if privacy_result is None else getattr(privacy_result, "outcome", "failed")
@@ -2636,8 +2717,7 @@ async def run_provider_setup(
     if privacy_outcome == "failed":
         return 20
     typer.echo(
-        "Preview Codex MCP registration again to review the policy route command now that "
-        "AI-powered review configuration changed."
+        "AI-powered review configuration changed: start a fresh agent session so it uses it."
     )
     return 0
 
@@ -2748,6 +2828,18 @@ async def _refresh_setup_recommendations(
         return {"outcome": "failed", "reason": type(error).__name__, "pending": []}
 
 
+def _default_installation_choice(installations: Sequence[HostInstallation]) -> int:
+    """Offer the Codex a plain ``codex`` command runs, not merely the first path in sort order."""
+
+    on_path = shutil.which("codex")
+    if on_path is not None:
+        selected = Path(os.path.abspath(on_path))
+        for index, item in enumerate(installations, 1):
+            if item.host == "codex" and Path(os.path.abspath(item.executable)) == selected:
+                return index
+    return 1
+
+
 async def run_setup_wizard(
     *,
     non_interactive: bool,
@@ -2781,10 +2873,18 @@ async def run_setup_wizard(
         installations = discover_hosts()
         alternatives = [item for item in installations if item.host != "codex"]
         if alternatives and interactive:
-            typer.echo("Choose an agent to connect:")
+            typer.echo(
+                "Choose an agent to connect (one per run; run setup again to connect another):"
+            )
             for index, item in enumerate(installations, 1):
-                typer.echo(f"  {index}. {item.label} {item.version or ''}")
-            choice = int(typer.prompt("Agent", type=IntRange(1, len(installations)), default=1))
+                typer.echo(f"  {index}. {item.label} {item.version or ''} ({item.executable})")
+            choice = int(
+                typer.prompt(
+                    "Agent",
+                    type=IntRange(1, len(installations)),
+                    default=_default_installation_choice(installations),
+                )
+            )
             selected = installations[choice - 1]
             host, host_path, host_config_root = (
                 selected.host,
@@ -2799,6 +2899,28 @@ async def run_setup_wizard(
                 selected.config_root,
             )
     if host is not None:
+        connected_project = _resolve_setup_project(project, interactive=interactive)
+        if connected_project is None:
+            if json_output:
+                typer.echo(
+                    json.dumps(
+                        {
+                            "schema": "yoetz.host-connection-report/1",
+                            "host": host,
+                            "action": "connect",
+                            "connection_observed": False,
+                            "outcome": "incomplete",
+                            "reason": "workspace_locator_invalid",
+                            "next_step": _NEXT_PROJECT,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            else:
+                typer.echo(f"{host}: incomplete")
+                typer.echo("workspace_locator_invalid")
+                typer.echo(_NEXT_PROJECT)
+            return 1
         selected_route = route_profile or (
             "policy" if interactive and _choose_review_mode() == "semantic" else "strict"
         )
@@ -2808,7 +2930,7 @@ async def run_setup_wizard(
                 host=host,
                 executable=host_path,
                 config_root=host_config_root,
-                project=_canonical_setup_workspace(project),
+                project=connected_project,
                 route=selected_route,
                 accept=accept,
                 interactive=interactive,

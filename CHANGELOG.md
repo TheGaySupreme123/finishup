@@ -261,6 +261,13 @@ unreleased above reverse-chronological released versions.
 
 ### Changed
 
+- **New Codex-subscription setups suggest `gpt-6.1-sol` at reasoning effort `medium`** for final
+  reviews, and `medium` for routine checkpoints as before. Earlier setups suggested `gpt-6-luna` at
+  `high`. The suggestion is bound only when the Codex that FinishUP runs lists it. The admitted Codex
+  `0.157.1` does not, so setup uses `gpt-6-luna` with the same efforts and says so before sign-in.
+  A model you type yourself is never substituted, and upgrading keeps every existing setup's model
+  and efforts. A sign-in whose Codex does not list the chosen model or effort now names a next step
+  (`codex_model_unavailable`, `codex_reasoning_effort_unavailable`).
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
   a data table) now stops closure instead of being only disclosed: the Stop hook continues the agent
   and names each such file, `status` lists them (`closure_readiness.undeclared_references`), the
@@ -352,6 +359,17 @@ unreleased above reverse-chronological released versions.
 
 ### Fixed
 
+- **`finishup setup` is smoother.** Run from your home folder (or anywhere that is not a
+  project), it ended in `internal_error` after every question had been answered. It now checks the
+  folder first, lets you type the project folder, and otherwise stops with a plain next step. A
+  successful Codex-subscription sign-in in the guided connection no longer reports
+  `Credential: unknown` and exits with an error. It no longer asks to "verify this API key" for
+  Codex, which has no key, and it no longer ends by telling Claude Code and Cursor users to preview
+  a Codex registration. The agent list now offers the Codex that a plain `codex` command runs,
+  shows each path, and says that one agent is connected per run. Claude Code and Cursor
+  connection plans describe their changes in plain words, as Codex plans already did. When more
+  than one installation of an agent is found, connect and disconnect list the paths to pass with
+  `--host-path`.
 - In a repository holding another Git repository inside it (an `api` directory with its own
   `.git`), FinishUP's local, names-only read of what changed no longer fails: it reads the nested
   repository the same way the change shown to the reviewer does. So the check again tells whether
