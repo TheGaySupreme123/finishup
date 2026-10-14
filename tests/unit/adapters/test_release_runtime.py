@@ -26,6 +26,10 @@ def prefix(tmp_path: Path) -> Generator[Path]:
     (packages / "dependency/lazy.py").write_text("VALUE = 'old dependency'\n")
     (packages / "yoetz/resources").mkdir(parents=True)
     (packages / "yoetz/resources/guidance.md").write_text("old guidance\n")
+    # Independent of the runner's umask (0002 on Ubuntu/Fedora accounts): tests opt in to g+w.
+    for path in (root, *root.rglob("*")):
+        if not path.is_symlink():
+            path.chmod(path.stat().st_mode & ~0o022)
     try:
         yield root
     finally:
@@ -222,7 +226,8 @@ def test_shared_group_writable_interpreter_chain_is_refused(
     (base / "bin").mkdir(parents=True)
     binary = base / "bin/python3.14"
     binary.write_bytes(b"interpreter")
-    binary.chmod(0o755)
+    for path in (base, base / "bin", binary):
+        path.chmod(0o755)
     (prefix / "bin/python").unlink()
     (prefix / "bin/python").symlink_to(binary)
     {"binary": binary, "bin": base / "bin", "root": base}[writable].chmod(0o775)
@@ -355,6 +360,9 @@ def _as_installed(monkeypatch: pytest.MonkeyPatch, prefix: Path) -> None:
     package = prefix / "lib/python3.14/site-packages/yoetz/adapters/release_runtime.py"
     package.parent.mkdir(parents=True, exist_ok=True)
     package.write_text("")
+    for path in (prefix, *prefix.rglob("*")):
+        if not path.is_symlink():
+            path.chmod(path.stat().st_mode & ~0o022)
     monkeypatch.setattr(runtimes.sys, "prefix", str(prefix))
     monkeypatch.setattr(runtimes.sys, "base_prefix", "/base")
     monkeypatch.setattr(runtimes, "__file__", str(package))
@@ -380,4 +388,5 @@ def test_installed_runtime_probe_ignores_other_refusals(
 ) -> None:
     _as_installed(monkeypatch, prefix)
     (prefix / "lib/external.pth").write_text(str(tmp_path))
+    (prefix / "lib/external.pth").chmod(0o644)
     assert runtimes.installed_runtime_refusal() is None

@@ -2211,7 +2211,12 @@ def test_umask_0002_nested_repository_is_read_only_for_a_user_private_group(
 
     monkeypatch.setattr(foreign_write, "owner_private_group", _private_group_is(private))
     monkeypatch.setattr(capture_module, "owner_private_group", _private_group_is(private))
-    repository = _repository(tmp_path)
+    # The outer repository is owner-only whatever the runner's umask; only the nested one is g+w.
+    previous = os.umask(0o022)
+    try:
+        repository = _repository(tmp_path)
+    finally:
+        os.umask(previous)
     adapter = GitChangeCaptureAdapter()
     base = adapter.read_task_base(os.fspath(repository))
     previous = os.umask(0o002)
