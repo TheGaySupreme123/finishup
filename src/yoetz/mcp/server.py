@@ -3030,6 +3030,7 @@ async def dispatch_closure_prepare(
             client_kind="cooperative_agent",
             integration="cooperative_mcp",
             scope_to_selection=True,
+            host=runtime.host_profile,
         )
         if len(canonical_encode(cast(JsonValue, prepared))) > _MAX_CLOSURE_RESULT_BYTES:
             raise ValueError("closure_result_too_large")

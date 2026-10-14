@@ -1000,3 +1000,29 @@ mentions it in incidental prose or that re-declares it as an input) and
 `tests/unit/kernel/test_claim_correction_replay.py` (the supersession carries claim scope only to
 recorded replacements, and a failure or partial result on a superseded obligation, one or two
 supersessions back, must still be disclosed and may be).
+
+## Amendment (2026-10-14, issue #1050 follow-up): Cursor is never told to use the acceptance line
+
+The 2026-10-13 amendment left Cursor asking every flagged set, but its text still told the agent
+to end the final answer with `yoetz-acceptance:<obligation id>:met`, a line Cursor's `stop`
+payload (status and `loop_count` only) can never carry to the gate.
+
+1. **`afterAgentResponse` is not registered.** Cursor's hook documentation gives it the response
+   text, but Cursor acknowledges that its CLI and Cloud Agents do not dispatch it, and it
+   documents no order between it and `stop`. Registering it would make the line work only on some
+   Cursor surfaces, and would change the advertised Cursor event set (ADR-010) and add a
+   cross-process memory of the attested ids. Revisit when Cursor dispatches it everywhere with a
+   documented order before `stop`.
+2. **Host-aware text, no new record.** The acceptance re-read sentence and the re-check note take
+   the host. On `cursor` they say that Cursor passes Yoetz no final answer, that a met criterion
+   stays resolved and is confirmed in the final answer, and that the re-read is not asked again for
+   the set; that is the existing per-session, per-key memory, so the continued Stop passes and a
+   later Stop with the same flagged set is not asked. The MCP bridge passes its host profile to
+   `closure_prepare`; the CLI and TUI, which do not know the agent's host, name Codex and Claude
+   Code as the hosts that read the line. Codex and Claude Code text is unchanged. No protocol,
+   schema or ledger record changes: a ledger-recorded acceptance answer would need a new event or
+   disposition and is not part of this amendment.
+
+Locked by `tests/unit/cli/test_closure_gate.py` (the Cursor Stop flow and the host-aware text),
+`tests/unit/kernel/test_tb4n5_acceptance_risk.py` (the note per host) and
+`tests/integration/application/test_closure_composer.py` (the `closure_prepare` host).

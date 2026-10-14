@@ -332,16 +332,37 @@ _ACCEPTANCE_RISK_PHRASE: Final = (
     "the acceptance criteria of the resolved obligations Yoetz flags (rechecks lists them; a line"
     " `yoetz-acceptance:<obligation id>:met` per obligation in your final answer answers it)"
 )
+# Cursor's Stop hook receives no final message, so the line above can never answer the re-read
+# there; the Cursor note names the path that works (the re-read is asked once per flagged set).
+_ACCEPTANCE_RISK_PHRASE_CURSOR: Final = (
+    "the acceptance criteria of the resolved obligations Yoetz flags (rechecks lists them; Cursor"
+    " passes Yoetz no final answer, so it is asked once and saying they are met in your final"
+    " answer ends it)"
+)
+# A surface that does not know its host (the CLI, the TUI, a generic MCP profile) names which
+# hosts read the line, so an agent on Cursor is never told it answers the re-read.
+_ACCEPTANCE_RISK_PHRASE_ANY_HOST: Final = (
+    "the acceptance criteria of the resolved obligations Yoetz flags (rechecks lists them; on"
+    " Codex and Claude Code a line `yoetz-acceptance:<obligation id>:met` per obligation in your"
+    " final answer answers it; Cursor passes no final answer, so there it is asked once and saying"
+    " they are met ends it)"
+)
 _MAX_NAMED_RULING_FINDINGS: Final = 3
 
 
-def recheck_note(readiness: object) -> str | None:
+def recheck_note(readiness: object, *, host: str | None = None) -> str | None:
     """One sentence naming the re-checks the Stop gate will ask once (tb4n3 RC-8).
 
     ``closure_readiness.rechecks`` is the list status, ``closure_prepare`` and the Stop gate all
     read, so a surface that says "nothing further" never precedes a gate for an item it did not
     name. ``readiness`` is the wire mapping or the typed model. ``None`` when the readiness
     announces none (or an older service sent no list).
+
+    ``host`` decides how a flagged acceptance re-read is answered: ``None``, ``codex`` or
+    ``claude`` (the hosts whose Stop passes the final message) name the
+    ``yoetz-acceptance:<obligation id>:met`` line; ``cursor`` (no final message at Stop) names
+    the confirmation that ends it there; ``generic`` (a surface that does not know its host)
+    names both.
     """
 
     raw = _field(readiness, "rechecks")
@@ -358,8 +379,15 @@ def recheck_note(readiness: object) -> str | None:
             )
     if not kinds:
         return None
+    risk_phrase = (
+        _ACCEPTANCE_RISK_PHRASE_CURSOR
+        if host == "cursor"
+        else _ACCEPTANCE_RISK_PHRASE_ANY_HOST
+        if host == "generic"
+        else _ACCEPTANCE_RISK_PHRASE
+    )
     named = "; ".join(
-        _ACCEPTANCE_RISK_PHRASE if kind == "acceptance" and flagged else _RECHECK_PHRASES[kind]
+        risk_phrase if kind == "acceptance" and flagged else _RECHECK_PHRASES[kind]
         for kind in kinds
     )
     return (

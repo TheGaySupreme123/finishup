@@ -304,7 +304,9 @@ a Stop will ask you once to re-read (the acceptance criteria of the resolved obl
 flags because a requested item was never attempted or their evidence is unlinked or only your own
 assertion, obligations you recorded as not done, a blocker you recorded); the status text announces
 them. When a flagged obligation's criteria are met, the line `yoetz-acceptance:<obligation id>:met`
-in your final answer answers its re-read. `ready` means
+in your final answer answers its re-read in Codex and Claude Code. Cursor does not pass your final
+answer to Yoetz, so there the re-read is asked once and saying the criteria are met ends it.
+`ready` means
 nothing remains at all, and `unknown` means read status again once it is readable.
 
 Local checks also report facts about the task's own work: a planned verification command (an

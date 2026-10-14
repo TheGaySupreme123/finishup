@@ -624,7 +624,8 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         # The rejected findings that wait for a reviewer ruling and the re-reads a Stop will ask
         # once (tb4n3 RC-8), so "nothing further to do" is never followed by a surprise gate.
         lines.extend(awaiting_ruling_variants(readiness)[:1])
-        announced = recheck_note(readiness)
+        # The CLI and the TUI do not know the agent's host: name which hosts read the line.
+        announced = recheck_note(readiness, host="generic")
         if announced is not None:
             lines.append(announced)
     if readiness.agent_actionable and readiness.state != "unknown":

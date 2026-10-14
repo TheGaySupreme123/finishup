@@ -1084,6 +1084,8 @@ def test_a_final_message_that_attests_every_flagged_obligation_skips_the_reread(
     if host.name == "cursor":
         text = _text(host, output)
         assert f"{_RESOLVED_A}, {_RESOLVED_B}:" in text
+        # Cursor is never told to use a line its Stop cannot deliver (#1050 follow-up).
+        assert "yoetz-acceptance" not in text
         assert h.reasons() == ["closure_gate_continued", "closure_gate_acceptance_rechecked"]
         return
     assert "closure gate" not in json.dumps(output)
@@ -1122,6 +1124,83 @@ def test_the_reread_names_only_what_the_message_missed_and_the_downgrade_still_c
     h.readiness.rechecks = (invite, ack_recheck(_RESOLVED_B, since=8))
     after = _final_stop(h, host, session, "Acknowledged as not done.")
     assert "closure gate" not in json.dumps(after)
+
+
+def test_cursor_acceptance_reread_names_a_path_that_works_and_following_it_ends_the_reread(
+    tmp_path: Path,
+) -> None:
+    """#1050 follow-up: Cursor's ``stop`` carries no final message, so the re-read never asks for
+    the ``yoetz-acceptance`` line there. The instruction it gives (confirm in the final answer and
+    stop) ends the re-read: the continued Stop passes, and a later Stop at a new frontier with the
+    same flagged set is not asked again."""
+
+    host = _Host("cursor")
+    session = "gate-acceptance-cursor"
+    h, invite = _acceptance_harness(tmp_path, host, session)
+    text = _text(host, _stop(h, host, session))
+    assert f"{_RESOLVED_A}, {_RESOLVED_B}:" in text
+    assert "yoetz-acceptance" not in text
+    assert "say so in your final answer" in text
+    assert "Cursor passes Yoetz no final answer" in text
+    assert "that confirmation alone needs no new record, check or receipt" in text
+    # The downgrade and verification-limit paths are the same on every host.
+    assert "republish that obligation as `acknowledged_not_done`" in text
+    assert "`yoetz-verification-limit:<obligation id>`" in text
+    assert h.reasons() == ["closure_gate_continued", "closure_gate_acceptance_rechecked"]
+    assert gate_module.closure_gate_reasked_blockers(h.session_id, _state=tmp_path) == frozenset(
+        {f"{invite.key}@{h.sequence}"}
+    )
+
+    # The agent follows it: a confirmation and a Stop. Cursor continues the turn (loop_count 1).
+    confirmed = _stop(h, host, session, guarded=True)
+    assert "closure gate" not in json.dumps(confirmed)
+    assert h.reasons()[-1] == "closure_gate_turn_end_after_continue"
+    # A later turn with the same flagged set at a new frontier is not asked the re-read again.
+    h.sequence = str(int(h.sequence) + 3)
+    later = _stop(h, host, session)
+    assert "closure gate" not in json.dumps(later)
+    assert h.reasons()[-1] == "closure_gate_not_required"
+
+
+def test_the_acceptance_answer_is_host_aware_and_codex_claude_text_is_unchanged() -> None:
+    """The Stop gate names the line only where the host passes the final message."""
+
+    announced = _flagged_readiness(_RESOLVED_A, _RESOLVED_B)
+    texts = {
+        host: closure_gate_from_readiness(
+            announced,
+            frontier_sequence="7",
+            frontier_digest=_DIGEST,
+            observation_pending=False,
+            host=host,
+        )
+        for host in ("codex", "claude", "cursor", None)
+    }
+    for host in ("codex", "claude", None):
+        gate = texts[host]
+        assert gate is not None
+        assert gate.text.count(" If it is met, end your final answer with the line") == 1
+        assert "`yoetz-acceptance:<obligation id>:met` for it." in gate.text
+        assert "Cursor" not in gate.text
+    assert texts["codex"] is not None and texts["claude"] is not None
+    assert texts["claude"].text == texts[None].text  # type: ignore[union-attr]
+    cursor = texts["cursor"]
+    assert cursor is not None
+    assert "yoetz-acceptance" not in cursor.text
+    assert cursor.items == texts["claude"].items  # type: ignore[union-attr]
+    assert cursor.blocker_keys == texts["claude"].blocker_keys  # type: ignore[union-attr]
+    # Beside an item that needs a check (no once-only shortcut), Cursor still gets no line.
+    beside = closure_gate_from_readiness(
+        _flagged_readiness(_RESOLVED_A, actionable=("closing_review_required",)),
+        frontier_sequence="7",
+        frontier_digest=_DIGEST,
+        observation_pending=False,
+        host="cursor",
+    )
+    assert beside is not None
+    assert gate_module.ACCEPTANCE_RECHECK_ITEM in beside.items
+    assert "yoetz-acceptance" not in beside.text
+    assert "Cursor passes Yoetz no final answer" in beside.text
 
 
 def test_only_the_codex_stop_gate_repeats_the_check_cell_deadline(
