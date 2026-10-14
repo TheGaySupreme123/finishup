@@ -35,9 +35,18 @@ reverse-chronological released versions.
   `project_connected_via_other_path`, with the path already connected and the disconnect that
   clears it. When the shared pieces predate this release (or their record was lost), Yoetz
   treats the other projects as unknown and keeps those pieces on an ordinary disconnect, and says
-  so in the preview. Two setups for the same agent configuration at once can no longer lose a
-  project. After disconnecting projects in any order, each can be connected again (Claude Code
-  previously refused the first one with `destination_conflict`).
+  so in status and the preview. For Codex, a trusted checkout that carries Yoetz's plugin files
+  but never connected through Yoetz only counts as a project that *may* use the shared pieces:
+  status and previews list it, it keeps those pieces, and it never takes over the home's
+  marketplace binding; a disconnect that would leave only such projects stops with
+  `membership_unverified` and offers reconnecting the project you use or `--remove-shared`.
+  Two setups for the same agent configuration at once can no longer lose a project: setup holds
+  a private lock per configuration in Yoetz's own state folder, so a first setup into a
+  configuration folder that does not exist yet needs no manual `mkdir`, and a lock that cannot be
+  taken stops with `connection_lock_unavailable` before anything changes. A damaged
+  connected-projects record now names the file and the way out. After disconnecting projects in
+  any order, each can be connected again (Claude Code previously refused the first one with
+  `destination_conflict`).
 
 - `yoetz setup disconnect` now removes the selected project's Yoetz tool-approval entry (the one
   `integrate <host> admission grant` writes) as part of the same previewed plan, before the

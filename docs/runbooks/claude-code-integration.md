@@ -54,6 +54,28 @@ re-renders it for every project. `setup disconnect --remove-shared` is the expli
 it runs the marketplace removal even while other projects keep their rows, so they stop using
 Yoetz too. A disconnect whose approval file (`.claude/settings.local.json`) cannot be read safely,
 such as a symlink, stops before any change as `connection_admission_cleanup_failed`.
+Because Claude Code's rows are the membership, this host has no unknown membership, no possible
+users and no `membership_unverified` refusal (those are Codex and Cursor states). Like every
+host, each setup apply holds Yoetz's per-configuration lock from revalidation through the last
+change: an exclusive `flock` on a 0600 file under Yoetz's own state directory
+(`host-config-locks/`), keyed by the config root's resolved path, NFC, case-folded, never inside
+the Claude config root. A lock that cannot be taken stops as `connection_lock_unavailable` before
+any change, naming the lock folder. It does not serialise a setup run by another Yoetz
+installation. Untested: a state directory on NFS, SMB/CIFS, WSL DrvFS (`/mnt/c`) or another
+network or FUSE filesystem (ADR-012 amendment item 7).
+
+Native evidence, Linux x86_64 (ext4), Claude Code 2.1.300, scratch `HOME`, `CLAUDE_CONFIG_DIR`,
+XDG and isolation root (2026-10-14, #1058). Plans were prepared and applied through the same
+`prepare_selected`/`apply_connection` composition `setup run|disconnect --host claude` uses; the
+one substitution is the OS-presence review (the trusted PAM console prompt), which the container
+cannot provide, so a test stub consumed the exact plan digest. `setup status` and the disconnect
+preview were also read through the real CLI and agreed.
+
+| Scenario | Result |
+| --- | --- |
+| Connect A and B; disconnect A, then B; reconnect A | A's disconnect plans `uninstall_plugin` alone with `shared_with` B; B keeps its enabled row and `yoetz-local` stays in `claude plugin marketplace list`; B's disconnect removes the marketplace; reconnecting A succeeds (no `destination_conflict`) and its row is enabled |
+| Connect A and B; disconnect B, then A; reconnect B, then A | Same in reverse: each step leaves the remaining project's row enabled; both reconnect, and the second reconnect lists the first in `shared_with` |
+| First setup with `CLAUDE_CONFIG_DIR` under parents that do not exist yet | Connects; the plugin row is listed |
 
 On macOS the presence step uses LocalAuthentication; Linux and WSL 2 use the trusted PAM console
 path. A missing mechanism is a reported local continuation, not permission to bypass it. The

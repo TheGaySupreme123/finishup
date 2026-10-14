@@ -6488,13 +6488,34 @@ refuses `connection_other_projects_need_registration` while one still depends. C
 `retained_tables` (reconnect), and status adds `project_mcp_needs_registration` while it loads. `setup status --host codex` reports a transport-less project
 `mcp_servers.yoetz` table as `project_mcp_leftover: "tools_only"` with its revoke `next_command`.
 Several projects per host configuration root (ADR-012, 2026-10-14, #1058): the record
-`<config root>/.yoetz-connected-projects.json` (`host_projects.CONNECTED_PROJECTS_FILE`, canonical
-JSON `{"projects": [<absolute roots>]}` plus optional `"unknown_members": true`; refused unless
-owner-only; atomic compare-and-swap writes with a parent-directory fsync, under
-`host_projects.host_config_lock`, which `apply_connection` holds for every host across refresh,
-apply and the record update) names the projects that connected a Codex home or Cursor config
-root; Cursor discloses `membership_unknown` and keeps the shared plugin while it is set, and its
-status adds `connected_projects_observed`; Claude Code's own `plugin list` rows (one
+`<config root>/.yoetz-connected-projects.json` (`host_projects.CONNECTED_PROJECTS_FILE`, a frozen
+literal that does not follow `MCP_SERVER_NAME`; canonical JSON `{"projects": [<absolute roots>]}`
+plus optional `"unknown_members": true`; refused unless a regular file owned by the invoking
+account with no group or other bits; atomic compare-and-swap replace through a 0600 temporary
+with a parent-directory fsync) names the projects that connected a Codex home or Cursor config
+root. `host_projects.host_config_lock(config_root)` is the per-root setup lock `apply_connection`
+holds for every host across refresh, apply and the record update: an exclusive `flock` on
+`host_projects.lock_path_for(config_root)` = `<state_dir()>/host-config-locks/<sha256 of the
+resolved absolute path, NFC, case-folded>.lock`, a 0600 regular file owned by the invoking account
+in a 0700 directory without symlinked components, opened `O_NOFOLLOW`, never deleted; it does not
+serialise another installation's setups (the record compare-and-swap does). A lock that cannot be
+created, opened or taken raises `HostProjectsError("lock_unavailable")`, surfaced as the
+`ConnectionError` reason `connection_lock_unavailable` before any change (the CLI `next_step`
+names the lock folder). Verified members are the record's projects plus, for Codex, the project
+the `[marketplaces.yoetz]` binding names; only they are recorded, anchor the binding, or keep a
+disconnect `detach`. Possible users (Codex only, while the record is missing with shared pieces
+present or marked `unknown_members`): `[projects."<path>"]` rows with `trust_level = "trusted"`
+whose live checkout serves the exact manifest and a marker-valid plugin source, excluding verified
+members under any path spelling; `codex_marketplace.possible_projects(home)` lists them,
+`RemovalPreview.possible_users` carries them (bound into the removal digest with `unknown_after`),
+status adds `codex_home_possible_projects` and `membership_unknown: true`, and the connect and
+disconnect plan disclosure adds `membership_unknown: true` and `possible_users` (bound into
+`preview_digest`; a connect excludes the connecting project). They keep the shared pieces but
+never anchor: a disconnect that would leave possible users and no verified member raises
+`IntegrationReason.REMOVE_REFUSED` with `conflict: membership_unverified`, reported by the CLI as
+reason `membership_unverified` with reconnect and `--remove-shared` continuations. Cursor
+discloses `membership_unknown` and keeps the shared plugin while it is set (status reports it
+before any record exists), and its status adds `connected_projects_observed`; Claude Code's own `plugin list` rows (one
 `projectPath` per project-scope install) stand in for it. Plan changes add `detach_project`
 (Codex), `uninstall_plugin` alone (Claude Code), and `record_connected_project|
 forget_connected_project` (Cursor, record-only updates); the plan disclosure `shared_with` lists
@@ -6505,7 +6526,8 @@ second path to an already connected directory fails as `project_connected_via_ot
 (`IntegrationReason.PROJECT_CONNECTED_VIA_OTHER_PATH` for Codex, the same `ConnectionError`
 reason for Claude Code and Cursor) with a `next_step` naming the connected path and the
 disconnect that clears it; a malformed record is `connection_projects_record_invalid` (Claude
-Code, Cursor) or `source_invalid` with `conflict: connected_projects` (Codex). CLI:
+Code, Cursor) or `source_invalid` with `conflict: connected_projects` (Codex), each with a
+`next_step` naming the record file (restore it, or remove it to make membership unknown). CLI:
 `yoetz integrate <host> admission status|preview|grant|revoke --project-root`
 (preview `--action grant|revoke`; Claude `--checkpoint`; the host roots the route observation
 needs; `--accept --preview-digest` for the apply verbs, exit 3 without them, exit 1

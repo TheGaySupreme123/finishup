@@ -11,9 +11,10 @@ carry; nothing here manufactures platform or capability evidence.
 `support/npm-launcher/package.json`, `support/npm-launcher/bin/yoetz.js`,
 `support/npm-launcher/README.md`, plus the amended `src/yoetz/cli/app.py`,
 `src/yoetz/config/paths.py`, and `docs/runbooks/codex-integration.md`; the 2026-10-14
-several-projects amendment by `src/yoetz/adapters/integrations/host_projects.py`,
-`src/yoetz/application/host_connection.py` (`SharedProjectsStep`), and
-`src/yoetz/cli/codex_connection.py`.
+several-projects amendment by `src/yoetz/adapters/integrations/host_projects.py` (record and
+setup lock), `src/yoetz/application/host_connection.py` (`SharedProjectsStep`,
+`apply_connection`), `src/yoetz/cli/codex_connection.py`, and `src/yoetz/cli/host_connection.py`
+(continuations).
 **Relates to:** ADR-005 (Codex capability identity), ADR-007 (packaging/release), ADR-009
 (privacy/egress), ADR-010 (harness integration port).
 
@@ -460,32 +461,54 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
      `known_marketplaces.json` entry. Per project: the project-scope install, its enable flag and
      its `extraKnownMarketplaces` declaration.
    - *Cursor:* shared: the user plugin (hooks, skill). Per project: the project MCP entry.
-2. **Who is connected.** Codex and Cursor do not list which projects use the shared pieces, so
-   Yoetz keeps `<config root>/.yoetz-connected-projects.json` (canonical JSON `{"projects":
-   [...]}`, plus `"unknown_members": true` when membership is uncertain). It is read only when
-   owner-only (mode 0600-style) and written atomically with the parent directory synced, only
-   while it still holds the bytes the approved plan read; its digest is bound into the plan.
-   Every setup apply for one configuration root holds one lock (an exclusive `flock` on the
-   root's parent directory) from plan revalidation through the shared changes and the record
-   update, so a concurrent setup is stale rather than losing a member. Claude Code itself lists
-   one project-scope row per project, so that host needs no record. A Codex home bound before
-   this amendment has no record; its bound project counts as connected (earlier releases served
-   one project per home) and, when the record is missing, trusted projects that still serve the
-   exact Yoetz manifest count too. Cursor shared pieces found without a record (an earlier
-   release, or a lost record) make membership unknown; that state survives later connects and
-   is disclosed in every preview.
-3. **Reverse path.** Disconnecting a project while another live project remains removes only
-   the project's pieces (Codex: `detach`, which moves the binding to a remaining project before
-   this project's manifest goes; Claude Code: `plugin uninstall --scope project` plus removing
-   the project's exact own `extraKnownMarketplaces` declaration, without the unscoped
-   `marketplace remove`; Cursor: the project MCP entry without the user plugin). The last
-   project's disconnect removes the shared pieces and the record. A deleted project, or one
-   whose path is now a symlink, does not keep the shared pieces. Uncertainty keeps them: unknown
-   Cursor membership, and a Codex scan of other projects that stopped at its bound of 32, keep
-   the shared pieces on an ordinary disconnect. Only the explicit `setup disconnect
-   --remove-shared` removes them for every project, with disclosure, and it still refuses
-   while another project's Codex configuration needs the registration or the scan is
-   incomplete.
+2. **Who is connected: verified members and possible users.** Codex and Cursor do not list
+   which projects use the shared pieces, so Yoetz keeps
+   `<config root>/.yoetz-connected-projects.json` (canonical JSON `{"projects": [...]}`, plus
+   `"unknown_members": true` when membership is uncertain). The file name is a frozen legacy
+   identifier: it does not follow the MCP server key, so a later rename of that key keeps the
+   records earlier builds wrote. The record is read only when it is a regular file owned by the
+   invoking account with no group or other permission bits, and it is replaced atomically (a 0600
+   temporary file in the same directory, fsync, rename, then a parent-directory fsync), only
+   while it still holds the bytes the approved plan read; its digest is bound into the plan. A
+   crash leaves the old record or the new one, never a partial one. A record that fails these
+   checks stops setup before any change (`connection_projects_record_invalid`; Codex
+   `source_invalid` with `conflict: connected_projects`), and the continuation names the file and
+   the way out: restore it, or remove it, which makes membership unknown. Claude Code itself
+   lists one project-scope row per project, so that host needs no record.
+   - *Verified members* are the projects the record names and, for Codex, the project the home's
+     `[marketplaces.yoetz]` binding names (a home bound before this amendment has no record, and
+     earlier releases served one project per home). Only a verified member is recorded by a later
+     connect, becomes the Codex binding's anchor, or makes a disconnect `detach`.
+   - *Possible users* exist only while membership is unknown: shared pieces found without a
+     record (an earlier release, or a lost record), or a record marked `unknown_members`. For
+     Codex they are the home's `[projects."<path>"]` rows with `trust_level = "trusted"` whose
+     live checkout still serves the exact Yoetz manifest and a plugin source that matches its own
+     install marker, excluding every verified member under any spelling of its path. Every Yoetz
+     checkout carries those files, so this is not evidence of a connection: a possible user is
+     never recorded and never becomes the anchor. It only keeps the shared pieces, and
+     `unknown_members` stays set while one exists. Reconnecting the project records it as a
+     verified member. Cursor has no equivalent list: shared pieces found without a record make
+     membership unknown, and that state survives later connects. Status (Codex
+     `codex_home_possible_projects` and `membership_unknown`; Cursor `membership_unknown`) and
+     every preview (`membership_unknown`, plus Codex `possible_users`) disclose it.
+3. **Reverse path.** Disconnecting a project while another verified live member remains removes
+   only the project's pieces (Codex: `detach`, which moves the binding to a remaining verified
+   member before this project's manifest goes; Claude Code: `plugin uninstall --scope project`
+   plus removing the project's exact own `extraKnownMarketplaces` declaration, without the
+   unscoped `marketplace remove`; Cursor: the project MCP entry without the user plugin). The last
+   project's disconnect removes the shared pieces and the record. A deleted project, or one whose
+   path is now a symlink, does not keep the shared pieces; neither does a Codex member whose
+   checkout no longer serves its manifest and marker-valid plugin source (it already reads
+   `installed_not_activated`; reconnecting it restores both). Uncertainty keeps the pieces:
+   unknown Cursor membership, and a Codex scan of other projects that stopped at its bound of 32,
+   keep them on an ordinary disconnect. A Codex disconnect that would leave possible users but no
+   verified member to carry the binding refuses before any change (`remove_refused` with
+   `conflict: membership_unverified`; CLI reason `membership_unverified`) rather than guess: its
+   continuation names the possible users and offers reconnecting the one that uses Yoetz, or
+   previewing `--remove-shared`. Only the explicit `setup disconnect --remove-shared` removes the
+   shared pieces for every project, with disclosure (`shared_removed_from`, `possible_users`), and
+   it still refuses while another project's Codex configuration needs the registration or the
+   scan is incomplete.
 4. **Genuine duplicates.** One directory reached through a second path (a symlink, a letter-case
    variant, a moved directory) is refused on connect as `project_connected_via_other_path`, with
    the path already connected and the way out: disconnecting the project under its current path
@@ -496,6 +519,39 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
    shared registration: connecting a second project with another route re-registers it for
    every project, as before; a registration from another Yoetz installation stays
    `foreign_entry_present`.
+
+6. **One setup at a time per configuration root.** Every setup apply for any host (connect or
+   disconnect, through `apply_connection`) holds an exclusive `flock` from plan revalidation
+   through the shared changes and the record update, so a concurrent setup finds the earlier
+   one's changes and is stale rather than losing a member. The lock is a file of its own,
+   `<state dir>/host-config-locks/<sha256>.lock` (`host_projects.lock_path_for`), not a lock on
+   any host directory: a first setup into a configuration root whose parents do not exist yet
+   needs no manual `mkdir`, and unrelated roots under one parent never share a lock. The key is the
+   target's resolved absolute path in Unicode NFC, case-folded, so every spelling of one root on a
+   case-insensitive or normalising filesystem (macOS) reaches one lock; two distinct roots that
+   differ only in case merely serialise. The file is created 0600 inside an owner-only 0700
+   directory with no symlinked path component (a symlinked state directory is refused, as
+   everywhere else), opened without following a symlink, and used only when it is a regular file
+   the invoking account owns. Two first setups racing to create the directory both proceed. Lock
+   files are never removed: unlinking one while another setup waits on it would split the lock.
+   A lock that cannot be created, opened or taken is `connection_lock_unavailable` before any
+   change, with a continuation naming the lock folder; there is no unlocked fallback.
+   Limits: the lock serialises setups run by one Yoetz installation (one state directory). A setup
+   from another installation or isolation root against the same configuration root is not
+   serialised by it; the record's compare-and-swap still refuses a stale record write, and Codex
+   setup also holds the home's own `.yoetz-marketplace-activation.lock`. The low-level
+   `ConnectionPlan.apply_reviewed_steps()` does not take the lock; callers apply through
+   `apply_connection`.
+7. **Untested lock boundary.** The lock file is exercised by unit tests on macOS (APFS) and
+   Linux (ext4), and natively on Linux (ext4) by the Codex 0.144.6 and Claude Code 2.1.300 runs
+   recorded in the host runbooks. It is untested where Yoetz's state directory sits
+   on NFS, SMB/CIFS, a WSL DrvFS (`/mnt/c`) mount, or another network or FUSE filesystem. There
+   `flock` may be refused (setup then stops as `connection_lock_unavailable`, which is safe) or
+   may hold only on the local machine, so two machines running setup against one configuration
+   root at the same moment would not exclude each other; the record compare-and-swap is then the
+   only guard. The default state directories (`~/Library/Application Support/yoetz` on macOS,
+   `~/.local/state/yoetz` on Linux and inside WSL 2's Linux filesystem) are local; this matters
+   only for a relocated state directory or isolation root.
 
 ### Cursor local selection amendment (2026-08-22, issue #153)
 

@@ -12,7 +12,12 @@ your Yoetz data. From a terminal, `yoetz setup run`, `yoetz setup status`, and
 You can connect several projects to the same agent installation one after another: each adds only
 what that project needs, disconnecting one keeps the others working, and `setup status` lists the
 connected projects. Connecting the same folder a second time under another path (a symlink, other
-letter case, or its old location) is refused with the command that resolves it.
+letter case, or its old location) is refused with the command that resolves it. If Yoetz cannot
+tell which projects use what an agent installation shares (an earlier version set it up, or its
+list of connected projects was lost), a disconnect keeps those shared pieces and says so. For
+Codex, a disconnect that would leave only projects Yoetz cannot verify stops before changing
+anything and offers two ways on: connect again the project you use, or preview removing the
+shared pieces for every project with `--remove-shared`.
 The [Codex](../runbooks/codex-integration.md), [Claude Code](../runbooks/claude-code-integration.md)
 and [Cursor](../runbooks/cursor-integration.md) runbooks retain version/platform evidence and
 operator details. Configuration success alone does not prove a fresh host session is connected.

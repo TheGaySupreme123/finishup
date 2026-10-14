@@ -49,9 +49,27 @@ longer observed keeps the plugin until `setup disconnect` runs for it, which for
 plugin is found without a record (it was set up by an earlier release, or the record was lost),
 other projects may use it that no record names: the record and every preview carry
 `membership_unknown`, an ordinary disconnect keeps the plugin, and only `--remove-shared` removes
-it. Every Cursor setup apply for one config root holds a lock across revalidation, the plugin
-and MCP changes, and the record update, so a concurrent setup is refused as stale and its retry
-joins. A second path to an already connected directory is
+it. `setup status --host cursor-ide|cursor-cli` names unknown membership as soon as the plugin
+is found without a record and gives the exact `--remove-shared` preview command. Cursor has no list of
+trusted projects to inspect, so there are no Codex-style possible users and no
+`membership_unverified` refusal here: unknown membership simply keeps the plugin. Every Cursor
+setup apply for one config root holds Yoetz's per-configuration lock across revalidation, the
+plugin and MCP changes, and the record update, so a concurrent setup is refused as stale and its
+retry joins. The lock is an exclusive `flock` on a 0600 file under Yoetz's own state directory
+(`host-config-locks/`), keyed by the config root's resolved path, NFC, case-folded; it touches no
+Cursor directory, so the first setup into a config root that does not exist yet (for example a
+nested `--host-config-root`, or Cursor Agent CLI's `CURSOR_CONFIG_DIR`) creates it without a
+manual `mkdir`. That case is covered by unit
+tests for both Cursor IDE and Cursor Agent CLI, not by a native Cursor run (no Cursor binary was
+available for the 2026-10-14 re-check). A lock that cannot be taken stops as
+`connection_lock_unavailable` before any change, naming the lock folder; it does not serialise
+a setup run by another Yoetz installation, where the record's compare-and-swap is the guard.
+Untested: a state directory on NFS, SMB/CIFS, WSL DrvFS (`/mnt/c`) or another network or FUSE
+filesystem (ADR-012 amendment item 7). The record keeps the name
+`.yoetz-connected-projects.json` whatever the MCP server key is called; one that is not an
+owner-only regular file with valid content stops setup as `connection_projects_record_invalid`
+with a continuation naming the file (restore it, or remove it, which makes membership unknown).
+A second path to an already connected directory is
 refused as `project_connected_via_other_path`; disconnecting under the current path clears it. A
 moved project's `.cursor/mcp.json` entry still names its old path and reads as foreign under the
 new one; remove that entry by hand before that disconnect. `setup disconnect --remove-shared` is
