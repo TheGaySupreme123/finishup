@@ -205,9 +205,10 @@ refused. If you need Git-based capture, give the user the checkout (`chown -R`).
 normally by host admission, so admission status shows `absent` (typically) and its reverse sweeps
 (the privacy ceremony, Codex disconnect and strict re-registration, plugin removal) report nothing
 to remove; Yoetz cannot write admission entries into it (the user cannot either), so a grant there
-is refused `target_unsafe`. Known gap: Claude Code's plugin connect and remove, and Cursor's
-project MCP status, connect and disconnect, still require `.claude` and `.cursor` to be the user's
-own and refuse a root-committed one as `target_unsafe`. In both cases the repair is to have root
+is refused `target_unsafe`. Known gap: every Claude Code plugin change (install, update, enable,
+disable, remove; status still reads it), and Cursor's project MCP status, connect and disconnect,
+still require `.claude` and `.cursor` to be the user's own and refuse a root-committed one as
+`target_unsafe`. In both cases the repair is to have root
 make the folder the user's (`chown -R <user> /app/.claude`); a follow-up may let those paths read
 such a folder for status and removal. In a sticky project folder another account can create one of those folders first;
 admission status then reports it `unknown` (`folder_not_owned`), grant and revoke refuse it, and
@@ -231,8 +232,9 @@ serving start uses that sibling. A runtime the user cannot use this way is refus
   create it in the prefix's parent. Terminal commands print that directory and the repair that
   fits; hooks print the token only. `service status` names it, and every connect path refuses to
   connect a host to such a runtime (`setup run` with or without `--host`, the full-screen
-  interface's first run and `/connect`, the menu, and the `integrate … install` commands for
-  Codex MCP, Claude Code and Cursor, exit 20); disconnect, removal and status stay available. Before, these
+  interface's first run and `/connect`, the menu, the `integrate … install` commands for Codex
+  MCP, Claude Code and Cursor, and `recommend accept codex-plugin-activation`, exit 20);
+  disconnect, removal and status stay available. Before, these
   printed `release_runtime_unavailable: permission_denied` (no directory yet) or "could not be
   verified" (root had already run Yoetz and made the directory), and setup connected anyway.
 - When the installation is the user's own but `.<prefix>-releases` is not (typically created by

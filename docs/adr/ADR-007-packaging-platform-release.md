@@ -384,8 +384,9 @@ as `target_unsafe`.
    root can pre-create `.claude` for the user to close it.
 
    Known gap, recorded rather than closed here: the read/write split above is host admission's
-   alone. Claude Code's plugin connect and remove and Cursor's project MCP status, connect and
-   disconnect still require `.claude` and `.cursor` to be the user's own on every path, so a
+   alone. Every Claude Code plugin change (install, update, enable, disable, remove; status still
+   reads it) and Cursor's project MCP status, connect and disconnect still require `.claude` and
+   `.cursor` to be the user's own, so a
    folder root committed to the image (`COPY . /app` with a committed `.claude` or `.cursor`) is
    refused there as `target_unsafe` until root makes it the user's (`chown`). A follow-up may let
    their status and removal read a root-owned folder no other account can write, as host admission
@@ -425,7 +426,9 @@ creates that sibling for the user (below). Both are now refused by name instead 
    runtime (or one another account can write), before writing any registration: `setup run --host`,
    bare `setup run` (the Codex wizard, with or without `--codex-path`), the full-screen interface's
    first run and `/connect` (both its host connection and its Codex preview), the direct
-   commands `integrate codex mcp preview|install` (also reached from the prompt-loop menu),
+   commands `integrate codex mcp preview|install` (also reached from the prompt-loop menu) and
+   `recommend accept codex-plugin-activation` (setup's next command, which enables the Codex
+   plugin and its hooks; `recommend list` and `decline` stay open),
    `integrate claude plugin preview|install|update|enable` (any connect action),
    `integrate cursor plugin preview|install` (install or replace) and
    `integrate cursor project-mcp preview|install`, and, as a last guard for any front end, the

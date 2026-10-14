@@ -48,8 +48,9 @@ reverse-chronological released versions.
   Before, the service, MCP connection and hooks stopped with
   `release_runtime_unavailable: permission_denied` or "could not be verified", and setup connected
   agents to a runtime that could not start. Every way of connecting an agent (`setup run`, with or
-  without `--host`, the full-screen interface's first run and `/connect`, the menu, and
-  `yoetz integrate … install` for Codex MCP, Claude Code and Cursor) now refuses that connection,
+  without `--host`, the full-screen interface's first run and `/connect`, the menu,
+  `yoetz integrate … install` for Codex MCP, Claude Code and Cursor, and
+  `yoetz recommend accept codex-plugin-activation`) now refuses that connection,
   and one another account can write, with the same reason; disconnect, removal and status still
   work.
 

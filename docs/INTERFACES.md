@@ -3054,7 +3054,8 @@ commands name the repair and, for `release_runtime_not_owned`, the directory and
 fits whose installation and directory it is; hooks exit 20 with no stdout and no local path).
 `cli/runtime_refusal.connect_refusal()` is the same check as `(token, next step)` for every connect
 path (`setup run` with or without `--host`, the full-screen interface's first run and `/connect`,
-`integrate codex mcp preview|install` and so the prompt-loop menu, `integrate claude plugin`
+`integrate codex mcp preview|install` and so the prompt-loop menu, `recommend accept
+codex-plugin-activation`, `integrate claude plugin`
 connect actions, `integrate cursor plugin preview|install`, `integrate cursor project-mcp
 preview|install`, and `cli/host_connection.apply_selected` for a connect); disconnect, removal,
 their previews and status never consult it. The MCP bridge supplies a
@@ -6431,8 +6432,10 @@ root by the shared project-root rule (`config.foreign_write.project_root_admitte
 without following a link: a folder that is the user's own or root's and that no other account can
 write is read normally; any other folder is `unknown` with detail `folder_not_owned`, so status,
 previews and the reverse sweeps never read another account's folder as this user's admission, and a
-host folder root committed is read normally by host admission (typically `absent`; Claude Code's
-plugin and Cursor's project MCP paths still refuse such a folder, ADR-007 item 5's known gap). A preview that would change a surface requires its folder
+host folder root committed is read normally by host admission (typically `absent`; every Claude
+Code plugin change (install, update, enable, disable, remove; status still reads it) and Cursor's
+project MCP status, connect and disconnect still refuse such a folder, ADR-007 item 5's known
+gap). A preview that would change a surface requires its folder
 to be the user's own and unshared (`target_unsafe` otherwise); apply pins the project root and host
 folder by descriptor, creates an absent folder `0700`, and stages, rechecks, renames and unlinks
 relative to that descriptor. `preview_host_admission` refuses a grant unless the

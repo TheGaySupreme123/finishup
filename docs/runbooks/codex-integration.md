@@ -2554,8 +2554,10 @@ session started below the top meets its own hooks instead of `repository_identit
 checkout; the receipt reads "the repository failed a safety check (a link, another owner, ...)",
 not "not a Git repository" (same path as every host). (3) `integrate codex mcp preview|install` (also the prompt-loop menu's "Install registration") now
 refuses a runtime that cannot serve this account with exit 20 and the token, before any
-registration; status, `preview-remove` and `remove` stay open. Codex has no other direct connect
-command (`integrate codex plugin` is removal only).
+registration; status, `preview-remove` and `remove` stay open. `yoetz recommend accept
+codex-plugin-activation` (setup's next command, which enables the Codex plugin and its hooks)
+refuses the same way before refreshing or previewing; `recommend list` and `decline` stay open.
+`integrate codex plugin` is removal only and is not refused.
 
 ## Response and receipt timeout recovery
 

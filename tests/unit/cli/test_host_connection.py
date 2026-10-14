@@ -576,3 +576,34 @@ def test_integrate_cursor_project_mcp_refuses_only_connects(
         assert "must belong to the account running Yoetz" in body["next_step"]
     else:
         assert body.get("reason_code") != "release_runtime_not_owned"
+
+
+def test_recommend_accept_codex_activation_refuses_a_runtime_that_cannot_serve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``yoetz recommend accept codex-plugin-activation`` (setup's next command) enables the
+    Codex plugin and its hooks: it is a connect, refused before refreshing or previewing."""
+
+    from typer.testing import CliRunner
+
+    from yoetz.cli import recommend
+
+    _runtime_cannot_serve(monkeypatch)
+
+    async def no_refresh(**_kwargs: object) -> object:
+        raise AssertionError("the activation went past the runtime refusal")
+
+    monkeypatch.setattr(recommend, "refresh_pending", no_refresh)
+    result = CliRunner().invoke(
+        recommend.recommend_app,
+        [
+            "accept",
+            "codex-plugin-activation",
+            "--codex-path",
+            str(tmp_path / "codex"),
+            "--codex-home",
+            str(tmp_path / "codex-home"),
+        ],
+    )
+    assert result.exit_code == 20
+    assert result.stderr.startswith("release_runtime_not_owned: ")

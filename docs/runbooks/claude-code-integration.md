@@ -1875,9 +1875,10 @@ that cannot serve this account with exit 20 and the token, before host discovery
 plugin` command; `disable`, `remove`, the removal preview and `status` stay open. Not covered:
 `integrate claude plugin export`, a development carrier for `claude --plugin-dir`, not a
 connection. Known gap: a `.claude` root committed to the image is refused `target_unsafe` by
-Claude plugin connect and remove (they require the user's own `.claude`); have root make it the
-user's (`chown -R <user> <project>/.claude`). Follow-up: let removal read a root-owned `.claude`
-no other account can write.
+every Claude Code plugin change (install, update, enable, disable, remove; status still reads it),
+because each requires the user's own `.claude`; have root make it the user's (`chown -R <user>
+<project>/.claude`). Follow-up: let removal read a root-owned `.claude` no other account can
+write.
 
 ## Response and receipt timeout recovery
 
