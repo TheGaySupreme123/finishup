@@ -9,6 +9,10 @@ through WSL 2; this does not add native Windows or mobile support.
 Use `/connect` to connect or repair and `/disconnect` to remove an integration while retaining
 your Yoetz data. From a terminal, `yoetz setup run`, `yoetz setup status`, and
 `yoetz setup disconnect --host codex|claude|cursor-ide|cursor-cli` expose the same lifecycle.
+You can connect several projects to the same agent installation one after another: each adds only
+what that project needs, disconnecting one keeps the others working, and `setup status` lists the
+connected projects. Connecting the same folder a second time under another path (a symlink, other
+letter case, or its old location) is refused with the command that resolves it.
 The [Codex](../runbooks/codex-integration.md), [Claude Code](../runbooks/claude-code-integration.md)
 and [Cursor](../runbooks/cursor-integration.md) runbooks retain version/platform evidence and
 operator details. Configuration success alone does not prove a fresh host session is connected.

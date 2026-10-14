@@ -8,6 +8,19 @@ reverse-chronological released versions.
 
 ### Fixed
 
+- One Codex home, Claude Code configuration or Cursor configuration now serves several projects
+  connected one after another (#1058). `yoetz setup run --host codex` for a second project no
+  longer stops with `destination_conflict` and advice to create a new Codex home: it adds only that
+  project's pieces and reuses the home's shared plugin and MCP registration. Disconnecting one
+  project keeps the shared pieces the other connected projects use (Codex moves its marketplace
+  binding to one of them; Claude Code no longer runs the marketplace removal that uninstalled every
+  project's copy; Cursor keeps the user plugin). The last project's disconnect removes them.
+  `setup status` lists the connected projects. Connecting the same directory again through a
+  symlink, a different letter case or its old path after a move is refused as
+  `project_connected_via_other_path`, with the path already connected and the disconnect that
+  clears it. Cursor projects connected by an earlier release are recorded when their setup runs
+  again.
+
 - `yoetz setup disconnect` now removes the selected project's Yoetz tool-approval entry (the one
   `integrate <host> admission grant` writes) as part of the same previewed plan, before the
   registration itself. Previously a Codex disconnect left `[mcp_servers.yoetz.tools.check]` in the

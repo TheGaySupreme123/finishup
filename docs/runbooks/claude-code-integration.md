@@ -32,6 +32,23 @@ The existing OS-authenticated artifact review still applies. Status and disconne
 `yoetz setup status|disconnect --host claude` with the same target options. Standalone `plugin
 install` below retains its disabled-by-default behavior.
 
+**Several projects in one config root (issue #1058).** The marketplace source under
+`<config root>/plugins/marketplaces/yoetz-local` and its `known_marketplaces.json` entry are shared
+by every project; each project has its own project-scope install, enable flag and
+`.claude/settings.json` `extraKnownMarketplaces` declaration. Verified with Claude Code 2.1.299
+against a scratch `CLAUDE_CONFIG_DIR`: `claude plugin list --json` lists one `yoetz@yoetz-local`
+row per project, each with its `projectPath`, from any working directory, and the unscoped
+`claude plugin marketplace remove yoetz-local` removes every project's install. Yoetz therefore
+reads its own project's row only (other rows are not a conflict), and a disconnect while another
+project still has its row plans `uninstall_plugin` alone: the other projects keep the shared
+source and marketplace, the disconnected project keeps its now-inert `extraKnownMarketplaces`
+declaration, and the preview's `status.shared_with` names them. The last project's disconnect
+removes the marketplace and its source as before. Status reports `connected_projects`. Claude
+Code's own rows name the projects, so no Yoetz record is kept for this host. A second path to an
+already connected directory is refused as `project_connected_via_other_path`. Because the shared
+source carries the launcher and route, connecting a project with another route or launcher
+re-renders it for every project.
+
 On macOS the presence step uses LocalAuthentication; Linux and WSL 2 use the trusted PAM console
 path. A missing mechanism is a reported local continuation, not permission to bypass it. The
 common connection code does not establish native acceptance on any OS. Track current exact-head

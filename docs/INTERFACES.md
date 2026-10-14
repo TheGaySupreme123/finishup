@@ -6429,7 +6429,22 @@ registration removal; a sweep that ends `unknown|write_failed` stops the disconn
 `connection_admission_cleanup_failed` before anything else changes. Codex adds the warning token
 `admission_present_in_other_projects` and reports `status.project_config_load:
 loads|fails|unknown`; `fails` is `connection_project_config_unloadable`. `setup status --host codex` reports a transport-less project
-`mcp_servers.yoetz` table as `project_mcp_leftover: "tools_only"` with its revoke `next_command`. CLI:
+`mcp_servers.yoetz` table as `project_mcp_leftover: "tools_only"` with its revoke `next_command`.
+Several projects per host configuration root (ADR-012, 2026-10-14, #1058): the record
+`<config root>/.yoetz-connected-projects.json` (`host_projects.CONNECTED_PROJECTS_FILE`, owner-only
+canonical JSON `{"projects": [<absolute roots>]}`, compare-and-swap writes) names the projects that
+connected a Codex home or Cursor config root; Claude Code's own `plugin list` rows (one
+`projectPath` per project-scope install) stand in for it. Plan changes add `detach_project`
+(Codex), `uninstall_plugin` alone (Claude Code), and `record_connected_project|
+forget_connected_project` (Cursor, record-only updates); the plan disclosure `shared_with` lists
+the other projects that keep the shared pieces and is bound into `preview_digest`. Status adds
+`codex_home_projects` and the project's own `activation_state` (Codex; `active` only for a
+connected project) or `connected_projects` (Claude Code, Cursor). A connect through a
+second path to an already connected directory fails as `project_connected_via_other_path`
+(`IntegrationReason.PROJECT_CONNECTED_VIA_OTHER_PATH` for Codex, the same `ConnectionError`
+reason for Claude Code and Cursor) with a `next_step` naming the connected path and the
+disconnect that clears it; a malformed record is `connection_projects_record_invalid` (Claude
+Code, Cursor) or `source_invalid` with `conflict: connected_projects` (Codex). CLI:
 `yoetz integrate <host> admission status|preview|grant|revoke --project-root`
 (preview `--action grant|revoke`; Claude `--checkpoint`; the host roots the route observation
 needs; `--accept --preview-digest` for the apply verbs, exit 3 without them, exit 1
@@ -6648,7 +6663,16 @@ presence cell. The ADR-012 setup composition remains its own separately authoriz
 Codex `preview_removal` / `apply_removal` refuse foreign, modified, dual, or otherwise
 conflicting marketplace, config, inventory, or cache surfaces with `remove_refused` and a closed
 `conflict` token (`personal_marketplace|repository_marketplace|config_marketplace|config_plugin|
-inventory|cache`). Cache purge is default-off. The removal digest binds the exact trusted project
+inventory|cache`). `RemovalOutcome` is `remove|already_absent|detach`: `detach` (#1058) means other
+connected projects that still serve the exact Yoetz manifest keep the home's binding, enable
+table, cache and MCP registration; the preview names them in `shared_with` and, when the binding
+named this project, the project it moves to in `rebind_to`; apply rebinds first, then removes the
+project's canonical `marketplace.json`, then updates the connected-projects record. The
+activation side treats a binding to another such project as the shared marketplace
+(`_plugin_inventory` expects that anchor's source), counts a project as activated only when it is
+the anchor or in the record, moves a binding whose project lost its manifest to the connecting
+project, and refuses an alias of the same directory as `project_connected_via_other_path`.
+Cache purge is default-off. The removal digest binds the exact trusted project
 root as well as the selected executable, Codex home, configuration/cache preimages, planned host
 commands, and cache-purge choice. Cache preview and apply share descriptor-relative no-follow
 total-entry, recursion-depth, relative-path, file-count, per-member, and aggregate-byte bounds.

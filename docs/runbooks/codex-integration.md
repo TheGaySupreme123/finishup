@@ -39,6 +39,44 @@ discovery/start, disconnect and reconnect for macOS, Linux and WSL 2 separately 
 app availability and CLI availability remain distinct; an untested version/platform does not
 inherit certification from executable discovery or unit tests.
 
+### Several projects in one Codex home (issue #1058)
+
+One Codex home serves every project connected to it. Verified with Codex 0.162.1 against a scratch
+`CODEX_HOME`: the installed Yoetz plugin (its hooks and plugin skills) loads from the home's plugin
+cache whatever the working directory, and `[mcp_servers.yoetz]` is user-level. The home has one
+`[marketplaces.yoetz]` binding, which names one connected project's `.agents/plugins` manifest;
+rebinding it to another project with the identical manifest keeps the installed plugin, and a
+binding whose project lost its manifest makes every `codex plugin …` command in that home fail
+(`marketplace root does not contain a supported manifest`).
+
+| Piece | Scope |
+| --- | --- |
+| `[mcp_servers.yoetz]`, `[marketplaces.yoetz]`, `[plugins."yoetz@yoetz"]`, `plugins/cache/yoetz` | the Codex home, shared |
+| `.agents/plugins/marketplace.json` and plugin source, `.agents/skills/yoetz`, observation consent, check policy trust, `.codex/config.toml` admission | each project |
+| `.yoetz-connected-projects.json` in the Codex home | Yoetz's record of the connected projects |
+
+- `setup run --host codex` for a second project adds only that project's pieces and records it;
+  the binding keeps naming the first project. Both projects read `active`. A project that only
+  carries Yoetz's committed plugin source but never ran setup in this home stays
+  `installed_not_activated`.
+- `setup disconnect` while another connected project remains plans `detach_project`: the binding
+  moves to a remaining project if it named this one, this project's manifest, skill and admission
+  go, and the shared plugin, cache and MCP registration stay (`retained` says so, the preview's
+  `status.shared_with` names who keeps them, and no `admission_other_projects` warning applies
+  because the transport stays). The last connected project's disconnect removes the shared pieces
+  and the record.
+- `setup status --host codex` reports `codex_home_projects`. A home connected before this release
+  has no record; its bound project counts as connected and is recorded when a second project
+  connects.
+- Refused: one directory under a second path (a symlink, a letter-case variant, the path it had
+  before it moved) fails as `project_connected_via_other_path`, naming the path already
+  connected. Disconnecting the project under its current path also clears the entry under the
+  other path; then connect again. Yoetz-named configuration that Yoetz did not write or that was
+  edited stays `destination_conflict`; another connected project never is.
+- The route profile is part of the shared registration: connecting a project with a different
+  `--route-profile` re-registers it for every project in the home, and the preview shows the
+  transition.
+
 ## Linux and WSL
 
 This integration uses the standalone Codex CLI installation path on Linux and WSL 2. This runbook
@@ -517,8 +555,10 @@ version stays constant while plugin content drifts, a previously activated home'
 legitimately differ from the fresh render: a cache tree that carries a valid
 `.yoetz-plugin-install.json` marker and byte-matches that marker's own inventory is a prior
 yoetz-managed render, previewed as a same-version refresh and replaced atomically on apply.
-`destination_conflict` is reserved for foreign, marker-inconsistent, or modified cache trees —
-those still require the owner to resolve the conflict by hand.
+`destination_conflict` is reserved for foreign, marker-inconsistent, or modified cache trees and
+for Yoetz-named configuration Yoetz did not write — those still require the owner to resolve the
+conflict by hand. A binding to another connected project is the shared marketplace, not a conflict
+(see [Several projects in one Codex home](#several-projects-in-one-codex-home-issue-1058)).
 
 Registration also decides *which* route the agent gets. Both owned serve commands classify as
 `yoetz_owned`, so the state alone cannot tell a strict registration from a policy one. Read the
@@ -1562,7 +1602,8 @@ egress.
 | Write/swap interrupted | Run `status`; preserve any staged content; do not delete it yourself. |
 | Skill not discovered, or duplicate `$yoetz` names loaded | Check the exact scope, loaded skill roots, managed path, trust, version, and capability matrix; reload Codex. |
 | Setup reports `installed_not_activated` | Run `yoetz recommend list --codex-path <exact-executable> --codex-home <exact-home>`, then accept only the freshly shown target/preview digest. Historical acceptance cannot suppress an observed inactive target; a decline suppresses only its unchanged exact target. Review canonical inventory and the versioned cache; marketplace/config presence alone is insufficient. A marker-consistent stale cache is refreshed by an ordinary approved re-run. |
-| Activation reports `destination_conflict` | The versioned cache (or a config/marketplace surface) holds foreign, marker-inconsistent, or modified content. Review it by hand; setup only replaces trees that match their own Yoetz install marker. |
+| Activation reports `destination_conflict` | The versioned cache (or a config/marketplace surface) holds foreign, marker-inconsistent, or modified content. Review it by hand; setup only replaces trees that match their own Yoetz install marker. Another Yoetz-connected project in the same home is not a conflict. |
+| Setup reports `project_connected_via_other_path` | This directory is already connected under another path (symlink, letter case, or a move). Run the `setup disconnect` the message names for this project (it clears the other entry), then connect again. |
 | Activation failed with an explicit `--codex-home` | Read the actual `reason` in `registration.plugin_activation`/`readiness.plugin_activation`; the bound home and config path are echoed there. `codex_home_required` appears only when no home was passed. |
 | Setup reports plugin source files but no Yoetz skill appears | Check `.agents/skills/yoetz`; source installation and plugin activation do not prove project-skill discovery. |
 | `list_mcp_resources` fails with `resources/list failed: Unexpected response type` | Codex's rmcp client is built with serde_json `arbitrary_precision`; before modelcontextprotocol/rust-sdk#1300 it cannot decode a fractional number in a buffered result, and the whole listing is dropped. Yoetz therefore lists guidance resources without the fractional `annotations.priority` on every host; an older Yoetz shows this symptom. Guidance never needs the listing: call `read_guidance` with a registered URI. |

@@ -10,7 +10,10 @@ carry; nothing here manufactures platform or capability evidence.
 `src/yoetz/adapters/integrations/codex_marketplace.py`, `src/yoetz/cli/setup.py`,
 `support/npm-launcher/package.json`, `support/npm-launcher/bin/yoetz.js`,
 `support/npm-launcher/README.md`, plus the amended `src/yoetz/cli/app.py`,
-`src/yoetz/config/paths.py`, and `docs/runbooks/codex-integration.md`.
+`src/yoetz/config/paths.py`, and `docs/runbooks/codex-integration.md`; the 2026-10-14
+several-projects amendment by `src/yoetz/adapters/integrations/host_projects.py`,
+`src/yoetz/application/host_connection.py` (`SharedProjectsStep`), and
+`src/yoetz/cli/codex_connection.py`.
 **Relates to:** ADR-005 (Codex capability identity), ADR-007 (packaging/release), ADR-009
 (privacy/egress), ADR-010 (harness integration port).
 
@@ -437,6 +440,49 @@ reusing a stale approval. No-op stages require no new review. Linux/WSL TUI appr
 to the trusted terminal for OS authentication. Integration approval grants no observation,
 provider-credential or disclosure authority. Installed, enabled/configured, reload-required and
 connection-observed are separate facts; only a fresh native session can prove discovery and start.
+
+### Several projects in one host configuration (2026-10-14, issue #1058)
+
+Owner direction (2026-10-14, recorded on #1058; design gates: storage, release): one Codex home,
+Claude Code config root or Cursor config root must support several Yoetz-connected projects,
+connected one after another. Only a genuinely conflicting duplicate is refused.
+
+1. **Shared versus per project.** Each host keeps some Yoetz pieces once per configuration root
+   and serves every project from them; setup for a second project adds only that project's
+   pieces and leaves the shared ones as they are.
+   - *Codex:* shared: the user-level `mcp_servers.yoetz` registration, the one
+     `[marketplaces.yoetz]` binding, `[plugins."yoetz@yoetz"]`, and the plugin cache (with its
+     hooks and plugin skills). Per project: `.agents/plugins` (manifest and plugin source), the
+     project skill, observation consent, check policy trust, and `.codex/config.toml` admission.
+     The binding names one connected project (its *anchor*); a binding to another project that
+     still serves the exact Yoetz manifest is the shared marketplace, not a conflict.
+   - *Claude Code:* shared: the marketplace source under the config root and its
+     `known_marketplaces.json` entry. Per project: the project-scope install, its enable flag and
+     its `extraKnownMarketplaces` declaration.
+   - *Cursor:* shared: the user plugin (hooks, skill). Per project: the project MCP entry.
+2. **Who is connected.** Codex and Cursor do not list which projects use the shared pieces, so
+   Yoetz keeps `<config root>/.yoetz-connected-projects.json` (owner-only canonical JSON,
+   `{"projects": [...]}`), written under the activation lock and only while it still holds the
+   bytes the approved plan read; its digest is bound into the plan. Claude Code itself lists one
+   project-scope row per project, so that host needs no record. A Codex home bound before this
+   amendment has no record; its bound project counts as connected and is recorded when another
+   project connects.
+3. **Reverse path.** Disconnecting a project while another live project remains removes only
+   the project's pieces (Codex: `detach`, which moves the binding to a remaining project before
+   this project's manifest goes; Claude Code: `plugin uninstall --scope project` without the
+   unscoped `marketplace remove`; Cursor: the project MCP entry without the user plugin). The
+   last project's disconnect removes the shared pieces and the record. A deleted project, or
+   one whose path is now a symlink, does not keep the shared pieces.
+4. **Genuine duplicates.** One directory reached through a second path (a symlink, a letter-case
+   variant, a moved directory) is refused on connect as `project_connected_via_other_path`, with
+   the path already connected and the way out: disconnecting the project under its current path
+   also clears the entry under the other path. A Codex binding to a project that no longer
+   serves its manifest (Codex then fails every plugin command in the home) is moved to the
+   connecting project; a binding to anything else stays `destination_conflict`.
+5. **Not a duplicate.** The MCP route profile, launcher and isolation root are properties of the
+   shared registration: connecting a second project with another route re-registers it for
+   every project, as before; a registration from another Yoetz installation stays
+   `foreign_entry_present`.
 
 ### Cursor local selection amendment (2026-08-22, issue #153)
 
