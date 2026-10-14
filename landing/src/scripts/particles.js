@@ -483,9 +483,11 @@ export function mountParticles(canvas, options = {}) {
         break;
       }
       case "sun": {
-        // The figures and tier words are drawn flat and the camera holds square, so they
-        // stay readable and land in the slot the copy leaves for them.
-        spec.yawAmp = 0.05;
+        // The figures and tier words are drawn flat and the camera holds square, with no
+        // sway and no pointer parallax (as for the closing lockup), so they stay readable and
+        // land in the slot the copy leaves for them.
+        spec.yawAmp = 0;
+        spec.mouse = false;
         spec.turn = false;
         const y0 = 0.8;
         const sy = 0.6 - phase * 1.0; // already half-risen when the scene opens
@@ -599,7 +601,7 @@ export function mountParticles(canvas, options = {}) {
     if (tierPx) tierN = { x: (tierPx.x - cxo) / S, y: (tierPx.y - cyo) / S, w: tierPx.w / S, h: tierPx.h / S };
     else tierN = defaultTier;
     // the side score's room: from the camera centre to a gutter inside the canvas's left edge,
-    // wide enough to absorb the sunrise's slight yaw and perspective
+    // which also absorbs the parallax still settling as the camera squares up for the sunrise
     scoreRoom = (cxo - Math.max(24, cw * 0.04)) / S;
     let spec;
     if (tl) {

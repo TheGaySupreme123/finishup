@@ -220,6 +220,9 @@ const PAPER_URL = "[PAPER URL]";
       import { mountParticles } from "../scripts/particles.js";
 
       const reduced = window.matchMedia("(prefers-reduced-motion: reduce)");
+      // In forced colours the artwork's dots carry no reliable contrast, so the story is static
+      // and the benchmark figures read as text.
+      const forced = window.matchMedia("(forced-colors: active)");
       const compact = window.matchMedia("(max-height: 560px)");
       const narrow = window.matchMedia("(max-width: 719px)");
       const canvas = document.getElementById("particles") as HTMLCanvasElement | null;
@@ -243,7 +246,7 @@ const PAPER_URL = "[PAPER URL]";
       function syncPresentation() {
         stopStory();
         stopStory = () => {};
-        const animated = pageActive && !paused && !reduced.matches && !compact.matches
+        const animated = pageActive && !paused && !reduced.matches && !forced.matches && !compact.matches
           && !!canvas?.getContext("2d") && !!story && plan.length > 0;
         story?.classList.toggle("animated", animated);
         const spacer = story?.querySelector<HTMLElement>(".spacer");
@@ -261,7 +264,7 @@ const PAPER_URL = "[PAPER URL]";
         benchWith?.classList.remove("on");
         benchDot?.classList.remove("off");
         if (motionToggle) {
-          motionToggle.hidden = reduced.matches || compact.matches;
+          motionToggle.hidden = reduced.matches || forced.matches || compact.matches;
           motionToggle.setAttribute("aria-pressed", String(paused));
           motionToggle.setAttribute("aria-label", paused ? "Play animated story" : "Pause animation and read the static story");
           motionToggle.title = paused ? "Play animation" : "Pause animation";
@@ -360,6 +363,7 @@ const PAPER_URL = "[PAPER URL]";
         syncPresentation();
       });
       reduced.addEventListener("change", syncPresentation);
+      forced.addEventListener("change", syncPresentation);
       compact.addEventListener("change", syncPresentation);
       narrow.addEventListener("change", syncPresentation);
       window.addEventListener("pagehide", () => { pageActive = false; stopStory(); });

@@ -20,7 +20,7 @@ function environment(t, { opaqueSamples = false, size = [1024, 768] } = {}) {
         listeners.get(name).add(fn);
       },
       removeEventListener(name, fn) { listeners.get(name)?.delete(fn); },
-      dispatch(name) { for (const fn of listeners.get(name) ?? []) fn({}); },
+      dispatch(name, event = {}) { for (const fn of listeners.get(name) ?? []) fn(event); },
       listenerCount() { return [...listeners.values()].reduce((sum, set) => sum + set.size, 0); },
     };
   };
@@ -310,8 +310,11 @@ function scoreDots(env, [w, h]) {
   return env.ctx.inkDraws.filter(([, y, , size]) => y + size / 2 < cy + 0.4 * S);
 }
 
+// The engine keeps the side score this far inside the canvas's left edge.
+const gutter = ([w]) => Math.max(24, w * 0.04);
+
 for (const size of [[768, 1024], [720, 900], [820, 1180], [900, 1000], [1024, 1366], [1024, 768], [1440, 900], [390, 844]]) {
-  test(`the score stays inside a ${size[0]}x${size[1]} canvas at both stops`, (t) => {
+  test(`the score keeps its gutter inside a ${size[0]}x${size[1]} canvas at both stops`, (t) => {
     const env = environment(t, { opaqueSamples: true, size });
     const art = env.mount({ reducedMotion: true, count: 5500, scores: ["60", "80"] });
     env.intersect(true);
@@ -320,7 +323,9 @@ for (const size of [[768, 1024], [720, 900], [820, 1180], [900, 1000], [1024, 13
       env.flush(now);
       const dots = scoreDots(env, size);
       assert.ok(dots.length > 100, "the score is drawn");
-      for (const [x, , w] of dots) assert.ok(x >= 0 && x + w <= size[0], `dot at ${x.toFixed(1)} stays inside 0..${size[0]}`);
+      for (const [x, , w] of dots) {
+        assert.ok(x >= gutter(size) - 3 && x + w <= size[0], `dot at ${x.toFixed(1)} keeps the ${gutter(size)}px gutter inside 0..${size[0]}`);
+      }
     }
   });
 }
@@ -340,5 +345,42 @@ for (const size of [[1440, 900], [2560, 900]]) {
     const span = Math.max(...xs) - Math.min(...xs);
     const full = 0.6 * (658 / 450) * Math.min(...size) * 0.46;
     assert.ok(span > full * 0.85 && span <= full + 1, `span ${span.toFixed(1)} of a full-size ${full.toFixed(1)}`);
+  });
+}
+
+// The dotted word's slot on the built page at the second stop (canvas px: left, top, width,
+// height) and the top of "Read the full paper" below it, measured in Chromium.
+const PAGE = {
+  "1920x1080": { slot: [1204, 561, 620, 73], paperTop: 654 },
+  "768x1024": { slot: [102, 462, 620, 42], paperTop: 524 },
+  "700x1000": { slot: [16, 842, 620, 44], paperTop: 906 },
+  "390x844": { slot: [16, 689, 358, 41], paperTop: 750 },
+};
+
+// With motion on, the pointer at either edge must not swing the sunrise's flat words out of
+// place: the score keeps its gutter and the dotted word stays in its slot, above the link.
+for (const [size, side] of [[[1920, 1080], "left"], [[768, 1024], "left"], [[768, 1024], "right"], [[700, 1000], "right"], [[390, 844], "right"]]) {
+  test(`with motion and the pointer at the ${side} edge, a ${size[0]}x${size[1]} sunrise keeps its words in place`, (t) => {
+    const { slot: [sx, sy, sw, sh], paperTop } = PAGE[size.join("x")];
+    const env = environment(t, { opaqueSamples: true, size });
+    const art = env.mount({ count: size[0] < 720 ? 2600 : 5500, scores: ["60", "80"] });
+    art.setTier(sx + sw / 2, sy + sh / 2, sw, sh);
+    env.intersect(true);
+    env.win.dispatch("pointermove", { clientX: side === "left" ? 0 : size[0] - 1 });
+    art.setScene("sun", 0.75);
+    // Frames 200 ms apart: the springs settle well within 200 frames, and frames 200..400
+    // (40 s to 80 s) cover both peaks of the ambient sway.
+    for (let k = 0; k < 400; k++) {
+      env.flush(k * 200);
+      if (k < 200) continue;
+      for (const [x, , w] of scoreDots(env, size)) {
+        assert.ok(x >= gutter(size) - 4 && x + w <= size[0], `frame ${k}: score dot at ${x.toFixed(1)} keeps the gutter`);
+      }
+      assert.ok(env.ctx.tierDraws.length > 100, "the dotted word is drawn");
+      for (const [x, y, w, h] of env.ctx.tierDraws) {
+        assert.ok(x >= sx - w - 2 && x + w <= sx + sw + w + 2, `frame ${k}: word dot at x ${x.toFixed(1)} stays in the slot ${sx}..${sx + sw}`);
+        assert.ok(y >= sy - h - 2 && y + h <= Math.min(sy + sh + h + 2, paperTop), `frame ${k}: word dot at y ${y.toFixed(1)} stays in the slot, above the link`);
+      }
+    }
   });
 }
