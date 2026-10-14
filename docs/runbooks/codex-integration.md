@@ -2511,6 +2511,18 @@ non-root user may use a root-owned project root that no other account can write,
 Files Yoetz writes inside the project must still be the user's own. Verified for Codex in a Boat
 container as `nobody` and `agent`; Claude Code and Cursor are unit-tested on the same rule.
 
+**Runtime another account installed.** Decision for Codex: same path as every host (shared entry
+and setup code; no host-specific change). A runtime root installed and a non-root user runs stops
+`yoetz mcp serve`, `service run` and every hook with `release_runtime_not_owned` (exit 20) instead
+of `release_runtime_unavailable: permission_denied` or "could not be verified". Codex shows the MCP server's startup error with that text; its hooks exit 20 with no stdout, so they make no allow or block decision and Codex continues the turn. Terminal
+commands print the `.<prefix>-releases` directory the user must own; hook stderr carries the token
+without local paths. `setup run` refuses to connect Codex to such a runtime with that reason and
+leaves status and disconnect available. `yoetz instance create --bind-runtime` on such a runtime
+is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succeeds (ADR-028,
+2026-10-14 amendment). Install Yoetz as the user, or see the Linux runbook for the one-user
+`.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
+hook paths, not a Codex session); the Codex connect refusal is unit-tested.
+
 ## Response and receipt timeout recovery
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the

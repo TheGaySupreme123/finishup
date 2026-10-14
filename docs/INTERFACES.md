@@ -3037,7 +3037,15 @@ Bridges of the stale installation reconnect and are refused in turn until their 
 reopened, and never replace the newer service: the one per-user endpoint belongs to the newest
 installation in use. Installed bridges and services run from retained release copies, including
 code, dependencies and resources, so package replacement does not change the bytes available to
-an open process (ADR-007). The MCP bridge supplies a
+an open process (ADR-007). Entering a retained copy refuses an installation it cannot trust or
+serve with an ownership token, `adapters/release_runtime.OWNERSHIP_TOKENS` =
+`release_runtime_group_writable|release_runtime_world_writable` (another account can write the
+runtime) `|release_runtime_not_owned` (its `.<prefix>-releases` directory belongs to another
+account, or is absent from a parent another account owns and this user cannot write: a runtime
+another account installed); `installed_runtime_refusal()` reports the same tokens read-only, and
+`cli/runtime_refusal.runtime_refusal(token, hook=)` is the one text every surface prints (terminal
+commands name the repair and, for `release_runtime_not_owned`, the directory; hooks exit 20 with
+no stdout and no local path). The MCP bridge supplies a
 default **30-second** call deadline for `start`, `publish_work`, and `status`, a default
 **50-second** deadline for `respond` and `receipt` (below the common 60-second host MCP tool
 limit, so the bridge's typed timeout reaches the agent first), and a default **300-second**
@@ -7688,17 +7696,22 @@ facade and are never MCP tools.
   (closed `reason`: `instance_identity_invalid|instance_expired|instance_exists|instance_absent|
   instance_not_disposable|instance_root_invalid|instance_root_too_long|instance_expiry_invalid|
   instance_lifecycle_requires_isolated_root|installation_identity_mismatch|
-  instance_service_running|runtime_pin_conflict|runtime_pin_invalid`) otherwise;
-  `write_instance_identity()` never overwrites; `verify_instance_binding()` is the service-start
-  gate `service/daemon.py` runs before `acquire_singleton()`; `write_runtime_pin()` /
-  `remove_runtime_pin()` own the pin file. `cli/exits.py` maps the reasons through
-  `INSTANCE_PUBLIC_CODES` (usage-shaped refusals exit 2, untrusted identity 20 as
-  `STORAGE_UNSAFE`, `instance_expired` 20 as `SERVICE_UNAVAILABLE`, `instance_service_running`
-  20 as `BUNDLE_BUSY`) and carries their remediation lines.
+  instance_service_running|runtime_pin_conflict|runtime_pin_invalid|runtime_pin_unwritable`)
+  otherwise; `write_instance_identity()` never overwrites; `verify_instance_binding()` is the
+  service-start gate `service/daemon.py` runs before `acquire_singleton()`; `write_runtime_pin()` /
+  `remove_runtime_pin()` own the pin file, and a pin that cannot be written (the prefix is not
+  writable by the current user, or its disk is read-only or full) is `runtime_pin_unwritable` with
+  no temporary file left behind. `cli/exits.py` maps the reasons through
+  `INSTANCE_PUBLIC_CODES` (usage-shaped refusals exit 2, untrusted identity and an unwritable pin
+  20 as `STORAGE_UNSAFE`, `instance_expired` 20 as `SERVICE_UNAVAILABLE`,
+  `instance_service_running` 20 as `BUNDLE_BUSY`) and carries their remediation lines.
 - `cli/instance.py`: `yoetz instance create|status|dispose` (ADR-028). `create_instance()`
   creates one owner-only root (parent must exist; same path-safety gate; socket path bound
   `MAX_SOCKET_PATH_BYTES` = 100), seals the marker, and with `--bind-runtime` pins `sys.prefix`;
-  it echoes the exact root once. `instance_status()` is connection-free and digest-only: mode,
+  it echoes the exact root once. Creation is whole or nothing: a refusal after the root exists
+  (`runtime_pin_unwritable`, a pin conflict found at write time, a failed seal) first removes this
+  call's own marker and the directories it created, each only when empty, so a retry after the
+  repair succeeds (ADR-028, 2026-10-14 amendment). `instance_status()` is connection-free and digest-only: mode,
   binding, lifecycle, the isolation report's `path_identity` block, marker fields, `expired`, `runtime_provenance`
   (`matched|drifted|unrecorded`), `runtime_pin` (`bound|none`), and the lock-stamped
   `service_holder`. `dispose_instance()` removes exactly one marked persistent/disposable root:

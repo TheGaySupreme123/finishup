@@ -211,6 +211,37 @@ def test_failed_connection_names_a_runtime_another_account_can_write(
     assert "chmod -R go-w /x" in report["next_step"]
 
 
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor-cli"])
+def test_connect_preflight_names_a_runtime_another_account_installed(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    host: str,
+) -> None:
+    """Every host would launch a runtime that cannot serve this account: refuse by name."""
+
+    from yoetz.adapters import release_runtime
+
+    monkeypatch.setattr(
+        release_runtime,
+        "installed_runtime_refusal",
+        lambda: release_runtime.ReleaseRuntimeError("release_runtime_not_owned"),
+    )
+    code = cli.run_host_connection(
+        host=host,
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/example/project"),
+        json_output=True,
+    )
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    HostConnectionReport.model_validate(report)
+    assert (report["outcome"], report["reason"]) == ("incomplete", "release_runtime_not_owned")
+    assert "Install Yoetz as this account" in report["next_step"]
+    assert "plan" not in report
+
+
 def test_connect_preflight_refuses_but_disconnect_and_status_proceed(
     prepared: ConnectionPlan, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

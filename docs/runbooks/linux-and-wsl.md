@@ -190,7 +190,30 @@ create entries there, have root pre-create that directory owned by the user. Git
 root-owned worktree for another user, so such a project is used as a plain directory, not a
 repository. For the runtime itself in such an image: install it as the user (or give the user its
 prefix and a 0700 `.<prefix>-releases` sibling), because binding an instance writes into the
-prefix and every serving start uses that sibling.
+prefix and every serving start uses that sibling. A runtime the user cannot use this way is
+refused by name (ADR-007, 2026-10-14):
+
+- `release_runtime_not_owned` (exit 20) from `service run`, `mcp serve`, `upgrade` and every hook
+  when `.<prefix>-releases` belongs to another account, or does not exist and the user cannot
+  create it in the prefix's parent. Terminal commands print that directory; hooks print the token
+  only. `setup run` refuses to connect a host to such a runtime and `service status` names it.
+  Before, these printed `release_runtime_unavailable: permission_denied` (no directory yet) or
+  "could not be verified" (root had already run Yoetz and made the directory).
+- `runtime_pin_unwritable` (exit 20) from `instance create --bind-runtime` when the user cannot
+  write the prefix; the command keeps nothing, so it can simply be run again after the repair.
+
+If the image must keep the runtime root-owned, root can create the sibling for exactly one user
+before anyone runs Yoetz:
+
+```bash
+install -d -m 0700 -o agent /opt/yu/.runtime-releases   # for a runtime at /opt/yu/runtime
+```
+
+That user then builds and serves its own private copies from root's files (verified as `nobody`,
+2026-10-14). Root itself is then refused by the same rule, the runtime serves only that user, and
+it cannot be pinned (a pin must be the running user's own), so a pinned instance still needs a
+runtime the user owns. If root has already run Yoetz from that runtime, the existing sibling holds
+root's copies and lock: leave it and install a runtime for the user instead.
 
 ## Retained-runtime bytecode and slow starts
 

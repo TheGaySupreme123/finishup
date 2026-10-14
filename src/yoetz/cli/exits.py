@@ -110,6 +110,7 @@ INSTANCE_PUBLIC_CODES: Final = MappingProxyType(
         "isolation_root_conflict": PublicErrorCode.STORAGE_UNSAFE,
         "runtime_pin_conflict": PublicErrorCode.STORAGE_UNSAFE,
         "runtime_pin_invalid": PublicErrorCode.STORAGE_UNSAFE,
+        "runtime_pin_unwritable": PublicErrorCode.STORAGE_UNSAFE,
         "instance_service_running": PublicErrorCode.BUNDLE_BUSY,
     }
 )
@@ -369,6 +370,12 @@ REMEDIATION_MESSAGES: Final = MappingProxyType(
         "runtime_pin_conflict": (
             "this runtime is already pinned to another root; dispose that instance from this "
             "runtime or provision a separate runtime for the new root"
+        ),
+        "runtime_pin_unwritable": (
+            "this runtime's environment directory cannot be written by the current user (it was "
+            "installed by another account, or its disk is read-only or full), so the runtime was "
+            "not pinned and no instance was kept; install Yoetz as the account that will run it, "
+            "or fix that directory, then run the same command again"
         ),
         "path_on_network_filesystem": (
             "the Yoetz state directory is on a network or cross-machine filesystem (NFS, SMB, "

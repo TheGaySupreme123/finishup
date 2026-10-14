@@ -1,8 +1,8 @@
-"""The one refusal text for an installed runtime another account can write.
+"""The one refusal text for an installed runtime another account can write or owns.
 
 Shared by the console entry (before the CLI graph loads), CLI service-unavailable failures and
-setup. Standard library only. Terminal commands get the exact repair command for this
-installation; hook output, which a host may show to a model, carries no local path.
+setup. Standard library only. Terminal commands get the exact repair for this installation; hook
+output, which a host may show to a model, carries no local path.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shlex
 import sys
+from pathlib import Path
 
 
 def _repair_paths() -> list[str]:
@@ -52,7 +53,7 @@ def foreign_write_refusal(token: str, *, hook: bool) -> str:
             "this hook did nothing.\n"
         )
     paths = _repair_paths()
-    if any(any(ord(c) < 32 or ord(c) == 127 for c in path) for path in paths):
+    if not all(_printable(path) for path in paths):
         command = "chmod -R go-w <the Yoetz tool environment> <its Python installation>"
     else:
         command = shlex.join(["chmod", "-R", "go-w", *paths])
@@ -63,8 +64,51 @@ def foreign_write_refusal(token: str, *, hook: bool) -> str:
     )
 
 
+def _printable(path: str) -> bool:
+    return not any(ord(c) < 32 or ord(c) == 127 for c in path)
+
+
+def not_owned_refusal(*, hook: bool) -> str:
+    """A runtime another account installed: name the directory it needs; ends with a newline."""
+
+    head = (
+        "release_runtime_not_owned: This Yoetz installation runs from a private copy kept in a "
+        "directory that must belong to the account running Yoetz, and for this account it does "
+        "not, so Yoetz will not run. "
+    )
+    if hook:
+        return (
+            head + "Run 'yoetz service run' in a terminal for the details; this hook did nothing.\n"
+        )
+    directory = "<the directory beside the Yoetz tool environment>"
+    try:
+        from yoetz.adapters.release_runtime import installation_prefix, retained_runtime_directory
+
+        candidate = os.fspath(
+            retained_runtime_directory(Path(os.path.realpath(installation_prefix())))
+        )
+        if _printable(candidate):
+            directory = candidate
+    except Exception:  # noqa: BLE001 - the placeholder still says what is needed
+        pass
+    return (
+        head + "That directory belongs to another account, or this account cannot create it:\n"
+        f"  {directory}\n"
+        "This usually means another account, such as root, installed Yoetz. Install Yoetz as "
+        "this account, then connect your hosts again from that installation.\n"
+    )
+
+
+def runtime_refusal(token: str, *, hook: bool) -> str:
+    """The refusal text for any ownership token the installed runtime reports."""
+
+    if token == "release_runtime_not_owned":
+        return not_owned_refusal(hook=hook)
+    return foreign_write_refusal(token, hook=hook)
+
+
 def installed_runtime_refusal_text() -> tuple[str, str] | None:
-    """``(token, text)`` when this installation's runtime is refused for foreign write."""
+    """``(token, text)`` when this installation's runtime is refused for its ownership."""
 
     if os.name == "nt":
         return None
@@ -77,4 +121,4 @@ def installed_runtime_refusal_text() -> tuple[str, str] | None:
     if error is None:
         return None
     token = str(error)
-    return token, foreign_write_refusal(token, hook=False)
+    return token, runtime_refusal(token, hook=False)

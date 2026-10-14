@@ -1972,6 +1972,18 @@ non-root user may use a root-owned project root that no other account can write,
 Files Yoetz writes inside the project must still be the user's own. Verified for Codex in a Boat
 container as `nobody` and `agent`; the same check path is unit-tested for this host.
 
+**Runtime another account installed.** Decision for Cursor: same path as every host (shared entry
+and setup code; no host-specific change). A runtime root installed and a non-root user runs stops
+`yoetz mcp serve`, `service run` and every hook with `release_runtime_not_owned` (exit 20) instead
+of `release_runtime_unavailable: permission_denied` or "could not be verified". Cursor lists the MCP server as failed and keeps its stderr in the MCP log; its hooks exit 20 with no stdout, so they make no allow or block decision and Cursor proceeds with the action. Terminal
+commands print the `.<prefix>-releases` directory the user must own; hook stderr carries the token
+without local paths. `setup run` refuses to connect Cursor to such a runtime with that reason and
+leaves status and disconnect available. `yoetz instance create --bind-runtime` on such a runtime
+is `runtime_pin_unwritable` and keeps nothing, so a retry after the repair succeeds (ADR-028,
+2026-10-14 amendment). Install Yoetz as the user, or see the Linux runbook for the one-user
+`.<prefix>-releases` layout. Verified on Linux as `nobody` against a root-owned runtime (entry and
+hook paths, not a Cursor session); the Cursor connect refusal is unit-tested.
+
 ## Response and receipt timeout recovery
 
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the

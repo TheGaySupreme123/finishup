@@ -16,6 +16,18 @@ reverse-chronological released versions.
   project must still belong to the user, and a root-owned Git worktree is used as a plain
   directory, because Git itself refuses another owner's worktree.
 
+- `yoetz instance create --bind-runtime` on a Yoetz runtime the current user cannot write (for
+  example one root installed in a container image) now fails with `runtime_pin_unwritable` and
+  removes what it created. Before, it reported `internal_error` and left a half-created instance
+  behind, so the retry after fixing permissions reported `instance_exists`.
+
+- A Yoetz installation another account set up (for example root, in a container image whose
+  agent runs as a non-root user) is now refused by name, `release_runtime_not_owned`, with the
+  directory it needs and the repair: install Yoetz as the account that runs it. Before, the
+  service, MCP connection and hooks stopped with `release_runtime_unavailable: permission_denied`
+  or "could not be verified", and `setup run` connected hosts to a runtime that could not start.
+  `setup run` now refuses that connection with the same reason.
+
 - The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
   in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find
   bubblewrap on PATH" warning is admitted the same way as its user-namespace warning: the reviewer

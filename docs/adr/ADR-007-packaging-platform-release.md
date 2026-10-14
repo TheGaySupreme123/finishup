@@ -313,14 +313,46 @@ as `target_unsafe`.
 3. **All hosts.** Workspace binding is shared by hooks, MCP and the CLI for Codex, Claude Code and
    Cursor, and the same rule replaces each host's project-root ownership check.
 
-Known limits, unchanged here: the runtime prefix must be writable by the user who binds an
-instance to it (`instance create --bind-runtime` writes the pin there), and a serving start needs
-the user's own 0700 `.<prefix>-releases` sibling, so a root-installed runtime serves only root.
+Known limits: the runtime prefix must be writable by the user who binds an instance to it
+(`instance create --bind-runtime` writes the pin there), and a serving start needs the user's own
+0700 `.<prefix>-releases` sibling, so a runtime root installed serves only root unless root
+creates that sibling for the user (below). Both are now refused by name instead of
+`internal_error` or a bare permission error:
+
+4. **`runtime_pin_unwritable`.** `instance create --bind-runtime` on a prefix the user cannot
+   write is a typed refusal and creates nothing that stays (ADR-028, 2026-10-14 amendment).
+5. **`release_runtime_not_owned`.** A serving start (`service run`, `mcp serve`, every hook,
+   `upgrade`) whose `.<prefix>-releases` directory belongs to another account, or is absent from a
+   parent another account owns and this user cannot write, is refused with
+   `release_runtime_not_owned` instead of the generic "could not be verified" (an existing
+   directory) or `release_runtime_unavailable: permission_denied` (none yet). The ownership rule
+   is unchanged: generations stay the running user's own, 0700. Terminal commands name the
+   directory and the repair (install Yoetz as the account that runs it); hooks keep the
+   non-blocking exit 20 with no stdout decision and print the token without local paths. A
+   spawned `service run` records the token as its startup failure, the CLI's
+   `service_unavailable` and `setup` probes report it read-only (they create nothing), `setup run`
+   refuses to connect a host to such a runtime with the token as its reason, and
+   `upgrade --prune-runtimes` names it. A directory the user owns that is read-only, and every
+   other condition, keeps its existing report.
+
+What the rule already admits, and the 2026-10-14 container run confirmed as `nobody`: root may
+create `.<prefix>-releases` for one non-root account (`install -d -m 0700 -o <user>` before anyone
+runs Yoetz) and leave the runtime root-owned; that account then builds and serves its own
+generations from root's files, which no other account can write. Such a runtime serves only that
+account (root is then refused by the same rule) and cannot carry a pin, because a pin must be the
+running user's own; a pinned instance needs a runtime the user owns. A separate per-user location
+for generations, so one root-installed runtime could serve every account, is not part of this
+change.
 
 Verification: synthetic-stat unit tests of the rule; per-host tests in which the test runner's
 uid plays root and the process another account; a Boat container run of the full benchmark
 bootstrap and an MCP `start`/`publish_work`/`receipt` lifecycle as `nobody` in a root-owned
-`/app` (risk-scorer-replay) and as `agent` in a sticky root-owned `/app` (rs-archive-clone).
+`/app` (risk-scorer-replay) and as `agent` in a sticky root-owned `/app` (rs-archive-clone). For
+items 4 and 5: unit tests in which another effective uid plays the non-root user against files
+the runner owns, and a Linux run as `nobody` against a root-owned runtime (`mcp serve`,
+`service run`, a hook, `service status` and `instance create --bind-runtime`; the previous release
+printed `permission_denied`, "could not be verified" and `internal_error`), including the
+root-created `.<prefix>-releases` layout above serving a hook.
 
 ## Implementation-lock identities
 

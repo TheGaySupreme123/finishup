@@ -8,6 +8,7 @@ malformed — never selecting the everyday install by accident.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 from collections.abc import Callable
@@ -216,6 +217,53 @@ def test_pin_writes_reads_and_removes_only_its_own_root(
     assert (prefix / RUNTIME_PIN_NAME).is_file()
     assert remove_runtime_pin(prefix, root) is True
     assert remove_runtime_pin(prefix, root) is False
+
+
+@pytest.mark.parametrize("failing", ["open", "write", "replace"])
+def test_a_pin_that_cannot_be_written_is_a_typed_refusal_with_nothing_left(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failing: str
+) -> None:
+    """EACCES/ENOSPC/EROFS at any step: ``runtime_pin_unwritable``, no temp file, no pin."""
+
+    prefix = tmp_path / "venv"
+    prefix.mkdir(mode=0o755)
+    identity = _identity()
+    code = {"open": errno.EACCES, "write": errno.ENOSPC, "replace": errno.EROFS}[failing]
+    real = cast(Callable[..., object], getattr(os, failing))
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        first = args[0]
+        beneath = isinstance(first, str | Path) and Path(first).parent == prefix
+        if failing == "write" or beneath:
+            raise OSError(code, os.strerror(code))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(os, failing, refuse)
+    with pytest.raises(InstanceIdentityError) as caught:
+        write_runtime_pin(prefix, tmp_path / "iso", identity.installation_id)
+    monkeypatch.undo()
+
+    assert caught.value.reason == "runtime_pin_unwritable"
+    assert list(prefix.iterdir()) == []
+
+
+def test_a_marker_whose_write_fails_leaves_no_temporary_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed seal leaves the state directory empty, so a create can roll it back."""
+
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+
+    def no_space(_descriptor: int, _data: object) -> int:
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    monkeypatch.setattr(os, "write", no_space)
+    with pytest.raises(OSError):
+        write_instance_identity(state, _identity())
+    monkeypatch.undo()
+
+    assert list(state.iterdir()) == []
 
 
 @pytest.mark.parametrize(

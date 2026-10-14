@@ -6,6 +6,7 @@ singleton, never remove the everyday install or an unlabeled ADR-026 root, and b
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -33,6 +34,7 @@ from yoetz.config.installation import (
     new_instance_identity,
     read_instance_identity,
     write_instance_identity,
+    write_runtime_pin,
 )
 from yoetz.config.paths import ISOLATED_ROOT_ENV, RUNTIME_PIN_NAME, read_runtime_pin
 from yoetz.protocol.canonical import canonical_encode
@@ -179,6 +181,145 @@ def test_create_refuses_to_repin_a_runtime_bound_elsewhere(
         )
     assert caught.value.reason == "runtime_pin_conflict"
     assert not (cell / "second").exists()
+
+
+def _deny_new_entries(monkeypatch: pytest.MonkeyPatch, directory: Path) -> Callable[[], None]:
+    """Make ``directory`` refuse new entries the way it refuses an account without write access.
+
+    The directory loses its write bits. A superuser runner bypasses those bits, so there every
+    ``os.open(..., O_CREAT)`` directly beneath it fails with EACCES instead, which is what the
+    kernel answers a non-owner. The returned callable is the operator's repair.
+    """
+
+    directory.chmod(0o555)
+    denied = [True]
+    if os.geteuid() == 0:
+        real_open = os.open
+
+        def refusing_open(
+            path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+            flags: int,
+            mode: int = 0o777,
+            *,
+            dir_fd: int | None = None,
+        ) -> int:
+            if denied[0] and flags & os.O_CREAT and Path(os.fsdecode(path)).parent == directory:
+                raise PermissionError(errno.EACCES, os.strerror(errno.EACCES))
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(os, "open", refusing_open)
+
+    def repair() -> None:
+        denied[0] = False
+        directory.chmod(0o755)
+
+    return repair
+
+
+def test_cli_bind_runtime_on_an_unwritable_runtime_fails_whole_and_retries_cleanly(
+    cell: Path,
+    prefix: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The pin cannot be written: a typed refusal, nothing left behind, and a clean retry.
+
+    Before, the raw OSError surfaced as internal_error after the root and its marker were
+    already sealed, so the retry after fixing permissions reported instance_exists.
+    """
+
+    _scrub(monkeypatch)
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    monkeypatch.setenv("YOETZ_CONFIG", str(cell / "missing.toml"))
+    root = cell / "state"
+    repair = _deny_new_entries(monkeypatch, prefix)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "yoetz",
+            "instance",
+            "create",
+            "--root",
+            str(root),
+            "--lifecycle",
+            "disposable",
+            "--bind-runtime",
+            "--json",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as refused:
+        cli.main()
+
+    stderr = capsys.readouterr().err
+    assert stderr.startswith("runtime_pin_unwritable:"), stderr
+    assert refused.value.code == exit_code_for(INSTANCE_PUBLIC_CODES["runtime_pin_unwritable"])
+    assert refused.value.code == 20
+    assert "internal_error" not in stderr
+    assert str(prefix) not in stderr
+    assert not root.exists()
+    assert list(prefix.iterdir()) == []
+
+    repair()
+    with pytest.raises(SystemExit) as created:
+        cli.main()
+
+    captured = capsys.readouterr()
+    assert created.value.code == 0, captured.err
+    body = json.loads(captured.out)
+    assert body["runtime_pin"] == "bound"
+    identity = read_instance_identity(root / "state")
+    assert identity is not None and identity.installation_id == body["installation_id"]
+    assert read_runtime_pin() is not None
+
+
+def test_failed_bind_keeps_a_pre_existing_empty_root(
+    cell: Path, prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rollback removes only what this create made; the operator's empty root stays."""
+
+    _scrub(monkeypatch)
+    root = cell / "state"
+    root.mkdir(mode=0o700)
+    _deny_new_entries(monkeypatch, prefix)
+
+    with pytest.raises(InstanceIdentityError) as caught:
+        create_instance(
+            root=root, lifecycle="persistent", now=_NOW, bind_runtime=True, runtime_prefix=prefix
+        )
+
+    assert caught.value.reason == "runtime_pin_unwritable"
+    assert root.is_dir()
+    assert list(root.iterdir()) == []
+    assert list(prefix.iterdir()) == []
+
+
+def test_a_pin_conflict_found_at_write_time_rolls_back_only_this_create(
+    cell: Path, prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Any refusal after the root exists unwinds it; another instance's pin is never touched."""
+
+    import yoetz.cli.instance as instance_module
+
+    _scrub(monkeypatch)
+    other = new_instance_identity(
+        "persistent", now=_NOW, package_version="0.1.0", runtime_prefix=prefix
+    )
+    write_runtime_pin(prefix, cell / "other", other.installation_id)
+    pinned = (prefix / RUNTIME_PIN_NAME).read_bytes()
+    # The other pin lands between the preflight and the write.
+    monkeypatch.setattr(instance_module, "read_runtime_pin", lambda: None)
+    root = cell / "state"
+
+    with pytest.raises(InstanceIdentityError) as caught:
+        create_instance(
+            root=root, lifecycle="persistent", now=_NOW, bind_runtime=True, runtime_prefix=prefix
+        )
+
+    assert caught.value.reason == "runtime_pin_conflict"
+    assert not root.exists()
+    assert (prefix / RUNTIME_PIN_NAME).read_bytes() == pinned
 
 
 def test_parse_expiry_accepts_exactly_one_spelling() -> None:

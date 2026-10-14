@@ -615,6 +615,82 @@ def test_spawned_service_records_the_refusal_for_the_client_that_started_it(
     assert capsys.readouterr().err.startswith("release_runtime_group_writable: ")
 
 
+def _refuse_not_owned(monkeypatch: pytest.MonkeyPatch) -> None:
+    from yoetz.adapters import release_runtime
+
+    def refuse(_arguments: list[str]) -> None:
+        raise release_runtime.ReleaseRuntimeError("release_runtime_not_owned")
+
+    monkeypatch.setattr(release_runtime, "enter_release_runtime", refuse)
+
+
+@pytest.mark.parametrize(
+    "argv", [["service", "run"], ["mcp", "serve"], ["upgrade"]], ids=["service", "mcp", "upgrade"]
+)
+def test_another_accounts_runtime_names_its_token_and_the_directory_it_needs(
+    argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """A root-installed runtime started by a non-root user (before: "permission_denied")."""
+
+    prefix = tmp_path / "opt" / "yoetz"
+    (prefix / "bin").mkdir(parents=True)
+    monkeypatch.setattr(sys, "prefix", str(prefix))
+    _refuse_not_owned(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["yoetz", *argv])
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 20
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("release_runtime_not_owned: ")
+    assert "release_runtime_unavailable" not in captured.err
+    assert f"  {prefix.resolve().parent / '.yoetz-releases'}\n" in captured.err
+    assert "Install Yoetz as this account" in captured.err
+
+
+def test_another_accounts_runtime_hook_names_token_without_paths(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "PRIVATE_PREFIX"))
+    _refuse_not_owned(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["yoetz", "hooks", "observe", "--event", "PreToolUse"])
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 20
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("release_runtime_not_owned: ")
+    assert "PRIVATE_PREFIX" not in captured.err
+    assert "yoetz service run" in captured.err
+
+
+def test_spawned_service_records_the_not_owned_refusal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from yoetz.protocol.ids import IdKind, new_id
+    from yoetz.service import startup_failure
+
+    recorded: list[str | None] = []
+
+    def record(_exc: BaseException, *, reason_code: str | None = None, **_kwargs: object) -> None:
+        recorded.append(reason_code)
+
+    monkeypatch.setattr(startup_failure, "record_startup_failure", record)
+    correlation_id = new_id(IdKind.CORRELATION)
+    _refuse_not_owned(monkeypatch)
+    monkeypatch.setattr(
+        sys, "argv", ["yoetz", "service", "run", "--startup-correlation-id", correlation_id]
+    )
+    with pytest.raises(SystemExit) as error:
+        entry.main()
+    assert error.value.code == 20
+    assert recorded == ["release_runtime_not_owned"]
+    assert capsys.readouterr().err.startswith("release_runtime_not_owned: ")
+
+
 def test_startup_failure_line_carries_the_runtime_token() -> None:
     from yoetz.service.startup_failure import StartupFailure
 
