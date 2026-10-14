@@ -22,6 +22,7 @@ from finishup.domain.events import (
     ObligationChangeKind,
     ObligationStatus,
     ResponseRecordedPayload,
+    ReviewMode,
     is_lineage_service_stamped,
     is_observation_authored,
 )
@@ -162,6 +163,7 @@ from finishup.kernel.receipt_prediction import (
     predict_receipt_conclusion,
 )
 from finishup.kernel.reducers import is_material_event_family
+from finishup.kernel.review_mode import review_mode_switches
 from finishup.kernel.task_facts import (
     acknowledged_obligation_ids,
     disclosure_declarations,
@@ -1976,6 +1978,52 @@ def _input_loss_causes(context: ReceiptBuildContext) -> tuple[str, ...]:
     return tuple(sorted(causes))
 
 
+# At most this many review-mode switches are named; earlier ones are counted (ADR-049).
+_REVIEW_MODE_SWITCHES_LISTED: Final = 8
+_REVIEW_MODE_LOCAL_REASON_TEXT: Final[Mapping[str, str]] = {
+    "owner_local_only": "the owner chose local checks only for this repository",
+    "route_local_only": "the host connection is registered local-only (strict route)",
+    "ai_review_not_set_up": "AI-powered review is not set up for this repository",
+}
+
+
+def _review_mode_sentence(context: ReceiptBuildContext) -> str:
+    """When and by whose authority the task switched review mode, and how its check ran.
+
+    ADR-049: empty unless the task recorded a standing ``decision_recorded`` 1.1.0 switch, so a
+    receipt of a task without one keeps its exact bytes. Names each switch by ledger sequence,
+    event id and authority actor, never by its statement or rationale.
+    """
+
+    switches = review_mode_switches(context.projection)
+    if not switches:
+        return ""
+    listed = switches[-_REVIEW_MODE_SWITCHES_LISTED:]
+    earlier = len(switches) - len(listed)
+    rows = "; ".join(
+        ("to AI-powered review" if switch.mode is ReviewMode.AI_POWERED else "back to local checks")
+        + f" at sequence {switch.sequence} (event {switch.event_id}, authority {switch.authority})"
+        for switch in listed
+    )
+    sentence = f"Review mode switches recorded for this task: {rows}."
+    if earlier:
+        sentence += f" {earlier} earlier switch(es) are not listed; status lists the latest."
+    check = context.applicable_check
+    recorded = None if check is None else check.review_mode
+    if check is None:
+        return sentence + " No check applies to this receipt."
+    if recorded is None:
+        return sentence + " The applicable check recorded no review mode."
+    if recorded.mode is ReviewMode.AI_POWERED:
+        return sentence + " The applicable check ran with AI-powered review requested."
+    reason = (
+        ""
+        if recorded.local_reason is None
+        else f", because {_REVIEW_MODE_LOCAL_REASON_TEXT[recorded.local_reason]}"
+    )
+    return sentence + f" The applicable check ran local checks only (FinishUP){reason}."
+
+
 def _sections(
     *,
     include: ReceiptInclude,
@@ -2016,6 +2064,7 @@ def _sections(
     omitted_rows_sentence: str = "",
     closure_summary: _ClosureSummary | None = None,
     gap_effects: Mapping[str, ReceiptGapEffect] | None = None,
+    review_mode_sentence: str = "",
 ) -> tuple[ReceiptSection, ...]:
     # Issue #1017: the limitations section lists live gaps only; the human renderings list the
     # historical ones (a later check cleared them) in their own section from the gap rows.
@@ -2328,6 +2377,10 @@ def _sections(
     compat_manifest_line = render_review_input_manifest_compat_line(review_input_manifest)
     if compat_manifest_line:
         bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + compat_manifest_line
+    # ADR-049: only a task that switched its review mode carries this closing sentence, so every
+    # receipt of a task without a switch keeps its exact bytes.
+    if review_mode_sentence:
+        bodies[ReceiptSectionKey.LIMITATIONS_AND_COVERAGE] += " " + review_mode_sentence
 
     policy_rows = "; ".join(
         f"{entry.policy_id} {entry.policy_version}" for entry in versions.policy_versions
@@ -2692,6 +2745,7 @@ def build_receipt(
         task_statement_source_sentence=_task_statement_source_sentence(
             context.applicable_check, context.records
         ),
+        review_mode_sentence=_review_mode_sentence(context),
         semantic_usage_sentence=_semantic_usage_sentence(
             None
             if context.applicable_check is None

@@ -20,6 +20,12 @@ from finishup.domain.review_input_render import (
     render_review_input_manifest_compat_line,
     render_review_input_manifest_lines,
 )
+from finishup.domain.review_mode_render import (
+    check_review_mode_line,
+    conversation_setting_line,
+    review_mode_continuation,
+    status_review_mode_line,
+)
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.legacy_names import LAUNCHER_NAME
 from finishup.protocol.canonical import JsonValue
@@ -423,6 +429,15 @@ def render_human_check(result: CheckSuccessModel) -> str:
         review_line,
         render_human_findings(result.findings),
     ]
+    if result.review_mode is not None:
+        # ADR-049: the mode this check ran in and why; a task that asked for AI-powered review
+        # and still ran local also gets the exact continuation.
+        review_mode = result.review_mode.model_dump(mode="json", exclude_none=True)
+        mode_lines = [check_review_mode_line(review_mode)]
+        continuation = review_mode_continuation(review_mode.get("local_reason"))
+        if continuation:
+            mode_lines.append(continuation)
+        lines[2:2] = [line for line in mode_lines if line]
     if result.totals is not None:
         lines.insert(2, render_check_totals(result.totals.model_dump(mode="json")))
     if result.observations_awaited is not None:
@@ -680,6 +695,16 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
 _FILTER_WORDS: Final = {"enforced": "on", "disabled": "off", "unknown": "unknown"}
 
 
+def conversation_setting_text(setting: object) -> str:
+    """The owner's conversation setting as one sentence (ADR-049); ``""`` when unknown.
+
+    Every human surface (``finishup privacy show``, the terminal interface) uses this text for
+    the same token, and it names the command that changes it.
+    """
+
+    return conversation_setting_line(setting)
+
+
 def credential_heuristic_line(repository: object, machine_default: object) -> str:
     """One sentence for the external reviewer's possible-credential filter (issue #982).
 
@@ -717,6 +742,18 @@ def _credential_heuristic_lines(result: StatusSuccessModel) -> tuple[str, ...]:
     return (credential_heuristic_line(state.repository, state.machine_default),)
 
 
+def _status_review_mode_lines(result: StatusSuccessModel) -> tuple[str, ...]:
+    """The task's review mode, the owner's setting and the latest switch (ADR-049)."""
+
+    if result.review_mode is None:
+        return ()
+    review_mode = result.review_mode.model_dump(mode="json", exclude_none=True)
+    lines = [status_review_mode_line(review_mode)]
+    if review_mode.get("mode") == "local":
+        lines.append(review_mode_continuation(review_mode.get("local_reason")))
+    return tuple(line for line in lines if line)
+
+
 def render_human_status(result: StatusSuccessModel) -> str:
     """Render current structural status without dumping the ledger."""
 
@@ -738,6 +775,7 @@ def render_human_status(result: StatusSuccessModel) -> str:
         f"Unanswered findings: {_count(result.closure_readiness.unanswered_finding_count)}",
         *render_closure_readiness_lines(result.closure_readiness),
         *_credential_heuristic_lines(result),
+        *_status_review_mode_lines(result),
     ]
     if isinstance(result.page, StatusCompactPageModel):
         for item in result.page.items:
@@ -991,6 +1029,10 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     limitations = tuple(result.coverage.known_gaps)
     lines.append("Limitations: " + (", ".join(limitations) if limitations else "none declared"))
     document = result.document
+    if isinstance(document, Mapping) and result.human_text is None:
+        # ADR-049: a JSON receipt names the task's review-mode switches in its limitations
+        # section; markdown and text already carry that section in ``human_text``.
+        lines.extend(_receipt_review_mode_lines(document))
     if isinstance(document, Mapping):
         historical = historical_gaps_from_wire(document)
         if historical:
@@ -1016,6 +1058,28 @@ def render_human_receipt(result: ReceiptSuccessModel) -> str:
     if result.suppressed_finding_count:
         lines.append(f"Suppressed findings: {result.suppressed_finding_count}")
     return "\n".join(lines)
+
+
+_RECEIPT_REVIEW_MODE_PREFIX: Final = "Review mode switches recorded for this task:"
+
+
+def _receipt_review_mode_lines(document: Mapping[str, JsonValue]) -> list[str]:
+    """The receipt's review-mode sentence from its limitations section, when it has one."""
+
+    sections = document.get("sections")
+    if not isinstance(sections, (list, tuple)):
+        return []
+    for raw in cast(Sequence[object], sections):
+        if not isinstance(raw, Mapping):
+            continue
+        section = cast(Mapping[str, object], raw)
+        body = section.get("body")
+        if section.get("key") != "limitations_and_coverage" or type(body) is not str:
+            continue
+        start = body.find(_RECEIPT_REVIEW_MODE_PREFIX)
+        if start >= 0:
+            return [body[start:]]
+    return []
 
 
 def _semantic_redacted_value_lines(items: Sequence[object]) -> list[str]:
