@@ -708,6 +708,76 @@ def _second_project(
     return target, claude
 
 
+def test_reviewed_remove_keeps_foreign_mcp_and_shared_legacy_marketplace(tmp_path: Path) -> None:
+    target, artifact, first_claude = _legacy_install(tmp_path)
+    second, second_claude = _second_project(tmp_path, target, artifact)
+    claude = _Projects(first_claude, second_claude)
+    mcp_path = Path(target.project_root) / ".mcp.json"
+    _mcp(mcp_path, {"finishup": {"command": "other-server", "args": ["private-value"]}})
+    mcp_before = mcp_path.read_bytes()
+    known_before = first_claude.known.read_bytes()
+    second_settings_before = second_claude.settings.read_bytes()
+    root = _legacy_root(target)
+    tree_before = {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+    before = status_claude_code_plugin(target, artifact, commands=claude)
+    assert before.legacy_installation == "legacy_only"
+    assert before.mcp_observation.ownership_state is McpOwnershipState.FOREIGN
+
+    request = _request(65)
+    preview = preview_claude_code_plugin(
+        request, target, ClaudeCodePluginAction.REMOVE, artifact, commands=claude
+    )
+    assert preview.action is ClaudeCodePluginAction.REMOVE
+    assert preview.legacy_installation == "legacy_only"
+    assert {
+        "legacy_installation_owned",
+        "legacy_project_registration_removed",
+        "legacy_marketplace_retained",
+    } <= set(preview.warnings)
+    first_claude.calls.clear()
+    second_claude.calls.clear()
+    result = apply_claude_code_plugin(
+        request,
+        target,
+        ClaudeCodePluginAction.REMOVE,
+        artifact,
+        accepted_preview_digest=preview.preview_digest,
+        authority=ArtifactAuthority("review_only", preview.preview_digest, "a" * 64),
+        review=_Review(),
+        commands=claude,
+    )
+    assert result.operation_state is PluginOperationState.COMPLETED
+    assert result.state_after is PluginArtifactState.ABSENT
+    assert first_claude.installed[_OLD[1]] is False
+    assert first_claude.enabled[_OLD[1]] is False
+    settings = _load(first_claude.settings)
+    assert _OLD[0] not in cast(dict[str, object], settings.get("extraKnownMarketplaces", {}))
+    assert _OLD[1] not in cast(dict[str, object], settings.get("enabledPlugins", {}))
+    mutations = [call for call in first_claude.calls if call != ("plugin", "list", "--json")]
+    assert mutations == [("plugin", "uninstall", _OLD[1], "--scope", "project", "--keep-data")]
+    assert all(call == ("plugin", "list", "--json") for call in second_claude.calls)
+    assert mcp_path.read_bytes() == mcp_before
+    assert first_claude.known.read_bytes() == known_before
+    assert second_claude.settings.read_bytes() == second_settings_before
+    assert {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    } == tree_before
+    assert second_claude.installed[_OLD[1]] is True
+    assert second_claude.enabled[_OLD[1]] is True
+    after = status_claude_code_plugin(target, artifact, commands=claude)
+    assert after.legacy_installation == "none"
+    assert after.mcp_observation.ownership_state is McpOwnershipState.FOREIGN
+    assert status_claude_code_plugin(second, artifact, commands=claude).legacy_installation == (
+        "legacy_only"
+    )
+
+
 def test_migrating_one_project_keeps_the_shared_tree_for_the_next(tmp_path: Path) -> None:
     first, artifact, first_claude = _legacy_install(tmp_path)
     second, second_claude = _second_project(tmp_path, first, artifact)

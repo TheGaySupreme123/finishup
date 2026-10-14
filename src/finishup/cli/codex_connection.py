@@ -24,7 +24,12 @@ from finishup.application.harness_mcp import (
 )
 from finishup.application.host_connection import ConnectionAction, ConnectionError, ConnectionPlan
 from finishup.domain.values import request_id
-from finishup.ports.harness_mcp import HarnessBinary, McpRegistrationError, McpRegistrationReason
+from finishup.ports.harness_mcp import (
+    HarnessBinary,
+    McpRegistrationError,
+    McpRegistrationReason,
+    McpRegistrationState,
+)
 from finishup.ports.integrations import (
     HarnessId,
     IntegrationAction,
@@ -290,7 +295,7 @@ def prepare_codex_connection(
             return {
                 "installed": None,
                 "enabled": current.outcome is not RemovalOutcome.ALREADY_ABSENT,
-                "configured": observed.action.value != "noop",
+                "configured": observed.state_before is McpRegistrationState.FINISHUP_OWNED,
                 "legacy_registration": observed.legacy_registration,
                 "connection_observed": False,
                 "reload_required": True,

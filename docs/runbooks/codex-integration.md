@@ -1113,6 +1113,11 @@ adds `legacy_registration`:
 | `duplicate` | Owned entries under both keys. | Integrate removes the owned `yoetz` entry; remove and disconnect take both. |
 | `foreign` | A `yoetz` entry FinishUP cannot prove is its own. | Reported (warning `legacy_registration_foreign`) and never touched. |
 
+Remove and disconnect select the owned entries independently: an owned `yoetz` entry can be
+removed beside a foreign `finishup` entry. The interactive removal preview names the owned keys
+and explicitly says the foreign `finishup` entry is retained. After that removal, guided
+disconnect reports `configured: false`; the retained foreign entry is not a FinishUP connection.
+
 A `yoetz` entry is owned only with proof: a bare `finishup` or `yoetz` launcher, this runtime's
 proven launcher, or this runtime's `yoetz` alias. `<scripts>/yoetz` is FinishUP's when the
 transitional `yoetz` distribution's installed RECORD proves it, digest included; while any `yoetz`

@@ -1007,8 +1007,16 @@ def _emit_unregistration_preview(mcp_preview: object) -> None:
     """Show every approval-relevant removal field before interactive consent."""
 
     typer.echo("Proposed change: remove the FinishUP-owned Codex MCP registration")
-    typer.echo("  MCP server name: finishup")
-    _emit_legacy_registration(getattr(mcp_preview, "legacy_registration", "none"))
+    legacy = getattr(mcp_preview, "legacy_registration", "none")
+    if legacy == "legacy_only":
+        typer.echo("  MCP server name: yoetz")
+    elif legacy == "duplicate":
+        typer.echo("  MCP server names: finishup, yoetz")
+    else:
+        typer.echo("  MCP server name: finishup")
+    _emit_legacy_registration(legacy)
+    if "foreign_entry_present" in getattr(mcp_preview, "warnings", ()):
+        typer.echo("  Foreign MCP server finishup: retained; not provably FinishUP's")
     typer.echo(f"  Action: {getattr(mcp_preview, 'action').value}")
     typer.echo(f"  State before: {getattr(mcp_preview, 'state_before').value}")
     serve_command = getattr(mcp_preview, "serve_command", ())
