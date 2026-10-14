@@ -30,6 +30,7 @@ from finishup.adapters.providers.codex_app_server import (
     codex_evaluator_cell_for_platform,
     codex_login,
     codex_logout,
+    codex_model_listed,
     prepare_codex_home,
 )
 from finishup.adapters.providers.codex_evaluator_runtime import (
@@ -82,6 +83,9 @@ __all__ = [
     "default_codex_evaluator_executable",
     "default_codex_home",
     "default_codex_subscription_model",
+    "codex_subscription_model_is_suggested",
+    "CODEX_SUBSCRIPTION_FALLBACK_MODEL",
+    "CODEX_SUBSCRIPTION_SUGGESTED_MODEL",
     "default_codex_subscription_routine_effort",
     "default_codex_subscription_reasoning_effort",
     "describe_runtime_download",
@@ -98,8 +102,13 @@ __all__ = [
 _CODEX_PACKAGE_NAME: Final = "@openai/codex"
 _CODEX_PACKAGE_JSON_MAX_BYTES: Final = 64 * 1024
 _SUPPORTED_REASONING: Final = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
-_DEFAULT_CODEX_SUBSCRIPTION_MODEL: Final = "gpt-6-luna"
-_DEFAULT_CODEX_SUBSCRIPTION_REASONING: Final = "high"
+# New bindings are offered gpt-6.1-sol at medium final effort. The admitted Codex must list it in
+# its own model/list; when it does not (Codex 0.157.1's catalog predates it), setup binds the
+# fallback, says so, and never substitutes for a model the owner typed or an existing binding.
+CODEX_SUBSCRIPTION_SUGGESTED_MODEL: Final = "gpt-6.1-sol"
+CODEX_SUBSCRIPTION_FALLBACK_MODEL: Final = "gpt-6-luna"
+_DEFAULT_CODEX_SUBSCRIPTION_MODEL: Final = CODEX_SUBSCRIPTION_SUGGESTED_MODEL
+_DEFAULT_CODEX_SUBSCRIPTION_REASONING: Final = "medium"
 _CLOSED_FAILURE_TOKEN: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 
 
@@ -213,6 +222,17 @@ _SUBSCRIPTION_REMEDIATIONS: Final[Mapping[str, str]] = {
     "codex_evaluator_runtime_package_manager_unavailable": (
         "npm was not found or could not run; install Node.js and npm, pass --npm <absolute "
         "path>, or retain a local copy with --from"
+    ),
+    "codex_model_unavailable": (
+        "the admitted Codex does not list the selected model with the selected reasoning efforts "
+        "for this sign-in; rerun 'finishup provider codex-subscription setup --model <id>' with a "
+        f"model Codex lists ({CODEX_SUBSCRIPTION_FALLBACK_MODEL} works on Codex "
+        f"{CODEX_EVALUATOR_RUNTIME_VERSION})"
+    ),
+    "codex_reasoning_effort_unavailable": (
+        "the admitted Codex lists the selected model but not with the selected reasoning effort; "
+        "rerun 'finishup provider codex-subscription setup' with --reasoning-effort and "
+        "--routine-reasoning-effort values Codex lists for it (medium is widely listed)"
     ),
     "codex_subscription_login_required": (
         "Codex reports the dedicated home is not signed in with the exact model; run "
@@ -633,6 +653,12 @@ def _base_config(path: Path | None) -> FinishUpConfig:
     return _bounded_config_operation(lambda: load_config({}, {}, target))
 
 
+def codex_subscription_model_is_suggested(path: Path | None = None) -> bool:
+    """True when no binding exists, so the model on offer is setup's own suggestion."""
+
+    return _base_config(path).external_runtime is None
+
+
 def default_codex_subscription_model(path: Path | None = None) -> str:
     """Return the new-binding recommendation or preserve an existing binding's model."""
 
@@ -906,8 +932,15 @@ async def codex_subscription_setup(
     config_path: Path | None = None,
     as_fallback: bool = False,
     routine_reasoning_effort: str | None = None,
+    model_is_suggestion: bool = False,
 ) -> dict[str, JsonValue]:
     """Validate the binding and its persistence, prove or obtain Codex login, then persist it.
+
+    ``model_is_suggestion`` marks ``model`` as setup's own suggestion for a new binding rather than
+    the owner's explicit choice. Only then, when the admitted Codex's ``model/list`` does not offer
+    the suggested model with the selected efforts, setup binds
+    :data:`CODEX_SUBSCRIPTION_FALLBACK_MODEL` instead, announces it, and reports
+    ``model_fallback_from``. An explicit model or an existing binding is never substituted.
 
     ``as_fallback`` keeps the already-bound API provider as the primary and declares this
     runtime as its fallback (issue #582); it never replaces that binding.
@@ -970,6 +1003,43 @@ async def codex_subscription_setup(
         )
         _retain_binding_runtime(binding, source=Path(validated.executable_path), bundle=bundle)
         prepare_codex_home(codex_home)
+        model_fallback_from: str | None = None
+        if (
+            model_is_suggestion
+            and base.external_runtime is None
+            and model != CODEX_SUBSCRIPTION_FALLBACK_MODEL
+            and not await codex_model_listed(_profile(binding))
+        ):
+            fallback = _retained_binding(
+                _binding(
+                    executable=executable,
+                    codex_home=codex_home,
+                    model=CODEX_SUBSCRIPTION_FALLBACK_MODEL,
+                    reasoning_effort=reasoning_effort,
+                    routine_reasoning_effort=selected_routine,
+                    existing=base.external_runtime,
+                ),
+                bundle=bundle,
+            )
+            if await codex_model_listed(_profile(fallback)):
+                _bounded_config_operation(
+                    lambda: preflight_config_write(
+                        external_runtime_binding_config(
+                            fallback, base=base, as_fallback=as_fallback
+                        ),
+                        target,
+                        expected_bytes=expected_bytes,
+                    )
+                )
+                model_fallback_from = model
+                binding = fallback
+                typer.echo("")
+                typer.echo(
+                    f"Codex {binding.runtime_version} does not list the suggested model {model} "
+                    f"with these reasoning efforts; using {CODEX_SUBSCRIPTION_FALLBACK_MODEL} "
+                    "instead. After an upgrade that admits a newer Codex, rerun setup with "
+                    f"--model {model} to switch."
+                )
         profile = _profile(binding)
         login_reused = False
         if switch_account:
@@ -1019,6 +1089,8 @@ async def codex_subscription_setup(
         )
         result = _safe_status(binding, status)
         result["login_reused"] = login_reused
+        if model_fallback_from is not None:
+            result["model_fallback_from"] = model_fallback_from
         # An existing pairing keeps its selector, so report the role the written config holds.
         result["endpoint_role"] = _endpoint_role(selected_config)
         result["runtime_retained_from"] = validated.executable_path
@@ -1060,7 +1132,19 @@ async def prompt_codex_subscription_setup() -> dict[str, JsonValue]:
     codex_home = Path(
         typer.prompt("Dedicated evaluator CODEX_HOME", default=str(default_codex_home()))
     ).expanduser()
-    model = typer.prompt("Exact model", default=default_codex_subscription_model()).strip()
+    suggested_model = default_codex_subscription_model()
+    new_binding = codex_subscription_model_is_suggested()
+    if new_binding:
+        typer.echo(
+            f"Suggested model: {suggested_model} at medium reasoning. If this Codex does not list "
+            f"it, setup uses {CODEX_SUBSCRIPTION_FALLBACK_MODEL} and tells you. Press Enter to "
+            "accept, or type another exact Codex model id."
+        )
+    model = typer.prompt("Exact model", default=suggested_model).strip()
+    typer.echo(
+        "Reasoning effort: final reviews run when the agent claims it is done; routine "
+        "checkpoints run along the way. Higher effort is slower and uses more of your plan."
+    )
     reasoning_effort = typer.prompt(
         "Final review reasoning effort", default=default_codex_subscription_reasoning_effort()
     ).strip()
@@ -1069,7 +1153,11 @@ async def prompt_codex_subscription_setup() -> dict[str, JsonValue]:
         "Routine checkpoint reasoning effort",
         default=reasoning_effort if routine_default is None else routine_default,
     ).strip()
-    login_choice = typer.prompt("Login method (browser/device_code)", default="browser").strip()
+    login_choice = typer.prompt(
+        "Sign-in method: browser opens a page here; device_code shows a code for another device "
+        "(browser/device_code)",
+        default="browser",
+    ).strip()
     if login_choice not in {"browser", "device_code"}:
         raise ValueError("codex_login_method_invalid")
     preview = codex_subscription_preview(
@@ -1092,7 +1180,15 @@ async def prompt_codex_subscription_setup() -> dict[str, JsonValue]:
     typer.echo(f"  capability cell: {preview['capability_cell_sha256']}")
     typer.echo(f"  cell evidence expires: {preview['capability_evidence_expires_at']}")
     typer.echo(f"  dedicated CODEX_HOME: {preview['codex_home']}")
-    typer.echo(f"  model: {model}")
+    model_is_suggestion = new_binding and model == suggested_model
+    typer.echo(
+        f"  model: {model}"
+        + (
+            f" (suggested; {CODEX_SUBSCRIPTION_FALLBACK_MODEL} if this Codex does not list it)"
+            if model_is_suggestion and model != CODEX_SUBSCRIPTION_FALLBACK_MODEL
+            else ""
+        )
+    )
     typer.echo(f"  reasoning: final {reasoning_effort} / routine {routine_reasoning_effort}")
     typer.echo("  destination: OpenAI through Codex-managed ChatGPT authentication")
     typer.echo("  data-use posture: unknown; your ChatGPT plan and terms apply")
@@ -1115,6 +1211,7 @@ async def prompt_codex_subscription_setup() -> dict[str, JsonValue]:
         login_mode=cast(Literal["browser", "device_code"], login_choice),
         open_browser=login_choice == "browser",
         switch_account=switch_account,
+        model_is_suggestion=model_is_suggestion,
     )
 
 

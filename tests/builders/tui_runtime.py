@@ -152,6 +152,7 @@ class FakeRuntime:
     subscription_actions: list[str] = field(default_factory=lambda: [])
     subscription_setups: list[tuple[str, str, str, str, bool]] = field(default_factory=lambda: [])
     subscription_routine_efforts: list[str | None] = field(default_factory=lambda: [])
+    subscription_model_suggestions: list[bool] = field(default_factory=lambda: [])
     checks: list[tuple[str, CheckMode]] = field(default_factory=lambda: [])
     opened: list[str] = field(default_factory=lambda: [])
     progress_reads: list[str] = field(default_factory=lambda: [])
@@ -385,8 +386,10 @@ class FakeRuntime:
         *,
         switch_account: bool = False,
         routine_reasoning_effort: str | None = None,
+        model_is_suggestion: bool = False,
     ) -> dict[str, object]:
         action = "switch" if switch_account else "setup"
+        self.subscription_model_suggestions.append(model_is_suggestion)
         self.subscription_routine_efforts.append(routine_reasoning_effort)
         self.subscription_actions.append(action)
         self.subscription_setups.append(

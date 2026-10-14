@@ -2646,3 +2646,45 @@ async def test_launch_binding_hash_runs_off_loop_and_failure_prevents_spawn(
     with pytest.raises(ValueError, match="codex_runtime_executable_changed"):
         await module._launch(_profile())  # pyright: ignore[reportPrivateUsage]
     assert len(threads) == 1 and threads[0] != loop_thread
+
+
+async def _model_listed(
+    monkeypatch: pytest.MonkeyPatch, runtime: _Runtime, cleanup_outcome: str = "terminated"
+) -> bool:
+    async def launch(profile: CodexAppServerProfile) -> _Runtime:
+        assert profile is runtime.profile
+        return runtime
+
+    async def cleanup(value: object) -> str:
+        assert value is runtime
+        return cleanup_outcome
+
+    monkeypatch.setattr(module, "_launch", launch)
+    monkeypatch.setattr(module, "_cleanup", cleanup)
+    return await module.codex_model_listed(runtime.profile)
+
+
+async def test_model_listed_reads_only_the_catalog_and_never_account_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _Runtime(_profile())
+
+    assert await _model_listed(monkeypatch, runtime) is True
+    assert runtime.methods == ["initialize", "model/list"]
+    assert runtime.sent == [{"method": "initialized"}]
+
+
+async def test_model_listed_is_false_for_an_unlisted_model_or_effort(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert await _model_listed(monkeypatch, _Runtime(_profile(), model_available=False)) is False
+    unlisted_effort = _Runtime(_profile())
+    unlisted_effort.supported_efforts = ("medium",)
+    assert await _model_listed(monkeypatch, unlisted_effort) is False
+
+
+async def test_model_listed_refuses_an_unconfirmed_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="^codex_subscription_readiness_unproven$"):
+        await _model_listed(monkeypatch, _Runtime(_profile()), cleanup_outcome="failed")

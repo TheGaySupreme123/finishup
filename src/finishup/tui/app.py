@@ -1892,9 +1892,14 @@ class FinishUpTui(App[int]):
             TextEntryView(
                 name="codex-subscription-model",
                 title="Exact evaluator selection",
-                label="Model identifier",
+                label=(
+                    "Model identifier (gpt-6.1-sol is suggested; setup uses gpt-6-luna and says "
+                    "so if this Codex does not list it)"
+                    if model_default == "gpt-6.1-sol"
+                    else "Model identifier"
+                ),
                 initial=model_default,
-                placeholder="gpt-6-luna",
+                placeholder="gpt-6.1-sol",
             ),
         )
         values: list[str] = []
@@ -1951,7 +1956,12 @@ class FinishUpTui(App[int]):
             f"Capability cell: {preview.get('capability_cell_sha256')}",
             f"Cell evidence expires: {preview.get('capability_evidence_expires_at')}",
             f"Dedicated CODEX_HOME: {preview.get('codex_home')}",
-            f"Model: {model}",
+            f"Model: {model}"
+            + (
+                " (suggested; gpt-6-luna if this Codex does not list it)"
+                if model == model_default == "gpt-6.1-sol"
+                else ""
+            ),
             f"Reasoning: final {effort} / routine {routine_effort}",
             "Destination: OpenAI through Codex-managed ChatGPT authentication.",
             "Data-use posture: unknown; your ChatGPT plan and terms apply.",
@@ -1991,6 +2001,7 @@ class FinishUpTui(App[int]):
                     effort,
                     switch_account=switch_account,
                     routine_reasoning_effort=routine_effort,
+                    model_is_suggestion=model == model_default,
                 )
             )
         except SuspendNotSupported:
@@ -2016,6 +2027,12 @@ class FinishUpTui(App[int]):
             "Codex subscription binding is ready",
             (
                 f"Sign-in: {sign_in}",
+                f"Model: {status.get('model') or model}"
+                + (
+                    f" (suggested {status.get('model_fallback_from')} is not listed by this Codex)"
+                    if isinstance(status.get("model_fallback_from"), str)
+                    else ""
+                ),
                 f"Auth mode: {status.get('auth_mode')}",
                 f"Plan: {status.get('plan_type') or 'not reported'}",
                 f"Model available: {status.get('model_available')}",

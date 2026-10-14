@@ -3994,8 +3994,9 @@ def provider_codex_subscription_setup(
         typer.Option(
             "--model",
             help=(
-                "Exact Codex model id. Defaults to gpt-6-luna for a new binding and "
-                "preserves an existing binding's model when omitted."
+                "Exact Codex model id. A new binding is offered gpt-6.1-sol, or gpt-6-luna when "
+                "the admitted Codex does not list it; an existing binding keeps its model when "
+                "omitted."
             ),
         ),
     ] = None,
@@ -4003,7 +4004,10 @@ def provider_codex_subscription_setup(
         str | None,
         typer.Option(
             "--reasoning-effort",
-            help="Final review effort; high for a new binding, otherwise preserves its current choice.",
+            help=(
+                "Final review effort; medium for a new binding, otherwise preserves its current "
+                "choice."
+            ),
         ),
     ] = None,
     routine_reasoning_effort: Annotated[
@@ -4056,6 +4060,8 @@ def provider_codex_subscription_setup(
     from finishup.adapters.providers.codex_app_server import codex_evaluator_cell_for_platform
     from finishup.adapters.providers.codex_evaluator_runtime import managed_runtime_path
     from finishup.cli.codex_subscription import (
+        CODEX_SUBSCRIPTION_FALLBACK_MODEL,
+        codex_subscription_model_is_suggested,
         codex_subscription_setup,
         default_codex_evaluator_executable,
         default_codex_home,
@@ -4081,6 +4087,13 @@ def provider_codex_subscription_setup(
             raise ValueError("codex_runtime_capability_unsupported")
         destination = default_codex_home() if codex_home is None else codex_home
         selected_model = default_codex_subscription_model() if model is None else model
+        # Setup's own suggestion for a new binding may fall back when Codex does not list it;
+        # an explicit --model or an existing binding's model is never substituted.
+        model_is_suggestion = (
+            model is None
+            and selected_model != CODEX_SUBSCRIPTION_FALLBACK_MODEL
+            and codex_subscription_model_is_suggested()
+        )
         selected_routine = (
             default_codex_subscription_routine_effort()
             if routine_reasoning_effort is None
@@ -4103,7 +4116,14 @@ def provider_codex_subscription_setup(
         typer.echo(f"  capability cell: {cell.capability_cell_sha256}")
         typer.echo(f"  cell evidence expires: {cell.capability_evidence_expires_at}")
         typer.echo(f"  dedicated CODEX_HOME: {destination}")
-        typer.echo(f"  model: {selected_model}")
+        typer.echo(
+            f"  model: {selected_model}"
+            + (
+                f" (suggested; {CODEX_SUBSCRIPTION_FALLBACK_MODEL} if this Codex does not list it)"
+                if model_is_suggestion
+                else ""
+            )
+        )
         typer.echo(
             f"  reasoning: final {selected_effort} / routine "
             + (
@@ -4145,6 +4165,7 @@ def provider_codex_subscription_setup(
                     open_browser=open_browser,
                     switch_account=switch_account,
                     as_fallback=as_fallback,
+                    model_is_suggestion=model_is_suggestion,
                 )
             )
         )
