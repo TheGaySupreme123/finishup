@@ -177,6 +177,37 @@ def test_an_injected_startup_failure_is_typed_on_the_service_log_and_its_record(
         cleanup_environment(environment)
 
 
+def test_the_hermetic_runtime_fits_every_service_endpoint() -> None:
+    """The on-demand cases below spawn a real service into this process's hermetic environment.
+
+    That service binds its endpoints beneath ``runtime_dir()``. A path longer than ``sun_path``
+    fails ``bind`` with ``OSError`` (``AF_UNIX path too long``) before the injected failure is
+    reached, so the service names ``endpoint_unsafe`` instead and those cases test the platform's
+    pathname limit rather than the startup failure they guard. Renaming the per-test tree and the
+    application directory from ``yoetz`` to ``finishup`` pushed the longest endpoint past it under
+    the CI job's ``HOME``.
+    """
+
+    from finishup.adapters.control.unix_socket import (
+        CONTROL_ENDPOINT_BASENAME,
+        HUMAN_CONTROL_ENDPOINT_BASENAME,
+        SECRET_ENDPOINT_BASENAME,
+    )
+    from finishup.cli.instance import MAX_SOCKET_PATH_BYTES
+    from finishup.config.paths import runtime_dir
+
+    runtime = runtime_dir()
+    longest = max(
+        len(os.fsencode(runtime / name))
+        for name in (
+            CONTROL_ENDPOINT_BASENAME,
+            SECRET_ENDPOINT_BASENAME,
+            HUMAN_CONTROL_ENDPOINT_BASENAME,
+        )
+    )
+    assert longest <= MAX_SOCKET_PATH_BYTES
+
+
 @pytest.fixture
 def injected_spawn_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
