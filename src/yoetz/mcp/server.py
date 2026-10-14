@@ -3621,8 +3621,9 @@ def _with_status_streak_nudge(
     """Lead a repeated status read's text with one concrete next write (tb4 n5).
 
     The structured result is unchanged; only the model-visible text gains one leading line. The
-    Cursor profile's text block is the exact canonical JSON of the result, so there the line is a
-    separate first block. A failure here never fails the call: the result is returned as served.
+    Cursor profile's text block is the exact canonical JSON of the result, which stays
+    ``content[0]``; there the line is a separate second block. A failure here never fails the
+    call: the result is returned as served.
     """
 
     try:
@@ -3640,7 +3641,9 @@ def _with_status_streak_nudge(
         if runtime.host_profile != "cursor" and isinstance(first, types.TextContent):
             content[0] = first.model_copy(update={"text": f"{nudge}\n{first.text}"})
         else:
-            content.insert(0, types.TextContent(type="text", text=nudge))
+            # Cursor's first block is the exact canonical JSON a consumer may parse as the result;
+            # it stays first and the nudge follows it as its own block.
+            content.append(types.TextContent(type="text", text=nudge))
         return result.model_copy(update={"content": content})
     except Exception:  # noqa: BLE001 - the nudge is advisory text; the served result stands
         return result

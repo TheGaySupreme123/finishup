@@ -316,7 +316,8 @@ open and both test targets had passed. Two causes, two changes:
   `projection_stale` or `check_in_progress` listed, a `rebuild_state` other than `current`, or a
   non-zero `projection_lag`. The
   structured result and every schema are unchanged; on the Cursor profile, whose text block is the
-  exact canonical JSON copy, the line is a separate leading block. A read appends nothing, so the
+  exact canonical JSON copy, that block stays `content[0]` and the line is a separate second
+  block, so a consumer that parses the first block keeps the exact result. A read appends nothing, so the
   count cannot be derived from the ledger; a bridge restart only restarts the count. All three
   hosts share the bridge, so the rule applies to Codex, Claude Code and Cursor alike.
 

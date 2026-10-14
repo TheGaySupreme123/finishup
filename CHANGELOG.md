@@ -225,7 +225,7 @@ reverse-chronological released versions.
   needed, and the one next write the result's own closure state names (for example resolving the
   first open obligation with `resolution_evidence_refs`, `respond`, `check`, or `receipt`). Paging
   and polling a running check do not count. The structured result is unchanged, so no schema
-  changes; on Cursor the line is a separate block before the exact result copy. The start-of-session
+  changes; on Cursor the line is a separate block after the exact result copy. The start-of-session
   text and the `status` tool description now say: after resume or compaction, read status once,
   keep the returned obligations and findings, then do the work, and do not reread status between
   ordinary steps (tb4 n5).

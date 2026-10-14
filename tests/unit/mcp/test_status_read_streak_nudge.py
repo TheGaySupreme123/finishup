@@ -207,7 +207,7 @@ async def test_third_read_leads_the_text_and_a_write_resets_it(
 
 
 @pytest.mark.anyio
-async def test_cursor_keeps_its_canonical_block_and_gains_a_leading_one(
+async def test_cursor_keeps_its_canonical_block_first_and_gains_a_second_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _patched_status(monkeypatch, _obligations_wire())
@@ -219,9 +219,10 @@ async def test_cursor_keeps_its_canonical_block_and_gains_a_leading_one(
     finally:
         await bridge.close_bridge_runtime(runtime)
     texts = _texts(third)
+    # content[0] stays the exact canonical copy a consumer may parse; the nudge follows it.
     assert len(texts) == 2
-    assert texts[0].startswith("Status read 3 times in a row with no write.")
-    assert texts[1] == _SUMMARY
+    assert texts[0] == _SUMMARY
+    assert texts[1].startswith("Status read 3 times in a row with no write.")
 
 
 @pytest.mark.parametrize(
