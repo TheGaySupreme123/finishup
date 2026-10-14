@@ -12,9 +12,8 @@ lookups cannot show: a directory service (SSSD, LDAP, NIS, winbind) may not enum
 and may report a populated group as empty. So the answer comes from the local files alone, and
 only when ``/etc/nsswitch.conf`` serves the ``passwd`` and ``group`` databases (and
 ``initgroups`` when named) exclusively from ``files`` and ``systemd``, in every entry for those
-databases (glibc syntax: the colon is optional; duplicates and malformed entries are weighed
-conservatively). ``systemd`` is admitted
-because on a stock system it only adds dynamic service users (gids 61184-65519, never a person's
+databases (glibc syntax: LF-only lines, an optional colon, validated action clauses;
+duplicates and malformed entries are weighed conservatively). ``systemd`` is admitted because on a stock system it only adds dynamic service users (gids 61184-65519, never a person's
 private group); any userdb drop-in record or userdb service beyond dynamic users (systemd-homed,
 for example) makes the answer unprovable. ``/etc/gshadow`` is read when readable; an ordinary
 account cannot read it, and its member list is kept in step with ``/etc/group`` by the account
@@ -27,7 +26,6 @@ Only the standard library is imported: the installed launcher calls this before 
 from __future__ import annotations
 
 import os
-import re
 import stat
 import time
 from pathlib import Path
@@ -40,9 +38,11 @@ WORLD: Final[ForeignWrite] = "world"
 # The filesystem root the account files are read under; tests point it at a fixture tree.
 _ROOT: Path = Path("/")
 _LOCAL_SOURCES: Final = frozenset({"files", "systemd"})
-_ACTION: Final = re.compile(r"\[[^\]]*\]")
-# A switch line: the database name ends at the first colon or whitespace (glibc accepts either).
-_SWITCH_LINE: Final = re.compile(r"([^\s:]+)[\s:](.*)\Z", re.DOTALL)
+# glibc's nsswitch.conf grammar (nss/nss_database.c, nss/nss_action_parse.c): C-locale
+# whitespace, the status and action words of a ``[STATUS=ACTION ...]`` clause.
+_C_SPACE: Final = frozenset(" \t\n\v\f\r")
+_NSS_STATUSES: Final = frozenset({"SUCCESS", "UNAVAIL", "NOTFOUND", "TRYAGAIN"})
+_NSS_ACTIONS: Final = frozenset({"RETURN", "CONTINUE", "MERGE"})
 _SWITCH_DATABASES: Final = frozenset({"passwd", "group", "initgroups"})
 _DYNAMIC_GIDS: Final = range(61184, 65520)
 # Userdb services that never describe a person's group membership.
@@ -114,34 +114,76 @@ def _records(text: str) -> list[list[str]] | None:
     return records
 
 
+def _skip_space(text: str, index: int) -> int:
+    while index < len(text) and text[index] in _C_SPACE:
+        index += 1
+    return index
+
+
+def _word(text: str, index: int, stops: str) -> int:
+    while index < len(text) and text[index] not in _C_SPACE and text[index] not in stops:
+        index += 1
+    return index
+
+
+def _services(text: str) -> list[str] | None:
+    """A service list as glibc's action parser reads it; None on any syntax error."""
+
+    services: list[str] = []
+    index = _skip_space(text, 0)
+    while index < len(text):
+        start, index = index, _word(text, index, "[")
+        if index == start:
+            return None  # An action clause with no service before it.
+        services.append(text[start:index])
+        index = _skip_space(text, index)
+        if index < len(text) and text[index] == "[":
+            index = _skip_space(text, index + 1)
+            while True:
+                if index < len(text) and text[index] == "!":
+                    index += 1
+                start, index = index, _word(text, index, "=]")
+                if text[start:index].upper() not in _NSS_STATUSES:
+                    return None
+                index = _skip_space(text, index)
+                if index >= len(text) or text[index] != "=":
+                    return None
+                start = _skip_space(text, index + 1)
+                index = _word(text, start, "=]")
+                if text[start:index].upper() not in _NSS_ACTIONS:
+                    return None
+                index = _skip_space(text, index)
+                if index < len(text) and text[index] == "]":
+                    index = _skip_space(text, index + 1)
+                    break
+    return services
+
+
 def _switch_entries(text: str) -> dict[str, list[list[str] | None]]:
     """Every ``passwd``/``group``/``initgroups`` entry in glibc order; None marks a malformed one.
 
-    glibc ends the database name at the first colon *or* whitespace, strips ``#`` comments and
-    has no line continuation. Releases before 2.33 honour the first entry for a database, later
-    ones the last, so the caller weighs every entry. Names are matched case-insensitively here
-    so that a case variant glibc might honour is never silently skipped.
+    As glibc does: physical lines end at LF only (vertical tab and form feed are whitespace
+    within a line), ``#`` starts a comment, there is no continuation, and the database name ends
+    at the first colon or whitespace, after which the whole run of colons and whitespace is the
+    separator. Releases before 2.33 honour the first entry for a database, later ones the last,
+    so the caller weighs every entry. A relevant entry glibc would skip or reject (no separator,
+    empty or unparsable service list, a case variant of the name) is kept as malformed.
     """
 
     entries: dict[str, list[list[str] | None]] = {}
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if not line:
+    for raw in text.split("\n"):
+        line = raw.split("#", 1)[0]
+        start = _skip_space(line, 0)
+        index = _word(line, start, ":")
+        name = line[start:index]
+        if name.lower() not in _SWITCH_DATABASES:
             continue
-        match = _SWITCH_LINE.match(line)
-        name = (match.group(1) if match else line).lower()
-        if name not in _SWITCH_DATABASES:
-            continue
-        rest = match.group(2) if match else ""
-        services = _ACTION.sub(" ", rest).split()
-        malformed = (
-            match is None
-            or match.group(1) != name
-            or not services
-            or "[" in "".join(services)
-            or "]" in "".join(services)
-        )
-        entries.setdefault(name, []).append(None if malformed else services)
+        separated = index < len(line)
+        while index < len(line) and (line[index] in _C_SPACE or line[index] == ":"):
+            index += 1
+        services = _services(line[index:]) if separated else None
+        valid = name in _SWITCH_DATABASES and bool(services)
+        entries.setdefault(name.lower(), []).append(services if valid else None)
     return entries
 
 

@@ -78,8 +78,21 @@ def test_user_private_group_from_local_files_is_owner_only(
         # glibc takes whitespace instead of the colon after the database name.
         "passwd files systemd\ngroup\tfiles\n  initgroups files # trailing\n",
         "passwd: files\npasswd: files systemd\ngroup: files\n",
+        # glibc consumes the whole run of whitespace and colons after the name.
+        "passwd : files\ngroup :: files systemd\n",
+        "passwd: files [!UNAVAIL=return] systemd\ngroup: files [ SUCCESS = merge ] systemd\n",
+        "passwd: files\r\ngroup: files\r\n",
     ],
-    ids=["files-only", "action-tokens", "local-initgroups", "colon-less", "local-duplicates"],
+    ids=[
+        "files-only",
+        "action-tokens",
+        "local-initgroups",
+        "colon-less",
+        "local-duplicates",
+        "space-before-colon",
+        "action-grammar",
+        "crlf",
+    ],
 )
 def test_local_only_switch_variants_are_accepted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, nss: str
@@ -125,7 +138,15 @@ def test_world_write_is_always_refused(monkeypatch: pytest.MonkeyPatch, tmp_path
         "passwd: files [NOTFOUND=return\ngroup: files\n",
         "passwd: files\ngroup: files\ninitgroups\n",
         "passwd: files\ngroup:\n",
-        "passwd: files\ngroup : files\n",
+        # glibc reads physical lines on LF only; VT and FF are whitespace inside a line.
+        "passwd: files\ngroup: files\vsss\n",
+        "passwd: files\ngroup: files\fsss\n",
+        # Brackets are an action grammar, not a comment.
+        "passwd: files [BROKEN]\ngroup: files\n",
+        "passwd: files [NOTFOUND=]\ngroup: files\n",
+        "passwd: files [NOTFOUND return]\ngroup: files\n",
+        "passwd: files [NOTFOUND=return\ngroup: files\n",
+        "passwd: [NOTFOUND=return] files\ngroup: files\n",
         "PASSWD: sss\npasswd: files\ngroup: files\n",
     ],
     ids=[
@@ -144,7 +165,13 @@ def test_world_write_is_always_refused(monkeypatch: pytest.MonkeyPatch, tmp_path
         "unterminated-action",
         "bare-name",
         "empty-service-list",
-        "space-before-colon",
+        "vertical-tab",
+        "form-feed",
+        "unknown-action",
+        "action-without-value",
+        "action-without-equals",
+        "unclosed-action",
+        "action-before-service",
         "case-variant",
     ],
 )

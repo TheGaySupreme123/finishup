@@ -197,10 +197,11 @@ host configuration roots (`target_unsafe`).
    `/etc/gshadow` when readable), and only when `/etc/nsswitch.conf` serves `passwd`, `group`
    (and `initgroups` when named) exclusively from `files` and `systemd`, with no userdb service
    beyond dynamic users and no userdb drop-in record. `nsswitch.conf` is read with glibc's
-   syntax (the colon after the database name is optional), and every entry for those databases
-   must be local, because glibc before 2.33 honours the first duplicate and later releases the
-   last; a malformed entry for them makes the answer unprovable. A directory service (SSSD, LDAP, NIS,
-   winbind) may not enumerate accounts and may report a populated group as empty, so on such a
+   syntax (lines end at LF only, so vertical tab and form feed are whitespace; the name ends at
+   a colon or whitespace and the whole run of both is the separator; `[STATUS=ACTION]` clauses
+   must use glibc's words), and every entry for those databases must be local, because glibc
+   before 2.33 honours the first duplicate and later releases the last; a malformed entry for
+   them makes the answer unprovable. A directory service (SSSD, LDAP, NIS, winbind) may not enumerate accounts and may report a populated group as empty, so on such a
    machine, on macOS (no `nsswitch.conf`) and with any NIS compat line, duplicate gid, name
    mismatch or unreadable file, group write counts as shared: those users install with
    `umask 022` or run the printed `chmod`. `/etc/gshadow` is unreadable to ordinary accounts; the
