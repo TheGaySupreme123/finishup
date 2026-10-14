@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -411,7 +412,9 @@ class _Candidate:
 
         pid = self.descendant()
         if pid is not None and _alive(pid):
-            os.kill(pid, signal.SIGKILL)
+            # The probe's own group kill may still be landing; a pid that exits in between is fine.
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
 
 
 @pytest.fixture
@@ -495,4 +498,61 @@ def test_an_unconfirmed_group_cleanup_is_a_typed_failure_not_a_probe_failure(
                 real_killpg(group, signal.SIGKILL)
             except ProcessLookupError:
                 pass
+        candidate.reap_own_descendant()
+
+
+@_POSIX_ONLY
+def test_a_transient_eperm_while_killed_members_exit_is_confirmed_gone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """macOS briefly answers EPERM for a group whose killed members are still exiting."""
+
+    candidate = _Candidate(tmp_path / "candidate", stdout_line="codex-cli 0.162.1", hang=False)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    real_killpg = os.killpg
+    probes: list[int] = []
+
+    def transient_eperm(group: int, sig: int) -> None:
+        if sig == 0:
+            probes.append(group)
+            if len(probes) <= 3:
+                raise PermissionError(1, "Operation not permitted")
+        real_killpg(group, sig)
+
+    monkeypatch.setattr(module.os, "killpg", transient_eperm)
+    try:
+        assert codex_cli_version(candidate.executable, scratch_parent=scratch) == "0.162.1"
+        assert len(probes) > 3
+        pid = candidate.descendant()
+        assert pid is not None
+        assert _gone_within(pid, 5.0)
+    finally:
+        monkeypatch.undo()
+        candidate.reap_own_descendant()
+
+
+@_POSIX_ONLY
+def test_a_group_that_stays_visible_past_the_grace_is_unconfirmed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A member that genuinely survives (persistent EPERM) still fails closed."""
+
+    candidate = _Candidate(tmp_path / "candidate", stdout_line="codex-cli 0.162.1", hang=False)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    real_killpg = os.killpg
+
+    def persistent_eperm(group: int, sig: int) -> None:
+        if sig == 0:
+            raise PermissionError(1, "Operation not permitted")
+        real_killpg(group, sig)
+
+    monkeypatch.setattr(module.os, "killpg", persistent_eperm)
+    monkeypatch.setattr(module, "_GROUP_CLEANUP_GRACE_SECONDS", 0.2)
+    try:
+        with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed"):
+            codex_cli_version(candidate.executable, scratch_parent=scratch)
+    finally:
+        monkeypatch.undo()
         candidate.reap_own_descendant()
