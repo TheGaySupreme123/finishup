@@ -329,6 +329,14 @@ def run_host_connection(
                 "For legacy Codex setup use --codex-home. If the conflict is in the "
                 "project's marketplace, inspect that file first; a new home cannot repair it."
             )
+        from yoetz.cli.runtime_refusal import installed_runtime_refusal_text
+
+        refusal = installed_runtime_refusal_text()
+        if refusal is not None:
+            # The launcher or runtime this host would run is writable by another account: a
+            # host-specific symptom (launcher_unproven, target_unsafe) hides the one repair.
+            report["reason"], text = refusal
+            report["next_step"] = text.split(": ", 1)[1].rstrip("\n")
         if isinstance(error, ConnectionError) and error.status is not None:
             report["status"] = error.status
             next_command = error.status.get("next_command")

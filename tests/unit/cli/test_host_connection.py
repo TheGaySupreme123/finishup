@@ -173,3 +173,39 @@ def test_setup_keeps_os_password_ceremony_on_main_thread(
         )
 
     assert anyio.run(run) == 0
+
+
+@pytest.mark.parametrize("host", ["codex", "claude", "cursor-cli"])
+def test_failed_connection_names_a_runtime_another_account_can_write(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    host: str,
+) -> None:
+    import yoetz.cli.runtime_refusal as refusal
+    from yoetz.ports.plugin_artifacts import PluginArtifactError, PluginArtifactReason
+
+    def unsafe(*_args: object, **_kwargs: object) -> ConnectionPlan:
+        raise PluginArtifactError(PluginArtifactReason.TARGET_UNSAFE, {})
+
+    monkeypatch.setattr(cli, "prepare_selected", unsafe)
+    monkeypatch.setattr(
+        refusal,
+        "installed_runtime_refusal_text",
+        lambda: (
+            "release_runtime_group_writable",
+            "release_runtime_group_writable: Another account ... retry:\n  chmod -R go-w /x\n",
+        ),
+    )
+    code = cli.run_host_connection(
+        host=host,
+        executable=None,
+        config_root=None,
+        project=Path("/workspace/example/project"),
+        json_output=True,
+    )
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    HostConnectionReport.model_validate(report)
+    assert report["reason"] == "release_runtime_group_writable"
+    assert "chmod -R go-w /x" in report["next_step"]
