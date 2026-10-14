@@ -461,18 +461,31 @@ connected one after another. Only a genuinely conflicting duplicate is refused.
      its `extraKnownMarketplaces` declaration.
    - *Cursor:* shared: the user plugin (hooks, skill). Per project: the project MCP entry.
 2. **Who is connected.** Codex and Cursor do not list which projects use the shared pieces, so
-   Yoetz keeps `<config root>/.yoetz-connected-projects.json` (owner-only canonical JSON,
-   `{"projects": [...]}`), written under the activation lock and only while it still holds the
-   bytes the approved plan read; its digest is bound into the plan. Claude Code itself lists one
-   project-scope row per project, so that host needs no record. A Codex home bound before this
-   amendment has no record; its bound project counts as connected and is recorded when another
-   project connects.
+   Yoetz keeps `<config root>/.yoetz-connected-projects.json` (canonical JSON `{"projects":
+   [...]}`, plus `"unknown_members": true` when membership is uncertain). It is read only when
+   owner-only (mode 0600-style) and written atomically with the parent directory synced, only
+   while it still holds the bytes the approved plan read; its digest is bound into the plan.
+   Every setup apply for one configuration root holds one lock (an exclusive `flock` on the
+   root's parent directory) from plan revalidation through the shared changes and the record
+   update, so a concurrent setup is stale rather than losing a member. Claude Code itself lists
+   one project-scope row per project, so that host needs no record. A Codex home bound before
+   this amendment has no record; its bound project counts as connected (earlier releases served
+   one project per home) and, when the record is missing, trusted projects that still serve the
+   exact Yoetz manifest count too. Cursor shared pieces found without a record (an earlier
+   release, or a lost record) make membership unknown; that state survives later connects and
+   is disclosed in every preview.
 3. **Reverse path.** Disconnecting a project while another live project remains removes only
    the project's pieces (Codex: `detach`, which moves the binding to a remaining project before
-   this project's manifest goes; Claude Code: `plugin uninstall --scope project` without the
-   unscoped `marketplace remove`; Cursor: the project MCP entry without the user plugin). The
-   last project's disconnect removes the shared pieces and the record. A deleted project, or
-   one whose path is now a symlink, does not keep the shared pieces.
+   this project's manifest goes; Claude Code: `plugin uninstall --scope project` plus removing
+   the project's exact own `extraKnownMarketplaces` declaration, without the unscoped
+   `marketplace remove`; Cursor: the project MCP entry without the user plugin). The last
+   project's disconnect removes the shared pieces and the record. A deleted project, or one
+   whose path is now a symlink, does not keep the shared pieces. Uncertainty keeps them: unknown
+   Cursor membership, and a Codex scan of other projects that stopped at its bound of 32, keep
+   the shared pieces on an ordinary disconnect. Only the explicit `setup disconnect
+   --remove-shared` removes them for every project, with disclosure, and it still refuses
+   while another project's Codex configuration needs the registration or the scan is
+   incomplete.
 4. **Genuine duplicates.** One directory reached through a second path (a symlink, a letter-case
    variant, a moved directory) is refused on connect as `project_connected_via_other_path`, with
    the path already connected and the way out: disconnecting the project under its current path

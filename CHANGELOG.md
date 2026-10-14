@@ -18,8 +18,11 @@ reverse-chronological released versions.
   `setup status` lists the connected projects. Connecting the same directory again through a
   symlink, a different letter case or its old path after a move is refused as
   `project_connected_via_other_path`, with the path already connected and the disconnect that
-  clears it. Cursor projects connected by an earlier release are recorded when their setup runs
-  again.
+  clears it. When the shared pieces predate this release (or their record was lost), Yoetz
+  treats the other projects as unknown and keeps those pieces on an ordinary disconnect, and says
+  so in the preview. Two setups for the same agent configuration at once can no longer lose a
+  project. After disconnecting projects in any order, each can be connected again (Claude Code
+  previously refused the first one with `destination_conflict`).
 
 - `yoetz setup disconnect` now removes the selected project's Yoetz tool-approval entry (the one
   `integrate <host> admission grant` writes) as part of the same previewed plan, before the

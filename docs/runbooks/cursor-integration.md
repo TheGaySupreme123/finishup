@@ -43,10 +43,15 @@ which projects use the plugin, so setup keeps `<config root>/.yoetz-connected-pr
 record shared with Codex's model, ADR-012): connect records the project, a disconnect while
 another live project remains removes only that project's MCP entry (the preview's
 `status.shared_with` names the others), and the last project's disconnect removes the plugin and
-the record. Status reports `connected_projects`. A project connected by an earlier release is not
-in the record until its setup runs again (`record_connected_project` is then the only change);
-run `setup run` once in each connected project after upgrading, or a disconnect elsewhere can
-still remove the plugin that project uses. A second path to an already connected directory is
+the record. Status reports `connected_projects` (recorded) and `connected_projects_observed`
+(recorded projects whose own project MCP entry is still Yoetz's); a recorded project that is no
+longer observed keeps the plugin until `setup disconnect` runs for it, which forgets it. When the
+plugin is found without a record (it was set up by an earlier release, or the record was lost),
+other projects may use it that no record names: the record and every preview carry
+`membership_unknown`, an ordinary disconnect keeps the plugin, and only `--remove-shared` removes
+it. Every Cursor setup apply for one config root holds a lock across revalidation, the plugin
+and MCP changes, and the record update, so a concurrent setup is refused as stale and its retry
+joins. A second path to an already connected directory is
 refused as `project_connected_via_other_path`; disconnecting under the current path clears it. A
 moved project's `.cursor/mcp.json` entry still names its old path and reads as foreign under the
 new one; remove that entry by hand before that disconnect. `setup disconnect --remove-shared` is

@@ -6435,8 +6435,9 @@ refuses `connection_project_mcp_tables_retained` (`status.project_mcp_retained`)
 whose layer `depends` (or is `unknown`) keep the transport: `status.admission_other_projects`
 entries carry `project_root`, `dependence`, and a revoke `next_command` only when exact Yoetz
 tables alone remain; warning `mcp_registration_kept_for_other_projects`; a bound of 32 inspected
-candidates is reported as `admission_other_projects_known|_inspected` with warning
-`other_projects_partially_checked`. `setup disconnect --remove-shared` (disclosure
+candidates (after filtering missing and same-directory ones) is reported as
+`admission_other_projects_known|_inspected` with warning `other_projects_partially_checked`, and
+an incomplete read keeps the transport (`--remove-shared` refuses). `setup disconnect --remove-shared` (disclosure
 `remove_shared: true`, carried by the continuation) removes the shared pieces for every project and
 refuses `connection_other_projects_need_registration` while one still depends. Codex reports
 `status.project_config_load: loads|fails|unknown`; `fails` is
@@ -6444,9 +6445,13 @@ refuses `connection_other_projects_need_registration` while one still depends. C
 `retained_tables` (reconnect), and status adds `project_mcp_needs_registration` while it loads. `setup status --host codex` reports a transport-less project
 `mcp_servers.yoetz` table as `project_mcp_leftover: "tools_only"` with its revoke `next_command`.
 Several projects per host configuration root (ADR-012, 2026-10-14, #1058): the record
-`<config root>/.yoetz-connected-projects.json` (`host_projects.CONNECTED_PROJECTS_FILE`, owner-only
-canonical JSON `{"projects": [<absolute roots>]}`, compare-and-swap writes) names the projects that
-connected a Codex home or Cursor config root; Claude Code's own `plugin list` rows (one
+`<config root>/.yoetz-connected-projects.json` (`host_projects.CONNECTED_PROJECTS_FILE`, canonical
+JSON `{"projects": [<absolute roots>]}` plus optional `"unknown_members": true`; refused unless
+owner-only; atomic compare-and-swap writes with a parent-directory fsync, under
+`host_projects.host_config_lock`, which `apply_connection` holds for every host across refresh,
+apply and the record update) names the projects that connected a Codex home or Cursor config
+root; Cursor discloses `membership_unknown` and keeps the shared plugin while it is set, and its
+status adds `connected_projects_observed`; Claude Code's own `plugin list` rows (one
 `projectPath` per project-scope install) stand in for it. Plan changes add `detach_project`
 (Codex), `uninstall_plugin` alone (Claude Code), and `record_connected_project|
 forget_connected_project` (Cursor, record-only updates); the plan disclosure `shared_with` lists

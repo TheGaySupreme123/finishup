@@ -41,8 +41,11 @@ row per project, each with its `projectPath`, from any working directory, and th
 `claude plugin marketplace remove yoetz-local` removes every project's install. Yoetz therefore
 reads its own project's row only (other rows are not a conflict), and a disconnect while another
 project still has its row plans `uninstall_plugin` alone: the other projects keep the shared
-source and marketplace, the disconnected project keeps its now-inert `extraKnownMarketplaces`
-declaration, and the preview's `status.shared_with` names them. The last project's disconnect
+source and marketplace, the disconnected project's own exact `extraKnownMarketplaces`
+declaration is removed (Claude's project-scope uninstall keeps it; an edited declaration stays
+yours), and the preview's `status.shared_with` names them. A project detached before this fix
+still declares a source that the last disconnect removed; setup treats that exact declaration
+as repairable prior setup and connects over it. The last project's disconnect
 removes the marketplace and its source as before. Status reports `connected_projects`. Claude
 Code's own rows name the projects, so no Yoetz record is kept for this host. A second path to an
 already connected directory is refused as `project_connected_via_other_path`. Because the shared

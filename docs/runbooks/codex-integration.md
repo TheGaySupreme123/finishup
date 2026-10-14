@@ -40,9 +40,11 @@ stop Codex loading there, so it refuses with `connection_project_mcp_tables_reta
 the file; `setup status` reports `project_mcp_needs_registration` meanwhile, and an already broken
 project with such tables reports `project_mcp_leftover: "retained_tables"` with the reconnect
 continuation (a revoke cannot remove them). Disconnect also reads the projects this home knows
-(its `[projects."<path>"]` entries, the Yoetz binding and the connected-projects record, at most 32;
-more are reported as `admission_other_projects_known`/`_inspected` with the warning
-`other_projects_partially_checked`) and keeps the user-level registration when another project's
+(its `[projects."<path>"]` entries, the Yoetz binding and the connected-projects record; missing
+directories and other paths to this project are skipped first, then at most 32 are read; more are
+reported as `admission_other_projects_known`/`_inspected` with the warning
+`other_projects_partially_checked`, and because an unread project may depend on it the
+registration then stays, and `--remove-shared` refuses) and keeps the user-level registration when another project's
 layer names the server without a transport of its own or cannot be read: the preview lists them
 in `status.admission_other_projects` (with a revoke continuation where only exact Yoetz tables
 remain) and warns `mcp_registration_kept_for_other_projects`. Projects with only the plugin-scoped
@@ -83,7 +85,8 @@ binding whose project lost its manifest makes every `codex plugin …` command i
   and the record.
 - `setup status --host codex` reports `codex_home_projects`. A home connected before this release
   has no record; its bound project counts as connected and is recorded when a second project
-  connects.
+  connects. If the record is lost, trusted projects that still serve the exact Yoetz manifest
+  count as connected, so a disconnect detaches rather than removing what they use.
 - Refused: one directory under a second path (a symlink, a letter-case variant, the path it had
   before it moved) fails as `project_connected_via_other_path`, naming the path already
   connected. Disconnecting the project under its current path also clears the entry under the
