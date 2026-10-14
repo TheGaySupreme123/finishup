@@ -53,7 +53,12 @@ def _obligations_wire(
         "page": {
             "items": [
                 {"obligation_id": _RESOLVED, "status": "resolved"},
-                {"obligation_id": _OBLIGATION, "status": "open"},
+                {
+                    "obligation_id": _OBLIGATION,
+                    "status": "open",
+                    "in_current_plan": True,
+                    "closure_class": "agent_work",
+                },
             ]
         },
         "closure_readiness": {"state": state, "agent_actionable": list(actionable)},
@@ -248,3 +253,61 @@ def test_no_nudge_while_readiness_is_unknown_or_the_projection_is_catching_up(
     """Round 2 (3): an unknown readiness must not become "no status read is needed"."""
 
     assert status_streak_nudge(wire, 9) == ""
+
+
+_SUPERSEDED: Final = "obl_00000000-0000-4000-8000-00000000000c"
+_SETTLED: Final = "obl_00000000-0000-4000-8000-00000000000d"
+
+
+def test_nudge_names_only_an_effective_agent_work_obligation_of_the_current_plan() -> None:
+    """Round 2 (2): plan v2 replaced obligation A by B; the nudge must name B, never A."""
+
+    wire = _obligations_wire()
+    wire["page"]["items"] = [
+        # v1's obligation, superseded by the revision: still "open" in the history listing.
+        {"obligation_id": _SUPERSEDED, "status": "open", "in_current_plan": False},
+        # Effective but settled (acknowledged/disclosed): not agent work.
+        {
+            "obligation_id": _SETTLED,
+            "status": "open",
+            "in_current_plan": True,
+            "closure_class": "settled_disclosed",
+        },
+        {
+            "obligation_id": _OBLIGATION,
+            "status": "open",
+            "in_current_plan": True,
+            "closure_class": "agent_work",
+        },
+    ]
+    nudge = status_streak_nudge(wire, 3)
+    assert _OBLIGATION in nudge
+    assert _SUPERSEDED not in nudge and _SETTLED not in nudge
+
+
+@pytest.mark.parametrize(
+    "items",
+    [
+        # Plan scope unreadable: no in_current_plan, so no single obligation can be named.
+        [{"obligation_id": _OBLIGATION, "status": "open"}],
+        [{"obligation_id": _SUPERSEDED, "status": "open", "in_current_plan": False}],
+        # The compact view's open list carries no plan scope at all.
+        [{"open_obligations": [{"obligation_id": _OBLIGATION}]}],
+    ],
+    ids=["scope-unknown", "only-superseded", "compact"],
+)
+def test_nudge_names_no_obligation_it_cannot_prove_current(items: list[dict[str, Any]]) -> None:
+    wire = _obligations_wire()
+    wire["page"]["items"] = items
+    nudge = status_streak_nudge(wire, 3)
+    assert "obl_" not in nudge
+    assert "each open obligation of the current plan" in nudge
+
+
+def test_nudge_follows_the_agent_actionable_order() -> None:
+    """The first agent-actionable entry the service listed decides the next write."""
+
+    first_findings = _obligations_wire(actionable=("findings_unanswered", "obligations_open"))
+    assert "Next: call respond" in status_streak_nudge(first_findings, 3)
+    first_check = _obligations_wire(actionable=("check_not_recorded", "findings_unanswered"))
+    assert "Next: call check." in status_streak_nudge(first_check, 3)

@@ -125,7 +125,15 @@ def _readiness(wire: Mapping[str, object]) -> tuple[str, tuple[str, ...]]:
     return state, actionable
 
 
-def _first_open_obligation(wire: Mapping[str, object]) -> str | None:
+def _current_agent_work_obligation(wire: Mapping[str, object]) -> str | None:
+    """The first open obligation the result proves is current agent work, or ``None``.
+
+    Only an ``obligations`` view row says so: ``status`` open, ``in_current_plan`` true (published,
+    not waived, not superseded by a plan revision) and ``closure_class`` ``agent_work``. The view
+    also lists historical obligations, and the compact view's open list carries no plan scope, so
+    any other row names nothing (round 2, finding 2).
+    """
+
     page = wire.get("page")
     if not isinstance(page, Mapping):
         return None
@@ -135,20 +143,52 @@ def _first_open_obligation(wire: Mapping[str, object]) -> str | None:
     for raw in cast(Sequence[JsonValue], raw_items):
         if not isinstance(raw, Mapping):
             continue
-        item = cast(Mapping[str, JsonValue], raw)
-        nested = item.get("open_obligations")
-        candidates: Sequence[object] = (
-            cast(Sequence[JsonValue], nested) if isinstance(nested, (list, tuple)) else (item,)
-        )
-        for candidate in candidates:
-            if not isinstance(candidate, Mapping):
-                continue
-            row = cast(Mapping[str, JsonValue], candidate)
-            identifier = row.get("obligation_id")
-            status = row.get("status")
-            if (status is None or status == "open") and is_valid_id(IdKind.OBLIGATION, identifier):
-                return cast(str, identifier)
+        row = cast(Mapping[str, JsonValue], raw)
+        identifier = row.get("obligation_id")
+        if (
+            row.get("status") == "open"
+            and row.get("in_current_plan") is True
+            and row.get("closure_class") == "agent_work"
+            and is_valid_id(IdKind.OBLIGATION, identifier)
+        ):
+            return cast(str, identifier)
     return None
+
+
+def _obligations_write(wire: Mapping[str, object]) -> str:
+    obligation = _current_agent_work_obligation(wire)
+    target = (
+        f"obligation_published for {obligation}"
+        if obligation
+        else "each open obligation of the current plan"
+    )
+    return (
+        f"Next: publish_work {target} with status resolved and resolution_evidence_refs naming "
+        "the evd_/res_ ids that show it done (publish that evidence first if it is not "
+        "recorded), then call check."
+    )
+
+
+def _write_for(token: str, wire: Mapping[str, object]) -> str:
+    """The next write for one agent-actionable entry; ``""`` for one this table does not name."""
+
+    if token == "obligations_open":
+        return _obligations_write(wire)
+    if token == "findings_unanswered":
+        return "Next: call respond for each unanswered finding this result names."
+    if token == "receipt_findings_unresolved":
+        return "Next: repair the receipt-blocking findings, publish_work the repair, then check."
+    if token in {"no_plan_published", "no_obligations_declared"}:
+        return "Next: publish_work a plan that declares the obligations."
+    if token == COMPLETION_PLAN_NOT_CLAIMED_GAP:
+        return "Next: publish_work a completion claim_recorded citing your evidence."
+    if token in _RERUN_TOKENS:
+        return "Next: run the planned verification on the current state, then call check."
+    if token in {"closing_review_required", FINDING_REJECTION_AWAITING_RULING_GAP}:
+        return "Next: call check with final_review: true."
+    if token in _CHECK_TOKENS:
+        return "Next: call check."
+    return ""
 
 
 def _reread_is_the_contract(
@@ -173,31 +213,11 @@ def _next_write(wire: Mapping[str, object]) -> str:
         return ""
     if state in {"ready", "ready_with_limitations"}:
         return "Next: call receipt."
-    if "obligations_open" in actionable:
-        obligation = _first_open_obligation(wire)
-        target = f"obligation_published for {obligation}" if obligation else "each open obligation"
-        return (
-            f"Next: publish_work {target} with status resolved and resolution_evidence_refs "
-            "naming the evd_/res_ ids that show it done (publish that evidence first if it is "
-            "not recorded), then call check."
-        )
-    if "findings_unanswered" in actionable:
-        return "Next: call respond for each unanswered finding this result names."
-    if "receipt_findings_unresolved" in actionable:
-        return "Next: repair the receipt-blocking findings, publish_work the repair, then check."
-    if "no_plan_published" in actionable or "no_obligations_declared" in actionable:
-        return "Next: publish_work a plan that declares the obligations."
-    if COMPLETION_PLAN_NOT_CLAIMED_GAP in actionable:
-        return "Next: publish_work a completion claim_recorded citing your evidence."
-    if any(token in _RERUN_TOKENS for token in actionable):
-        return "Next: run the planned verification on the current state, then call check."
-    if (
-        "closing_review_required" in actionable
-        or FINDING_REJECTION_AWAITING_RULING_GAP in actionable
-    ):
-        return "Next: call check with final_review: true."
-    if any(token in _CHECK_TOKENS for token in actionable):
-        return "Next: call check."
+    # The service lists agent-actionable entries in its own order; the first one named here decides.
+    for token in actionable:
+        write = _write_for(token, wire)
+        if write:
+            return write
     if actionable:
         first = actionable[0] if len(actionable[0]) <= 145 else "an agent-actionable item"
         return f"Next: resolve {first} with publish_work, check, respond, or receipt."

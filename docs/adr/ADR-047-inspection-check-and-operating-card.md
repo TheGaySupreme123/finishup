@@ -305,7 +305,9 @@ open and both test targets had passed. Two causes, two changes:
   Continuation pages (`cursor`) and `view: operation` neither count nor nudge. From the third such
   read, the text channel leads with "Status read N times in a row with no write. No status read
   is needed." and one next write derived from the same result's `closure_readiness` (`state`,
-  `agent_actionable`) and its first open obligation id: resolve that obligation with
+  `agent_actionable`, in the service's order) and, for open obligations, the first `obligations`
+  view row that is `open`, `in_current_plan` and `closure_class: agent_work` (none is named from
+  the compact view or when the plan scope is unreadable): resolve that obligation with
   `resolution_evidence_refs`, `respond`, run the planned verification then `check`, `check` with
   `final_review: true`, or `receipt`. No line is added when the result itself asks for a
   reread: readiness `unknown` (or a state this build does not know), `readiness_unknown`,
