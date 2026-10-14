@@ -108,7 +108,7 @@ _NEXT_PRIVACY: Final = "run 'yoetz --privacy' to review or change the privacy po
 _NEXT_PROVIDER_TOML: Final = (
     "run 'yoetz provider endpoint' for an API provider, or "
     "'yoetz provider codex-subscription setup' for Codex-managed ChatGPT login (it offers "
-    "Yoetz's verified evaluator runtime) — never put credentials in TOML"
+    "the newest capability-checked Codex) — never put credentials in TOML"
 )
 _NEXT_CREDENTIAL: Final = (
     "run 'yoetz provider credential set' from a local terminal to provision the "
@@ -147,6 +147,15 @@ _PROVIDER_SETUP_DIRECT_REASONS: Final = frozenset(
         "codex_evaluator_runtime_download_failed",
         "codex_evaluator_runtime_download_timeout",
         "codex_evaluator_runtime_package_manager_unavailable",
+        # Capability admission (ADR-006, 2026-10-13): why a Codex release was not admitted.
+        "codex_runtime_version_unsupported",
+        "codex_runtime_version_unknown",
+        "codex_runtime_code_mode_host_missing",
+        "codex_runtime_protocol_incompatible",
+        "codex_runtime_protocol_unavailable",
+        "codex_app_server_predisclosure_event_forbidden",
+        "codex_thread_isolation_unproven",
+        "codex_model_unavailable",
     }
 )
 

@@ -649,10 +649,7 @@ def external_runtime_fact(config: YoetzConfig) -> dict[str, JsonValue] | None:
     runtime = config.external_runtime
     if runtime is None:
         return None
-    from yoetz.adapters.providers.codex_evaluator_runtime import (
-        host_codex_evaluator_cell,
-        managed_runtime_path,
-    )
+    from yoetz.adapters.providers.codex_evaluator_runtime import is_managed_runtime_path
     from yoetz.cli.codex_subscription import (
         binding_continuation,
         diagnose_bound_runtime,
@@ -665,11 +662,9 @@ def external_runtime_fact(config: YoetzConfig) -> dict[str, JsonValue] | None:
     next_command = binding_continuation(diagnosis.state)
     uses_managed: bool | None
     try:
-        managed = managed_runtime_path(runtime_bundle(), host_codex_evaluator_cell())
+        uses_managed = is_managed_runtime_path(runtime_bundle(), Path(runtime.executable_path))
     except ValueError:
         uses_managed = None
-    else:
-        uses_managed = runtime.executable_path == str(managed)
     if next_command is None and uses_managed is False:
         # Ready today, but bound to a host installation its package manager can replace.
         next_command = "yoetz provider codex-subscription repair"

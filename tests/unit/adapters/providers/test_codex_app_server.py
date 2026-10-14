@@ -15,26 +15,26 @@ from typing import Literal, cast
 
 import pytest
 
+from builders.codex_capability import (
+    LINUX,
+    MAC,
+    binding_for,
+    profile_for,
+    record_for,
+    retained_runtime,
+    write_home,
+)
 from yoetz.adapters.providers import codex_app_server as module
 from yoetz.adapters.providers.codex_app_server import (
-    CODEX_APP_SERVER_SCHEMA_SHA256,
-    CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
     CODEX_EVALUATOR_CAPABILITY_PROFILE,
-    CODEX_EVALUATOR_CODE_MODE_HOST_SHA256,
     CODEX_EVALUATOR_CONFIG_SHA256,
-    CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-    CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256,
-    CODEX_EVALUATOR_LINUX_X64_CODE_MODE_HOST_SHA256,
-    CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256,
-    CODEX_EVALUATOR_LINUX_X64_SOURCE_IDENTITY,
-    CODEX_EVALUATOR_RUNTIME_VERSION,
     CodexAppServerEvaluator,
     CodexAppServerExternalFactory,
     CodexAppServerProfile,
     CodexReviewBudget,
     CodexRuntimeStatus,
 )
-from yoetz.adapters.providers.data_use_catalog import data_use_record_for_endpoint
+from yoetz.adapters.providers.codex_capability import CodexCapabilityRecord
 from yoetz.adapters.providers.openai_responses import (
     JUDGMENT_JSON_SCHEMA,
     SEMANTIC_REVIEW_INSTRUCTION,
@@ -74,221 +74,162 @@ class _Clock:
 
 
 def _profile() -> CodexAppServerProfile:
-    return CodexAppServerProfile(
-        provider_id="openai-codex",
-        endpoint_profile_id="codex-chatgpt-subscription",
-        endpoint_profile_version="1.0.0",
-        executable_path=Path("/opt/codex/0.157.1/codex"),
-        executable_sha256="sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d",
-        runtime_version="0.157.1",
-        source_identity="openai-codex-npm-darwin-arm64-0.157.1",
-        app_server_schema_sha256=CODEX_APP_SERVER_SCHEMA_SHA256,
-        capability_cell_sha256=CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
-        capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
-        capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-        codex_home=Path("/var/lib/yoetz/codex-0.150.1"),
-        isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
-        model="gpt-5.6-sol",
-        reasoning_effort="high",
-        timeout_seconds=30,
-        data_use_profile=data_use_record_for_endpoint("codex-chatgpt-subscription").profile,
-    )
+    """A capability-checked Codex 0.159.0 profile whose record is held in memory."""
+
+    return profile_for()
 
 
-def test_committed_compatibility_cell_matches_runtime_constants() -> None:
+def test_committed_isolated_config_matches_the_runtime_constant() -> None:
     root = Path(__file__).resolve().parents[4]
-    cell = json.loads((root / "support/codex-evaluator/0.157.1/cell.json").read_text("utf-8"))
-    config = (root / "support/codex-evaluator/0.157.1/config.toml").read_bytes()
+    config = (root / "support/codex-evaluator/config.toml").read_bytes()
 
-    assert cell["runtime_version"] == module.CODEX_EVALUATOR_RUNTIME_VERSION
-    assert cell["app_server_schema_sha256"] == CODEX_APP_SERVER_SCHEMA_SHA256
-    assert cell["capability_profile"] == CODEX_EVALUATOR_CAPABILITY_PROFILE
-    assert cell["capability_cell_sha256"] == CODEX_EVALUATOR_CAPABILITY_CELL_SHA256
-    assert cell["evidence_expires_at"] == CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT
-    identity_keys = (
-        "schema",
-        "runtime_version",
-        "distribution_kind",
-        "distribution",
-        "platform",
-        "protocol",
-        "executable_sha256",
-        "app_server_schema_sha256",
-        "isolated_config_sha256",
-        "capability_profile",
-        "credential_authority",
-        "upstream_body_observability",
-        "evidence_reviewed_at",
-        "evidence_expires_at",
-        "code_mode_host_sha256",
-    )
-    assert canonical_digest({key: cell[key] for key in identity_keys}) == (
-        CODEX_EVALUATOR_CAPABILITY_CELL_SHA256
-    )
-    assert cell["isolated_config_sha256"] == CODEX_EVALUATOR_CONFIG_SHA256
     assert "sha256:" + hashlib.sha256(config).hexdigest() == CODEX_EVALUATOR_CONFIG_SHA256
     assert config.decode("utf-8") == module.CODEX_EVALUATOR_CONFIG
-    assert cell["upstream_body_observability"] == "unavailable"
-    assert cell["release_evidence"] == "pending"
-    assert cell["code_mode_host_sha256"] == CODEX_EVALUATOR_CODE_MODE_HOST_SHA256
-    assert cell["capability_profile"] == "codex-evaluator/0.157.1/v2"
+    # The exact pinned 0.157.1 cells are gone: admission is the capability check (ADR-006).
+    assert not (root / "support/codex-evaluator/0.157.1").exists()
 
 
-def test_committed_linux_compatibility_cell_matches_runtime_constants() -> None:
-    root = Path(__file__).resolve().parents[4]
-    cell = json.loads(
-        (root / "support/codex-evaluator/0.157.1/cell-linux-x64.json").read_text("utf-8")
-    )
-    identity_keys = (
-        "schema",
-        "runtime_version",
-        "distribution_kind",
-        "distribution",
-        "platform",
-        "protocol",
-        "executable_sha256",
-        "app_server_schema_sha256",
-        "isolated_config_sha256",
-        "capability_profile",
-        "credential_authority",
-        "upstream_body_observability",
-        "evidence_reviewed_at",
-        "evidence_expires_at",
-        "code_mode_host_sha256",
-    )
+@pytest.mark.parametrize("version", ["0.157.1", "0.159.0", "0.162.1", "1.0.0"])
+def test_any_stable_release_at_or_above_the_floor_forms_a_binding(version: str) -> None:
+    record = record_for(b"codex", b"host", version=version)
+    profile = profile_for(record)
 
-    assert cell["runtime_version"] == CODEX_EVALUATOR_RUNTIME_VERSION
-    assert cell["app_server_schema_sha256"] == CODEX_APP_SERVER_SCHEMA_SHA256
-    assert cell["capability_profile"] == CODEX_EVALUATOR_CAPABILITY_PROFILE
-    assert cell["capability_cell_sha256"] == CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256
-    assert cell["executable_sha256"] == CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256
-    assert cell["isolated_config_sha256"] == CODEX_EVALUATOR_CONFIG_SHA256
-    assert canonical_digest({key: cell[key] for key in identity_keys}) == (
-        CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256
-    )
-    assert cell["platform"] == {"architecture": "x86_64", "os": "linux"}
-    assert cell["release_evidence"] == "pending"
-    runtime_cell = module.codex_evaluator_cell_for_platform("linux", "x86_64")
-    assert cell["code_mode_host_sha256"] == CODEX_EVALUATOR_LINUX_X64_CODE_MODE_HOST_SHA256
-    assert runtime_cell.code_mode_host_sha256 == CODEX_EVALUATOR_LINUX_X64_CODE_MODE_HOST_SHA256
-    assert (
-        cell["code_mode_host_relative"]
-        == (
-            runtime_cell.native_executable_relative.parent / module.CODEX_CODE_MODE_HOST_NAME
-        ).as_posix()
-    )
-    assert cell["native_package"] == f"@openai/{runtime_cell.native_package_directory}"
-    assert cell["native_executable_relative"] == (
-        runtime_cell.native_executable_relative.as_posix()
-    )
-
-
-def test_linux_cell_identity_binds_the_native_digest_and_package_alias() -> None:
-    cell = module.codex_evaluator_cell_for_platform("linux", "x86_64")
-    assert module.codex_evaluator_cell_for_platform("linux2", "amd64") is cell
-
-    assert cell.source_identity == CODEX_EVALUATOR_LINUX_X64_SOURCE_IDENTITY
-    assert cell.executable_sha256 == CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256
-    assert cell.capability_cell_sha256 == CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256
-    assert cell.native_package_directory == "codex-linux-x64"
-    assert cell.native_package_spec == "npm:@openai/codex@0.157.1-linux-x64"
-    assert cell.native_executable_relative.as_posix() == (
-        "vendor/x86_64-unknown-linux-musl/bin/codex"
-    )
-
-
-def test_linux_cell_rejects_mac_digest_or_source_identity() -> None:
-    with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module.codex_evaluator_cell_for_binding(
-            source_identity=CODEX_EVALUATOR_LINUX_X64_SOURCE_IDENTITY,
-            executable_sha256="sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d",
-            runtime_version="0.157.1",
-            app_server_schema_sha256=CODEX_APP_SERVER_SCHEMA_SHA256,
-            capability_cell_sha256=CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256,
-            capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
-            capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-            isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
-        )
-
-    with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module.codex_evaluator_cell_for_binding(
-            source_identity="openai-codex-npm-darwin-arm64-0.157.1",
-            executable_sha256=CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256,
-            runtime_version="0.157.1",
-            app_server_schema_sha256=CODEX_APP_SERVER_SCHEMA_SHA256,
-            capability_cell_sha256=CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256,
-            capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
-            capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-            isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
-        )
+    assert profile.runtime_version == version
+    assert profile.capability_profile == CODEX_EVALUATOR_CAPABILITY_PROFILE
+    assert CODEX_EVALUATOR_CAPABILITY_PROFILE == "codex-evaluator/capability/v1"
+    assert module.CODEX_EVALUATOR_RUNTIME_FLOOR == "0.157.1"
 
 
 @pytest.mark.parametrize(
-    ("source_identity", "executable_sha256", "capability_cell_sha256"),
+    ("overrides", "token"),
     [
+        # Bindings written under the exact pinned cells move through repair, never launch.
+        ({"capability_profile": "codex-evaluator/0.157.1/v2"}, "codex_runtime_profile_outdated"),
+        ({"capability_profile": "codex-evaluator/0.150.1/v2"}, "codex_runtime_profile_outdated"),
+        ({"isolated_config_sha256": "sha256:" + "c" * 64}, "codex_runtime_profile_outdated"),
         (
-            "openai-codex-npm-darwin-arm64-0.150.1",
-            "sha256:a14f9a907c12c8812878b70e6b7d65f81c39ed795513e46a55817d7428c0ca6b",
-            "sha256:c04d2dd111c85d323c3f96c7041bb598f047fff9f73b84f916d38b5321d32cfa",
+            {"capability_evidence_expires_at": "2026-12-31T00:00:00Z"},
+            "codex_runtime_profile_outdated",
+        ),
+        # Below the floor, a prerelease, or an identity that disagrees with its version.
+        (
+            {
+                "runtime_version": "0.153.4",
+                "source_identity": "openai-codex-npm-darwin-arm64-0.153.4",
+            },
+            "codex_runtime_version_unsupported",
+        ),
+        ({"runtime_version": "0.163.0-alpha.9"}, "codex_runtime_version_unsupported"),
+        (
+            {"source_identity": "openai-codex-npm-darwin-arm64-0.162.1"},
+            "codex_runtime_capability_unsupported",
         ),
         (
-            "openai-codex-npm-linux-x64-0.150.1",
-            "sha256:abf1bb1643a79f73aa78ee627e111e02d4f8c98f25813a0cf6ce277709664386",
-            "sha256:3fac9e18eca7395b14166114ebf49eaaae5fe3061e86c0d5b76eb17b54488cab",
+            {"source_identity": "openai-codex-brew-darwin-arm64-0.159.0"},
+            "codex_runtime_capability_unsupported",
         ),
+        ({"executable_sha256": "sha256:short"}, "codex_runtime_binding_invalid"),
     ],
 )
-def test_the_superseded_0_150_1_cells_are_no_longer_admitted(
-    source_identity: str, executable_sha256: str, capability_cell_sha256: str
+def test_binding_fields_are_validated_before_any_file_access(
+    overrides: dict[str, object], token: str
 ) -> None:
-    """A binding written under the replaced cell must go through repair, never launch."""
+    profile = profile_for(in_memory=False)
 
-    with pytest.raises(ValueError, match="codex_runtime_capability_unsupported"):
-        module.codex_evaluator_cell_for_binding(
-            source_identity=source_identity,
-            executable_sha256=executable_sha256,
-            runtime_version="0.150.1",
-            app_server_schema_sha256=(
-                "sha256:8cdccfc35582696d7141e7f916e0d5a664ab5b5e90b732f104284d2507f369f8"
-            ),
-            capability_cell_sha256=capability_cell_sha256,
-            capability_profile="codex-evaluator/0.150.1/v2",
-            capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-            isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
-        )
+    with pytest.raises(ValueError, match=token):
+        replace(profile, **overrides)  # pyright: ignore[reportArgumentType]
 
 
-def test_macos_cell_binds_the_exact_0_157_1_native_package() -> None:
-    cell = module.codex_evaluator_cell_for_platform("darwin", "arm64")
+def test_an_in_memory_record_must_be_the_one_the_binding_commits_to() -> None:
+    record = record_for(b"codex", b"host")
+    other = record_for(b"other codex", b"host")
 
-    assert CODEX_EVALUATOR_RUNTIME_VERSION == "0.157.1"
-    assert cell.source_identity == "openai-codex-npm-darwin-arm64-0.157.1"
-    assert cell.executable_sha256 == (
-        "sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d"
-    )
-    assert cell.capability_cell_sha256 == CODEX_EVALUATOR_CAPABILITY_CELL_SHA256
-    assert cell.native_package_spec == "npm:@openai/codex@0.157.1-darwin-arm64"
-    assert cell.code_mode_host_sha256 == (
-        "sha256:80fdf166c3da068282d5692f67a852715a327ae7dc1913abb93b8c3d3030103f"
-    )
-    assert CODEX_EVALUATOR_LINUX_X64_CODE_MODE_HOST_SHA256 == (
-        "sha256:67b86142bac5cead11b8420cf32d3a2bf88c8868d71733f351ed7c5d95a953e0"
-    )
-    assert CODEX_EVALUATOR_CAPABILITY_PROFILE == "codex-evaluator/0.157.1/v2"
-    assert module.codex_code_mode_host_path(Path("/store/codex")) == Path(
-        "/store/codex-code-mode-host"
-    )
-    assert cell.native_executable_relative.as_posix() == "vendor/aarch64-apple-darwin/bin/codex"
+    with pytest.raises(ValueError, match="codex_runtime_capability_record_invalid"):
+        replace(profile_for(record), capability_record=other)
 
 
-def test_local_binding_rejects_a_mac_cell_on_linux_before_file_access(
+def test_local_binding_rejects_a_mac_binding_on_linux_before_file_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(module.sys, "platform", "linux")
-    monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
 
     with pytest.raises(ValueError, match="codex_runtime_platform_unsupported"):
         _profile().verify_local_binding()
+
+
+def _launchable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, version: str = "0.159.0"
+) -> tuple[Path, CodexCapabilityRecord, CodexAppServerProfile]:
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+
+    def allow_private(_path: Path) -> None:
+        return None
+
+    monkeypatch.setattr(module, "verify_private_local_bundle", allow_private)
+    bundle = tmp_path / "bundle"
+    executable, record = retained_runtime(bundle, version=version)
+    home = write_home(tmp_path / "home")
+    profile = CodexAppServerProfile.from_config(binding_for(record, executable, home))
+    return executable, record, profile
+
+
+def test_launch_fence_accepts_the_retained_bytes_and_record_it_commits_to(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _executable, record, profile = _launchable(tmp_path, monkeypatch)
+
+    profile.verify_local_binding()
+    assert profile.bound_capability_record() == record
+
+
+@pytest.mark.parametrize("target", ["codex", "codex-code-mode-host", "capability.json"])
+def test_launch_fence_refuses_bytes_or_record_changed_after_the_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    executable, _record, profile = _launchable(tmp_path, monkeypatch)
+    changed = executable.parent / target
+    changed.chmod(0o700)
+    if target == "capability.json":
+        replacement = record_for(b"a newer codex", b"its host").to_json()
+        changed.write_text(json.dumps(replacement), encoding="utf-8")
+    else:
+        changed.write_bytes(b"bytes a later update wrote")
+
+    with pytest.raises(ValueError, match="codex_runtime_executable_changed"):
+        profile.verify_local_binding()
+
+
+def test_launch_fence_refuses_a_missing_record_as_a_missing_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executable, _record, profile = _launchable(tmp_path, monkeypatch)
+    (executable.parent / "capability.json").unlink()
+
+    with pytest.raises(FileNotFoundError):
+        profile.verify_local_binding()
+
+
+def test_linux_and_mac_identities_stay_bound_to_their_platform(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    linux = record_for(b"codex", b"host", platform=LINUX)
+    profile = profile_for(linux)
+    assert profile.source_identity == "openai-codex-npm-linux-x64-0.159.0"
+    assert LINUX.native_package_spec("0.159.0") == "npm:@openai/codex@0.159.0-linux-x64"
+    assert MAC.native_package_spec("0.159.0") == "npm:@openai/codex@0.159.0-darwin-arm64"
+    assert MAC.native_executable_relative.as_posix() == "vendor/aarch64-apple-darwin/bin/codex"
+    assert LINUX.native_executable_relative.as_posix() == (
+        "vendor/x86_64-unknown-linux-musl/bin/codex"
+    )
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    with pytest.raises(ValueError, match="codex_runtime_platform_unsupported"):
+        profile.verify_local_binding()
+    assert module.codex_code_mode_host_path(Path("/store/codex")) == Path(
+        "/store/codex-code-mode-host"
+    )
 
 
 def test_codex_output_schema_omits_provider_rejected_keywords() -> None:
@@ -488,7 +429,7 @@ class _Runtime:
         if method == "initialize":
             return {
                 "codexHome": str(self.profile.codex_home),
-                "userAgent": "yoetz_semantic_evaluator/0.157.1",
+                "userAgent": "yoetz_semantic_evaluator/0.159.0 (Mac OS 26.6.2; arm64) unknown",
             }
         if method == "account/read":
             return {"account": self.account}
@@ -580,7 +521,7 @@ class _LoginRuntime:
         if method == "initialize":
             return {
                 "codexHome": str(self.profile.codex_home),
-                "userAgent": "yoetz_semantic_evaluator/0.157.1",
+                "userAgent": "yoetz_semantic_evaluator/0.159.0 (Mac OS 26.6.2; arm64) unknown",
             }
         if method == "account/login/start":
             assert isinstance(params, dict)
@@ -723,7 +664,7 @@ async def test_login_demultiplexes_exact_remote_control_notice_before_completion
                 "params": {"loginId": "login-1", "success": True},
             }
         ],
-        # Codex 0.150.1 and 0.157.1 emit this notification while account/login/start is in
+        # Codex 0.150.1 through 0.162.1 emit this notification while account/login/start is in
         # flight. The request buffers it before returning the login challenge, as the native
         # process does.
         login_notifications=[
@@ -1897,7 +1838,7 @@ def test_launcher_and_environment_do_not_inherit_aliases_credentials_or_proxies(
     )
 
     assert profile.launcher_argv[:3] == (
-        "/opt/codex/0.157.1/codex",
+        "/opt/codex/0.159.0/codex",
         "app-server",
         "--stdio",
     )
@@ -2646,3 +2587,178 @@ async def test_launch_binding_hash_runs_off_loop_and_failure_prevents_spawn(
     with pytest.raises(ValueError, match="codex_runtime_executable_changed"):
         await module._launch(_profile())  # pyright: ignore[reportPrivateUsage]
     assert len(threads) == 1 and threads[0] != loop_thread
+
+
+# -- capability admission (ADR-006 capability amendment) -----------------------------------------
+
+
+async def _probe(
+    monkeypatch: pytest.MonkeyPatch, runtime: _Runtime, *, cleanup_outcome: str = "terminated"
+) -> None:
+    async def launch(profile: CodexAppServerProfile) -> _Runtime:
+        assert profile is runtime.profile
+        return runtime
+
+    async def cleanup(value: object) -> str:
+        assert value is runtime
+        return cleanup_outcome
+
+    monkeypatch.setattr(module, "_launch", launch)
+    monkeypatch.setattr(module, "_cleanup", cleanup)
+    await module.codex_capability_probe(runtime.profile)
+
+
+async def test_capability_probe_proves_isolation_without_any_turn_or_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = _Runtime(_profile(), predisclosure_event=_REMOTE_CONTROL_NOTICE)
+
+    await _probe(monkeypatch, runtime)
+
+    # No turn is ever started, so nothing is sampled and no task content exists.
+    assert runtime.methods == ["initialize", "account/read", "thread/start"]
+    thread = cast(dict[str, object], runtime.params["thread/start"])
+    assert (thread["sandbox"], thread["ephemeral"], thread["approvalPolicy"]) == (
+        "read-only",
+        True,
+        "never",
+    )
+    assert runtime.pending_notifications == deque()
+
+
+@pytest.mark.parametrize(
+    ("event", "token"),
+    [
+        (
+            {"method": "thread/prediction/updated", "params": {}},
+            "codex_app_server_predisclosure_event_forbidden",
+        ),
+        (
+            {"method": "configWarning", "params": {"summary": "bubblewrap is unavailable"}},
+            "codex_app_server_predisclosure_event_forbidden",
+        ),
+        (
+            {
+                "method": "warning",
+                "params": {"message": "Code Mode is unavailable", "threadId": "t"},
+            },
+            "codex_app_server_predisclosure_event_forbidden",
+        ),
+        (
+            {
+                "method": "remoteControl/status/changed",
+                "params": {
+                    "environmentId": None,
+                    "installationId": "i",
+                    "serverName": "s",
+                    "status": "connected",
+                },
+            },
+            "codex_app_server_remote_control_not_disabled",
+        ),
+        (
+            {"id": 7, "method": "item/tool/call", "params": {}},
+            "codex_app_server_tool_request_forbidden",
+        ),
+    ],
+)
+async def test_capability_probe_fails_closed_on_any_unreviewed_predisclosure_event(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], token: str
+) -> None:
+    runtime = _Runtime(_profile(), predisclosure_event=event)
+
+    with pytest.raises(ValueError, match=token):
+        await _probe(monkeypatch, runtime)
+    assert "turn/start" not in runtime.methods
+
+
+async def test_capability_probe_refuses_a_runtime_reporting_another_release(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fake app-server reports 0.159.0; the bytes are being checked as 0.162.1.
+    runtime = _Runtime(profile_for(record_for(b"codex", b"host", version="0.162.1")))
+
+    with pytest.raises(ValueError, match="codex_runtime_version_mismatch"):
+        await _probe(monkeypatch, runtime)
+    assert runtime.methods == ["initialize"]
+
+
+async def test_capability_probe_refuses_an_unproven_isolated_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NetworkedThread(_Runtime):
+        async def request(
+            self, request_id: int, method: str, params: object, timeout: float
+        ) -> dict[str, object]:
+            result = await super().request(request_id, method, params, timeout)
+            if method == "thread/start":
+                result["sandbox"] = {"type": "readOnly", "networkAccess": True}
+            return result
+
+    runtime = NetworkedThread(_profile())
+
+    with pytest.raises(ValueError, match="codex_thread_isolation_unproven"):
+        await _probe(monkeypatch, runtime)
+
+
+async def test_capability_probe_with_unconfirmed_cleanup_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed"):
+        await _probe(monkeypatch, _Runtime(_profile()), cleanup_outcome="failed")
+
+
+@pytest.mark.parametrize(
+    "agent",
+    [
+        "yoetz_semantic_evaluator/0.159.1 (Mac OS 26.6.2; arm64) unknown",
+        "yoetz_semantic_evaluator/0.159.0-alpha.1 (Mac OS 26.6.2; arm64) unknown",
+        "something 0.159.0",
+        None,
+    ],
+)
+def test_initialize_must_name_exactly_the_checked_release(agent: object) -> None:
+    profile = _profile()
+
+    with pytest.raises(ValueError, match="codex_runtime_version_mismatch"):
+        module._validate_initialize(  # pyright: ignore[reportPrivateUsage]
+            profile, {"codexHome": str(profile.codex_home), "userAgent": agent}
+        )
+
+
+async def test_partial_answer_is_discarded_like_commentary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex 0.162.1 adds ``partial_answer``; only the ``final_answer`` is the judgment."""
+
+    runtime = _runtime_with_output(
+        _agent_message("partial-canary: still reviewing", phase="partial_answer"),
+        _agent_message(_NO_DISCREPANCY, phase="final_answer"),
+    )
+
+    result = await _evaluate(monkeypatch, runtime)
+
+    assert type(result) is SemanticResultSuccess
+    assert "partial-canary" not in repr(result)
+
+
+def test_new_plan_names_stay_bounded_bookkeeping() -> None:
+    """Codex 0.159.0 adds the ``promax`` plan; rate-limit plan names are discarded unread."""
+
+    notice = {"method": "account/rateLimits/updated", "params": {"rateLimits": {"planType": ""}}}
+    for plan in ("promax", "a_future_plan"):
+        cast(dict[str, dict[str, object]], notice["params"])["rateLimits"]["planType"] = plan
+        module._discard_rate_limits_notification(notice)  # pyright: ignore[reportPrivateUsage]
+    cast(dict[str, dict[str, object]], notice["params"])["rateLimits"]["planType"] = "Not A Plan!"
+    with pytest.raises(ValueError, match="codex_app_server_rate_limits_invalid"):
+        module._discard_rate_limits_notification(notice)  # pyright: ignore[reportPrivateUsage]
+    assert module._account(  # pyright: ignore[reportPrivateUsage]
+        {"account": {"type": "chatgpt", "planType": "promax"}}
+    ) == ("chatgpt", "promax")
+
+
+def test_flex_tier_unavailability_is_a_provider_outage() -> None:
+    failure = module._turn_failure(  # pyright: ignore[reportPrivateUsage]
+        {"codexErrorInfo": "flexUnavailable", "message": "private"}
+    )
+    assert failure.failure_class is SemanticFailureClass.PROVIDER_OUTAGE

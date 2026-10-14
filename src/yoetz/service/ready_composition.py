@@ -53,6 +53,7 @@ from yoetz.adapters.providers.codex_app_server import (
     codex_binding_from_config,
     codex_code_mode_host_path,
 )
+from yoetz.adapters.providers.codex_capability import capability_record_path
 from yoetz.adapters.providers.codex_evaluator_runtime import diagnose_codex_binding
 from yoetz.adapters.providers.factory import external_factory_builders_from_config
 from yoetz.adapters.providers.local_model import InstalledLocalModelProfileRegistry
@@ -5915,7 +5916,7 @@ def _record_external_runtime_state(state: Callable[[], str | None] | None, reque
 def subscription_runtime_structurally_ready(
     runtime: object, *, now: datetime | None = None
 ) -> bool:
-    """READY fact for Codex OAuth: unexpired evidence, exact binding, digest, and home.
+    """READY fact for Codex OAuth: unexpired evidence, checked runtime bytes and record, home.
 
     Login and model availability stay inside the evaluate() child. A READY snapshot
     must not spawn a preflight app-server process group.
@@ -5954,9 +5955,9 @@ class SubscriptionReadinessMemo:
     ``subscription_runtime_structurally_ready`` hashes the retained executable and code-mode host
     (hundreds of MiB). Credential presence is asked on every observation advice cycle, so this
     memo re-runs it, off the event loop, only when the exact binding or a stat fingerprint of the
-    executable, code-mode host, dedicated home, or isolated config changed. Evidence expiry is
-    checked against the clock on every call. The launch fence is not cached: every
-    ``evaluate()`` child launch still hashes both files through ``verify_local_binding``.
+    executable, code-mode host, capability record, dedicated home, or isolated config changed.
+    Evidence expiry is checked against the clock on every call. The launch fence is not cached:
+    every ``evaluate()`` child launch still hashes both files through ``verify_local_binding``.
     """
 
     def __init__(self) -> None:
@@ -5973,6 +5974,7 @@ class SubscriptionReadinessMemo:
                 for path in (
                     executable,
                     codex_code_mode_host_path(executable),
+                    capability_record_path(executable),
                     home,
                     home / "config.toml",
                 )

@@ -6469,14 +6469,48 @@ still reports the credential connected. A `ready` binding on a host installation
 `next_command: "yoetz provider codex-subscription repair"` as advice, with no blocker.
 `next_commands` lists each continuation once.
 
+The evaluator is admitted by capability, not by one pinned build (ADR-006 capability amendment,
+2026-10-13): any stable Codex release at or above `0.157.1` whose retained bytes pass the check
+(profile `codex-evaluator/capability/v1`). A passed check commits
+`yoetz.codex-evaluator-capability/1` (`capability.json`) beside the retained runtime:
+`capability_profile`, `runtime_floor`, `runtime_version`, `source_identity`,
+`platform` (`os`, `architecture`), `executable_sha256`, `code_mode_host_sha256`,
+`app_server_schema_sha256` (digest of the checked protocol-subset facts),
+`isolated_config_sha256`, and `checks`. The binding's `capability_cell_sha256` is that record's
+canonical digest. The configuration and `runtime_evidence` field sets are unchanged. The closed
+structural states add `codex_runtime_version_unsupported` (continuation `repair`), and a
+pinned-cell binding reports `codex_runtime_profile_outdated`.
+
 `yoetz provider codex-subscription runtime status --json` emits
-`yoetz.codex-evaluator-runtime-status/1`. It carries `platform_cell`, `admitted_runtime_version`,
-`managed_runtime` (`path`, `state` exactly `absent|verified|changed|invalid|unsafe`), `binding`
-(the same axes plus `executable_path`, `uses_managed_runtime`, `capability_profile`,
-`runtime_version`, `codex_home`, `endpoint_role`), `login_checked: false`, and `next_command`. It
-exits `0` when no binding exists or the binding is `ready`, otherwise `20`. `repair` emits the
-subscription status shape plus `state_before`, `source`, `changed_fields`, `login_reused`,
-`endpoint_role`, and `config_path`. `runtime install` and `runtime remove` report
+`yoetz.codex-evaluator-runtime-status/2`. It carries:
+- `platform` (`darwin-arm64|linux-x64` or `null`), `runtime_floor`, `capability_profile`, and
+  `store` (`present|absent|unsafe`);
+- `retained_runtimes`: one entry per retained release, newest first, with `source_identity`,
+  `runtime_version`, `path`, `state` exactly
+  `absent|verified|incomplete|unchecked|changed|invalid|unsafe`, `code_mode_host_path`, and the
+  recorded `executable_sha256`, `code_mode_host_sha256` and `capability_profile`, each `null`
+  without a record;
+- `binding`: the same axes plus `executable_path`, `uses_managed_runtime`, `capability_profile`,
+  `runtime_version`, `codex_home` and `endpoint_role`;
+- `login_checked: false` and `next_command`.
+
+It exits `0` when no binding exists or the binding is `ready`, otherwise `20`.
+`repair` emits the subscription status shape plus `state_before`, `source`,
+`runtime_retained_from`, `runtimes_passed_over` (closed tokens of newer candidates that failed the
+check or lack the model), `changed_fields`, `login_reused`, `endpoint_role` and `config_path`.
+`setup` adds the same `runtime_source`, `runtime_retained_from` and `runtimes_passed_over`.
+
+`yoetz.codex-subscription-repair-plan/2` replaces `changed_fields` with `runtime_version_before`,
+`runtime_version_after` and `candidates` (`source`, `path`, `runtime_version`, newest first),
+because identity fields are known only after the check. `yoetz.codex-subscription-preview/2` adds
+`runtime_floor`, `capability_profile` and `capability_check`, and drops `app_server_schema_sha256`
+and `capability_cell_sha256`.
+
+`runtime install` (`yoetz.codex-evaluator-runtime-install/2`) retains and checks one release and
+reports its `capability_cell_sha256` and `capability_profile`. `runtime remove`
+(`yoetz.codex-evaluator-runtime-remove/2`) deletes every retained release the binding does not use
+and reports `removed_runtimes` and `kept_runtime_path`; it is refused with
+`codex_evaluator_runtime_in_use` when only the bound release remains. Both report
 `binding_changed: false` and `host_installation_changed: false`; neither edits the binding.
 
 Every `integration_preview` preview/status body and every `integration_execute` body carries an

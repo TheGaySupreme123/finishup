@@ -1217,11 +1217,11 @@ class YoetzRuntime:
         return tuple(options)
 
     def codex_subscription_defaults(self) -> tuple[str, str, str, str]:
-        """Return eligible nonsecret defaults; setup still digest-validates the exact binary.
+        """Return eligible nonsecret defaults; setup still capability-checks the runtime.
 
-        The executable default is an admitted evaluator runtime only (#855) — Yoetz's retained
-        copy first — never merely the first discovered host binary. An existing binding's model
-        and reasoning effort are offered unchanged.
+        The executable default is the newest eligible evaluator runtime (a Codex release at or
+        above the floor, Yoetz's retained copy first on equal releases), never a binary below the
+        floor. An existing binding's model and reasoning effort are offered unchanged.
         """
 
         from yoetz.cli.codex_subscription import (
@@ -1255,7 +1255,7 @@ class YoetzRuntime:
         reasoning_effort: str,
         routine_reasoning_effort: str | None = None,
     ) -> Mapping[str, object]:
-        """Validate and render the exact subscription cell without logging in or writing state."""
+        """Resolve and render the subscription binding without logging in or writing state."""
 
         from yoetz.cli.codex_subscription import codex_subscription_preview
 
@@ -1268,7 +1268,9 @@ class YoetzRuntime:
                 routine_reasoning_effort=routine_reasoning_effort,
             )
         except (OSError, ValueError) as error:
-            raise _subscription_error(error, "that Codex evaluator cell is not supported") from None
+            raise _subscription_error(
+                error, "that Codex is not a supported evaluator runtime"
+            ) from None
 
     async def setup_codex_subscription(
         self,

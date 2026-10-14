@@ -1328,6 +1328,9 @@ status|install|remove` behave exactly as documented in the
 [subscription evaluator runbook](codex-subscription-evaluator.md#evaluator-runtime-retention-and-repair).
 Decision for this host: supported through the shared provider surfaces, with no Cursor-specific
 step. Native Cursor acceptance of a post-repair check is pending.
+Capability admission of the evaluator's Codex release (ADR-006, 2026-10-13: the newest installed
+Codex at or above `0.157.1` that passes the check, adopted by the next `repair` or `setup`) is
+equally host-independent; nothing in the Cursor host integration changes.
 
 Fallback endpoint pairing (issue #582) is host-independent: whether the evaluator or a paired
 API provider serves a given attempt is a service-side dispatch decision recorded in provenance

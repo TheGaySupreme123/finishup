@@ -48,10 +48,15 @@ class _RepairRuntime(FakeRuntime):
         return {
             "state_before": "codex_runtime_executable_changed",
             "source_path": "/opt/evaluator/codex",
+            "runtime_version_before": "0.157.1",
+            "runtime_version_after": "0.162.1",
+            "candidates": [
+                {"source": "discovered", "path": "/opt/evaluator/codex", "runtime_version": v}
+                for v in ("0.162.1", "0.159.0")
+            ],
             "executable_path_after": "/var/lib/yoetz/external-runtimes/codex-evaluator/x/codex",
-            "capability_profile_before": "codex-evaluator/0.150.1/v1",
-            "capability_profile_after": "codex-evaluator/0.150.1/v2",
-            "changed_fields": ["executable_path", "capability_cell_sha256", "capability_profile"],
+            "capability_profile_before": "codex-evaluator/0.157.1/v2",
+            "capability_profile_after": "codex-evaluator/capability/v1",
         }
 
     async def repair_codex_subscription(self) -> dict[str, object]:
@@ -65,8 +70,16 @@ class _RepairRuntime(FakeRuntime):
 
     def codex_evaluator_runtime_status(self) -> dict[str, object]:
         return {
-            "managed_runtime": {"path": "/var/lib/yoetz/x/codex", "state": "absent"},
-            "binding": {"state": "codex_runtime_executable_changed"},
+            "platform": "linux-x64",
+            "runtime_floor": "0.157.1",
+            "retained_runtimes": [
+                {"runtime_version": "0.159.0", "state": "verified"},
+                {"runtime_version": "0.157.1", "state": "unchecked"},
+            ],
+            "binding": {
+                "state": "codex_runtime_executable_changed",
+                "runtime_version": "0.157.1",
+            },
             "next_command": "yoetz provider codex-subscription repair",
         }
 
@@ -92,7 +105,9 @@ async def test_repair_shows_what_changes_and_runs_only_after_approval(
         assert view is not None
         body = " ".join(getattr(view, "body", ()) or getattr(view, "_body", ()))
         assert "codex_runtime_executable_changed" in body
-        assert "codex-evaluator/0.150.1/v1 -> codex-evaluator/0.150.1/v2" in body
+        assert "codex-evaluator/0.157.1/v2 -> codex-evaluator/capability/v1" in body
+        assert "(Codex 0.162.1)" in body
+        assert "1 older release(s) remain as fallbacks" in body
         assert "never signs in" in body
         # The safe default declines.
         await pilot.press("enter")
@@ -135,7 +150,10 @@ async def test_runtime_status_reports_structure_without_a_sign_in_check(
         await pilot.pause()
         await _choose(pilot, app, "evaluator runtime status")
         text = transcript(app)
-        assert "Binding: codex_runtime_executable_changed" in text
+        assert "Binding: codex_runtime_executable_changed (Codex 0.157.1)" in text
+        assert "Retained Codex 0.159.0: verified" in text
+        assert "Retained Codex 0.157.1: unchecked" in text
+        assert "Minimum Codex: 0.157.1" in text
         assert "Next: yoetz provider codex-subscription repair" in text
         assert "Sign-in was not checked" in text
 

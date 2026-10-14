@@ -1666,14 +1666,17 @@ existing native-carrier identity rules; this repair changes only Codex external 
 Codex may be both the host carrying Yoetz and the selected external AI-powered evaluator, but those
 are independent cells. Host skill/plugin/MCP activation grants no ChatGPT evaluator login or
 privacy authority. Configure the evaluator only through
-`yoetz provider codex-subscription setup`; it binds a separate owner-private `CODEX_HOME` and exact
-native `0.157.1` app-server cell. Never reuse the host's ambient home, environment, session, tools,
-instructions, or repository cwd for the evaluator.
+`yoetz provider codex-subscription setup`; it binds a separate owner-private `CODEX_HOME` and the
+newest installed Codex release (at least `0.157.1`) that passes the evaluator's capability check.
+Never reuse the host's ambient home, environment, session, tools, instructions, or repository cwd
+for the evaluator.
 
-The evaluator binds Yoetz's own verified copy of that admitted release (issue #855), never the host
-Codex installation. Updating the host Codex therefore changes neither the evaluator nor its
-binding. A binding stranded by an earlier host update or a capability-identity change is repaired
-with `yoetz provider codex-subscription repair`, which reuses the dedicated home's sign-in. Decision
+The evaluator binds Yoetz's own checked copy of that release (issue #855), never the host Codex
+installation. Updating the host Codex therefore changes neither the evaluator nor its binding until
+the owner runs `yoetz provider codex-subscription repair`, which adopts the newer host release
+when it passes the check and keeps the previous one otherwise. Repair also moves a binding written
+under the pinned `0.157.1` cell and reuses the dedicated home's sign-in. The host's own Codex
+capability cells (this runbook) stay exact; only the evaluator is admitted by capability. Decision
 for this host: supported through the shared provider surfaces, with no Codex-specific step. Native
 Codex acceptance of a post-repair check is pending; see the
 [subscription evaluator runbook](codex-subscription-evaluator.md#evaluator-runtime-retention-and-repair).

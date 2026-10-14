@@ -181,8 +181,12 @@ adapter/SDK/endpoint/model profile and is optional and advisory; the strict-loca
 Yoetz ships with is independent of any provider profile. New `codex-chatgpt-subscription@1`
 setups recommend `gpt-6-luna` with independent default reasoning `high`; that recommendation
 is not a live packaged Luna cell and does not rewrite historical Sol exact-cell evidence or
-existing bindings. It runs only on the exact Codex `0.157.1` evaluator cells (#871), because the
-superseded `0.150.1` cells cannot list it. Platform support is stated as an exact
+existing bindings. The subscription evaluator is not an exact-cell claim: it admits any stable
+Codex release at or above `0.157.1` whose retained bytes pass the capability check (reviewed
+app-server subset, zero-inference isolation probe, model listed for the dedicated home), newest
+first, and records the release, executable digest and capability-record digest as provenance
+(ADR-006, 2026-10-13). This does not change the exact-cell rule for the Codex *host* integration
+above. Platform support is stated as an exact
 artifact/runtime/SQLite/filesystem/key-backend cell (for example "macOS 11.0+ arm64, APSW
 `3.53.3.1`, SQLite source ID `2026-06-26 ...`"), never a generic "Python" or "macOS/Linux" claim.
 

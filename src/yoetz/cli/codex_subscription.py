@@ -1,16 +1,24 @@
-"""Guided Codex-owned ChatGPT login for the exact subscription evaluator cell."""
+"""Guided Codex-owned ChatGPT login for the capability-checked subscription evaluator.
+
+The evaluator uses the newest installed Codex release at or above the floor that passes the
+capability check (ADR-006 capability amendment). ``setup`` and ``repair`` gather the eligible
+installations (Yoetz's retained copies, the existing binding, and discovered everyday Codex
+installs), try them newest first, and bind the first one that passes the check and lists the
+configured model for the dedicated home. Updating Codex is enough: the next ``repair`` or
+``setup`` adopts the newer release without a Yoetz release.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import os
-import platform
 import re
 import shutil
 import stat
-import sys
+import tempfile
 import webbrowser
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final, Literal, cast
@@ -19,30 +27,42 @@ import typer
 
 from yoetz.adapters.providers.codex_app_server import (
     CODEX_CODE_MODE_HOST_NAME,
-    CODEX_EVALUATOR_RUNTIME_VERSION,
+    CODEX_EVALUATOR_CAPABILITY_PROFILE,
+    CODEX_EVALUATOR_CONFIG_SHA256,
+    CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
+    CODEX_EVALUATOR_RUNTIME_FLOOR,
     CodexAppServerProfile,
-    CodexEvaluatorCell,
     CodexLoginChallenge,
     CodexRuntimeStatus,
     codex_account_status,
     codex_code_mode_host_path,
-    codex_evaluator_cell_for_binding,
-    codex_evaluator_cell_for_platform,
     codex_login,
     codex_logout,
     prepare_codex_home,
 )
+from yoetz.adapters.providers.codex_capability import (
+    CodexCapabilityRecord,
+    CodexPlatform,
+    codex_cli_version,
+    codex_source_identity,
+    codex_version_key,
+    read_capability_record,
+    require_admitted_version,
+)
 from yoetz.adapters.providers.codex_evaluator_runtime import (
     CodexBindingDiagnosis,
+    check_codex_capability,
+    commit_capability_record,
     diagnose_codex_binding,
-    host_codex_evaluator_cell,
-    inspect_managed_code_mode_host,
+    host_codex_platform,
     inspect_managed_runtime,
-    managed_code_mode_host_path,
+    is_managed_runtime_path,
     managed_runtime_path,
+    managed_runtime_root,
     provision_codex_runtime,
     remove_managed_runtime,
     retain_codex_runtime,
+    retained_runtimes,
     runtime_mutation_lock,
 )
 from yoetz.config.load import load_config
@@ -66,7 +86,8 @@ from yoetz.protocol.canonical import JsonValue, strict_json_parse
 __all__ = [
     "BINDING_CONTINUATIONS",
     "RUNTIME_REBINDABLE_STATES",
-    "admitted_native_executable",
+    "EvaluatorCandidate",
+    "ResolvedCodex",
     "binding_continuation",
     "codex_evaluator_runtime_install",
     "codex_evaluator_runtime_install_plan",
@@ -86,8 +107,9 @@ __all__ = [
     "default_codex_subscription_reasoning_effort",
     "describe_runtime_download",
     "diagnose_bound_runtime",
+    "evaluator_candidates",
     "prompt_codex_subscription_setup",
-    "resolve_supported_codex_executable",
+    "resolve_codex_executable",
     "runtime_bundle",
     "select_codex_evaluator_executable",
     "subscription_failure_line",
@@ -145,19 +167,19 @@ def subscription_failure_reason(error: BaseException) -> str:
 
 _REPAIR_COMMAND: Final = "'yoetz provider codex-subscription repair'"
 _INSTALL_COMMAND: Final = "'yoetz provider codex-subscription runtime install'"
+_UPDATE_CODEX: Final = "update Codex (for example 'npm install -g @openai/codex@latest')"
+_RECHECK: Final = "it checks the newest installed Codex and keeps the sign-in, model, and settings"
 # Next steps for the evaluator-runtime tokens (#855). They are kept beside the subscription
 # commands, not in the shared CLI remediation table, because every reason in that table must also
 # carry a registered recovery directive; these are rendered only by subscription surfaces.
 _SUBSCRIPTION_REMEDIATIONS: Final[Mapping[str, str]] = {
     "codex_runtime_executable_changed": (
-        "the bound evaluator executable or its code-mode host no longer holds the admitted Codex "
-        f"bytes (a Codex update usually replaced it); run {_REPAIR_COMMAND} to bind Yoetz's "
-        "retained copy — the sign-in, model, and settings are kept"
+        "the bound evaluator runtime, its code-mode host, or its capability record no longer "
+        f"matches what passed Yoetz's capability check; run {_REPAIR_COMMAND} — {_RECHECK}"
     ),
     "codex_runtime_executable_missing": (
-        "the bound evaluator executable or its code-mode host is gone; run "
-        f"{_REPAIR_COMMAND} to bind Yoetz's retained copy — the sign-in, model, and settings are "
-        "kept"
+        "the bound evaluator runtime, its code-mode host, or its capability record is gone; run "
+        f"{_REPAIR_COMMAND} — {_RECHECK}"
     ),
     "codex_runtime_executable_invalid": (
         "the bound evaluator executable or its code-mode host is not a regular owner-executable "
@@ -165,26 +187,73 @@ _SUBSCRIPTION_REMEDIATIONS: Final[Mapping[str, str]] = {
     ),
     "codex_runtime_code_mode_host_missing": (
         f"the selected Codex has no {CODEX_CODE_MODE_HOST_NAME} beside its native executable, "
-        "which the admitted evaluator runtime needs; select the npm package's bin/codex.js, or "
-        f"run {_INSTALL_COMMAND} --download"
+        "which the evaluator runtime needs; select the npm package's bin/codex.js, or run "
+        f"{_INSTALL_COMMAND} --download"
     ),
     "codex_runtime_profile_outdated": (
-        "this Yoetz release uses a newer reviewed capability identity for the same Codex runtime; "
-        f"review and run {_REPAIR_COMMAND} — the sign-in, model, and settings are kept"
+        "this Yoetz release admits Codex by capability check instead of the exact build this "
+        f"binding names; review and run {_REPAIR_COMMAND} — {_RECHECK}"
     ),
     "codex_runtime_capability_unsupported": (
-        f"the Codex executable is not the admitted evaluator runtime (Codex "
-        f"{CODEX_EVALUATOR_RUNTIME_VERSION} with the reviewed digest); your everyday Codex can "
-        f"stay on any version — run {_INSTALL_COMMAND} --download to keep a verified copy, then "
-        "setup or repair"
+        "the selected Codex did not pass Yoetz's capability check; "
+        f"{_UPDATE_CODEX} and run {_REPAIR_COMMAND}, or run {_INSTALL_COMMAND} --download"
+    ),
+    "codex_runtime_version_unsupported": (
+        "the selected Codex is not a stable release at or above "
+        f"{CODEX_EVALUATOR_RUNTIME_FLOOR}, the oldest the evaluator admits; {_UPDATE_CODEX}, "
+        "then run setup or repair"
+    ),
+    "codex_runtime_version_unknown": (
+        "the selected Codex did not report its version ('codex --version'); select the npm "
+        "package's bin/codex.js or its native codex executable"
+    ),
+    "codex_runtime_version_mismatch": (
+        "the Codex runtime reported a different release than the one being checked or bound; "
+        f"run {_REPAIR_COMMAND}"
+    ),
+    "codex_runtime_protocol_incompatible": (
+        "the selected Codex no longer carries an app-server method or field the evaluator reads, "
+        "so it is not admitted; an earlier admitted runtime is used when one exists — run "
+        f"{_REPAIR_COMMAND}, or upgrade Yoetz (see 'yoetz upgrade --help')"
+    ),
+    "codex_runtime_protocol_unavailable": (
+        "the selected Codex could not describe its app-server protocol "
+        "('codex app-server generate-json-schema'); select another Codex installation"
+    ),
+    "codex_app_server_predisclosure_event_forbidden": (
+        "the selected Codex sent an event Yoetz does not admit before any review content exists "
+        "(on Linux, usually a missing system bubblewrap); it is not admitted — fix that, then "
+        f"run {_REPAIR_COMMAND}"
+    ),
+    "codex_app_server_remote_control_not_disabled": (
+        "the selected Codex reported remote control as not disabled before any review content "
+        "exists; it is not admitted"
+    ),
+    "codex_thread_isolation_unproven": (
+        "the selected Codex did not prove a read-only, network-off, ephemeral review thread; it "
+        "is not admitted"
+    ),
+    "codex_capability_probe_timeout": (
+        "the selected Codex did not answer the capability check in time; retry, or select "
+        "another Codex installation"
+    ),
+    "codex_capability_probe_cleanup_unconfirmed": (
+        "the capability check could not confirm its Codex process exited; inspect running "
+        "processes, then retry"
+    ),
+    "codex_model_unavailable": (
+        "Codex reports the dedicated home signed in, but no admitted Codex lists the model with "
+        f"the configured reasoning efforts; {_UPDATE_CODEX} and retry, choose another --model, "
+        "or pass --switch-account to sign in with another ChatGPT account"
     ),
     "codex_runtime_not_found": (
         "the selected Codex executable or its platform package was not found; pass the exact "
         f"path, or run {_INSTALL_COMMAND} --download"
     ),
     "codex_evaluator_runtime_unavailable": (
-        f"no Codex {CODEX_EVALUATOR_RUNTIME_VERSION} evaluator runtime was found; run "
-        f"{_INSTALL_COMMAND} --download (or --from <path> for a local copy), then retry"
+        f"no Codex {CODEX_EVALUATOR_RUNTIME_FLOOR} or newer was found; install Codex (for "
+        f"example 'npm install -g @openai/codex') or run {_INSTALL_COMMAND} --download, then "
+        "retry"
     ),
     "codex_evaluator_runtime_store_unsafe": (
         "Yoetz's evaluator runtime store must be an owner-only (0700), non-symlinked local "
@@ -199,11 +268,11 @@ _SUBSCRIPTION_REMEDIATIONS: Final[Mapping[str, str]] = {
         "then retry this command"
     ),
     "codex_evaluator_runtime_in_use": (
-        "the current binding uses this retained runtime; run 'yoetz provider codex-subscription "
-        "disconnect' or 'rollback' first, then remove it"
+        "the current binding uses the only retained runtime; run 'yoetz provider "
+        "codex-subscription disconnect' or 'rollback' first, then remove it"
     ),
     "codex_evaluator_runtime_download_failed": (
-        "npm could not install the admitted Codex release (its output is not captured); check "
+        "npm could not install the newest Codex release (its output is not captured); check "
         "your npm registry and network settings, then retry, or retain a local copy with --from"
     ),
     "codex_evaluator_runtime_download_timeout": (
@@ -239,8 +308,8 @@ _SUBSCRIPTION_REMEDIATIONS: Final[Mapping[str, str]] = {
         "(see 'yoetz upgrade --help')"
     ),
     "codex_runtime_platform_unsupported": (
-        "this platform has no reviewed evaluator cell, so the binding cannot run here; "
-        "'yoetz provider codex-subscription rollback' removes it"
+        "the evaluator supports macOS arm64 and Linux x86_64 only, so the binding cannot run "
+        "here; 'yoetz provider codex-subscription rollback' removes it"
     ),
     "codex_runtime_binding_invalid": (
         "the stored binding is malformed; run 'yoetz provider codex-subscription setup'"
@@ -326,37 +395,37 @@ def _package_json(package_root: Path) -> Mapping[str, JsonValue]:
 
 
 def _validate_codex_wrapper_manifest(
-    document: Mapping[str, JsonValue], cell: CodexEvaluatorCell
-) -> None:
-    """Validate the exact wrapper metadata for the closed evaluator cell."""
+    document: Mapping[str, JsonValue], platform: CodexPlatform
+) -> str:
+    """Validate the wrapper metadata and return the release it names."""
 
     if document.get("name") != _CODEX_PACKAGE_NAME:
         raise ValueError("codex_runtime_capability_unsupported")
-    if document.get("version") != CODEX_EVALUATOR_RUNTIME_VERSION:
+    version = document.get("version")
+    if type(version) is not str:
         raise ValueError("codex_runtime_capability_unsupported")
+    require_admitted_version(version)
     binary_map = document.get("bin")
     if not isinstance(binary_map, Mapping) or binary_map.get("codex") != "bin/codex.js":
         raise ValueError("codex_runtime_capability_unsupported")
     optional_dependencies = document.get("optionalDependencies")
-    if (
-        not isinstance(optional_dependencies, Mapping)
-        or optional_dependencies.get(f"@openai/{cell.native_package_directory}")
-        != cell.native_package_spec
-    ):
+    if not isinstance(optional_dependencies, Mapping) or optional_dependencies.get(
+        f"@openai/{platform.native_package_directory}"
+    ) != platform.native_package_spec(version):
         raise ValueError("codex_runtime_capability_unsupported")
+    return version
 
 
 def _validate_codex_native_manifest(
-    document: Mapping[str, JsonValue], cell: CodexEvaluatorCell
+    document: Mapping[str, JsonValue], platform: CodexPlatform, version: str
 ) -> None:
-    """Validate the exact native package identity and platform selectors."""
+    """Validate the native package identity and platform selectors for one release."""
 
     if document.get("name") != _CODEX_PACKAGE_NAME:
         raise ValueError("codex_runtime_capability_unsupported")
-    if document.get("version") != cell.native_package_version:
+    if document.get("version") != platform.native_package_version(version):
         raise ValueError("codex_runtime_capability_unsupported")
-    expected_cpu = "arm64" if cell.platform_architecture == "arm64" else "x64"
-    if document.get("os") != [cell.platform_os] or document.get("cpu") != [expected_cpu]:
+    if document.get("os") != [platform.os] or document.get("cpu") != [platform.npm_cpu]:
         raise ValueError("codex_runtime_capability_unsupported")
 
 
@@ -384,25 +453,21 @@ def _reject_symlinked_package_root(path: Path) -> None:
         raise ValueError("codex_runtime_unavailable") from error
 
 
-def _resolve_codex_package_layout(selected: Path, cell: CodexEvaluatorCell | None = None) -> Path:
-    """Resolve a selected wrapper to its exact nested or npm-prefix native executable.
+def _resolve_codex_package_layout(wrapper: Path, platform: CodexPlatform) -> tuple[Path, str]:
+    """Resolve a selected npm wrapper to its nested or npm-prefix native executable and release.
 
     The only allowed package roots are the optional dependency nested below the selected wrapper
     and its direct hoisted sibling. The nested candidate wins deterministically; a present but
     malformed nested package is terminal and never causes an unbounded parent/PATH search.
     """
 
-    wrapper = _runtime_path(selected.expanduser(), missing_token="codex_runtime_not_found")
-    selected_cell = cell or codex_evaluator_cell_for_platform(sys.platform, platform.machine())
-    if wrapper.name != "codex.js" or wrapper.parent.name != "bin":
-        return wrapper
     package_root = wrapper.parent.parent
     if package_root == Path(package_root.anchor):
         raise ValueError("codex_runtime_capability_unsupported")
-    _validate_codex_wrapper_manifest(_package_json(package_root), selected_cell)
+    version = _validate_codex_wrapper_manifest(_package_json(package_root), platform)
 
-    nested = package_root / "node_modules" / "@openai" / selected_cell.native_package_directory
-    hoisted = package_root.parent / selected_cell.native_package_directory
+    nested = package_root / "node_modules" / "@openai" / platform.native_package_directory
+    hoisted = package_root.parent / platform.native_package_directory
     if _package_candidate_present(nested):
         _reject_symlinked_package_root(nested)
         expected_parent = nested.parent
@@ -421,36 +486,61 @@ def _resolve_codex_package_layout(selected: Path, cell: CodexEvaluatorCell | Non
         or not native_root.is_dir()
     ):
         raise ValueError("codex_runtime_capability_unsupported")
-    _validate_codex_native_manifest(_package_json(native_root), selected_cell)
+    _validate_codex_native_manifest(_package_json(native_root), platform, version)
     native = _runtime_path(
-        native_root / selected_cell.native_executable_relative,
+        native_root / platform.native_executable_relative,
         missing_token="codex_runtime_not_found",
     )
     try:
         native.relative_to(native_root)
     except ValueError as error:
         raise ValueError("codex_runtime_capability_unsupported") from error
-    return native
+    return native, version
 
 
-def resolve_supported_codex_executable(selected: Path) -> tuple[Path, str, str]:
-    """Resolve only the selected npm distribution to its exact native executable."""
+def _codex_cli_version(native: Path) -> str:
+    """``codex --version`` of one native executable, under a throwaway scratch home."""
 
-    cell = codex_evaluator_cell_for_platform(sys.platform, platform.machine())
+    return codex_cli_version(native, scratch_parent=Path(tempfile.gettempdir()))
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedCodex:
+    """One selected Codex resolved to its native executable, release and platform."""
+
+    native: Path
+    version: str
+    platform: CodexPlatform
+
+    @property
+    def source_identity(self) -> str:
+        return codex_source_identity(self.platform, self.version)
+
+
+def resolve_codex_executable(selected: Path) -> ResolvedCodex:
+    """Resolve one selected npm wrapper or native executable; nothing else is searched.
+
+    The release comes from the npm manifests for a wrapper, or from ``codex --version`` for a
+    native executable; it must be a stable release at or above the floor, and the code-mode host
+    must sit beside the native executable. Admission itself is the later capability check.
+    """
+
+    platform = host_codex_platform()
     resolved = _runtime_path(selected.expanduser(), missing_token="codex_runtime_not_found")
+    version: str | None = None
     if resolved.name == "codex.js" and resolved.parent.name == "bin":
-        resolved = _resolve_codex_package_layout(resolved, cell)
+        resolved, version = _resolve_codex_package_layout(resolved, platform)
     if not resolved.is_file() or not os.access(resolved, os.X_OK):
         raise ValueError("codex_runtime_executable_invalid")
-    digest = _sha256_file(resolved)
-    if digest != cell.executable_sha256:
-        raise ValueError("codex_runtime_capability_unsupported")
-    _verify_code_mode_host(resolved, cell)
-    return resolved, digest, cell.source_identity
+    if version is None:
+        version = _codex_cli_version(resolved)
+    require_admitted_version(version)
+    _verify_code_mode_host(resolved)
+    return ResolvedCodex(resolved, version, platform)
 
 
-def _verify_code_mode_host(native: Path, cell: CodexEvaluatorCell) -> Path:
-    """Require the admitted code-mode host beside the resolved native executable (#874).
+def _verify_code_mode_host(native: Path) -> Path:
+    """Require Codex's code-mode host beside the resolved native executable (#874).
 
     Every supported layout (nested or hoisted npm package, or the native path itself) places it
     in the native executable's own directory, where Codex starts it; nothing else is searched.
@@ -465,8 +555,6 @@ def _verify_code_mode_host(native: Path, cell: CodexEvaluatorCell) -> Path:
         raise ValueError("codex_runtime_unavailable") from error
     if not stat.S_ISREG(facts.st_mode) or not facts.st_mode & stat.S_IXUSR:
         raise ValueError("codex_runtime_executable_invalid")
-    if _sha256_file(host) != cell.code_mode_host_sha256:
-        raise ValueError("codex_runtime_capability_unsupported")
     return host
 
 
@@ -486,7 +574,7 @@ def default_codex_home() -> Path:
 
 
 def runtime_bundle() -> Path:
-    """The data bundle whose owner-private store holds the retained evaluator runtime.
+    """The data bundle whose owner-private store holds the retained evaluator runtimes.
 
     It is resolved exactly like the service's own bundle and the default dedicated home
     (configuration file, environment, and isolation root), so an isolated or test instance never
@@ -500,56 +588,109 @@ def runtime_bundle() -> Path:
         raise ValueError("codex_evaluator_runtime_store_unsafe") from error
 
 
-def admitted_native_executable(selected: Path) -> Path | None:
-    """Return the admitted native executable behind ``selected``, or ``None`` when it is not one.
+type EvaluatorRuntimeSource = Literal["selected", "managed", "binding", "discovered"]
+# On equal releases the copy Yoetz already retains wins, so no bytes are copied again.
+_SOURCE_PREFERENCE: Final[Mapping[str, int]] = {
+    "selected": 0,
+    "managed": 0,
+    "binding": 1,
+    "discovered": 2,
+}
 
-    Eligibility is the exact capability-cell identity (layout, platform, and pinned digest), never
-    a path name, version string, or discovery order.
+
+@dataclass(frozen=True, slots=True)
+class EvaluatorCandidate:
+    """One eligible installation: a stable release at or above the floor, not yet checked."""
+
+    source: EvaluatorRuntimeSource
+    path: Path
+    version: str
+
+
+def _sorted_candidates(found: list[EvaluatorCandidate]) -> tuple[EvaluatorCandidate, ...]:
+    best: dict[str, EvaluatorCandidate] = {}
+    for candidate in found:
+        current = best.get(candidate.version)
+        if current is None or (
+            _SOURCE_PREFERENCE[candidate.source] < _SOURCE_PREFERENCE[current.source]
+        ):
+            best[candidate.version] = candidate
+    return tuple(
+        sorted(
+            best.values(),
+            key=lambda item: codex_version_key(item.version) or (0, 0, 0),
+            reverse=True,
+        )
+    )
+
+
+def evaluator_candidates(
+    config: YoetzConfig, *, executable: Path | None = None
+) -> tuple[EvaluatorCandidate, ...]:
+    """Every eligible evaluator runtime, newest release first; nothing is checked or copied.
+
+    An explicit ``executable`` is the only candidate. Otherwise: Yoetz's retained releases, the
+    existing binding's executable when it is a host installation, and every discovered everyday
+    Codex install. One candidate is kept per release (the retained copy first). An installation
+    below the floor, a prerelease, or one that cannot be resolved is never offered.
     """
 
+    platform = host_codex_platform()
+    if executable is not None:
+        resolved = resolve_codex_executable(executable)
+        return (EvaluatorCandidate("selected", resolved.native, resolved.version),)
+    found: list[EvaluatorCandidate] = []
     try:
-        native, digest, source_identity = resolve_supported_codex_executable(selected)
-        cell = codex_evaluator_cell_for_platform(sys.platform, platform.machine())
-    except OSError, ValueError:
-        return None
-    if digest != cell.executable_sha256 or source_identity != cell.source_identity:
-        return None
-    return native
+        bundle: Path | None = runtime_bundle()
+    except ValueError:
+        bundle = None
+    if bundle is not None:
+        for retained in retained_runtimes(bundle, platform):
+            state = inspect_managed_runtime(bundle, retained.source_identity)
+            if state not in {"verified", "unchecked", "changed"}:
+                continue
+            try:
+                require_admitted_version(retained.runtime_version)
+            except ValueError:
+                continue
+            found.append(EvaluatorCandidate("managed", retained.path, retained.runtime_version))
+    binding = config.external_runtime
+    if binding is not None and not (
+        bundle is not None and is_managed_runtime_path(bundle, Path(binding.executable_path))
+    ):
+        try:
+            resolved = resolve_codex_executable(Path(binding.executable_path))
+        except (OSError, ValueError):  # fmt: skip
+            pass
+        else:
+            found.append(EvaluatorCandidate("binding", resolved.native, resolved.version))
+    from yoetz.adapters.integrations.codex_discovery import discover_codex_binaries
 
-
-type EvaluatorRuntimeSource = Literal["managed", "binding", "discovered"]
+    for binary in discover_codex_binaries():
+        try:
+            resolved = resolve_codex_executable(Path(binary.executable_path))
+        except (OSError, ValueError):  # fmt: skip
+            continue
+        found.append(EvaluatorCandidate("discovered", resolved.native, resolved.version))
+    return _sorted_candidates(found)
 
 
 def select_codex_evaluator_executable(
     config: YoetzConfig,
 ) -> tuple[EvaluatorRuntimeSource, Path] | None:
-    """Select the evaluator runtime by eligibility and ownership, never by lexical path order.
+    """The newest eligible evaluator runtime, or ``None`` when there is none.
 
-    Preference: the Yoetz-managed retained runtime, then the existing binding's executable when it
-    still holds the admitted bytes, then the first discovered host installation that resolves to
-    the admitted cell. A discovered binary that is not the admitted cell is never offered.
+    This is the first of :func:`evaluator_candidates`; setup and repair fall back to the next
+    candidate when it does not pass the capability check.
     """
 
     try:
-        cell = codex_evaluator_cell_for_platform(sys.platform, platform.machine())
+        candidates = evaluator_candidates(config)
     except ValueError:
         return None
-    try:
-        bundle = runtime_bundle()
-    except ValueError:
-        bundle = None
-    if bundle is not None and inspect_managed_runtime(bundle, cell) == "verified":
-        return "managed", managed_runtime_path(bundle, cell)
-    if config.external_runtime is not None:
-        bound = admitted_native_executable(Path(config.external_runtime.executable_path))
-        if bound is not None:
-            return "binding", bound
-    from yoetz.adapters.integrations.codex_discovery import discover_codex_binaries
-
-    for binary in discover_codex_binaries():
-        if admitted_native_executable(Path(binary.executable_path)) is not None:
-            return "discovered", Path(binary.executable_path)
-    return None
+    if not candidates:
+        return None
+    return candidates[0].source, candidates[0].path
 
 
 def default_codex_evaluator_executable(path: Path | None = None) -> Path | None:
@@ -565,24 +706,9 @@ def diagnose_bound_runtime(binding: ExternalRuntimeProfileConfig) -> CodexBindin
     return diagnose_codex_binding(binding, now=datetime.now(UTC))
 
 
-def codex_subscription_preview(
-    *,
-    executable: Path,
-    codex_home: Path,
-    model: str,
-    reasoning_effort: str,
-    routine_reasoning_effort: str | None = None,
-) -> dict[str, JsonValue]:
-    """Resolve and validate the exact nonsecret cell without creating a home or logging in.
-
-    ``reasoning_effort`` is the final-profile effort. ``routine_reasoning_effort=None`` means the
-    routine profile keeps that single effort (the legacy binding shape).
-    """
-
-    native, digest, source_identity = resolve_supported_codex_executable(executable)
-    cell = codex_evaluator_cell_for_platform(sys.platform, platform.machine())
-    if source_identity != cell.source_identity or digest != cell.executable_sha256:
-        raise ValueError("codex_runtime_capability_unsupported")
+def _validate_choices(
+    *, codex_home: Path, model: str, reasoning_effort: str, routine_reasoning_effort: str | None
+) -> None:
     if not codex_home.is_absolute():
         raise ValueError("codex_home_invalid")
     if not model or reasoning_effort not in _SUPPORTED_REASONING:
@@ -591,20 +717,45 @@ def codex_subscription_preview(
         _SUPPORTED_REASONING
     ):
         raise ValueError("codex_runtime_model_invalid")
+
+
+def codex_subscription_preview(
+    *,
+    executable: Path,
+    codex_home: Path,
+    model: str,
+    reasoning_effort: str,
+    routine_reasoning_effort: str | None = None,
+) -> dict[str, JsonValue]:
+    """Resolve the selected runtime and show the nonsecret binding without any side effect.
+
+    ``reasoning_effort`` is the final-profile effort. ``routine_reasoning_effort=None`` means the
+    routine profile keeps that single effort (the legacy binding shape). The capability check
+    runs at setup, against Yoetz's retained copy, before anything is bound.
+    """
+
+    resolved = resolve_codex_executable(executable)
+    _validate_choices(
+        codex_home=codex_home,
+        model=model,
+        reasoning_effort=reasoning_effort,
+        routine_reasoning_effort=routine_reasoning_effort,
+    )
+    host = codex_code_mode_host_path(resolved.native)
     return {
-        "schema": "yoetz.codex-subscription-preview/1",
+        "schema": "yoetz.codex-subscription-preview/2",
         "credential_authority": "external_runtime_oauth",
-        "runtime_version": CODEX_EVALUATOR_RUNTIME_VERSION,
-        "runtime_source_identity": source_identity,
-        "executable_path": str(native),
-        "executable_sha256": digest,
-        "code_mode_host_path": str(codex_code_mode_host_path(native)),
-        "code_mode_host_sha256": cell.code_mode_host_sha256,
-        "app_server_schema_sha256": cell.app_server_schema_sha256,
-        "capability_cell_sha256": cell.capability_cell_sha256,
-        "capability_profile": cell.capability_profile,
-        "capability_evidence_expires_at": cell.capability_evidence_expires_at,
-        "isolated_config_sha256": cell.isolated_config_sha256,
+        "runtime_version": resolved.version,
+        "runtime_floor": CODEX_EVALUATOR_RUNTIME_FLOOR,
+        "runtime_source_identity": resolved.source_identity,
+        "executable_path": str(resolved.native),
+        "executable_sha256": _sha256_file(resolved.native),
+        "code_mode_host_path": str(host),
+        "code_mode_host_sha256": _sha256_file(host),
+        "capability_profile": CODEX_EVALUATOR_CAPABILITY_PROFILE,
+        "capability_check": "runs at setup before binding; a newer failing Codex falls back",
+        "capability_evidence_expires_at": CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
+        "isolated_config_sha256": CODEX_EVALUATOR_CONFIG_SHA256,
         "codex_home": str(codex_home),
         "model": model,
         "reasoning_effort": reasoning_effort,
@@ -680,6 +831,7 @@ def _target_config_path(path: Path | None) -> Path:
 
 def _binding(
     *,
+    record: CodexCapabilityRecord,
     executable: Path,
     codex_home: Path,
     model: str,
@@ -687,31 +839,29 @@ def _binding(
     routine_reasoning_effort: str | None = None,
     existing: ExternalRuntimeProfileConfig | None = None,
 ) -> ExternalRuntimeProfileConfig:
-    """Validate and construct the exact nonsecret binding without creating any state.
+    """Construct the nonsecret binding for one checked runtime without creating any state.
 
-    Output limits, timeout and retry budgets are configuration-only choices with no setup
-    prompt; an existing binding preserves all of them during a rebind (#855).
+    The runtime identity fields come from the capability record the retained ``executable``
+    earned; output limits, timeout and retry budgets are configuration-only choices with no setup
+    prompt, and an existing binding preserves all of them during a rebind (#855).
     """
 
-    preview = codex_subscription_preview(
-        executable=executable,
+    _validate_choices(
         codex_home=codex_home,
         model=model,
         reasoning_effort=reasoning_effort,
         routine_reasoning_effort=routine_reasoning_effort,
     )
     return codex_subscription_runtime(
-        executable_path=cast(str, preview["executable_path"]),
-        executable_sha256=cast(str, preview["executable_sha256"]),
-        runtime_version=CODEX_EVALUATOR_RUNTIME_VERSION,
-        source_identity=cast(str, preview["runtime_source_identity"]),
-        app_server_schema_sha256=cast(str, preview["app_server_schema_sha256"]),
-        capability_cell_sha256=cast(str, preview["capability_cell_sha256"]),
-        isolated_config_sha256=cast(str, preview["isolated_config_sha256"]),
-        capability_profile=cast(str, preview["capability_profile"]),
-        capability_evidence_expires_at=cast(
-            Literal["2026-11-30T00:00:00Z"], preview["capability_evidence_expires_at"]
-        ),
+        executable_path=str(executable),
+        executable_sha256=record.executable_sha256,
+        runtime_version=record.runtime_version,
+        source_identity=record.source_identity,
+        app_server_schema_sha256=record.app_server_schema_sha256,
+        capability_cell_sha256=record.digest,
+        isolated_config_sha256=record.isolated_config_sha256,
+        capability_profile=record.capability_profile,
+        capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
         codex_home=str(codex_home),
         model=model,
         reasoning_effort=reasoning_effort,
@@ -729,32 +879,122 @@ def _binding(
     )
 
 
-def _retained_binding(
-    binding: ExternalRuntimeProfileConfig, *, bundle: Path
-) -> ExternalRuntimeProfileConfig:
-    """The same validated binding, pointed at the Yoetz-managed copy of its admitted runtime.
+def _provisional_record(candidate: EvaluatorCandidate) -> CodexCapabilityRecord:
+    """A shape-only record used to prove the configuration write before any side effect."""
 
-    Only the path changes: the digest, cell identity, and every other field are the ones the
-    selected executable was just validated against, and the launch fence re-verifies the copy.
-    """
-
-    cell = codex_evaluator_cell_for_platform(sys.platform, platform.machine())
-    return binding.model_copy(update={"executable_path": str(managed_runtime_path(bundle, cell))})
-
-
-def _retain_binding_runtime(
-    binding: ExternalRuntimeProfileConfig, *, source: Path, bundle: Path
-) -> None:
-    """Retain the admitted bytes behind ``source`` at the path ``binding`` is bound to."""
-
-    cell = codex_evaluator_cell_for_platform(sys.platform, platform.machine())
-    retained = retain_codex_runtime(source, bundle=bundle, cell=cell)
-    if str(retained) != binding.executable_path:
-        raise ValueError("codex_evaluator_runtime_store_unavailable")
+    platform = host_codex_platform()
+    placeholder = "sha256:" + "0" * 64
+    return CodexCapabilityRecord(
+        runtime_version=candidate.version,
+        source_identity=codex_source_identity(platform, candidate.version),
+        platform_os=platform.os,
+        platform_architecture=platform.architecture,
+        executable_sha256=placeholder,
+        code_mode_host_sha256=placeholder,
+        app_server_schema_sha256=placeholder,
+        isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
+    )
 
 
 def _profile(binding: ExternalRuntimeProfileConfig) -> CodexAppServerProfile:
     return CodexAppServerProfile.from_config(binding)
+
+
+@dataclass(frozen=True, slots=True)
+class _Checked:
+    """One candidate that passed the capability check, retained with its committed record."""
+
+    candidate: EvaluatorCandidate
+    retained: Path
+    record: CodexCapabilityRecord
+
+
+# Store faults are not a property of one candidate; they stop the whole adoption.
+_STORE_FAULTS: Final = frozenset(
+    {
+        "codex_evaluator_runtime_busy",
+        "codex_evaluator_runtime_store_unsafe",
+        "codex_evaluator_runtime_store_unavailable",
+        "codex_runtime_platform_unsupported",
+    }
+)
+
+
+async def _check_candidate(candidate: EvaluatorCandidate, *, bundle: Path) -> _Checked:
+    """Retain one candidate, run the capability check on the retained bytes, commit the record."""
+
+    platform = host_codex_platform()
+    identity = codex_source_identity(platform, candidate.version)
+    retained = retain_codex_runtime(candidate.path, bundle=bundle, source_identity=identity)
+    record = await check_codex_capability(
+        retained,
+        runtime_version=candidate.version,
+        platform=platform,
+        scratch_parent=managed_runtime_root(bundle),
+    )
+    commit_capability_record(bundle, record)
+    return _Checked(candidate, retained, record)
+
+
+type _Readiness = Callable[[ExternalRuntimeProfileConfig], Awaitable[CodexRuntimeStatus]]
+
+
+@dataclass(frozen=True, slots=True)
+class _Adopted:
+    checked: _Checked
+    binding: ExternalRuntimeProfileConfig
+    status: CodexRuntimeStatus | None
+    # Closed tokens of the newer candidates that were tried first and not adopted.
+    passed_over: tuple[str, ...]
+
+
+async def _adopt_runtime(
+    candidates: tuple[EvaluatorCandidate, ...],
+    *,
+    bundle: Path,
+    make_binding: Callable[[Path, CodexCapabilityRecord], ExternalRuntimeProfileConfig],
+    readiness: _Readiness | None,
+) -> _Adopted:
+    """Bind the newest candidate that passes the check and, given a home, lists the model.
+
+    Candidates are tried newest first. A candidate that fails the capability check, or whose
+    readiness probe reports the dedicated home signed in without the configured model and
+    efforts, is passed over for the next one: a newer Codex that regresses falls back to the
+    previous good release. A home Codex reports as not signed in stops the search there (sign-in
+    belongs to the home, not the runtime). An unconfirmed probe cleanup fails closed at once.
+    Nothing is written to the configuration here.
+    """
+
+    passed_over: list[str] = []
+    for candidate in candidates:
+        try:
+            checked = await _check_candidate(candidate, bundle=bundle)
+        except ValueError as error:
+            token = subscription_failure_reason(error)
+            if token in _STORE_FAULTS:
+                raise
+            passed_over.append(token)
+            continue
+        except (OSError, TimeoutError) as error:  # fmt: skip
+            passed_over.append(subscription_failure_reason(error))
+            continue
+        binding = make_binding(checked.retained, checked.record)
+        if readiness is None:
+            return _Adopted(checked, binding, None, tuple(passed_over))
+        try:
+            status = await readiness(binding)
+        except (OSError, TimeoutError, ValueError) as error:  # fmt: skip
+            passed_over.append(subscription_failure_reason(error))
+            continue
+        if status.cleanup == "failed":
+            raise ValueError("codex_subscription_readiness_unproven")
+        if status.runtime_ready and status.auth_mode == "chatgpt" and not status.model_available:
+            passed_over.append("codex_model_unavailable")
+            continue
+        return _Adopted(checked, binding, status, tuple(passed_over))
+    if "codex_model_unavailable" in passed_over:
+        raise ValueError("codex_model_unavailable")
+    raise ValueError(passed_over[0] if passed_over else "codex_evaluator_runtime_unavailable")
 
 
 # Structural states another admitted runtime resolves: the bound bytes or capability identity are
@@ -762,6 +1002,7 @@ def _profile(binding: ExternalRuntimeProfileConfig) -> CodexAppServerProfile:
 RUNTIME_REBINDABLE_STATES: Final = frozenset(
     {
         "codex_runtime_capability_unsupported",
+        "codex_runtime_version_unsupported",
         "codex_runtime_executable_missing",
         "codex_runtime_executable_invalid",
         "codex_runtime_executable_changed",
@@ -787,14 +1028,36 @@ def _refuse_home_fault(
         raise ValueError(refusal)
 
 
-def _operational_binding(
+def _rebinder(
+    existing: ExternalRuntimeProfileConfig,
+) -> Callable[[Path, CodexCapabilityRecord], ExternalRuntimeProfileConfig]:
+    """Build ``existing`` with only its runtime identity replaced by one checked runtime."""
+
+    def make(retained: Path, record: CodexCapabilityRecord) -> ExternalRuntimeProfileConfig:
+        validated = _binding(
+            record=record,
+            executable=retained,
+            codex_home=Path(existing.codex_home),
+            model=existing.model,
+            reasoning_effort=existing.reasoning_effort,
+            existing=existing,
+        )
+        return existing.model_copy(
+            update={name: getattr(validated, name) for name in _IDENTITY_FIELDS}
+        )
+
+    return make
+
+
+async def _operational_binding(
     binding: ExternalRuntimeProfileConfig, config: YoetzConfig
 ) -> ExternalRuntimeProfileConfig:
     """The binding to launch for a reverse operation on the same dedicated home.
 
     A stranded binding (replaced executable, outdated capability identity) must still be able to
-    ask Codex to log its dedicated home out; the eligible admitted runtime is used in memory for
-    that one probe. Nothing is persisted, and home or config faults still fail closed.
+    ask Codex to log its dedicated home out; the newest runtime that passes the capability check
+    is used in memory for that one probe. Nothing is persisted, and home or config faults still
+    fail closed.
     """
 
     diagnosis = diagnose_bound_runtime(binding)
@@ -803,13 +1066,17 @@ def _operational_binding(
     _refuse_home_fault(diagnosis)
     if diagnosis.state not in RUNTIME_REBINDABLE_STATES:
         raise ValueError(diagnosis.state)
-    selected = select_codex_evaluator_executable(config)
-    if selected is None:
-        raise ValueError(diagnosis.state)
-    return _rebound(binding, selected[1])
+    with runtime_mutation_lock(runtime_bundle()):
+        candidates = evaluator_candidates(config)
+        if not candidates:
+            raise ValueError(diagnosis.state)
+        adopted = await _adopt_runtime(
+            candidates, bundle=runtime_bundle(), make_binding=_rebinder(binding), readiness=None
+        )
+    return adopted.binding
 
 
-# The compatibility-critical fields a rebind takes from the admitted cell and selected executable.
+# The compatibility-critical fields a rebind takes from the capability record and retained copy.
 # Every other field of an existing binding (model, efforts, budgets, home, and any field a later
 # release adds) is carried over unchanged, so a rebind can never silently reset an owner choice.
 _IDENTITY_FIELDS: Final = (
@@ -825,21 +1092,6 @@ _IDENTITY_FIELDS: Final = (
 )
 
 
-def _rebound(
-    existing: ExternalRuntimeProfileConfig, executable: Path
-) -> ExternalRuntimeProfileConfig:
-    """``existing`` with only its runtime identity replaced by the validated admitted cell."""
-
-    validated = _binding(
-        executable=executable,
-        codex_home=Path(existing.codex_home),
-        model=existing.model,
-        reasoning_effort=existing.reasoning_effort,
-        existing=existing,
-    )
-    return existing.model_copy(update={name: getattr(validated, name) for name in _IDENTITY_FIELDS})
-
-
 def _already_ready(status: CodexRuntimeStatus) -> bool:
     """Codex proved a ChatGPT login and the exact model/reasoning cell for this home."""
 
@@ -847,21 +1099,15 @@ def _already_ready(status: CodexRuntimeStatus) -> bool:
 
 
 def _bound_code_mode_host_sha256(binding: ExternalRuntimeProfileConfig) -> str | None:
-    """The host digest the binding's exact cell pins, or ``None`` for an unadmitted binding."""
+    """The host digest the binding's capability record pins, or ``None`` when unreadable."""
 
     try:
-        return codex_evaluator_cell_for_binding(
-            source_identity=binding.source_identity,
-            executable_sha256=binding.executable_sha256,
-            runtime_version=binding.runtime_version,
-            app_server_schema_sha256=binding.app_server_schema_sha256,
-            capability_cell_sha256=binding.capability_cell_sha256,
-            capability_profile=binding.capability_profile,
-            capability_evidence_expires_at=binding.capability_evidence_expires_at,
-            isolated_config_sha256=binding.isolated_config_sha256,
-        ).code_mode_host_sha256
-    except ValueError:
+        record = read_capability_record(Path(binding.executable_path).parent)
+    except (OSError, ValueError):  # fmt: skip
         return None
+    if record.digest != binding.capability_cell_sha256:
+        return None
+    return record.code_mode_host_sha256
 
 
 def _safe_status(
@@ -907,29 +1153,25 @@ async def codex_subscription_setup(
     as_fallback: bool = False,
     routine_reasoning_effort: str | None = None,
 ) -> dict[str, JsonValue]:
-    """Validate the binding and its persistence, prove or obtain Codex login, then persist it.
+    """Check and bind the newest admitted runtime, prove or obtain Codex login, then persist it.
 
     ``as_fallback`` keeps the already-bound API provider as the primary and declares this
     runtime as its fallback (issue #582); it never replaces that binding.
 
-    Every deterministic local requirement — the exact runtime cell, the canonical target
-    configuration, and a render-validated, lock-probed write of the staged binding — is proven
-    before any Codex process starts, so a configuration failure can never follow login side
-    effects (#520).
+    Every deterministic local requirement — eligible candidates, the canonical target
+    configuration, and a render-validated, lock-probed write of the binding's shape — is proven
+    before any store, home or Codex side effect, so a configuration failure can never follow login
+    side effects (#520).
 
-    Login is Codex-owned state that lives once per dedicated home. Unless the caller asked to
-    switch accounts, the same structural probe ``status`` uses (app-server ``account/read`` with
-    ``refreshToken: false`` and ``model/list``) runs first; a home Codex already reports as
-    signed in with the exact model cell available is bound without a new ``account/login/start``
-    challenge (#534). Yoetz still never reads or copies ``auth.json``: readiness is only ever what
-    Codex itself answers. ``switch_account`` remains the explicit override that logs the home out
-    and signs in again.
-
-    The evaluator runtime is kept separate from the host installation (#855): the admitted bytes
-    behind ``executable`` are retained in the Yoetz-managed owner-private store and the binding
-    points at that copy, so a later host Codex update cannot strand the binding. ``executable``
-    ``None`` selects the eligible runtime (see :func:`select_codex_evaluator_executable`). An
-    existing binding's timeout and retry budgets are preserved.
+    The runtime is adopted by capability (ADR-006): candidates are tried newest first; each is
+    retained in the Yoetz-managed store, checked there, and then probed against the dedicated
+    home (``account/read`` with ``refreshToken: false`` and ``model/list``). A home Codex already
+    reports as signed in with the model available is bound without a new ``account/login/start``
+    challenge (#534); a signed-in home whose model no admitted runtime lists fails as
+    ``codex_model_unavailable`` without opening a sign-in. Yoetz never reads or copies
+    ``auth.json``: readiness is only what Codex answers. ``switch_account`` logs the home out
+    and signs in again. ``executable`` selects one installation instead of the candidate search.
+    An existing binding's timeout and retry budgets are preserved.
     """
 
     with runtime_mutation_lock(runtime_bundle()):
@@ -946,65 +1188,85 @@ async def codex_subscription_setup(
                 else base.external_runtime.routine_reasoning_effort
             )
         )
-        if executable is None:
-            selected = select_codex_evaluator_executable(base)
-            if selected is None:
-                raise ValueError("codex_evaluator_runtime_unavailable")
-            executable = selected[1]
-        validated = _binding(
-            executable=executable,
+        _validate_choices(
             codex_home=codex_home,
             model=model,
             reasoning_effort=reasoning_effort,
             routine_reasoning_effort=selected_routine,
-            existing=base.external_runtime,
         )
+        candidates = evaluator_candidates(base, executable=executable)
+        if not candidates:
+            raise ValueError("codex_evaluator_runtime_unavailable")
         bundle = runtime_bundle()
-        binding = _retained_binding(validated, bundle=bundle)
+
+        def make_binding(
+            retained: Path, record: CodexCapabilityRecord
+        ) -> ExternalRuntimeProfileConfig:
+            return _binding(
+                record=record,
+                executable=retained,
+                codex_home=codex_home,
+                model=model,
+                reasoning_effort=reasoning_effort,
+                routine_reasoning_effort=selected_routine,
+                existing=base.external_runtime,
+            )
+
+        provisional = make_binding(
+            managed_runtime_path(bundle, _provisional_record(candidates[0]).source_identity),
+            _provisional_record(candidates[0]),
+        )
         _bounded_config_operation(
             lambda: preflight_config_write(
-                external_runtime_binding_config(binding, base=base, as_fallback=as_fallback),
+                external_runtime_binding_config(provisional, base=base, as_fallback=as_fallback),
                 target,
                 expected_bytes=expected_bytes,
             )
         )
-        _retain_binding_runtime(binding, source=Path(validated.executable_path), bundle=bundle)
         prepare_codex_home(codex_home)
+
+        async def readiness(binding: ExternalRuntimeProfileConfig) -> CodexRuntimeStatus:
+            return await codex_account_status(_profile(binding))
+
+        adopted = await _adopt_runtime(
+            candidates,
+            bundle=bundle,
+            make_binding=make_binding,
+            readiness=None if switch_account else readiness,
+        )
+        binding = adopted.binding
         profile = _profile(binding)
         login_reused = False
+        status = adopted.status
         if switch_account:
             logout_status = await codex_logout(profile)
             if logout_status.cleanup == "failed":
                 raise ValueError("codex_logout_unconfirmed")
-            status: CodexRuntimeStatus | None = None
-        else:
-            status = await codex_account_status(profile)
-            if status.cleanup == "failed":
-                raise ValueError("codex_subscription_readiness_unproven")
-            if _already_ready(status):
-                login_reused = True
+        elif status is not None and _already_ready(status):
+            login_reused = True
+            typer.echo("")
+            typer.echo(
+                "Codex reports this dedicated home is already signed in with the exact model "
+                "available; reusing it without a new sign-in."
+            )
+        if not login_reused:
+
+            def present(challenge: CodexLoginChallenge) -> None:
                 typer.echo("")
                 typer.echo(
-                    "Codex reports this dedicated home is already signed in with the exact model "
-                    "available; reusing it without a new sign-in."
+                    "Codex owns this ChatGPT sign-in. Yoetz does not receive the credentials."
                 )
-            else:
-                status = None
+                typer.echo(f"Open: {challenge.url}")
+                if challenge.user_code is not None:
+                    typer.echo(f"One-time code: {challenge.user_code}")
+                if open_browser and challenge.mode == "browser":
+                    if not webbrowser.open(challenge.url):
+                        raise ValueError("codex_login_browser_unavailable")
 
-        def present(challenge: CodexLoginChallenge) -> None:
-            typer.echo("")
-            typer.echo("Codex owns this ChatGPT sign-in. Yoetz does not receive the credentials.")
-            typer.echo(f"Open: {challenge.url}")
-            if challenge.user_code is not None:
-                typer.echo(f"One-time code: {challenge.user_code}")
-            if open_browser and challenge.mode == "browser":
-                if not webbrowser.open(challenge.url):
-                    raise ValueError("codex_login_browser_unavailable")
-
-        if status is None:
             status = await codex_login(profile, mode=login_mode, present_challenge=present)
             if not _already_ready(status) or status.cleanup == "failed":
                 raise ValueError("codex_subscription_readiness_unproven")
+        assert status is not None
         selected_config = external_runtime_binding_config(
             binding, base=base, as_fallback=as_fallback
         )
@@ -1019,11 +1281,13 @@ async def codex_subscription_setup(
         result["login_reused"] = login_reused
         # An existing pairing keeps its selector, so report the role the written config holds.
         result["endpoint_role"] = _endpoint_role(selected_config)
-        result["runtime_retained_from"] = validated.executable_path
+        result["runtime_retained_from"] = str(adopted.checked.candidate.path)
+        result["runtime_source"] = adopted.checked.candidate.source
+        result["runtimes_passed_over"] = list(adopted.passed_over)
         return result
 
 
-def _prompt_evaluator_executable() -> Path:
+async def _prompt_evaluator_executable() -> Path:
     """Offer only an eligible evaluator runtime; offer the managed download when none exists.
 
     Discovery order is host inventory, not evaluator eligibility (#855): an unusable discovered
@@ -1034,13 +1298,13 @@ def _prompt_evaluator_executable() -> Path:
     if selected is None:
         typer.echo("")
         typer.echo(
-            f"No Codex {CODEX_EVALUATOR_RUNTIME_VERSION} evaluator runtime was found. Your "
-            "everyday Codex can stay on any version: Yoetz keeps its own verified copy."
+            f"No Codex {CODEX_EVALUATOR_RUNTIME_FLOOR} or newer was found. Yoetz can download "
+            "the newest Codex into its own private copy; your everyday Codex is not changed."
         )
         for line in describe_runtime_download():
             typer.echo(f"  {line}")
         if typer.confirm("Download the evaluator runtime now?", default=False):
-            installed = codex_evaluator_runtime_install(source=None, npm=None, download=True)
+            installed = await codex_evaluator_runtime_install(source=None, npm=None, download=True)
             selected = Path(cast(str, installed["managed_runtime_path"]))
     return Path(
         typer.prompt(
@@ -1054,7 +1318,7 @@ def _prompt_evaluator_executable() -> Path:
 async def prompt_codex_subscription_setup() -> dict[str, JsonValue]:
     """Run the shared terminal setup screen used by first-run and prompt-loop menus."""
 
-    executable = _prompt_evaluator_executable()
+    executable = await _prompt_evaluator_executable()
     codex_home = Path(
         typer.prompt("Dedicated evaluator CODEX_HOME", default=str(default_codex_home()))
     ).expanduser()
@@ -1081,14 +1345,17 @@ async def prompt_codex_subscription_setup() -> dict[str, JsonValue]:
     typer.echo("Codex with ChatGPT subscription")
     typer.echo(f"  runtime source: {preview['executable_path']}")
     typer.echo(
-        f"  bound runtime: {managed_runtime_path(runtime_bundle(), host_codex_evaluator_cell())}"
-        " (Yoetz's verified private copy; updating your everyday Codex leaves it unchanged)"
+        f"  Codex version: {preview['runtime_version']} (minimum {preview['runtime_floor']})"
+    )
+    typer.echo(
+        f"  bound runtime: {managed_runtime_path(runtime_bundle(), cast(str, preview['runtime_source_identity']))}"
+        " (Yoetz's private copy; updating your everyday Codex leaves it unchanged until the next"
+        " repair adopts the newer release)"
     )
     typer.echo(f"  executable_sha256: {preview['executable_sha256']}")
     typer.echo(f"  code-mode host sha256: {preview['code_mode_host_sha256']}")
-    typer.echo(f"  Codex version: {preview['runtime_version']}")
-    typer.echo(f"  capability cell: {preview['capability_cell_sha256']}")
-    typer.echo(f"  cell evidence expires: {preview['capability_evidence_expires_at']}")
+    typer.echo(f"  capability check: {preview['capability_profile']}, before binding")
+    typer.echo(f"  evidence expires: {preview['capability_evidence_expires_at']}")
     typer.echo(f"  dedicated CODEX_HOME: {preview['codex_home']}")
     typer.echo(f"  model: {model}")
     typer.echo(f"  reasoning: final {reasoning_effort} / routine {routine_reasoning_effort}")
@@ -1159,7 +1426,7 @@ async def codex_subscription_disconnect(*, config_path: Path | None = None) -> d
             expected_bytes=expected_bytes,
         )
     )
-    status = await codex_logout(_profile(_operational_binding(binding, config)))
+    status = await codex_logout(_profile(await _operational_binding(binding, config)))
     if status.cleanup == "failed":
         raise ValueError("codex_logout_unconfirmed")
     written = _bounded_config_operation(
@@ -1194,7 +1461,7 @@ def codex_subscription_rollback(*, config_path: Path | None = None) -> dict[str,
         "config_path": str(written),
         "codex_home_preserved": home,
         "codex_installation_preserved": True,
-        # The retained evaluator runtime is a separate resource with its own removal command.
+        # The retained evaluator runtimes are a separate resource with their own removal command.
         "evaluator_runtime_preserved": True,
     }
 
@@ -1213,6 +1480,7 @@ BINDING_CONTINUATIONS: Final[Mapping[str, str]] = {
     "codex_runtime_binding_invalid": _SETUP,
     "codex_runtime_capability_evidence_stale": "yoetz upgrade --help",
     "codex_runtime_capability_unsupported": _REPAIR,
+    "codex_runtime_version_unsupported": _REPAIR,
     "codex_runtime_executable_missing": _REPAIR,
     "codex_runtime_executable_invalid": _REPAIR,
     "codex_runtime_executable_changed": _REPAIR,
@@ -1246,48 +1514,72 @@ def describe_runtime_download() -> tuple[str, ...]:
     """Plain-language implications shown before any download consent."""
 
     return (
-        f"package: @openai/codex@{CODEX_EVALUATOR_RUNTIME_VERSION} through your own npm and "
+        "package: @openai/codex@latest (the newest stable Codex) through your own npm and "
         "registry settings, with install scripts disabled",
-        "only the native executable and its code-mode host matching the reviewed evaluator "
-        "SHA-256 values are kept, in an owner-private Yoetz directory; the rest of the download "
-        "is deleted",
+        "only the native executable and its code-mode host are kept, in an owner-private Yoetz "
+        "directory, and only after they pass the capability check; the rest of the download is "
+        "deleted",
+        "the capability check runs that Codex without any sign-in, task content, or model request",
         "your everyday Codex installation, settings, and sign-ins are not changed",
         "no task content, credential, or account data is sent",
         f"remove later: {_RUNTIME_REMOVE}",
     )
 
 
+def _retained_report(bundle: Path, platform: CodexPlatform) -> list[JsonValue]:
+    report: list[JsonValue] = []
+    for retained in retained_runtimes(bundle, platform):
+        state = inspect_managed_runtime(bundle, retained.source_identity)
+        try:
+            record: CodexCapabilityRecord | None = read_capability_record(retained.path.parent)
+        except (OSError, ValueError):  # fmt: skip
+            record = None
+        report.append(
+            {
+                "source_identity": retained.source_identity,
+                "runtime_version": retained.runtime_version,
+                "path": str(retained.path),
+                "state": state,
+                "code_mode_host_path": str(codex_code_mode_host_path(retained.path)),
+                "executable_sha256": None if record is None else record.executable_sha256,
+                "code_mode_host_sha256": None if record is None else record.code_mode_host_sha256,
+                "capability_profile": None if record is None else record.capability_profile,
+            }
+        )
+    return report
+
+
 def codex_evaluator_runtime_status(*, config_path: Path | None = None) -> dict[str, JsonValue]:
     """Read-only structural report; starts no Codex process and reads no credential."""
 
     config = _base_config(config_path)
-    managed_path: str | None = None
-    managed_state: str | None = None
-    host_path: str | None = None
-    host_state: str | None = None
     try:
-        cell = host_codex_evaluator_cell()
+        platform: CodexPlatform | None = host_codex_platform()
     except ValueError:
-        cell = None
-    if cell is not None:
+        platform = None
+    bundle: Path | None = None
+    retained: list[JsonValue] = []
+    store_state: str | None = None
+    if platform is not None:
         try:
             bundle = runtime_bundle()
         except ValueError:
-            managed_state = "unsafe"
-            host_state = "unsafe"
+            store_state = "unsafe"
         else:
-            managed_path = str(managed_runtime_path(bundle, cell))
-            managed_state = inspect_managed_runtime(bundle, cell)
-            host_path = str(managed_code_mode_host_path(bundle, cell))
-            host_state = inspect_managed_code_mode_host(bundle, cell)
+            retained = _retained_report(bundle, platform)
+            store_state = "present" if retained else "absent"
     binding = config.external_runtime
     binding_report: dict[str, JsonValue] | None = None
     next_command: str | None = None
     if binding is not None:
         diagnosis = diagnose_bound_runtime(binding)
         next_command = binding_continuation(diagnosis.state)
-        uses_managed = managed_path is not None and binding.executable_path == managed_path
-        if next_command is None and not uses_managed and cell is not None:
+        uses_managed: bool | None = (
+            None
+            if bundle is None
+            else is_managed_runtime_path(bundle, Path(binding.executable_path))
+        )
+        if next_command is None and uses_managed is False and platform is not None:
             # Ready, but still bound to a host installation its package manager can replace.
             next_command = _REPAIR
         binding_report = {
@@ -1304,21 +1596,17 @@ def codex_evaluator_runtime_status(*, config_path: Path | None = None) -> dict[s
             "codex_home": binding.codex_home,
             "endpoint_role": _endpoint_role(config),
         }
-    elif cell is not None and managed_state != "verified":
+    elif platform is not None and not any(
+        cast(Mapping[str, object], item).get("state") == "verified" for item in retained
+    ):
         next_command = _RUNTIME_INSTALL
     return {
-        "schema": "yoetz.codex-evaluator-runtime-status/1",
-        "platform_cell": None if cell is None else cell.source_identity,
-        "admitted_runtime_version": CODEX_EVALUATOR_RUNTIME_VERSION,
-        "managed_runtime": {
-            "path": managed_path,
-            "state": managed_state,
-            "code_mode_host": {
-                "path": host_path,
-                "state": host_state,
-                "sha256": None if cell is None else cell.code_mode_host_sha256,
-            },
-        },
+        "schema": "yoetz.codex-evaluator-runtime-status/2",
+        "platform": None if platform is None else platform.npm_suffix,
+        "runtime_floor": CODEX_EVALUATOR_RUNTIME_FLOOR,
+        "capability_profile": CODEX_EVALUATOR_CAPABILITY_PROFILE,
+        "store": store_state,
+        "retained_runtimes": retained,
         "binding": binding_report,
         "login_checked": False,
         "next_command": next_command,
@@ -1327,12 +1615,10 @@ def codex_evaluator_runtime_status(*, config_path: Path | None = None) -> dict[s
 
 def _install_source(
     config: YoetzConfig, source: Path | None, *, download: bool
-) -> tuple[InstallSource, Path | None]:
-    if source is not None:
-        return "selected", source
-    selected = select_codex_evaluator_executable(config)
-    if selected is not None:
-        return selected
+) -> tuple[InstallSource, EvaluatorCandidate | None]:
+    candidates = evaluator_candidates(config, executable=source)
+    if candidates:
+        return candidates[0].source, candidates[0]
     if download:
         return "download", None
     raise ValueError("codex_evaluator_runtime_unavailable")
@@ -1341,23 +1627,25 @@ def _install_source(
 def codex_evaluator_runtime_install_plan(
     *, source: Path | None, download: bool, config_path: Path | None = None
 ) -> dict[str, JsonValue]:
-    """Say which admitted bytes would be retained, and from where, before any side effect."""
+    """Say which runtime would be retained and checked, and from where, before any side effect."""
 
-    cell = host_codex_evaluator_cell()
+    platform = host_codex_platform()
     config = _base_config(config_path)
     bundle = runtime_bundle()
-    kind, selected = _install_source(config, source, download=download)
-    if selected is not None and admitted_native_executable(selected) is None:
-        raise ValueError("codex_runtime_capability_unsupported")
+    kind, candidate = _install_source(config, source, download=download)
+    identity = None if candidate is None else codex_source_identity(platform, candidate.version)
     return {
-        "schema": "yoetz.codex-evaluator-runtime-install-plan/1",
+        "schema": "yoetz.codex-evaluator-runtime-install-plan/2",
         "source": kind,
-        "source_path": None if selected is None else str(selected),
-        "runtime_version": CODEX_EVALUATOR_RUNTIME_VERSION,
-        "executable_sha256": cell.executable_sha256,
-        "code_mode_host_sha256": cell.code_mode_host_sha256,
-        "managed_runtime_path": str(managed_runtime_path(bundle, cell)),
-        "managed_runtime_state": inspect_managed_runtime(bundle, cell),
+        "source_path": None if candidate is None else str(candidate.path),
+        "runtime_version": "latest" if candidate is None else candidate.version,
+        "runtime_floor": CODEX_EVALUATOR_RUNTIME_FLOOR,
+        "managed_runtime_path": (
+            None if identity is None else str(managed_runtime_path(bundle, identity))
+        ),
+        "managed_runtime_state": (
+            None if identity is None else inspect_managed_runtime(bundle, identity)
+        ),
         "download": kind == "download",
     }
 
@@ -1369,47 +1657,53 @@ def _which_npm() -> Path:
     return Path(found).absolute()
 
 
-def codex_evaluator_runtime_install(
+def _resolve_downloaded_wrapper(wrapper: Path) -> tuple[Path, str]:
+    resolved = resolve_codex_executable(wrapper)
+    return resolved.native, resolved.version
+
+
+async def codex_evaluator_runtime_install(
     *,
     source: Path | None,
     npm: Path | None,
     download: bool,
     config_path: Path | None = None,
 ) -> dict[str, JsonValue]:
-    """Retain the admitted runtime; download it with npm only when ``download`` authorizes it.
+    """Retain and capability-check the newest eligible runtime; download only when authorized.
 
-    A local source is retained only when it resolves to the admitted cell. A download installs the
-    exact admitted release into an owner-private staging prefix with scripts disabled and keeps
-    only the native executable that hashes to the pinned digest. Neither path edits the binding.
+    A local source (or the newest eligible installation) is retained and checked. A download
+    installs ``@openai/codex@latest`` into an owner-private staging prefix with scripts disabled
+    and keeps only the native executable and its code-mode host. The check commits the capability
+    record. Neither path edits the binding.
     """
 
     with runtime_mutation_lock(runtime_bundle()):
-        cell = host_codex_evaluator_cell()
+        platform = host_codex_platform()
         config = _base_config(config_path)
         bundle = runtime_bundle()
-        kind, selected = _install_source(config, source, download=download)
-        if selected is None:
-            retained = provision_codex_runtime(
+        kind, candidate = _install_source(config, source, download=download)
+        if candidate is None:
+            retained, version = provision_codex_runtime(
                 bundle=bundle,
-                cell=cell,
-                runtime_version=CODEX_EVALUATOR_RUNTIME_VERSION,
+                platform=platform,
                 npm=_which_npm() if npm is None else npm,
-                resolve_wrapper=lambda wrapper: resolve_supported_codex_executable(wrapper)[0],
+                resolve_wrapper=_resolve_downloaded_wrapper,
             )
-        else:
-            native = admitted_native_executable(selected)
-            if native is None:
-                raise ValueError("codex_runtime_capability_unsupported")
-            retained = retain_codex_runtime(native, bundle=bundle, cell=cell)
+            candidate = EvaluatorCandidate("managed", retained, version)
+        checked = await _check_candidate(candidate, bundle=bundle)
         return {
-            "schema": "yoetz.codex-evaluator-runtime-install/1",
+            "schema": "yoetz.codex-evaluator-runtime-install/2",
             "source": kind,
-            "managed_runtime_path": str(retained),
-            "managed_runtime_state": inspect_managed_runtime(bundle, cell),
-            "runtime_version": CODEX_EVALUATOR_RUNTIME_VERSION,
-            "executable_sha256": cell.executable_sha256,
-            "code_mode_host_path": str(managed_code_mode_host_path(bundle, cell)),
-            "code_mode_host_sha256": cell.code_mode_host_sha256,
+            "managed_runtime_path": str(checked.retained),
+            "managed_runtime_state": inspect_managed_runtime(
+                bundle, checked.record.source_identity
+            ),
+            "runtime_version": checked.record.runtime_version,
+            "executable_sha256": checked.record.executable_sha256,
+            "code_mode_host_path": str(codex_code_mode_host_path(checked.retained)),
+            "code_mode_host_sha256": checked.record.code_mode_host_sha256,
+            "capability_cell_sha256": checked.record.digest,
+            "capability_profile": checked.record.capability_profile,
             "binding_changed": False,
             "host_installation_changed": False,
             "next_command": _SETUP if config.external_runtime is None else _REPAIR,
@@ -1417,33 +1711,40 @@ def codex_evaluator_runtime_install(
 
 
 def codex_evaluator_runtime_remove(*, config_path: Path | None = None) -> dict[str, JsonValue]:
-    """Delete only an unreferenced retained runtime; the binding and home are untouched."""
+    """Delete every retained runtime the binding does not use; the binding and home stay.
+
+    The release a binding uses is never removed; when it is the only retained runtime, removal is
+    refused as ``codex_evaluator_runtime_in_use``.
+    """
 
     with runtime_mutation_lock(runtime_bundle()):
-        cell = host_codex_evaluator_cell()
+        platform = host_codex_platform()
         config = _base_config(config_path)
         bundle = runtime_bundle()
-        managed = str(managed_runtime_path(bundle, cell))
-        if (
-            config.external_runtime is not None
-            and config.external_runtime.executable_path == managed
-        ):
+        bound = None if config.external_runtime is None else config.external_runtime.executable_path
+        retained = retained_runtimes(bundle, platform)
+        removable = [item for item in retained if str(item.path) != bound]
+        if retained and not removable:
             raise ValueError("codex_evaluator_runtime_in_use")
-        removed = remove_managed_runtime(bundle, cell)
+        removed: list[JsonValue] = []
+        for item in removable:
+            if remove_managed_runtime(bundle, item.source_identity):
+                removed.append(str(item.path))
         return {
-            "schema": "yoetz.codex-evaluator-runtime-remove/1",
-            "managed_runtime_path": managed,
-            "removed": removed,
+            "schema": "yoetz.codex-evaluator-runtime-remove/2",
+            "removed_runtimes": removed,
+            "removed": bool(removed),
+            "kept_runtime_path": bound if bound in {str(item.path) for item in retained} else None,
             "binding_changed": False,
             "codex_home_preserved": True,
             "host_installation_changed": False,
         }
 
 
-def _repair_target(
+def _repair_candidates(
     config: YoetzConfig, executable: Path | None
-) -> tuple[ExternalRuntimeProfileConfig, ExternalRuntimeProfileConfig, str, str, Path]:
-    """(existing, repaired, state before, source kind, retained source) with no side effect."""
+) -> tuple[ExternalRuntimeProfileConfig, str, tuple[EvaluatorCandidate, ...]]:
+    """(existing binding, state before, candidates newest first) with no side effect."""
 
     existing = config.external_runtime
     if existing is None:
@@ -1454,16 +1755,10 @@ def _repair_target(
     _refuse_home_fault(diagnosis, restorable=frozenset({"config_missing"}))
     if diagnosis.state not in _REPAIRABLE_STATES:
         raise ValueError(diagnosis.state)
-    if executable is not None:
-        kind, source = "selected", executable
-    else:
-        selected = select_codex_evaluator_executable(config)
-        if selected is None:
-            raise ValueError("codex_evaluator_runtime_unavailable")
-        kind, source = selected
-    validated = _rebound(existing, source)
-    repaired = _retained_binding(validated, bundle=runtime_bundle())
-    return existing, repaired, diagnosis.state, kind, Path(validated.executable_path)
+    candidates = evaluator_candidates(config, executable=executable)
+    if not candidates:
+        raise ValueError("codex_evaluator_runtime_unavailable")
+    return existing, diagnosis.state, candidates
 
 
 def _changed_fields(
@@ -1481,18 +1776,32 @@ def _changed_fields(
 def codex_subscription_repair_plan(
     *, config_path: Path | None = None, executable: Path | None = None
 ) -> dict[str, JsonValue]:
-    """Show exactly what repair would change; no store, home, config, or Codex side effect."""
+    """Show what repair would try; no store, home, config, or Codex side effect.
 
-    existing, repaired, state, kind, source = _repair_target(_base_config(config_path), executable)
+    The candidate list is newest first; repair binds the first one that passes the capability
+    check and lists the model for the dedicated home, so the exact identity fields are known
+    only after that check.
+    """
+
+    existing, state, candidates = _repair_candidates(_base_config(config_path), executable)
+    first = candidates[0]
+    platform = host_codex_platform()
+    identity = codex_source_identity(platform, first.version)
     return {
-        "schema": "yoetz.codex-subscription-repair-plan/1",
+        "schema": "yoetz.codex-subscription-repair-plan/2",
         "state_before": state,
-        "source": kind,
-        "source_path": str(source),
-        "changed_fields": _changed_fields(existing, repaired),
+        "source": first.source,
+        "source_path": str(first.path),
+        "runtime_version_before": existing.runtime_version,
+        "runtime_version_after": first.version,
+        "candidates": [
+            {"source": item.source, "path": str(item.path), "runtime_version": item.version}
+            for item in candidates
+        ],
         "capability_profile_before": existing.capability_profile,
-        "capability_profile_after": repaired.capability_profile,
-        "executable_path_after": repaired.executable_path,
+        "capability_profile_after": CODEX_EVALUATOR_CAPABILITY_PROFILE,
+        "executable_path_after": str(managed_runtime_path(runtime_bundle(), identity)),
+        "capability_check": "runs on each candidate, newest first, before anything is written",
         # Every owner choice the binding carries, whatever this release names them.
         "preserved": {
             name: getattr(existing, name)
@@ -1505,31 +1814,48 @@ def codex_subscription_repair_plan(
 async def codex_subscription_repair(
     *, config_path: Path | None = None, executable: Path | None = None
 ) -> dict[str, JsonValue]:
-    """Rebind to the current admitted cell and retained runtime, preserving every choice.
+    """Rebind to the newest runtime that passes the capability check, preserving every choice.
 
-    Order mirrors setup: the write is render-validated and lock-probed first, the runtime is
-    retained, the dedicated home's Yoetz-owned config is restored only when absent, then Codex's
-    own ``account/read``/``model/list`` probe must report the existing login usable before the
-    binding is written against the exact preimage. A home that is not signed in fails with
-    ``codex_subscription_login_required`` and nothing is written. Repair never starts a sign-in,
-    logs out, or switches accounts; privacy grants are not part of the binding and do not move.
+    Order mirrors setup: the write is render-validated and lock-probed first, the dedicated home's
+    Yoetz-owned config is restored only when absent, then candidates are retained, checked and
+    probed newest first. Codex's own ``account/read``/``model/list`` probe must report the existing
+    login usable before the binding is written against the exact preimage. A home that is not
+    signed in fails with ``codex_subscription_login_required`` and nothing is written. Repair
+    never starts a sign-in, logs out, or switches accounts; privacy grants are not part of the
+    binding and do not move.
     """
 
     with runtime_mutation_lock(runtime_bundle()):
         target = _target_config_path(config_path)
         base, expected_bytes = _config_snapshot(target)
-        existing, repaired, state, kind, source = _repair_target(base, executable)
-        selected_config = external_runtime_binding_config(repaired, base=base)
-        _bounded_config_operation(
-            lambda: preflight_config_write(selected_config, target, expected_bytes=expected_bytes)
+        existing, state, candidates = _repair_candidates(base, executable)
+        bundle = runtime_bundle()
+        make_binding = _rebinder(existing)
+        provisional = make_binding(
+            managed_runtime_path(bundle, _provisional_record(candidates[0]).source_identity),
+            _provisional_record(candidates[0]),
         )
-        _retain_binding_runtime(repaired, source=source, bundle=runtime_bundle())
-        prepare_codex_home(Path(repaired.codex_home))
-        status = await codex_account_status(_profile(repaired))
-        if status.cleanup == "failed":
-            raise ValueError("codex_subscription_readiness_unproven")
+        _bounded_config_operation(
+            lambda: preflight_config_write(
+                external_runtime_binding_config(provisional, base=base),
+                target,
+                expected_bytes=expected_bytes,
+            )
+        )
+        prepare_codex_home(Path(existing.codex_home))
+
+        async def readiness(binding: ExternalRuntimeProfileConfig) -> CodexRuntimeStatus:
+            return await codex_account_status(_profile(binding))
+
+        adopted = await _adopt_runtime(
+            candidates, bundle=bundle, make_binding=make_binding, readiness=readiness
+        )
+        repaired = adopted.binding
+        status = adopted.status
+        assert status is not None
         if not _already_ready(status):
             raise ValueError("codex_subscription_login_required")
+        selected_config = external_runtime_binding_config(repaired, base=base)
         written = _bounded_config_operation(
             lambda: write_config_toml_if_unchanged(
                 selected_config, expected_bytes=expected_bytes, path=target
@@ -1539,7 +1865,9 @@ async def codex_subscription_repair(
         result.update(
             {
                 "state_before": state,
-                "source": kind,
+                "source": adopted.checked.candidate.source,
+                "runtime_retained_from": str(adopted.checked.candidate.path),
+                "runtimes_passed_over": list(adopted.passed_over),
                 "changed_fields": _changed_fields(existing, repaired),
                 "login_reused": True,
                 "endpoint_role": _endpoint_role(selected_config),
