@@ -93,37 +93,40 @@ def _spellings(path: str) -> tuple[str, ...]:
     return tuple(sorted(forms, key=lambda spelling: (-len(spelling), spelling)))
 
 
-# A harmless spelling of the same repository-relative path: leading ``./`` segments, or an
-# absolute directory prefix that ends where the name starts. The absolute prefix may start at
-# ``/``, ``~`` (``~/`` or ``~user/``), ``$VAR/`` or ``${VAR}/``, optionally behind ``file://``, and
-# may hold empty or ``.`` segments (``//``, ``/./``). Either prefix is part of the matched token,
-# so the whole path token is withheld. A different relative directory (``x/artifacts/a.npz``,
-# ``../repo/a.npz``) never matches.
+# A harmless spelling of the same repository-relative path. ``./`` (also ``.//`` and ``././``)
+# may lead the relative path. An absolute prefix -- ``/``, ``~`` or ``~user``, ``$VAR`` or
+# ``${VAR}`` and then ``/``, optionally behind ``file://`` -- may lead any directories (empty and
+# ``.`` segments included) and then the name's last component: any absolute path that ends in a
+# withheld file's base name counts as that file, which can only withhold more, never less.
+# Either prefix is part of the matched token, so the whole path token is withheld. A different
+# relative directory (``x/artifacts/a.npz``, ``../repo/a.npz``) never matches.
 #
-# Every quantifier is bounded and a segment is matched possessively (a segment never contains
-# the ``/`` that ends it), so a search is linear in the text with a small constant: participant
-# prose reaches this pattern on the service event loop (#1073 review, P3).
+# Every quantifier is bounded, and the directories of an absolute prefix are taken possessively
+# (a segment never contains the ``/`` that ends it, and the prefix never gives a segment back),
+# so each start costs at most one bounded scan and one alternation: a search stays linear in the
+# text however many names there are. Participant prose reaches this pattern on the service event
+# loop (#1073 review).
 _MAX_PREFIX_SEGMENTS: Final = 64
 _MAX_SEGMENT_CHARS: Final = 255
 _MAX_DOT_SLASHES: Final = 16
 _ROOTS: Final = r"(?:file://)?(?:~[\w.-]{0,64}|\$\w{1,64}|\$\{\w{1,64}\})?/"
-_DOT_SLASHES: Final = rf"(?:\./){{1,{_MAX_DOT_SLASHES}}}"
+_DOT_SLASHES: Final = rf"\./(?:\.?/){{0,{_MAX_DOT_SLASHES}}}"
 
 
-def _same_path_prefix(segment: str) -> str:
-    return (
-        rf"(?:{_DOT_SLASHES}|{_ROOTS}"
-        rf"(?:{segment}{{0,{_MAX_SEGMENT_CHARS}}}+/){{0,{_MAX_PREFIX_SEGMENTS}}})"
-    )
+def _absolute_prefix(segment: str) -> str:
+    return rf"{_ROOTS}(?:{segment}{{0,{_MAX_SEGMENT_CHARS}}}+/){{0,{_MAX_PREFIX_SEGMENTS}}}+"
 
 
-# Unquoted prose has no token bound, so an unquoted segment stops at whitespace and at prose
-# delimiters; an unquoted absolute path through a directory with spaces is not one token there.
-_SAME_PATH_PREFIX: Final = _same_path_prefix(r"[^\s/\"'`<>|]")
+# Unquoted prose has no token bound, so an unquoted segment stops at whitespace and at prose and
+# list delimiters (``,``, ``;``, ``:``, brackets); an unquoted absolute path through a directory
+# with spaces or those characters is not one token there. Stopping at them also keeps the
+# possessive prefix from running past the end of one path into the next (``/r/a.npz,/r/b.npz``).
+_ABSOLUTE_PREFIX: Final = _absolute_prefix(r"[^\s/\"'`<>|,;:()\[\]{}]")
 # Inside one pair of quotes or backticks a path may contain spaces
 # (``"/Users/u/My Project/a.npz"``); the quotes bound the token, so a segment there may hold any
 # character but a quote, a backtick, a line break or a slash.
-_QUOTED_SAME_PATH_PREFIX: Final = _same_path_prefix(r"[^\"'`\n/]")
+_QUOTED_ABSOLUTE_PREFIX: Final = _absolute_prefix(r"[^\"'`\n/]")
+_EXTRA_SEPARATORS: Final = re.compile(r"/(?:\.?/)+")
 
 
 def _spelled(name: str) -> str:
@@ -131,47 +134,104 @@ def _spelled(name: str) -> str:
     return r"/(?:\.?/){0,8}".join(re.escape(segment) for segment in name.split("/"))
 
 
-def _pattern(spellings: Iterable[str]) -> re.Pattern[str]:
+def _longest_first(values: Iterable[str]) -> list[str]:
+    return sorted({value for value in values if value}, key=lambda value: (-len(value), value))
+
+
+def _union(names: Iterable[str]) -> str:
+    return "(?:" + "|".join(_spelled(name) for name in _longest_first(names)) + ")"
+
+
+@dataclass(frozen=True, slots=True)
+class _Spellings:
+    """One set of name spellings, split by the prefix each needs."""
+
+    bare: frozenset[str]  # readable alone: a path with a directory, a basename with an extension
+    relative: frozenset[str]  # behind ``./`` or quotes: every relative spelling
+    bases: frozenset[str]  # behind an absolute prefix: each name's last component
+
+    @classmethod
+    def of(cls, spellings: Iterable[str]) -> _Spellings:
+        quoted: set[str] = set()
+        prefixed: set[str] = set()
+        bare: set[str] = set()
+        for spelling in spellings:
+            if len(spelling) >= 2 and spelling[0] == '"' and spelling[-1] == '"':
+                quoted.add(spelling[1:-1])
+            elif spelling.startswith("./"):
+                # ``./name`` (from ``_spellings``) counts only behind a prefix or in quotes,
+                # so a plain word (``Summary``) without one stays readable.
+                if len(spelling) > 2:
+                    prefixed.add(spelling[2:])
+            elif spelling:
+                bare.add(spelling)
+        relative = quoted | prefixed | bare
+        bases = {name.rsplit("/", 1)[-1] for name in relative}
+        return cls(frozenset(bare), frozenset(relative), frozenset(bases))
+
+
+def _compile(names: _Spellings) -> re.Pattern[str]:
     # Longest first, and never inside a longer path-like token: ``a.npz`` does not match within
-    # ``data.npz`` or ``x/a.npz.bak``, so unrelated names and prose stay readable.
-    ordered = sorted(set(spellings), key=lambda s: (-len(s), s))
-    quoted = [s for s in ordered if len(s) >= 2 and s[0] == '"' and s[-1] == '"']
-    # ``./name`` (from ``_spellings``) is a name that counts only behind a ``./`` or absolute
-    # prefix, so a plain word (``Summary``) without such a prefix stays readable.
-    prefixed = sorted(
-        {s[2:] for s in ordered if s.startswith("./") and len(s) > 2},
-        key=lambda spelling: (-len(spelling), spelling),
-    )
-    bare = [s for s in ordered if s not in quoted and not s.startswith("./")]
-    inner = sorted(
-        {*(s[1:-1] for s in quoted), *bare, *prefixed},
-        key=lambda spelling: (-len(spelling), spelling),
-    )
-    alternatives: list[str] = [
+    # ``data.npz`` or ``x/a.npz.bak``, so unrelated names and prose stay readable. The groups say
+    # which kind of spelling matched, so a match maps back to its names without another search.
+    relative = _union(names.relative)
+    bases = _union(names.bases)
+    alternatives = [
         # A whole single-, double- or backtick-quoted path token, quotes included.
-        r"(?P<quote>[\"'`])(?:"
-        + _QUOTED_SAME_PATH_PREFIX
-        + ")?(?:"
-        + "|".join(_spelled(spelling) for spelling in inner)
-        + r")(?P=quote)"
+        r"(?P<quote>[\"'`])(?:(?:" + _DOT_SLASHES + ")?(?P<quoted_relative>" + relative + ")"
+        "|" + _QUOTED_ABSOLUTE_PREFIX + "(?P<quoted_base>" + bases + r"))(?P=quote)",
+        r"(?<![\w./-])(?:"
+        + _DOT_SLASHES
+        + "(?P<dotted_relative>"
+        + relative
+        + ")|"
+        + _ABSOLUTE_PREFIX
+        + "(?P<absolute_base>"
+        + bases
+        + ")"
+        + ("|(?P<bare>" + _union(names.bare) + ")" if names.bare else "")
+        + r")(?![\w/-]|\.\w)",
     ]
-    if bare:
-        alternatives.append(
-            r"(?<![\w./~$}-])(?:"
-            + _SAME_PATH_PREFIX
-            + ")?(?:"
-            + "|".join(_spelled(spelling) for spelling in bare)
-            + r")(?![\w/-]|\.\w)"
-        )
-    if prefixed:
-        alternatives.append(
-            r"(?<![\w./~$}-])"
-            + _SAME_PATH_PREFIX
-            + "(?:"
-            + "|".join(_spelled(spelling) for spelling in prefixed)
-            + r")(?![\w/-]|\.\w)"
-        )
     return re.compile("|".join(f"(?:{alternative})" for alternative in alternatives))
+
+
+def _pattern(spellings: Iterable[str]) -> re.Pattern[str]:
+    return _compile(_Spellings.of(spellings))
+
+
+class _NameMatcher:
+    """Every name's spans in one pass per text: one union search, then dictionary lookups."""
+
+    def __init__(self, paths: Sequence[str]) -> None:
+        self._relative: dict[str, set[str]] = {}
+        self._bases: dict[str, set[str]] = {}
+        everything: set[str] = set()
+        for path in paths:
+            spellings = _spellings(path)
+            everything.update(spellings)
+            names = _Spellings.of(spellings)
+            for name in names.relative:
+                self._relative.setdefault(name, set()).add(path)
+            for base in names.bases:
+                self._bases.setdefault(base, set()).add(path)
+        self._pattern = _compile(_Spellings.of(everything)) if everything else None
+
+    def paths_in(self, text: str) -> set[str]:
+        found: set[str] = set()
+        if self._pattern is None:
+            return found
+        for match in self._pattern.finditer(text):
+            for group, index in (
+                ("quoted_relative", self._relative),
+                ("dotted_relative", self._relative),
+                ("bare", self._relative),
+                ("quoted_base", self._bases),
+                ("absolute_base", self._bases),
+            ):
+                value = match.group(group) if group in self._pattern.groupindex else None
+                if value is not None:
+                    found.update(index.get(_EXTRA_SEPARATORS.sub("/", value), ()))
+        return found
 
 
 async def receipt_excerpts(
@@ -210,15 +270,19 @@ async def receipt_excerpts(
         excerpts: list[ReceiptExcerpt] = []
         if paths:
             spelled = [(path, _spellings(path)) for path in paths]
-            patterns = [_pattern(spellings) for _path, spellings in spelled]
+            # One union search per leaf, whatever the number of names (#1073 review).
+            matcher = _NameMatcher(paths)
             strings = _strings({"document": result.document, "human_text": result.human_text})
             for pointer, text in strings.items():
                 if _SECTION_TITLE.fullmatch(pointer):
                     continue
                 if classify_result_leaf("receipt", source, pointer) in _NOT_PROSE:
                     continue
+                hits = matcher.paths_in(text)
+                if not hits:
+                    continue
                 for index, (path, spellings) in enumerate(spelled):
-                    if patterns[index].search(text):
+                    if path in hits:
                         excerpts.append(
                             ReceiptExcerpt(
                                 f"{pointer}/@repository_name/{index}", pointer, path, spellings

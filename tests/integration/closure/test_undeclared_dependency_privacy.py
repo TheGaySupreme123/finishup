@@ -1391,7 +1391,7 @@ async def test_a_top_level_extensionless_name_is_withheld_behind_any_path_prefix
     status, _projected = await _projected_status(app, started, 31050)
     case, receipt = await _receipt_case(app, started, status, 31060, "json", "default_local_export")
     document = cast(dict[str, Any], receipt.document)
-    document["obligations"][0]["summary"] = "Loads ./vocab_table at start."
+    document["obligations"][0]["summary"] = "Loads ./vocab_table and .//vocab_table at start."
     document["sections"][0]["coverage_note"] = f"Checked {repository}//vocab_table too."
     body = document["sections"][0]["body"]
     # The quoted control proves the check recorded the undeclared top-level file.
@@ -1401,7 +1401,9 @@ async def test_a_top_level_extensionless_name_is_withheld_behind_any_path_prefix
     projected = await project_case(app, case, 31061)
     token = "(receipt prose withheld: repository_excerpt)"
     projected_document = cast(Mapping[str, Any], projected["document"])
-    assert projected_document["obligations"][0]["summary"] == f"Loads {token} at start."
+    assert projected_document["obligations"][0]["summary"] == (
+        f"Loads {token} and {token} at start."
+    )
     assert projected_document["sections"][0]["coverage_note"] == f"Checked {token} too."
     privacy = cast(Mapping[str, Any], projected["privacy_projection"])
     assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
