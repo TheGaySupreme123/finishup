@@ -336,8 +336,9 @@ async def status_review_mode(
     """The conversation's review mode for status (ADR-049); ``None`` when it cannot be read.
 
     Read-only: the owner's setting and review availability from the application's reader, and
-    the switches from the head compact projection. ``mode`` is what the next check that names no
-    mode runs in on this route. A read failure leaves status readable.
+    the switches from the head projection (status reads the head, never ``at_frontier``).
+    ``mode`` is what the next check that names no mode runs in on this route. A read failure
+    leaves status readable.
     """
 
     reader = getattr(app, "conversation_review_context", None)
@@ -349,7 +350,10 @@ async def status_review_mode(
         )(runtime)
         if type(context) is not ConversationReviewContext:
             return None
-        stored = await runtime.ledger.load_projection(runtime.session_id, ProjectionView.COMPACT)
+        # The full head projection: the compact view's items carry no decisions.
+        stored = await runtime.ledger.load_projection(
+            runtime.session_id, ProjectionView.CANDIDATE_FINDINGS
+        )
         switches = (
             review_mode_switches(stored.state)
             if stored is not None and type(stored.state) is ProjectionState

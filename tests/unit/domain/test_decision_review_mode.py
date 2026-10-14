@@ -17,20 +17,21 @@ from finishup.domain.events import (
     decode_payload,
     encode_payload,
 )
-from finishup.domain.values import actor_id
-from finishup.protocol.canonical import JsonValue
+from finishup.domain.values import JsonObject, actor_id
 from finishup.protocol.errors import ProtocolValueError
 from finishup.protocol.models import PublishWorkRequest
 from finishup.protocol.schemas import validate_schema_instance
 
 _REPO: Final = Path(__file__).resolve().parents[3]
 _JSON_FENCE: Final = re.compile(r"```json\n(?P<body>.*?)\n```", re.DOTALL)
-_SWITCH: Final[dict[str, JsonValue]] = {
-    "statement": "Turn on AI-powered review for the rest of this task.",
-    "rationale": "Cross-module change that local checks cannot judge.",
-    "authority": "harness:mcp-template",
-    "review_mode": "ai_powered",
-}
+_SWITCH: Final[JsonObject] = JsonObject(
+    {
+        "statement": "Turn on AI-powered review for the rest of this task.",
+        "rationale": "Cross-module change that local checks cannot judge.",
+        "authority": "harness:mcp-template",
+        "review_mode": "ai_powered",
+    }
+)
 
 
 def test_the_switch_rides_1_1_0_and_round_trips() -> None:
@@ -44,7 +45,7 @@ def test_the_switch_rides_1_1_0_and_round_trips() -> None:
 
 
 def test_1_1_0_requires_the_switch_and_1_0_0_refuses_it() -> None:
-    plain = {key: value for key, value in _SWITCH.items() if key != "review_mode"}
+    plain = JsonObject({key: value for key, value in _SWITCH.items() if key != "review_mode"})
     with pytest.raises(ProtocolValueError):
         decode_payload(EventSchema("decision_recorded", "1.1.0"), plain)
     with pytest.raises(ProtocolValueError):
@@ -59,7 +60,8 @@ def test_1_1_0_requires_the_switch_and_1_0_0_refuses_it() -> None:
 def test_only_the_two_closed_modes_decode() -> None:
     with pytest.raises(ProtocolValueError):
         decode_payload(
-            EventSchema("decision_recorded", "1.1.0"), {**_SWITCH, "review_mode": "semantic"}
+            EventSchema("decision_recorded", "1.1.0"),
+            JsonObject({**_SWITCH, "review_mode": "semantic"}),
         )
 
 

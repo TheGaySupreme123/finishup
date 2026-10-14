@@ -88,12 +88,15 @@ def test_the_three_answers_are_worded_for_the_owner(monkeypatch: pytest.MonkeyPa
     ],
 )
 def test_each_answer_maps_to_one_conversation_setting(
-    monkeypatch: pytest.MonkeyPatch, reply: str, choice: str, setting: ConversationReview
+    monkeypatch: pytest.MonkeyPatch,
+    reply: str,
+    choice: cli_setup.ReviewChoice,
+    setting: ConversationReview,
 ) -> None:
     _script_prompt(monkeypatch, [reply])
     chosen = _choose()
     assert chosen == choice
-    assert cli_setup.review_choice_conversation_setting(chosen) is setting
+    assert cli_setup.review_choice_conversation_setting(choice) is setting
 
 
 def test_local_only_stays_reachable_as_the_second_answer(
