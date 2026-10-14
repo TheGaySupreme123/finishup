@@ -3,8 +3,6 @@
    Mirrors the FinishUp design-system tokens (warm paper, deep ink, mint).
    ============================================================ */
 
-@import url("https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap");
-
 :root {
   /* ---------- BRAND ---------- */
   --deep-green: #064e3b;
@@ -21,7 +19,7 @@
   /* ---------- TEXT ---------- */
   --ink: #11201b;
   --ink-muted: #4a5e57;
-  --ink-faint: #b9c7c1;
+  --ink-faint: #4a5e57;
   --accent-text: var(--deep-green);
 
   /* ---------- ACTION / SIGNAL ---------- */

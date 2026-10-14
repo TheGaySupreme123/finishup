@@ -15,7 +15,12 @@ button { font-family: inherit; cursor: pointer; border: 0; }
 a { color: var(--accent-text); }
 a:hover { color: var(--ink); }
 img, svg { max-width: 100%; }
-:focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; border-radius: var(--radius-sm); }
+:focus-visible { outline: 2px solid var(--deep-green); outline-offset: 3px; border-radius: var(--radius-sm); }
+.skip-link { position: fixed; top: 8px; left: 8px; z-index: 40; padding: 12px; background: var(--surface-card); transform: translateY(-200%); }
+.skip-link:focus { transform: none; }
+.motion-toggle { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-sm); color: var(--deep-green); background: var(--pale-mint); }
+.motion-toggle[hidden] { display: none; }
+.motion-toggle svg { width: 18px; height: 18px; }
 
 /* ---------- Type ---------- */
 .eyebrow {
@@ -50,6 +55,7 @@ img, svg { max-width: 100%; }
 }
 .display .accent { color: var(--accent-text); }
 .display strong { font-weight: 600; }
+.copy.foot .display { font-size: clamp(36px, 5vw, 64px); }
 
 /* ---------- Buttons ---------- */
 .btn {
@@ -71,6 +77,22 @@ img, svg { max-width: 100%; }
 .btn.quiet { background: var(--surface-200); color: var(--accent-text); }
 .btn.quiet:hover { background: var(--highlight); color: var(--accent-text); }
 .btn svg { width: 18px; height: 18px; }
+.add-agent[hidden] { display: none; }
+.install-copy[hidden] { display: none; }
+
+/* ---------- Install ---------- */
+.install { position: relative; background: var(--surface-100); scroll-margin-top: 72px; }
+.install-inner { max-width: 1120px; margin: 0 auto; padding: 72px 24px; }
+.install .display { font-size: clamp(36px, 5vw, 64px); }
+.install-intro { max-width: 65ch; font-size: 17px; line-height: 1.5; color: var(--ink-muted); }
+.install-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin: 32px 0; }
+.install-option { padding: 24px; border: 1px solid var(--border-strong); border-radius: var(--radius-md); }
+.install-option h3 { margin: 0 0 16px; font-size: 22px; }
+.install-option p { line-height: 1.5; color: var(--ink-muted); }
+.install pre, .toast pre { font: 400 14px/1.6 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.install pre { min-height: 3.2em; margin: 0 0 20px; }
+.install code { font-family: var(--font-mono); }
+.toast > div { min-width: 0; }
 
 /* ---------- Nav ---------- */
 .nav {
@@ -249,13 +271,29 @@ img, svg { max-width: 100%; }
 }
 .copy.on { opacity: 1; transform: none; }
 .copy.on a, .copy.on button { pointer-events: auto; }
+.hero-word { display: block; }
+.story.animated .hero-word { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.review-line { display: block; }
+.review-note { margin: 0; max-width: 38ch; font: 400 17px/1.5 var(--font-sans); color: var(--ink-muted); }
+.story:not(.animated) .stage { position: relative; height: auto; overflow: visible; }
+.story:not(.animated) canvas, .story:not(.animated) .spacer { display: none; }
+.story:not(.animated) .copies { position: static; pointer-events: auto; }
+.story:not(.animated) .copy { position: relative; min-height: 220px; padding: 48px 24px; opacity: 1; transform: none; justify-content: center; }
+.story:not(.animated) .copy.hero { display: block; padding-top: 72px; }
+.story:not(.animated) .hero-top, .story:not(.animated) .hero-bottom { position: static; transform: none; }
+.story:not(.animated) .hero-bottom { margin-top: 32px; }
+.story:not(.animated) .copy-right { margin: 0 auto; align-items: center; text-align: center; }
+.story:not(.animated) .dot-word { display: inline; height: auto; margin: 0; }
 .copy.foot { align-items: flex-end; justify-content: center; }
 .copy.hero { position: absolute; }
 .paper { display: inline-flex; align-items: center; gap: 6px; font: 500 15px/1 var(--font-sans); color: var(--accent-text); text-decoration: underline; text-underline-offset: 3px; padding: 8px 0; }
 .paper svg { width: 16px; height: 16px; }
 
 /* ---------- Phone: artwork up top, copy at the bottom, one column ---------- */
-@media (max-width: 720px) {
+@media (max-width: 719px) {
+  .install { scroll-margin-top: 60px; }
+  .install-options { grid-template-columns: minmax(0, 1fr); }
+  .install-inner { padding: 48px 16px; }
   .nav-inner { height: 60px; padding: 0 16px; gap: 12px; }
   .lockup img { height: 26px; }
   .nav-links { gap: 8px; }
@@ -268,7 +306,7 @@ img, svg { max-width: 100%; }
   .stanza.sub { font-size: 20px; }
   .display { font-size: clamp(34px, 11vw, 44px); }
   .hero-top { top: calc(36% - 100px); }
-  .hero-bottom { top: auto; bottom: 56px; }
+  .hero-bottom { top: auto; bottom: 80px; }
   .copy.foot { padding-bottom: 56px; }
   .copy-center { gap: 16px; }
   .actions { gap: 10px; }
@@ -279,4 +317,9 @@ img, svg { max-width: 100%; }
   .footer-links { margin-left: 0; gap: 16px; }
   .footer-meta { flex-basis: 100%; }
   .toast { bottom: 12px; }
+}
+
+@media (max-width: 400px) {
+  .nav .lockup img { height: 24px; }
+  .nav .btn.sm { padding: 0 8px; font-size: 12px; }
 }
