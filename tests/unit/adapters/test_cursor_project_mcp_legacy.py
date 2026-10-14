@@ -187,6 +187,56 @@ def test_remove_takes_a_legacy_only_entry(tmp_path: Path) -> None:
     assert _servers(target) == {}
 
 
+def test_remove_owned_legacy_entry_preserves_foreign_current_entry(tmp_path: Path) -> None:
+    target = _target(tmp_path)
+    foreign = {"type": "stdio", "command": "/usr/bin/other-tool", "args": ["private-value"]}
+    other = {"command": "keep"}
+    _write_servers(target, {"finishup": foreign, "yoetz": _entry(ALIAS), "other": other})
+    assert _status(target)["state"] == "foreign_present"
+
+    # Install would overwrite the foreign current key, so it still refuses.
+    with pytest.raises(CursorProjectMcpError) as caught:
+        _apply(target, "install")
+    assert caught.value.reason == "cursor_project_mcp_foreign_present"
+
+    preview, applied = _apply(target, "remove")
+    assert preview["action"] == "unregister"
+    assert preview["legacy_registration"] == "legacy_only"
+    assert "foreign_entry_present" in preview["warnings"]
+    assert applied["state_after"] == "foreign_present"
+    assert _servers(target) == {"finishup": foreign, "other": other}
+    assert _status(target)["legacy_registration"] == "none"
+
+
+def test_remove_owned_legacy_entry_beside_foreign_current_refuses_stale_preview(
+    tmp_path: Path,
+) -> None:
+    target = _target(tmp_path)
+    foreign = {"command": "other-tool"}
+    _write_servers(target, {"finishup": foreign, "yoetz": _entry(ALIAS)})
+    preview = preview_cursor_project_mcp(
+        target,
+        action="remove",
+        launcher=LAUNCHER,
+        route_profile=None,
+        isolation_root=None,
+    )
+    changed = _entry(ALIAS, project_root=target.project_root)
+    _write_servers(target, {"finishup": foreign, "yoetz": changed})
+    with pytest.raises(CursorProjectMcpError) as caught:
+        apply_cursor_project_mcp(
+            target,
+            action="remove",
+            launcher=LAUNCHER,
+            route_profile=None,
+            isolation_root=None,
+            preview_digest=str(preview["preview_digest"]),
+            accept=True,
+        )
+    assert caught.value.reason == "cursor_project_mcp_preview_stale"
+    assert _servers(target) == {"finishup": foreign, "yoetz": changed}
+
+
 def test_foreign_legacy_entry_is_reported_and_never_touched(tmp_path: Path) -> None:
     target = _target(tmp_path)
     foreign = {"type": "stdio", "command": "/usr/bin/other-tool", "args": ["serve"]}

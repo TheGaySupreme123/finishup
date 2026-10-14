@@ -102,6 +102,16 @@ class _Registrations:
         return self.current
 
     @property
+    def removable(self) -> _Entry:
+        """Select an owned key independently of a foreign entry under the other name."""
+
+        if self.current.state is McpRegistrationState.FINISHUP_OWNED:
+            return self.current
+        if self.legacy.state is McpRegistrationState.FINISHUP_OWNED:
+            return self.legacy
+        return self.effective
+
+    @property
     def legacy_registration(self) -> LegacyRegistration:
         if self.legacy.state is McpRegistrationState.ABSENT:
             return "none"
@@ -671,7 +681,10 @@ class CodexMcpAdapter:
                 McpRegistrationReason.REGISTRATION_FAILED,
                 {"verified_state": after.current.state.value},
             )
-        if after.legacy.state is McpRegistrationState.FINISHUP_OWNED:
+        if after.legacy.state is McpRegistrationState.FINISHUP_OWNED or (
+            registrations.legacy.state is McpRegistrationState.FINISHUP_OWNED
+            and after.legacy.state is not McpRegistrationState.ABSENT
+        ):
             raise McpRegistrationError(
                 McpRegistrationReason.REGISTRATION_FAILED,
                 {"legacy_state": after.legacy.state.value},
@@ -687,7 +700,7 @@ class CodexMcpAdapter:
     def _unregistration_preview_for(
         self, binary: HarnessBinary, registrations: _Registrations
     ) -> McpRegistrationPreview:
-        effective = registrations.effective
+        effective = registrations.removable
         state, current_command, current_root = effective.state, effective.command, effective.root
         action = (
             McpRegistrationAction.NOOP
@@ -695,9 +708,9 @@ class CodexMcpAdapter:
             else McpRegistrationAction.UNREGISTER
         )
         warnings: list[str] = list(registrations.legacy_warnings())
-        if state is McpRegistrationState.FOREIGN_PRESENT:
+        if registrations.current.state is McpRegistrationState.FOREIGN_PRESENT:
             warnings.append("foreign_entry_present")
-        elif state is McpRegistrationState.FINISHUP_OWNED:
+        if state is McpRegistrationState.FINISHUP_OWNED:
             # Codex 0.149.x exposes a name-based remove command, not a compare-and-remove token.
             # Apply narrows that host limitation with an immediate ownership recheck below and
             # the preview must surface the remaining non-atomic boundary to the operator.
@@ -782,7 +795,7 @@ class CodexMcpAdapter:
                 preview.preview_digest,
             )
         before_remove = self._observe_registration_state(binary)
-        if before_remove.effective.state is McpRegistrationState.FOREIGN_PRESENT:
+        if before_remove.removable.state is McpRegistrationState.FOREIGN_PRESENT:
             raise McpRegistrationError(McpRegistrationReason.FOREIGN_ENTRY_PRESENT, {})
         if before_remove != registrations:
             raise McpRegistrationError(McpRegistrationReason.PREVIEW_STALE, {})
@@ -797,7 +810,23 @@ class CodexMcpAdapter:
             if entry.state is McpRegistrationState.FINISHUP_OWNED
         )
         nonzero = False
-        for name in names:
+        for index, name in enumerate(names):
+            if index:
+                # The first removal can run host code. Recheck the other key immediately
+                # before its name-based removal so a replacement is never treated as ours.
+                try:
+                    latest = self._observe_registration_state(binary).legacy
+                except McpRegistrationError as exc:
+                    raise McpRegistrationError(
+                        McpRegistrationReason.REGISTRATION_FAILED, {"legacy_state": "unknown"}
+                    ) from exc
+                if latest.state is McpRegistrationState.ABSENT:
+                    continue
+                if latest != registrations.legacy:
+                    raise McpRegistrationError(
+                        McpRegistrationReason.REGISTRATION_FAILED,
+                        {"legacy_state": latest.state.value},
+                    )
             try:
                 remove_output = self._run((binary.executable_path, "mcp", "remove", name))
             except Exception as exc:
@@ -817,12 +846,17 @@ class CodexMcpAdapter:
             # malformed verification is therefore an outcome-unknown mutation,
             # not the pre-mutation observation reason.
             raise McpRegistrationError(McpRegistrationReason.REGISTRATION_FAILED, details) from exc
-        if after.current.state is not McpRegistrationState.ABSENT:
+        if after.current.state is McpRegistrationState.FINISHUP_OWNED or (
+            MCP_SERVER_NAME in names and after.current.state is not McpRegistrationState.ABSENT
+        ):
             raise McpRegistrationError(
                 McpRegistrationReason.REGISTRATION_FAILED,
                 {**details, "verified_state": after.current.state.value},
             )
-        if after.legacy.state is McpRegistrationState.FINISHUP_OWNED:
+        if after.legacy.state is McpRegistrationState.FINISHUP_OWNED or (
+            MCP_LEGACY_SERVER_NAME in names
+            and after.legacy.state is not McpRegistrationState.ABSENT
+        ):
             raise McpRegistrationError(
                 McpRegistrationReason.REGISTRATION_FAILED,
                 {**details, "legacy_state": after.legacy.state.value},

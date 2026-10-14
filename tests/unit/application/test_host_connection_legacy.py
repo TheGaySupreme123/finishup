@@ -13,13 +13,15 @@ import shutil
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from finishup.adapters.integrations.cursor_integration import (
     CursorPluginTarget,
     apply_cursor_plugin,
     preview_cursor_plugin,
     render_cursor_plugin,
 )
-from finishup.adapters.integrations.host_discovery import HostInstallation
+from finishup.adapters.integrations.host_discovery import HostInstallation, SetupHost
 from finishup.application.host_connection import (
     ConnectionAction,
     ConnectionPlan,
@@ -160,3 +162,32 @@ def test_one_reviewed_connect_migrates_and_one_disconnect_removes(tmp_path: Path
     assert status["legacy_installation"] == "none"
     assert not (config / "plugins" / "local" / "yoetz").exists()
     assert json.loads((project / ".cursor" / "mcp.json").read_bytes())["mcpServers"] == {}
+
+
+@pytest.mark.parametrize("host", ["cursor-ide", "cursor-cli"])
+def test_reviewed_disconnect_preserves_foreign_current_mcp_entry(
+    tmp_path: Path, host: SetupHost
+) -> None:
+    launcher = tmp_path / "bin" / "finishup"
+    launcher.parent.mkdir()
+    launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    launcher.chmod(0o700)
+    project, config = _legacy_connection(tmp_path, launcher)
+    path = project / ".cursor" / "mcp.json"
+    document = json.loads(path.read_bytes())
+    foreign = {"command": "other-server", "args": ["private-value"]}
+    document["mcpServers"]["finishup"] = foreign
+    path.write_text(json.dumps(document), encoding="utf-8")
+    installation = HostInstallation(host, launcher, "3.17.8", config, "Cursor")
+
+    plan, status = _connection(installation, project, launcher, "disconnect", 5)
+    assert plan.body["changes"] == ["remove_legacy_plugin", "remove_project_mcp"]
+    mcp_preview = cast(dict[str, Any], plan.body["mcp_preview"])
+    assert mcp_preview["action"] == "unregister"
+    assert mcp_preview["legacy_registration"] == "legacy_only"
+    assert "foreign_entry_present" in mcp_preview["warnings"]
+    assert status["configured"] is False
+    assert status["legacy_installation"] == "none"
+    assert cast(dict[str, Any], status["project_mcp"])["state"] == "foreign_present"
+    assert not (config / "plugins" / "local" / "yoetz").exists()
+    assert json.loads(path.read_bytes())["mcpServers"] == {"finishup": foreign}

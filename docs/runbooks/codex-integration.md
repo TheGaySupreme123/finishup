@@ -1191,14 +1191,16 @@ not observed, and the result fails safe (legacy entries kept, or `unverified`).
 **Write scope.** The `.agents/plugins/yoetz` and `.agents/skills/yoetz` trees and `yoetz_receipt.*`
 or `yoetz-export.*` artifacts are still classified as FinishUP's own (`yoetz_owned`, non-counting).
 
+An owned registration under `yoetz` beside a foreign `finishup` entry can still be removed:
+remove and disconnect delete only the owned `yoetz` entry, and their preview warns
+`foreign_entry_present`. Register refuses to overwrite the foreign `finishup` entry. To migrate
+instead, remove or rename the foreign entry yourself, then integrate again.
+
 **Manual steps for state FinishUP cannot prove.** FinishUP never removes these; inspect each one and
 remove it yourself only if it is a leftover:
 
 - A `foreign` `yoetz` MCP entry, including one whose absolute launcher points at a runtime that no
   longer exists (for example a pre-upgrade tool path): `codex mcp remove yoetz`.
-- An owned registration under `yoetz` while the `finishup` key holds a foreign entry: register and
-  remove both refuse with `foreign_entry_present`. Remove or rename the foreign `finishup` entry
-  first, then integrate again.
 - A non-identical legacy table, a modified `.agents/plugins/yoetz` or `.agents/skills/yoetz` tree,
   or unmanaged content under `plugins/cache/yoetz/`: review and edit or delete it by hand.
 
@@ -1573,8 +1575,9 @@ finishup integrate codex mcp remove --accept --preview-digest <digest> --json
 
 The first command exposes the exact unregistration digest and current owned route without
 mutation. Noninteractive removal requires that digest plus `--accept`; `--accept` alone fails
-closed. Apply re-reads the current entry immediately before it runs `codex mcp remove finishup` and
-refuses a foreign replacement or changed FinishUP route observed at that boundary. An
+closed. Apply selects owned entries under `finishup` and `yoetz`, re-reads each immediately before
+its name-based remove, and refuses a foreign replacement or changed FinishUP route observed at
+that boundary. A foreign entry under the other name is retained. An
 already-absent entry is a no-op only after the same successful `mcp list --json` absence check.
 Interactive removal shows the exact command, route profile, warning tokens, and preview digest
 before requesting confirmation.
@@ -1584,7 +1587,7 @@ preview therefore includes `host_remove_not_compare_and_swap`: the owner must ke
 Codex MCP configuration writers quiescent during the accepted apply. The immediate pre-remove
 recheck narrows the host limitation, but cannot atomically exclude a non-cooperating replacement
 inside the final subprocess scheduling window. Post-apply verification still fails closed if the
-entry is not positively observed absent; a generic failed named lookup is not success.
+removed key is not positively observed absent; a generic failed named lookup is not success.
 Plugin-managed MCP is not this command: it goes away with the plugin artifact, not with `codex mcp
 remove`.
 

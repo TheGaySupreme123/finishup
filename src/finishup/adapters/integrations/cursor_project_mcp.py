@@ -733,7 +733,10 @@ def _plan(
     if target.project_binding not in {None, "mcp-roots", "registered-project"}:
         raise _fail("command_invalid")
     observed = _inspect(target, launcher, isolation_root, known_launchers)
-    if observed.state not in {"absent", "yoetz_owned"}:
+    remove_legacy_beside_foreign = (
+        action == "remove" and observed.state == "foreign_present" and observed.project_legacy_owned
+    )
+    if observed.state not in {"absent", "yoetz_owned"} and not remove_legacy_beside_foreign:
         raise _fail(observed.state)
     route = route_profile or observed.route or "policy"
     binding = target.project_binding or observed.project_binding or "mcp-roots"
@@ -743,9 +746,10 @@ def _plan(
     mutation = "noop"
     legacy_owned = observed.project_legacy_owned
     if action == "remove":
-        if observed.state == "yoetz_owned":
+        if observed.state == "yoetz_owned" or remove_legacy_beside_foreign:
             # Remove takes owned entries under both keys (ADR-048).
-            servers.pop(MCP_SERVER_NAME, None)
+            if observed.state == "yoetz_owned":
+                servers.pop(MCP_SERVER_NAME, None)
             if legacy_owned:
                 del servers[LEGACY_MCP_SERVER_NAME]
             mutation = "unregister"
@@ -790,6 +794,7 @@ def _plan(
             "host_config_not_compare_and_swap",
             "host_restart_required",
             *_legacy_warnings(observed.legacy_registration),
+            *(["foreign_entry_present"] if remove_legacy_beside_foreign else []),
         ],
     }
     body["preview_digest"] = canonical_digest(body)
@@ -916,7 +921,13 @@ def apply_cursor_project_mcp(
         after = _inspect(target, launcher, isolation_root, known_launchers)
     except CursorProjectMcpError:
         raise _fail("write_failed") from None
-    expected_state = "absent" if action == "remove" else "yoetz_owned"
+    expected_state = (
+        "foreign_present"
+        if action == "remove" and observed.state == "foreign_present"
+        else "absent"
+        if action == "remove"
+        else "yoetz_owned"
+    )
     if (
         after.raws[0] != replacement
         or after.state != expected_state

@@ -1186,7 +1186,7 @@ def test_remove_takes_owned_entries_under_both_keys() -> None:
     assert preview.action is McpRegistrationAction.UNREGISTER
     assert preview.legacy_registration == "duplicate"
     assert preview.warnings == ("host_remove_not_compare_and_swap", "legacy_registration_owned")
-    listings = iter([legacy, legacy, b"[]"])
+    listings = iter([legacy, legacy, legacy, b"[]"])
     calls: list[tuple[str, ...]] = []
 
     def host(argv: tuple[str, ...]) -> CommandOutput:
@@ -1247,6 +1247,181 @@ def test_remove_of_a_legacy_only_entry_leaves_a_foreign_one_alone() -> None:
     assert noop.action is McpRegistrationAction.NOOP
     assert noop.state_before is McpRegistrationState.ABSENT
     assert noop.warnings == ("legacy_registration_foreign",)
+
+
+@pytest.mark.parametrize("exit_code", [0, 23])
+def test_remove_owned_legacy_entry_beside_foreign_current_entry(exit_code: int) -> None:
+    foreign = CommandOutput(0, b'{"command":"other-server","args":["private-value"]}')
+    legacy = _listing("yoetz", _legacy_entry())
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(_Runner([foreign], listing=legacy)).preview_unregistration(_BINARY)
+    )
+    assert preview.action is McpRegistrationAction.UNREGISTER
+    assert preview.state_before is McpRegistrationState.FINISHUP_OWNED
+    assert preview.serve_command == _LEGACY_BARE
+    assert preview.warnings == (
+        "foreign_entry_present",
+        "host_remove_not_compare_and_swap",
+        "legacy_registration_owned",
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def host(argv: tuple[str, ...]) -> CommandOutput:
+        calls.append(argv)
+        if argv[2] == "get":
+            return foreign
+        if argv[2] == "remove":
+            assert argv[3] == "yoetz"
+            return CommandOutput(exit_code, b"")
+        removed = any(call[2] == "remove" for call in calls)
+        return CommandOutput(0, b"[]" if removed else legacy)
+
+    result = anyio.run(
+        lambda: CodexMcpAdapter(host).apply_unregistration(
+            _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+        )
+    )
+    assert result.state_after is McpRegistrationState.ABSENT
+    assert _mutations(calls) == [("/opt/harness/bin/codex", "mcp", "remove", "yoetz")]
+    assert result.warnings == (("host_remove_returned_nonzero",) if exit_code else ())
+    # Registering would overwrite the foreign new key and still refuses on this same state.
+    registration = anyio.run(
+        lambda: CodexMcpAdapter(_Runner([foreign], listing=legacy)).preview_registration(_BINARY)
+    )
+    with pytest.raises(McpRegistrationError) as caught:
+        anyio.run(
+            lambda: CodexMcpAdapter(_Runner([foreign], listing=legacy)).apply_registration(
+                _BINARY, McpRegistrationCommand(registration.preview_digest, True)
+            )
+        )
+    assert caught.value.reason is McpRegistrationReason.FOREIGN_ENTRY_PRESENT
+
+
+def test_remove_rechecks_the_legacy_key_after_removing_the_current_key() -> None:
+    legacy = _listing("yoetz", _legacy_entry())
+    foreign = _listing("yoetz", b'{"command":"other-server"}')
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(0, _finishup_entry())], listing=legacy)
+        ).preview_unregistration(_BINARY)
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def host(argv: tuple[str, ...]) -> CommandOutput:
+        calls.append(argv)
+        removed = any(call[2] == "remove" for call in calls)
+        if argv[2] == "get":
+            return CommandOutput(1, b"") if removed else CommandOutput(0, _finishup_entry())
+        if argv[2] == "remove":
+            return CommandOutput(0, b"")
+        return CommandOutput(0, foreign if removed else legacy)
+
+    with pytest.raises(McpRegistrationError) as caught:
+        anyio.run(
+            lambda: CodexMcpAdapter(host).apply_unregistration(
+                _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+            )
+        )
+    assert caught.value.reason is McpRegistrationReason.REGISTRATION_FAILED
+    assert caught.value.safe_details == {"legacy_state": "foreign_present"}
+    assert _mutations(calls) == [("/opt/harness/bin/codex", "mcp", "remove", "finishup")]
+
+
+@pytest.mark.parametrize("exit_code", [0, 23])
+def test_removed_legacy_key_requires_positive_absence(exit_code: int) -> None:
+    legacy = _listing("yoetz", _legacy_entry())
+    foreign = _listing("yoetz", b'{"command":"other-server"}')
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(1, b""), CommandOutput(0, legacy)])
+        ).preview_unregistration(_BINARY)
+    )
+    runner = _Runner(
+        [
+            CommandOutput(1, b""),
+            CommandOutput(0, legacy),
+            CommandOutput(1, b""),
+            CommandOutput(0, legacy),
+            CommandOutput(exit_code, b""),
+            CommandOutput(1, b""),
+            CommandOutput(0, foreign),
+        ]
+    )
+    with pytest.raises(McpRegistrationError) as caught:
+        anyio.run(
+            lambda: CodexMcpAdapter(runner).apply_unregistration(
+                _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+            )
+        )
+    assert caught.value.reason is McpRegistrationReason.REGISTRATION_FAILED
+    assert caught.value.safe_details.get("legacy_state") == "foreign_present"
+    assert _mutations(runner.calls) == [("/opt/harness/bin/codex", "mcp", "remove", "yoetz")]
+
+
+def test_migration_requires_positive_absence_of_the_removed_legacy_key() -> None:
+    legacy = _listing("yoetz", _legacy_entry())
+    foreign = _listing("yoetz", b'{"command":"other-server"}')
+    preview = anyio.run(
+        lambda: CodexMcpAdapter(
+            _Runner([CommandOutput(1, b""), CommandOutput(0, legacy)])
+        ).preview_registration(_BINARY)
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def host(argv: tuple[str, ...]) -> CommandOutput:
+        calls.append(argv)
+        if argv[2] in {"add", "remove"}:
+            return CommandOutput(0, b"")
+        added = any(call[2] == "add" for call in calls)
+        removed = any(call[2] == "remove" for call in calls)
+        if argv[2] == "get":
+            return CommandOutput(0, _finishup_entry()) if added else CommandOutput(1, b"")
+        return CommandOutput(0, foreign if removed else legacy)
+
+    with pytest.raises(McpRegistrationError) as caught:
+        anyio.run(
+            lambda: CodexMcpAdapter(host).apply_registration(
+                _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+            )
+        )
+    assert caught.value.reason is McpRegistrationReason.REGISTRATION_FAILED
+    assert caught.value.safe_details == {"legacy_state": "foreign_present"}
+    assert _mutations(calls)[-1] == ("/opt/harness/bin/codex", "mcp", "remove", "yoetz")
+
+
+@pytest.mark.parametrize("removed_name", ["finishup", "yoetz"])
+def test_remove_does_not_report_absence_when_another_owned_key_appears(removed_name: str) -> None:
+    legacy = _listing("yoetz", _legacy_entry())
+    foreign = CommandOutput(0, b'{"command":"other-server"}')
+    initial = (
+        _Runner([CommandOutput(0, _finishup_entry())])
+        if removed_name == "finishup"
+        else _Runner([foreign], listing=legacy)
+    )
+    preview = anyio.run(lambda: CodexMcpAdapter(initial).preview_unregistration(_BINARY))
+    calls: list[tuple[str, ...]] = []
+
+    def host(argv: tuple[str, ...]) -> CommandOutput:
+        calls.append(argv)
+        removed = any(call[2] == "remove" for call in calls)
+        if argv[2] == "remove":
+            return CommandOutput(0, b"")
+        if argv[2] == "get":
+            if removed_name == "finishup":
+                return CommandOutput(1, b"") if removed else CommandOutput(0, _finishup_entry())
+            return CommandOutput(0, _finishup_entry()) if removed else foreign
+        if removed_name == "finishup":
+            return CommandOutput(0, legacy if removed else b"[]")
+        return CommandOutput(0, b"[]" if removed else legacy)
+
+    with pytest.raises(McpRegistrationError) as caught:
+        anyio.run(
+            lambda: CodexMcpAdapter(host).apply_unregistration(
+                _BINARY, McpRegistrationCommand(preview.preview_digest, True)
+            )
+        )
+    assert caught.value.reason is McpRegistrationReason.REGISTRATION_FAILED
+    assert _mutations(calls) == [("/opt/harness/bin/codex", "mcp", "remove", removed_name)]
 
 
 @pytest.mark.parametrize(

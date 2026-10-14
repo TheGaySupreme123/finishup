@@ -573,6 +573,12 @@ export both `FINISHUP_ISOLATED_ROOT` and `YOETZ_ISOLATED_ROOT` with one value wh
 alias ships; readers accept either name alone or both equal, and two different values are not
 FinishUP's binding.
 
+When the project file holds an owned `yoetz` entry beside a foreign `finishup` entry, project MCP
+remove and disconnect remove only the owned `yoetz` entry. The preview warns
+`foreign_entry_present`, and the result keeps that state for the retained foreign entry. Project
+MCP install still refuses to overwrite it; rename or remove the foreign entry yourself before
+migrating.
+
 **Admission.** Grant writes only the `finishup` forms. The exact legacy entries `yoetz:check` (IDE),
 `Mcp(yoetz:check)` and `Mcp(plugin-yoetz-yoetz:check)` (Agent CLI) are reported as `legacy_entries`,
 removed by `admission revoke` and the removal sweeps, and retired by a grant once nothing FinishUP
