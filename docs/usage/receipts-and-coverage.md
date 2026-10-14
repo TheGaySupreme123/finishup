@@ -71,7 +71,7 @@ Not honest:
 ## The trap: a clean local-only check
 
 A clean `deterministic_only` check is **not** an implementation review. A clean result means “no
-issue detected within deterministic coverage”, and a clean receipt says the same:
+issue detected within local coverage”, and a clean receipt says the same:
 `no_unresolved_deterministic_findings`. Where AI-powered review is required, a `deterministic_only`
 check records `semantic_review_not_requested` and that limitation keeps the receipt at
 `insufficient_coverage`. Where it is not required (it is optional or off, or the owner connected
@@ -419,7 +419,7 @@ returned, acknowledgements of observation-authored non-actionable findings, and 
 host and FinishUP itself add around any tool call. FinishUP does not count your own `status`,
 `read_guidance`, `receipt` or `check` calls, read-only reads, the host's stream bookkeeping
 (messages, reasoning, token counts) or a receipt you save into the workspace, so checking and then
-asking for the receipt keeps a deterministic receipt clean.
+asking for the receipt keeps a local receipt clean.
 
 If something after the check might have changed the work and FinishUP cannot tell (a script run, a
 test or build, a tool it cannot attribute), the receipt folds the check's coverage, including

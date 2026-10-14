@@ -278,6 +278,12 @@ unreleased above reverse-chronological released versions.
 
 ### Changed
 
+- **Output says "local", not "deterministic".** A clean local check now reads "no issue detected
+  within local coverage" on the CLI, the terminal interface and MCP; human finding lists label
+  their origin "local" or "AI-powered review"; guidance, usage docs and the README follow. The
+  terminal interface no longer says "Nothing leaves this computer" for the Private policy or a
+  local-only check; it says no work is sent for AI-powered review. Wire values keep their
+  spellings (`deterministic_only`, `deterministic_mode`, `no_unresolved_deterministic_findings`).
 - **First-run setup asks three review answers, all on the policy route.** "FinishUP
   (recommended): local checks; your agent can turn on AI-powered review for a task when it
   helps", "FinishUP, local only (agents may not opt in)", or "AI-powered review on every task".

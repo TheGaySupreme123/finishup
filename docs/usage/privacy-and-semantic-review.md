@@ -465,7 +465,7 @@ the receipt say which follow-up round it answered and what FinishUP added. A fol
 the check the way a failed review does. Anything else the reviewer names (the task statement, plan
 or claim text, or material only the agent can record) still comes back to the agent as before.
 
-AI-powered output is advisory, provenance-labeled, and deterministically fenced. It never silently
+AI-powered output is advisory, provenance-labeled, and fenced by fixed rules. It never silently
 becomes local-check truth, and it never upgrades a coverage claim.
 
 A reviewer concern is not thrown away because one of its citations or its quote cannot be checked.

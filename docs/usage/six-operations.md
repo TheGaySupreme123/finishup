@@ -172,7 +172,7 @@ instead. One call answers three questions:
 Omit `scope`, `max_findings`, `policy_packs` and `final_review` (they are refused beside
 `inspect`); `await_observations` works as for any check.
 
-A local-only check can report “no issue detected within deterministic coverage” while preserving
+A local-only check can report “no issue detected within local coverage” while preserving
 the limitation that AI-powered review did not run. Open obligations, missing requested attempts,
 live failures and actionable findings prevent that result. Follow the overall next step: supply
 missing input when it names something you can provide; disclose standing limitations when there is

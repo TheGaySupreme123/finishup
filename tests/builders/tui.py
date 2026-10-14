@@ -197,7 +197,7 @@ def work_detail() -> WorkDetail:
         evidence_count=3,
         checks=("work-integrity/0.3.0",),
         coverage=("no AI-powered review",),
-        findings=("P2 unsupported_claim (deterministic): no evidence links the claim",),
+        findings=("P2 unsupported_claim (local): no evidence links the claim",),
         limitations=("semantic_review_unavailable",),
         receipt_available=True,
     )

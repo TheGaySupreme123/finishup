@@ -611,7 +611,7 @@ Stale-verification advice is scoped to the logical tool call, not to the observe
 identity, so one edit reports one `edit_after_successful_check` finding whose evidence refs name
 each observed phase; the originating call's tool name resolves the pair exactly as it already does
 for unresolved-command advice (issue #680).
-A successful Codex `shell` call is a command outcome, not a check. Deterministic advice moves its
+A successful Codex `shell` call is a command outcome, not a check. Local advice moves its
 verification baseline only on a current `passed` approved-check fact or an explicit success from a
 dedicated verification tool, and a routine read never moves it — including in Detailed mode, where
 a routine read keeps its `function_call_output` action and carries no routine marker (issue #681).
@@ -855,8 +855,8 @@ The 2026-09-07 native cell used source `80d0d94c` and the development `0.1.0` wh
 files matched the wheel. `codex-testing 0.150.1` ran in an isolated home and workspace, with a
 trusted project-marketplace carrier, a strict owned MCP route, `multi_agent_v2=false`, and a
 synthetic loopback Responses provider. The native process exited `0`; parent start, delegation,
-one legacy child, child attach, publication, deterministic check, receipt, and child terminal
-completion were recorded. The check and receipt returned structured success with deterministic
+one legacy child, child attach, publication, local check, receipt, and child terminal
+completion were recorded. The check and receipt returned structured success with local
 coverage and matching child/check frontiers. Parent mapping snapshots remained stable and a
 separate child route appeared after attach.
 
@@ -2518,7 +2518,7 @@ per-session interval on macOS, Linux and Windows through WSL 2. See
 resume and interval settings. The setting gates recovered pending work as well as new scheduling:
 while it resolves off, startup closes rows an earlier service left pending as `cancelled` with no
 provider identity (nothing sent), so re-enabling never replays them. Explicit checks and
-deterministic advice retain their independent behavior.
+local advice retain their independent behavior.
 
 Background review is also admitted only while a provider is usable: an endpoint bound, the machine
 policy admitting `llm_inference`, the configured credential present, and an ACTIVE task route

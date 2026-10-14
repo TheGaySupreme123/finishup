@@ -15,7 +15,7 @@ not need a recheck. At `ready_with_limitations`, nothing further is to do: reque
 without another check and disclose its standing limitations. The status sentence after the stop
 instruction says what the receipt will read (`predicted_receipt`); lead the final prose with the
 receipt's conclusion and its `conclusion_basis` reasons, not with "nothing further to do". After `insufficient_packet`, go to
-the receipt rather than a deterministic fallback.
+the receipt rather than a local-only fallback.
 
 Receipt and final prose are scope-first. Lead with what recorded evidence/checks covered and what was
 not verified or remained limited. Name the checked frontier, AI-powered review status/reason, and

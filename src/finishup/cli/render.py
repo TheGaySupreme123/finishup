@@ -186,6 +186,14 @@ def _projected_text(value: str | OmittedContentModel | None) -> str:
     return value
 
 
+# The finding origin in owner words (ADR-049 naming): FinishUP's local checks or AI-powered
+# review; the wire token stays in the structured result.
+_FINDING_ORIGIN_WORDS: Final[dict[str, str]] = {
+    "deterministic": "local",
+    "semantic_model_derived": "AI-powered review",
+}
+
+
 def render_human_findings(
     findings: Sequence[CheckProjectedFindingModel] | Sequence[object],
 ) -> str:
@@ -197,7 +205,10 @@ def render_human_findings(
     for finding in findings[:3]:
         kind = _token(getattr(finding, "kind", "unknown"))
         priority = getattr(finding, "priority", "unknown")
-        origin = _token(getattr(finding, "origin", "unknown"))
+        origin = _FINDING_ORIGIN_WORDS.get(
+            str(getattr(finding, "origin", "unknown")),
+            _token(getattr(finding, "origin", "unknown")),
+        )
         summary = _projected_text(getattr(finding, "summary", None))
         lines.append(f"- P{priority} {kind} ({origin}): {summary}")
         detail = getattr(finding, "detail", None)
@@ -414,7 +425,7 @@ def render_human_check(result: CheckSuccessModel) -> str:
         and result.semantic_reason == "deterministic_mode"
     )
     verdict_line = (
-        "Verdict: no issue detected within deterministic coverage"
+        "Verdict: no issue detected within local coverage"
         if scoped_local_verdict
         else f"Verdict: {result.verdict}"
     )

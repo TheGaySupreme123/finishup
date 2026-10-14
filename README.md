@@ -70,7 +70,7 @@ $ codex
 • Called finishup.check
   └ no_issue_detected
 • Called finishup.receipt
-  └ unresolved_findings_remain · deterministic · coverage-bounded
+  └ unresolved_findings_remain · local · coverage-bounded
 
 Done. The limiter is refactored, and the receipt still carries the two findings I hit on the way.
 ```
@@ -155,7 +155,7 @@ state for future sessions—not that a later session loaded a hook or delivered 
 | **Zero-egress by default** | A fresh installation runs local checks only and is fully useful offline; nothing leaves your machine before first-run setup commits a policy. |
 | **Privacy-gated AI-powered review** | An optional reviewer model reads a bounded, minimized packet built from the ledger — never your repository — behind explicit provider binding and reauthenticated policy authority. |
 | **A full-screen terminal interface** | First run, status, privacy, provider, integration, service, and receipt flows in one interface; no secret ever enters it. |
-| **Recoverable local durability** | Encrypted task bundles, generation-fenced single-writer storage, deterministic replay, backup/restore, and forward-only migrations. |
+| **Recoverable local durability** | Encrypted task bundles, generation-fenced single-writer storage, exact replay, backup/restore, and forward-only migrations. |
 
 See [The six operations](docs/usage/six-operations.md) for the protocol and
 [Receipts and coverage](docs/usage/receipts-and-coverage.md) for what a receipt does and does not

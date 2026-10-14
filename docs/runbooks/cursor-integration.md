@@ -702,7 +702,7 @@ Stale-verification advice is scoped to the logical tool call rather than the obs
 `edit_after_successful_check` finding with both phases as evidence. The reviewed post-only
 structural profile is unchanged and still reports one finding for its one observed phase; FinishUP
 does not fabricate a pre-event to complete a pair (issue #680).
-Built-in shell success is a host outcome, never a check: deterministic advice moves its
+Built-in shell success is a host outcome, never a check: local advice moves its
 verification baseline only on a current `passed` approved-check fact or an explicit success from a
 dedicated verification tool, and never on a routine read (issue #681). This host adds no reviewed
 check signal of its own, so a Cursor session with no approved check keeps
@@ -1974,7 +1974,7 @@ per-session interval on macOS, Linux and Windows through WSL 2. See
 resume and interval settings. The setting gates recovered pending work as well as new scheduling:
 while it resolves off, startup closes rows an earlier service left pending as `cancelled` with no
 provider identity (nothing sent), so re-enabling never replays them. Explicit checks and
-deterministic advice retain their independent behavior.
+local advice retain their independent behavior.
 
 Background review is also admitted only while a provider is usable: an endpoint bound, the machine
 policy admitting `llm_inference`, the configured credential present, and an ACTIVE task route

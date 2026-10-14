@@ -63,8 +63,8 @@ def test_the_json_verdict_is_the_verdict_in_the_mcp_text_and_the_cli(verdict: st
         )
         if scoped_local:
             # Coverage-bounded wording is the same sentence on both text surfaces.
-            assert "No issue detected within deterministic coverage" in text
-            assert "no issue detected within deterministic coverage" in cli
+            assert "No issue detected within local coverage" in text
+            assert "no issue detected within local coverage" in cli
         else:
             assert verdict in text, text
             assert f"Verdict: {verdict}" in cli

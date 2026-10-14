@@ -553,7 +553,7 @@ Where only the result is observed, that single phase is the whole condition; no 
 fabricated.
 
 A successful `Bash` result on this profile is an explicit host-tool success fact and nothing more.
-Deterministic advice never promotes it to a verification check: only a current `passed`
+Local advice never promotes it to a verification check: only a current `passed`
 approved-check fact, or an explicit success from a dedicated verification tool, establishes or
 advances the verification baseline, and a routine read never does. A Claude session that edits and
 claims completion after successful `Bash` commands alone therefore keeps
@@ -718,7 +718,7 @@ The final exact-wheel cell used `yoetz-0.1.0-py3-none-any.whl` at SHA256
 and a strict plugin export (`sha256:f2f7249ef47e43cde1fb0004d2bb770125665c7fc15664c8c6d116242dec6fdb`) loaded
 through Claude's development `--plugin-dir` carrier in a fresh mode-0700 isolated root; this is not
 marketplace-installed activation. It completed a FinishUP parent `start`, `mode=delegate`, native
-child `Agent`, child `mode=attach`, one `publish_work`, deterministic `check`, and JSON `receipt`;
+child `Agent`, child `mode=attach`, one `publish_work`, local `check`, and JSON `receipt`;
 the child receipt was `rcp_f567225d-a34f-4a07-beda-2866649a3b57` with digest
 `sha256:47a578bbdaedd7f93e3389ee7d212b84feb132dd44ff2f02a1c8d10e63ba3e3a` and the recorded
 conclusion `insufficient_coverage` (`semantic_review_not_requested`). The parent and child ledgers
@@ -778,7 +778,7 @@ The 2026-09-07 native cell used source `80d0d94c` and the development `0.1.0` wh
 files matched the wheel. Claude Code `2.1.263` ran with an isolated synthetic workspace and
 passphrase vault, the development `--plugin-dir` carrier, a strict MCP route, and a synthetic
 loopback Messages provider. The native host and driver exited `0` without timeout. Parent attach,
-delegation, native `Agent`, child attach, publication, deterministic check, and receipt completed;
+delegation, native `Agent`, child attach, publication, local check, and receipt completed;
 request/result models, child identity, operation ordering, and receipt/check bindings validated.
 `SessionStart`, `SubagentStart`, `SubagentStop`, and `Stop` hooks succeeded without cancellation.
 
@@ -792,7 +792,7 @@ hook ingress and retained structural state, not independently attested by the ou
 Final observation status showed Claude hook coverage, zero pending rows, zero quarantines, and a
 completed drain. One bounded `drain_budget_exhausted` diagnostic remained; a historical parent
 `mapping_missing` event did not recur in child callbacks. Public status retained
-`content_capture_unavailable`. The check and receipt used deterministic coverage with
+`content_capture_unavailable`. The check and receipt used local coverage with
 `semantic_review_not_requested`; their validation allowed later observation-related frontiers but
 did not independently prove the intervening digest chain. This cell proves the bounded native
 workflow and lane separation. Production model behavior, semantic advice content, marketplace
@@ -1862,7 +1862,7 @@ per-session interval on macOS, Linux and Windows through WSL 2. See
 resume and interval settings. The setting gates recovered pending work as well as new scheduling:
 while it resolves off, startup closes rows an earlier service left pending as `cancelled` with no
 provider identity (nothing sent), so re-enabling never replays them. Explicit checks and
-deterministic advice retain their independent behavior.
+local advice retain their independent behavior.
 
 Background review is also admitted only while a provider is usable: an endpoint bound, the machine
 policy admitting `llm_inference`, the configured credential present, and an ACTIVE task route

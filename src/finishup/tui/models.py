@@ -281,7 +281,7 @@ _PRIVACY_LABELS: Final[dict[PrivacyChoice, str]] = {
 }
 
 _PRIVACY_DESCRIPTIONS: Final[dict[PrivacyChoice, str]] = {
-    PrivacyChoice.LOCAL_ONLY: "Nothing leaves this computer. This is the default.",
+    PrivacyChoice.LOCAL_ONLY: "No work is sent for AI-powered review. This is the default.",
     PrivacyChoice.CONFIRM_EVERY_REQUEST: "FinishUP asks before anything is sent, every time.",
     PrivacyChoice.MINIMAL_EXTERNAL: "Structural summaries only; no prose and no excerpts.",
     PrivacyChoice.TRUSTED_PROVIDER: "The widest review this provider binding allows.",
@@ -292,7 +292,7 @@ _PRIVACY_DESCRIPTIONS: Final[dict[PrivacyChoice, str]] = {
 # `finishup privacy setup` must find the same name here; two names for one policy is how people
 # end up believing they configured something they did not.
 PRIVACY_RECIPES: Final[tuple[tuple[str, str, str], ...]] = (
-    ("private", "Private", "Nothing leaves this computer. This is the default."),
+    ("private", "Private", "No work is sent for AI-powered review. This is the default."),
     (
         "metadata_only",
         "Metadata only",
@@ -515,7 +515,7 @@ _CHECK_DESCRIPTIONS: Final[dict[CheckMode, str]] = {
         "Falls back to local checks and says so when the provider is not ready."
     ),
     CheckMode.SEMANTIC_REQUIRED: "Fails honestly rather than pretending review happened.",
-    CheckMode.DETERMINISTIC_ONLY: "Nothing leaves this computer.",
+    CheckMode.DETERMINISTIC_ONLY: "FinishUP's local checks; sends no work for AI-powered review.",
 }
 
 

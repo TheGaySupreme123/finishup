@@ -1449,10 +1449,10 @@ def _check_lead_variants(
         )
     if scoped_local_verdict:
         return (
-            "No issue detected within deterministic coverage; AI-powered review was not "
+            "No issue detected within local coverage; AI-powered review was not "
             f"requested; {counts}",
-            f"No issue detected within deterministic coverage; {counts}",
-            "No issue detected within deterministic coverage;",
+            f"No issue detected within local coverage; {counts}",
+            "No issue detected within local coverage;",
         )
     if status == "not_requested":
         return (
