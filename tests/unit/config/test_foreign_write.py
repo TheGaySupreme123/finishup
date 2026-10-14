@@ -75,8 +75,11 @@ def test_user_private_group_from_local_files_is_owner_only(
         "passwd: files\ngroup: files\n",
         "passwd: files [NOTFOUND=return] systemd\ngroup:files systemd # comment\n",
         "passwd: files systemd\ngroup: files systemd\ninitgroups: files\n",
+        # glibc takes whitespace instead of the colon after the database name.
+        "passwd files systemd\ngroup\tfiles\n  initgroups files # trailing\n",
+        "passwd: files\npasswd: files systemd\ngroup: files\n",
     ],
-    ids=["files-only", "action-tokens", "local-initgroups"],
+    ids=["files-only", "action-tokens", "local-initgroups", "colon-less", "local-duplicates"],
 )
 def test_local_only_switch_variants_are_accepted(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, nss: str
@@ -110,8 +113,40 @@ def test_world_write_is_always_refused(monkeypatch: pytest.MonkeyPatch, tmp_path
         "passwd: files\ngroup: files\ninitgroups: files sss\n",
         "passwd: files\n",
         "",
+        # glibc accepts whitespace for the colon: these lines are live, not comments.
+        "passwd: files\ngroup: files\ninitgroups files sss\n",
+        "passwd: files\ngroup: files\ngroup\tsss\n",
+        "passwd files sss\ngroup: files\n",
+        # glibc 2.33+ keeps the last entry for a database, older releases the first; any
+        # remote entry for a relevant database is decisive either way.
+        "passwd: files\ngroup: sss\ngroup: files\n",
+        "passwd: files\ngroup: files\ngroup: ldap\n",
+        # Malformed relevant entries are unprovable.
+        "passwd: files [NOTFOUND=return\ngroup: files\n",
+        "passwd: files\ngroup: files\ninitgroups\n",
+        "passwd: files\ngroup:\n",
+        "passwd: files\ngroup : files\n",
+        "PASSWD: sss\npasswd: files\ngroup: files\n",
     ],
-    ids=["sss", "ldap", "compat", "winbind", "remote-initgroups", "no-group-line", "empty"],
+    ids=[
+        "sss",
+        "ldap",
+        "compat",
+        "winbind",
+        "remote-initgroups",
+        "no-group-line",
+        "empty",
+        "colon-less-initgroups",
+        "colon-less-override",
+        "colon-less-passwd",
+        "duplicate-first-remote",
+        "duplicate-last-remote",
+        "unterminated-action",
+        "bare-name",
+        "empty-service-list",
+        "space-before-colon",
+        "case-variant",
+    ],
 )
 def test_directory_service_or_unknown_sources_are_shared(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, nss: str

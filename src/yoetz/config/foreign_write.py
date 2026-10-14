@@ -11,7 +11,9 @@ Privacy is accepted only when membership is provably complete, which the C libra
 lookups cannot show: a directory service (SSSD, LDAP, NIS, winbind) may not enumerate accounts
 and may report a populated group as empty. So the answer comes from the local files alone, and
 only when ``/etc/nsswitch.conf`` serves the ``passwd`` and ``group`` databases (and
-``initgroups`` when named) exclusively from ``files`` and ``systemd``. ``systemd`` is admitted
+``initgroups`` when named) exclusively from ``files`` and ``systemd``, in every entry for those
+databases (glibc syntax: the colon is optional; duplicates and malformed entries are weighed
+conservatively). ``systemd`` is admitted
 because on a stock system it only adds dynamic service users (gids 61184-65519, never a person's
 private group); any userdb drop-in record or userdb service beyond dynamic users (systemd-homed,
 for example) makes the answer unprovable. ``/etc/gshadow`` is read when readable; an ordinary
@@ -39,6 +41,9 @@ WORLD: Final[ForeignWrite] = "world"
 _ROOT: Path = Path("/")
 _LOCAL_SOURCES: Final = frozenset({"files", "systemd"})
 _ACTION: Final = re.compile(r"\[[^\]]*\]")
+# A switch line: the database name ends at the first colon or whitespace (glibc accepts either).
+_SWITCH_LINE: Final = re.compile(r"([^\s:]+)[\s:](.*)\Z", re.DOTALL)
+_SWITCH_DATABASES: Final = frozenset({"passwd", "group", "initgroups"})
 _DYNAMIC_GIDS: Final = range(61184, 65520)
 # Userdb services that never describe a person's group membership.
 _SAFE_USERDB_SERVICES: Final = frozenset(
@@ -109,24 +114,54 @@ def _records(text: str) -> list[list[str]] | None:
     return records
 
 
+def _switch_entries(text: str) -> dict[str, list[list[str] | None]]:
+    """Every ``passwd``/``group``/``initgroups`` entry in glibc order; None marks a malformed one.
+
+    glibc ends the database name at the first colon *or* whitespace, strips ``#`` comments and
+    has no line continuation. Releases before 2.33 honour the first entry for a database, later
+    ones the last, so the caller weighs every entry. Names are matched case-insensitively here
+    so that a case variant glibc might honour is never silently skipped.
+    """
+
+    entries: dict[str, list[list[str] | None]] = {}
+    for raw in text.splitlines():
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        match = _SWITCH_LINE.match(line)
+        name = (match.group(1) if match else line).lower()
+        if name not in _SWITCH_DATABASES:
+            continue
+        rest = match.group(2) if match else ""
+        services = _ACTION.sub(" ", rest).split()
+        malformed = (
+            match is None
+            or match.group(1) != name
+            or not services
+            or "[" in "".join(services)
+            or "]" in "".join(services)
+        )
+        entries.setdefault(name, []).append(None if malformed else services)
+    return entries
+
+
 def _local_databases_only() -> bool:
     """Whether every account and group lookup is answered from local files (see module doc)."""
 
     text = _read("etc/nsswitch.conf")
     if text is None:
         return False
+    entries = _switch_entries(text)
+    required = ["passwd", "group"] + (["initgroups"] if "initgroups" in entries else [])
     sources: dict[str, list[str]] = {}
-    for line in text.splitlines():
-        line = line.split("#", 1)[0]
-        if ":" not in line:
-            continue
-        database, _, rest = line.partition(":")
-        sources[database.strip()] = _ACTION.sub(" ", rest).split()
-    required = ["passwd", "group"] + (["initgroups"] if "initgroups" in sources else [])
     for database in required:
-        named = sources.get(database)
-        if not named or any(source not in _LOCAL_SOURCES for source in named):
+        named = entries.get(database)
+        if not named:
             return False
+        for entry in named:
+            if entry is None or any(source not in _LOCAL_SOURCES for source in entry):
+                return False
+        sources[database] = [source for entry in named if entry for source in entry]
     if not any("systemd" in sources[database] for database in required):
         return True
     services: set[str]

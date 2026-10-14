@@ -148,7 +148,8 @@ the owner's primary group, named like the owner, with no other member and no oth
 it as its primary group, as read from `/etc/passwd`, `/etc/group` and (when readable)
 `/etc/gshadow`. That is only trusted when `/etc/nsswitch.conf` serves `passwd` and `group` from
 `files`/`systemd` alone (the Ubuntu, Debian and Fedora defaults) with no userdb records beyond
-dynamic users. On machines joined to a directory service (`sss`, `ldap`, `nis`, `winbind`),
+dynamic users. Every `passwd`, `group` and `initgroups` line counts, including a duplicate or a
+line written without the colon (`initgroups files sss`); a malformed one makes the check refuse. On machines joined to a directory service (`sss`, `ldap`, `nis`, `winbind`),
 membership cannot be proved complete, so group write is treated as shared: install with
 `umask 022`, or run the printed `chmod -R go-w`. World write, and group write through any other group, are
 refused everywhere Yoetz checks who can write (installed runtime, launcher, host configuration
