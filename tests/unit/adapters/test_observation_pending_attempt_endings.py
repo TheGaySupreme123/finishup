@@ -393,20 +393,39 @@ def test_a_rejection_in_another_task_scope_closes_nothing(tmp_path: Path) -> Non
 
 
 def test_served_yoetz_read_record_proves_only_the_exact_served_read(tmp_path: Path) -> None:
-    """tb4 n5 round 2: the bridge's served-read record is the proof Cursor's hook relies on."""
+    """tb4 n5: the bridge's served-read record is the proof Cursor's hook relies on.
+
+    Round 3: each record is claimed at most once and only within its expiry, so a retained record
+    can never suppress a later call that reuses the same request scope.
+    """
 
     (tmp_path / "observation").mkdir(mode=0o700)
-    assert rejections.record_served_yoetz_read("status", _ARGS, state_root=tmp_path)
-    assert rejections.served_yoetz_read("MCP:status", _ARGS, state_root=tmp_path)
-    assert rejections.served_yoetz_read("mcp__yoetz__status", _ARGS, state_root=tmp_path)
+    now = 1_790_704_600_000
+    assert rejections.record_served_yoetz_read("status", _ARGS, state_root=tmp_path, now_ms=now)
     # Another call, another tool, or a foreign tool's own arguments prove nothing.
     other = {**_ARGS, "request_id": "req_00000000-0000-4000-8000-0000000000ff"}
-    assert not rejections.served_yoetz_read("MCP:status", other, state_root=tmp_path)
-    assert not rejections.served_yoetz_read("MCP:receipt", _ARGS, state_root=tmp_path)
-    assert not rejections.served_yoetz_read("MCP:status", {"cluster": "prod"}, state_root=tmp_path)
+    for tool, args in (
+        ("MCP:status", other),
+        ("MCP:receipt", _ARGS),
+        ("MCP:status", {"cluster": "prod"}),
+    ):
+        assert not rejections.claim_served_yoetz_read(
+            tool, args, state_root=tmp_path, now_ms=now + 10
+        )
+    # The exact call claims it once; a replay of the same scope finds nothing.
+    assert rejections.claim_served_yoetz_read("MCP:status", _ARGS, state_root=tmp_path, now_ms=now)
+    assert not rejections.claim_served_yoetz_read(
+        "mcp__yoetz__status", _ARGS, state_root=tmp_path, now_ms=now + 1
+    )
+    # A record older than the expiry proves nothing.
+    assert rejections.record_served_yoetz_read("status", _ARGS, state_root=tmp_path, now_ms=now)
+    late = now + rejections.SERVED_READ_MAX_AGE_MS + 1
+    assert not rejections.claim_served_yoetz_read(
+        "MCP:status", _ARGS, state_root=tmp_path, now_ms=late
+    )
     # Writes are never recorded as served reads.
     assert not rejections.record_served_yoetz_read("check", _ARGS, state_root=tmp_path)
-    assert not rejections.served_yoetz_read("MCP:check", _ARGS, state_root=tmp_path)
+    assert not rejections.claim_served_yoetz_read("MCP:check", _ARGS, state_root=tmp_path)
     # Without observation set up nothing is written.
     assert not rejections.record_served_yoetz_read("status", _ARGS, state_root=tmp_path / "x")
 
@@ -425,7 +444,7 @@ def test_the_bridge_records_served_reads_only_for_cursor_successes() -> None:
 
     server._record_served_read(codex, "status", _ARGS, success)
     server._record_served_read(cursor, "status", _ARGS, error)
-    assert not rejections.served_yoetz_read("MCP:status", _ARGS)
+    assert not rejections.claim_served_yoetz_read("MCP:status", _ARGS)
     server._record_served_read(cursor, "status", _ARGS, success)
-    assert rejections.served_yoetz_read("MCP:status", _ARGS)
     assert _REQUEST not in (root / "observation" / rejections.SERVED_READS_FILENAME).read_text()
+    assert rejections.claim_served_yoetz_read("MCP:status", _ARGS)

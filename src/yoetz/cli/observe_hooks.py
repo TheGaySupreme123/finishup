@@ -48,8 +48,8 @@ from yoetz.adapters.integrations.observation_local import (
 )
 from yoetz.adapters.integrations.observation_task_pending import task_pending_outbox_count
 from yoetz.adapters.integrations.yoetz_call_rejections import (
+    claim_served_yoetz_read,
     rejected_call_commitment,
-    served_yoetz_read,
 )
 from yoetz.adapters.workspace_binding import canonical_workspace_locator, resolve_workspace_locator
 from yoetz.cli import hook_io
@@ -1906,8 +1906,8 @@ def _cursor_served_yoetz_read(
     Cursor's ordinary ``postToolUse`` names no MCP server, so ``MCP:status`` may be another
     server's tool whose result is real evidence. Yoetz's bridge records a commitment to each read
     it served successfully (tool, Yoetz session and writer, ``request_id``) before returning it;
-    only a post-event whose own ``tool_input`` matches one is treated as Yoetz's. Anything else,
-    including every pre-event, stays ordinary evidence.
+    only a post-event whose own ``tool_input`` claims one, once and within its expiry, is treated
+    as Yoetz's. Anything else, including every pre-event and any replay, stays ordinary evidence.
     """
 
     if event_name != "PostToolUse":
@@ -1915,7 +1915,7 @@ def _cursor_served_yoetz_read(
     tool = payload.get("tool_name")
     if type(tool) is not str or not tool.startswith("MCP:"):
         return False
-    return served_yoetz_read(tool, payload.get("tool_input"), state_root=state_root)
+    return claim_served_yoetz_read(tool, payload.get("tool_input"), state_root=state_root)
 
 
 def _proven_yoetz_structural(

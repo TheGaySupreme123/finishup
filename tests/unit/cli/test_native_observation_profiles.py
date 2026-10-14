@@ -1216,3 +1216,24 @@ def test_cursor_ordinary_yoetz_status_read_proven_by_the_bridge_stays_local(tmp_
     assert ("PostToolUse", "MCP:status", "cur-other-status") in delivered
     local = {e.structural_payload.get("tool_call_id") for e in store.list_envelopes(commitment)}
     assert "cur-yoetz-status" in local
+
+
+def test_cursor_served_read_record_suppresses_at_most_one_post_event(tmp_path: Path) -> None:
+    """tb4 n5 round 3: a retained record must not suppress a later foreign call's evidence.
+
+    After one genuine Yoetz read, a later foreign ``MCP:status`` that reuses the same request
+    scope (another call id, another host session) is delivered: a served read is claimed once.
+    """
+
+    from yoetz.adapters.integrations import yoetz_call_rejections as rejections
+
+    store = LocalObservationStore(_state=tmp_path / "state")
+    commitment = store.workspace_commitment(str(tmp_path.resolve()))
+    store.grant_consent(commitment)
+    assert rejections.record_served_yoetz_read("status", _YOETZ_ARGS, state_root=tmp_path / "state")
+    ok = '{"content":[],"isError":false}'
+    _cursor_ordinary_emit(tmp_path, "postToolUse", "cur-genuine", "MCP:status", _YOETZ_ARGS, ok)
+    _cursor_ordinary_emit(tmp_path, "postToolUse", "cur-replay", "MCP:status", _YOETZ_ARGS, ok)
+    delivered = _cursor_delivered(tmp_path, commitment)
+    assert ("PostToolUse", "MCP:status", "cur-genuine") not in delivered
+    assert ("PostToolUse", "MCP:status", "cur-replay") in delivered

@@ -47,13 +47,14 @@ from yoetz.protocol.ids import IdKind, is_valid_id, safe_request_id_from
 __all__ = [
     "REJECTED_CALLS_FILENAME",
     "SERVED_READS_FILENAME",
+    "SERVED_READ_MAX_AGE_MS",
     "RejectedYoetzCall",
     "consume_rejected_yoetz_call",
     "read_rejected_yoetz_calls",
+    "claim_served_yoetz_read",
     "record_rejected_yoetz_call",
     "record_served_yoetz_read",
     "rejected_call_commitment",
-    "served_yoetz_read",
     "yoetz_tool_basename",
 ]
 
@@ -75,6 +76,8 @@ SERVED_READS_FILENAME: Final = "yoetz-served-reads.json"
 _SERVED_LOCK_FILENAME: Final = ".yoetz-served-reads.lock"
 _SERVED_SCHEMA: Final = "yoetz.served-reads/1"
 _READ_NAMES: Final = frozenset(YOETZ_READ_TOOL_BASENAMES)
+# A served read proves at most one post-event, and only within this age (round 3).
+SERVED_READ_MAX_AGE_MS: Final = 120_000
 
 
 # ``(commitment, rejected at in Unix milliseconds, claimant or None)``: the claimant is the opaque
@@ -341,14 +344,49 @@ def record_served_yoetz_read(
         return False
 
 
-def served_yoetz_read(tool: object, arguments: object, *, state_root: Path | None = None) -> bool:
-    """Whether the bridge recorded serving exactly this Yoetz read call. Never raises."""
+def claim_served_yoetz_read(
+    tool: object,
+    arguments: object,
+    *,
+    state_root: Path | None = None,
+    now_ms: int | None = None,
+) -> bool:
+    """Claim, once, the bridge's record of serving exactly this Yoetz read. Never raises.
+
+    ``True`` removes the matching record under the record's lock, so one served read suppresses
+    at most one post-event; a later call that reuses the same request scope (a replay, or a
+    foreign tool sent the same arguments, in any host session) finds nothing and is delivered. A
+    record older than ``SERVED_READ_MAX_AGE_MS`` proves nothing: the post-event of a served call
+    follows its result within seconds. The bridge cannot see Cursor's conversation or tool-call
+    id (the MCP request carries neither), so they cannot join the commitment; single use and the
+    expiry bound what a record can prove instead (tb4 n5 round 3).
+    """
 
     try:
         commitment = _served_read_commitment(tool, arguments)
         if commitment is None:
             return False
-        entries = _read(_directory(state_root) / SERVED_READS_FILENAME, _SERVED_SCHEMA)
-        return any(entry[0] == commitment for entry in entries)
+        at_now = int(time.time() * 1000) if now_ms is None else now_ms
+        claimed = False
+
+        def change(entries: list[_Entry]) -> list[_Entry] | None:
+            nonlocal claimed
+            for index, (entry_commitment, entry_at, _claimant) in enumerate(entries):
+                if entry_commitment != commitment:
+                    continue
+                if not 0 <= at_now - entry_at <= SERVED_READ_MAX_AGE_MS:
+                    continue
+                claimed = True
+                return [*entries[:index], *entries[index + 1 :]]
+            return None
+
+        written = _update(
+            _directory(state_root),
+            change,
+            SERVED_READS_FILENAME,
+            _SERVED_SCHEMA,
+            _SERVED_LOCK_FILENAME,
+        )
+        return claimed and written
     except Exception:
         return False

@@ -298,7 +298,8 @@ open and both test targets had passed. Two causes, two changes:
   action, result and evidence and moved the frontier the agent was polling. The item is now read in
   the `PostToolUse` phase and held items are settled locally on release. Cursor's ordinary
   `MCP:<tool>` names no server, so it is Yoetz's only when the bridge recorded serving that exact
-  read (commitment to tool, session, writer and `request_id`, written before the result returns);
+  read (commitment to tool, session, writer and `request_id`, written before the result returns,
+  claimed by at most one post-event within 120 s);
   an unproven event, including every pre-event, is delivered as ordinary evidence. Explicit failures and denials, Yoetz
   writes and other tools are delivered as before. Host runbooks record the per-host decision.
 - **Status loop (text only).** The MCP bridge keeps, per process (one host session), the number of

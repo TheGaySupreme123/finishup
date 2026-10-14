@@ -1181,7 +1181,9 @@ Yoetz's MCP bridge on the Cursor profile therefore records a commitment to each 
 successfully (`status`, `receipt`, `read_guidance`, `closure_prepare`: tool, Yoetz session and
 writer, `request_id`; owner-only `observation/yoetz-served-reads.json`, newest 256) before it
 returns the result. A `postToolUse` whose own `tool_input` matches a recorded read is Yoetz's and
-stays local; every other `MCP:<tool>` event, including every `preToolUse` (the read is not served
+stays local; the match claims the record, so it suppresses at most one post-event, and a record
+older than 120 s proves nothing (a later call reusing the same request scope, in any session, is
+delivered); every other `MCP:<tool>` event, including every `preToolUse` (the read is not served
 yet) and every write, is delivered as before. Gap: a Yoetz read's `preToolUse` still reaches the
 ledger on this profile (one row per read instead of two plus a result); owner: tb4 n5 follow-up.
 The
