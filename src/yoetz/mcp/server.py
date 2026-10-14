@@ -153,6 +153,7 @@ from yoetz.service.client import (
     handshake_failure,
     holder_version_order,
     service_holder_identity,
+    start_timed_out,
 )
 
 __all__ = [
@@ -1886,6 +1887,26 @@ def _control_error_result(
                 host_profile=host_profile,
                 safe_details=details,
                 diagnostic_reason="service_handshake_failed",
+            )
+        if start_timed_out(error):
+            # This bridge's on-demand start found a live service of this installation still
+            # starting at the end of its budget: retry, never a lifecycle command.
+            return _control_public_error_result(
+                error,
+                request_id,
+                operation,
+                code=PublicErrorCode.SERVICE_UNAVAILABLE,
+                message=(
+                    "The local Yoetz service is still starting and did not answer in time "
+                    "(service_handshake_timeout). The first start after an install or update, "
+                    "and slow machines such as WSL under nested virtualization, take longer. "
+                    "Wait a few seconds, then retry this operation with the same request_id. "
+                    "Do not run service lifecycle commands for this."
+                ),
+                retryable=True,
+                host_profile=host_profile,
+                safe_details={"reason_code": "service_unavailable", "phase": "handshake_timeout"},
+                diagnostic_reason="service_unavailable",
             )
         if accepted_but_unresponsive(error):
             # A listener that accepted and then went silent is running. Prescribing

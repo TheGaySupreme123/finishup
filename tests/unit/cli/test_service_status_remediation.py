@@ -298,3 +298,30 @@ def test_runtime_probe_is_silent_for_a_source_checkout() -> None:
 
     # Tests run from the checkout: no installed runtime exists to refuse.
     assert installed_runtime_refusal_text() is None
+
+
+def test_start_timeout_and_a_starting_holder_name_the_slow_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+
+    from yoetz.cli import bootstrap
+
+    printed: list[str] = []
+    payloads: list[object] = []
+    code = bootstrap.control_failure(
+        ControlError("service_unavailable", retryable=True, phase="handshake_timeout"),
+        json_output=True,
+        stderr_writer=printed.append,
+        stdout_writer=payloads.append,
+    )
+    assert code == 20
+    assert printed[0].startswith("service_unavailable: service_handshake_timeout: ")
+    assert "under your selected user supervisor" not in printed[0]
+    assert json.loads(json.dumps(payloads[0]))["reason"] == "service_handshake_timeout"
+
+    # Nothing accepted yet, but a live process stamped the singleton: still starting.
+    monkeypatch.setattr(bootstrap, "_singleton_holder_pid", lambda: 4242)
+    _, err = _status_stderr(monkeypatch, ControlError("service_unavailable", retryable=True))
+    assert err.startswith("service_unavailable: service_handshake_timeout: ")
+    assert "(holder pid 4242)" in err

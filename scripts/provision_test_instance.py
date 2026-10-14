@@ -171,7 +171,7 @@ def _install_runtime(runtime: Path, wheel: Path, python: str, env: dict[str, str
         sys.stderr.write(created.stderr.decode("utf-8", errors="replace"))
         raise _fail("runtime_venv_failed")
     interpreter = runtime / "bin" / "python"
-    args = ["uv", "pip", "install", "--python", str(interpreter), str(wheel)]
+    args = ["uv", "pip", "install", "--compile-bytecode", "--python", str(interpreter), str(wheel)]
     installed = _run([*args[:2], "--offline", *args[2:]], env=env)
     if installed.returncode != 0:
         installed = _run(args, env=env)

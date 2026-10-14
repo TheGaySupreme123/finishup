@@ -11,14 +11,17 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
+import py_compile
 import re
 import shutil
 import stat
 import sys
 import tempfile
 import time
+import warnings
 from collections.abc import Generator
 from pathlib import Path
 from typing import Final, Literal, cast
@@ -31,6 +34,9 @@ _LEASE: Final = ".in-use"
 _STAGING: Final = ".creation.json"
 _KEY: Final = re.compile(r"[0-9a-f]{64}\Z")
 _PIN: Final = "yoetz-instance-pin.json"
+# Part of every generation key. A generation built by an earlier layout (no bytecode) never
+# matches, so the next start builds a complete one and prunes the old one once unused.
+_LAYOUT: Final = b"yoetz.release-runtime-layout/2:unchecked-hash-bytecode\x00"
 # Kept open for the lifetime of this process; intentionally not inherited by unrelated children.
 _process_lease: int | None = None
 _original_interpreter: str | None = None
@@ -65,7 +71,13 @@ class ReleaseRuntimeIOError(OSError):
         self,
         error: OSError,
         phase: Literal[
-            "snapshot", "snapshot_copy", "snapshot_seal", "snapshot_publish", "lease", "exec"
+            "snapshot",
+            "snapshot_copy",
+            "snapshot_compile",
+            "snapshot_seal",
+            "snapshot_publish",
+            "lease",
+            "exec",
         ],
     ) -> None:
         super().__init__(error.errno, "release_runtime_io")
@@ -139,7 +151,7 @@ def _release_key(prefix: Path) -> str:
     records = sorted(prefix.glob("lib/python*/site-packages/*.dist-info/RECORD"))
     if not records or not (prefix / "pyvenv.cfg").is_file():
         raise ReleaseRuntimeError("release_runtime_unsupported")
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(_LAYOUT)
     paths = [prefix / "pyvenv.cfg", *records]
     if (prefix / _PIN).exists():
         paths.append(prefix / _PIN)
@@ -295,6 +307,10 @@ def _prepare_locked(prefix: Path, root: Path) -> Path:
             + "\n"
         )
         (temporary / _MARKER).chmod(0o600)
+        try:
+            _compile_bytecode(prefix, temporary, target)
+        except OSError as error:
+            raise ReleaseRuntimeIOError(error, "snapshot_compile") from None
         lease = _open_lock(temporary / _LEASE)
         os.close(lease)
         try:
@@ -324,6 +340,104 @@ def _prepare_locked(prefix: Path, root: Path) -> Path:
     finally:
         if temporary.exists():
             _remove_copy(temporary)
+
+
+def _compile_bytecode(prefix: Path, staging: Path, published: Path) -> None:
+    """Write unchecked-hash bytecode beside every copied module before the tree is sealed.
+
+    A sealed generation is read-only, so an interpreter could never cache what it compiles and
+    every serving start (service, bridge, each hook) would recompile the whole package: seconds
+    on a slow filesystem, enough to miss a host's hook or handshake deadline. Unchecked-hash
+    pycs never consult source mtimes, which the copy does not preserve; the generation is
+    immutable, so nothing can make them stale. ``__pycache__`` is fixed (never
+    ``sys.pycache_prefix``) and the optimization level is 0, as the ``-I`` bootstrap loads it.
+
+    Bytecode the installation already holds (``uv tool install --compile-bytecode``, or an
+    earlier ordinary run) is reused when its header still matches the copied source and no
+    other account can write it: only the header is rewritten, which costs a hash instead of a
+    compile. Everything else is compiled with the published file name. A module this
+    interpreter cannot compile (a file meant for another Python) still compiles at import.
+    """
+
+    tag: object = getattr(sys.implementation, "cache_tag", None)
+    if type(tag) is not str:
+        return  # An implementation that disables bytecode caching.
+    # A dependency's SyntaxWarning must not reach a hook's stderr.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _compile_sources(prefix, staging, published, tag)
+
+
+def _reusable_bytecode(installed: Path, origin: Path, source: bytes) -> bytes | None:
+    """The installed pyc as an unchecked-hash pyc of ``source``, or None when not provably it."""
+
+    try:
+        fd = os.open(installed, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        facts = os.fstat(fd)
+        if not stat.S_ISREG(facts.st_mode) or facts.st_size > 67_108_864:
+            return None
+        if foreign_write(facts) is not None or foreign_write(installed.parent.lstat()):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            data = stream.read()
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if len(data) < 16 or data[:4] != importlib.util.MAGIC_NUMBER:
+        return None
+    flags = int.from_bytes(data[4:8], "little")
+    source_hash = importlib.util.source_hash(source)
+    if flags & 0b1:
+        if flags & ~0b11 or data[8:16] != source_hash:
+            return None
+    elif flags != 0:
+        return None
+    else:
+        try:
+            source_facts = origin.stat()
+        except OSError:
+            return None
+        if (
+            int.from_bytes(data[8:12], "little") != int(source_facts.st_mtime) & 0xFFFFFFFF
+            or int.from_bytes(data[12:16], "little") != len(source) & 0xFFFFFFFF
+            or source_facts.st_size != len(source)
+        ):
+            return None
+    return data[:4] + (0b1).to_bytes(4, "little") + source_hash + data[16:]
+
+
+def _compile_sources(prefix: Path, staging: Path, published: Path, tag: str) -> None:
+    for source in sorted(staging.joinpath("lib").rglob("*.py")):
+        if source.is_symlink() or not source.is_file():
+            continue
+        relative = source.relative_to(staging)
+        cache = source.parent / "__pycache__"
+        cache.mkdir(mode=0o700, exist_ok=True)
+        name = f"{source.stem}.{tag}.pyc"
+        origin = prefix / relative
+        reused = _reusable_bytecode(
+            origin.parent / "__pycache__" / name, origin, source.read_bytes()
+        )
+        if reused is not None:
+            fd = os.open(cache / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(reused)
+            continue
+        try:
+            py_compile.compile(
+                str(source),
+                cfile=str(cache / name),
+                dfile=str(published / relative),
+                doraise=True,
+                optimize=0,
+                invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+            )
+        except py_compile.PyCompileError:
+            continue
 
 
 def prepare_release_runtime(prefix: Path) -> Path:

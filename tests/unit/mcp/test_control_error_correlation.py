@@ -502,3 +502,25 @@ def test_every_mapped_control_reason_reuses_a_service_correlation_id(
     found = lookup_diagnostic_records(_CORRELATION, root=diagnostic_root)
     assert len(found) == 1
     _assert_no_leakage(error, found)
+
+
+def test_start_timeout_names_a_slow_start_not_a_supervisor_or_lifecycle_command(
+    diagnostic_root: Path,
+) -> None:
+    result = bridge._control_error_result(  # pyright: ignore[reportPrivateUsage]
+        ControlError("service_unavailable", retryable=True, phase="handshake_timeout"),
+        request_id=_REQUEST,
+        operation="start",
+    )
+    error = _error_of(result)
+    assert error["code"] == PublicErrorCode.SERVICE_UNAVAILABLE.value
+    assert error["retryable"] is True
+    message = cast(str, error["message"])
+    assert "service_handshake_timeout" in message
+    assert "under your selected user supervisor" not in message
+    assert "same request_id" in message
+    details = cast(dict[str, object], error["safe_details"])
+    assert details == {"reason_code": "service_unavailable", "phase": "handshake_timeout"}
+    found = lookup_diagnostic_records(cast(str, error["correlation_id"]), root=diagnostic_root)
+    assert len(found) == 1
+    _assert_no_leakage(error, found)

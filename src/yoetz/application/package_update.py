@@ -43,7 +43,9 @@ __all__ = [
 ]
 
 PACKAGE_UPDATE_UPGRADE_COMMAND: Final = "yoetz upgrade"
-PACKAGE_INSTALL_COMMAND: Final = "uv tool install --managed-python --python 3.14.6 yoetz"
+PACKAGE_INSTALL_COMMAND: Final = (
+    "uv tool install --compile-bytecode --managed-python --python 3.14.6 yoetz"
+)
 _CACHE_SCHEMA: Final = "yoetz.package-update-cache/1"
 _CACHE_NAME: Final = "package-update-cache.json"
 _DEFAULT_TTL: Final = timedelta(hours=24)

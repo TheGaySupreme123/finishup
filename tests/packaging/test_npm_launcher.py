@@ -79,7 +79,7 @@ def test_launcher_delegates_to_pinned_uvx(tmp_path: Path) -> None:
     # entries bind a launcher that survives `uv cache clean` (issue #766).
     assert uv_record.read_text(encoding="utf-8").splitlines() == [
         "--version",
-        f"tool install --quiet --python 3.14 yoetz=={version}",
+        f"tool install --quiet --compile-bytecode --python 3.14 yoetz=={version}",
     ]
 
 

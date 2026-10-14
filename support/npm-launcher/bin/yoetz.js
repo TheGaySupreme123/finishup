@@ -78,7 +78,15 @@ function main() {
   try {
     install = spawnSync(
       "uv",
-      ["tool", "install", "--quiet", "--python", "3.14", `yoetz==${version}`],
+      [
+        "tool",
+        "install",
+        "--quiet",
+        "--compile-bytecode",
+        "--python",
+        "3.14",
+        `yoetz==${version}`,
+      ],
       { stdio: "inherit", shell: false },
     );
   } finally {

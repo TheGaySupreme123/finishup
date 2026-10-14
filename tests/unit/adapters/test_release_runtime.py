@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import sys
 from collections.abc import Callable, Generator
 from pathlib import Path
 
@@ -442,3 +443,121 @@ def test_process_inside_a_generation_revalidates_before_serving(
     binary.chmod(0o757)
     with pytest.raises(runtimes.ReleaseRuntimeError, match="release_runtime_world_writable"):
         runtimes.enter_release_runtime([])
+
+
+_TAG = sys.implementation.cache_tag
+
+
+def _pyc(generation: Path, relative: str) -> Path:
+    source = generation / relative
+    return source.parent / "__pycache__" / f"{source.stem}.{_TAG}.pyc"
+
+
+def test_generation_ships_unchecked_hash_bytecode_for_every_module(prefix: Path) -> None:
+    """A sealed copy cannot cache bytecode, so it must already hold it (WSL: 12 s vs 6 s)."""
+
+    import importlib.util
+
+    target = runtimes.prepare_release_runtime(prefix)
+    sources = sorted((target / "lib").rglob("*.py"))
+    assert sources
+    for source in sources:
+        cached = source.parent / "__pycache__" / f"{source.stem}.{_TAG}.pyc"
+        data = cached.read_bytes()
+        assert data[:4] == importlib.util.MAGIC_NUMBER
+        assert int.from_bytes(data[4:8], "little") == 0b1  # hash-based, never re-checked
+        assert data[8:16] == importlib.util.source_hash(source.read_bytes())
+        assert cached.stat().st_mode & 0o777 == 0o400
+        assert cached.parent.stat().st_mode & 0o777 == 0o500
+
+
+def test_sealed_generation_imports_from_its_bytecode(prefix: Path) -> None:
+    import subprocess
+
+    target = runtimes.prepare_release_runtime(prefix)
+    packages = target / "lib/python3.14/site-packages"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-v",
+            "-c",
+            f"import sys; sys.path.insert(0, {str(packages)!r}); "
+            "import dependency.lazy as m; print(m.__file__)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert (
+        f"code object from '{_pyc(target, 'lib/python3.14/site-packages/dependency/lazy.py')}'"
+        in (result.stderr)
+    )
+    assert result.stdout.strip() == str(packages / "dependency/lazy.py")
+
+
+def _spy_compiles(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    compiled: list[str] = []
+    original = runtimes.py_compile.compile
+
+    def spy(file: str, *args: object, **kwargs: object) -> object:
+        compiled.append(Path(file).name)
+        return original(file, *args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(runtimes.py_compile, "compile", spy)
+    return compiled
+
+
+def _installed_pyc(prefix: Path) -> Path:
+    import py_compile
+
+    source = prefix / "lib/python3.14/site-packages/dependency/lazy.py"
+    cached = source.parent / "__pycache__" / f"lazy.{_TAG}.pyc"
+    py_compile.compile(str(source), cfile=str(cached), doraise=True)
+    for path in (cached, cached.parent):
+        path.chmod(path.stat().st_mode & ~0o022)
+    return cached
+
+
+def test_valid_installed_bytecode_is_reused_not_recompiled(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    installed = _installed_pyc(prefix)
+    compiled = _spy_compiles(monkeypatch)
+    target = runtimes.prepare_release_runtime(prefix)
+    assert "lazy.py" not in compiled
+    reused = _pyc(target, "lib/python3.14/site-packages/dependency/lazy.py").read_bytes()
+    assert int.from_bytes(reused[4:8], "little") == 0b1
+    assert reused[16:] == installed.read_bytes()[16:]
+
+
+@pytest.mark.parametrize("problem", ["stale", "foreign_writable", "wrong_magic"])
+def test_untrustworthy_installed_bytecode_is_compiled_instead(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, problem: str
+) -> None:
+    installed = _installed_pyc(prefix)
+    source = prefix / "lib/python3.14/site-packages/dependency/lazy.py"
+    if problem == "stale":
+        stamp = source.stat().st_mtime + 10
+        os.utime(source, (stamp, stamp))
+    elif problem == "foreign_writable":
+        installed.chmod(0o666)
+    else:
+        data = bytearray(installed.read_bytes())
+        data[0] ^= 0xFF
+        installed.write_bytes(bytes(data))
+    compiled = _spy_compiles(monkeypatch)
+    runtimes.prepare_release_runtime(prefix)
+    assert "lazy.py" in compiled
+
+
+def test_generation_from_an_earlier_layout_is_never_reused(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A generation sealed before bytecode was shipped must not satisfy a newer start.
+    monkeypatch.setattr(runtimes, "_LAYOUT", b"")
+    older = runtimes.prepare_release_runtime(prefix)
+    monkeypatch.undo()
+    newer = runtimes.prepare_release_runtime(prefix)
+    assert newer != older
+    assert _pyc(newer, "lib/python3.14/site-packages/dependency/lazy.py").exists()

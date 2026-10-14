@@ -179,6 +179,18 @@ root-owned Claude Code executable, which the separate executable-ownership rule 
 `target_unsafe` regardless of umask. The interpreter a retained generation links to is
 re-checked on every reuse, so a later group change is refused then too.
 
+## Retained-runtime bytecode and slow starts
+
+Serving processes (`service run`, `mcp serve`, every hook, `upgrade`) run from a sealed,
+read-only copy of the installation (ADR-007). That copy ships unchecked-hash bytecode for every
+module, reused from the installation's own bytecode when it is current, so a start costs what an
+ordinary run costs. Installing with `uv tool install --compile-bytecode` (the documented command)
+makes building the copy cheap; without it the first serving start after an install or update
+compiles the package once (about 8 s on an M-series Mac, longer on WSL under nested
+virtualization). A start that outlives the client's budget is reported as
+`service_unavailable: service_handshake_timeout` (CLI) or `safe_details.phase:
+handshake_timeout` (MCP): wait and retry; do not run `yoetz service run` or `restart` for it.
+
 ## Approved-check sandbox
 
 Network-denied approved checks run only under an enforcing sandbox: Seatbelt (`sandbox-exec`,

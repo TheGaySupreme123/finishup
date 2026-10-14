@@ -16,6 +16,7 @@ __all__ = [
     "REASON_CODE_CONTINUATIONS",
     "SAFE_DETAIL_KEYS",
     "SERVICE_HANDSHAKE_PHASES",
+    "SERVICE_START_TIMEOUT_PHASE",
     "SERVICE_STARTUP_PHASES",
     "ProtocolValueError",
     "PublicErrorCode",
@@ -421,6 +422,10 @@ SERVICE_STARTUP_PHASES: frozenset[str] = frozenset(
 # service resolves it with, is older than the documented minimum. ``yoetz.service.client`` owns
 # the classification.
 SERVICE_HANDSHAKE_PHASES: frozenset[str] = frozenset({"handshake", "handshake_git_version"})
+# A service of this installation holds the singleton but did not complete a handshake within the
+# caller's start budget: still starting (a slow machine, or the first start after an install or
+# update), not a closed hello. ``phase`` on a retryable ``service_unavailable`` error.
+SERVICE_START_TIMEOUT_PHASE: str = "handshake_timeout"
 assert len(_PROTOCOL_REASON_CODE_VALUES) == 347
 assert len(_PROTOCOL_REASON_CODE_VALUES) == len(set(_PROTOCOL_REASON_CODE_VALUES))
 assert _PROTOCOL_REASON_CODE_VALUES == tuple(sorted(_PROTOCOL_REASON_CODE_VALUES, key=str.encode))
@@ -897,7 +902,11 @@ def _normalize_detail(key: str, value: object) -> SafeDetailValue | None:
         # stages (``yoetz.service.startup_failure``) name where a spawned service failed (#1040).
         if value in {"replay", "model", "digest", "projection", "handler", "unknown"}:
             return value
-        if value in SERVICE_STARTUP_PHASES or value in SERVICE_HANDSHAKE_PHASES:
+        if (
+            value in SERVICE_STARTUP_PHASES
+            or value in SERVICE_HANDSHAKE_PHASES
+            or value == SERVICE_START_TIMEOUT_PHASE
+        ):
             return value
         return None
     if key in _ENUM_DETAIL_KEYS:

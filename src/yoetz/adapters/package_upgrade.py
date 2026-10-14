@@ -14,7 +14,16 @@ from yoetz import __version__
 from yoetz.adapters.release_runtime import installation_prefix, release_update_lock
 
 # An explicit lower bound replaces an old exact installation pin and forbids downgrade.
-PACKAGE_UPGRADE_ARGV: Final = ("uv", "tool", "install", "--upgrade", f"yoetz>={__version__}")
+# --compile-bytecode: the release runtime reuses the installed bytecode for its sealed copy, so
+# the first serving start after an upgrade does not compile the whole package.
+PACKAGE_UPGRADE_ARGV: Final = (
+    "uv",
+    "tool",
+    "install",
+    "--upgrade",
+    "--compile-bytecode",
+    f"yoetz>={__version__}",
+)
 
 
 def _upgrade_command(prefix: Path) -> tuple[str, ...] | None:
@@ -23,7 +32,15 @@ def _upgrade_command(prefix: Path) -> tuple[str, ...] | None:
     try:
         tool = tomllib.loads((prefix / "uv-receipt.toml").read_text())["tool"]
         requirements = tool["requirements"]
-        if tool.get("options") or len(requirements) != 1:
+        options: object = tool.get("options") or {}
+        # uv records `--compile-bytecode` (which the documented install and this upgrade use)
+        # as an option; any other recorded option is a custom resolution to keep, not drop.
+        if (
+            not isinstance(options, dict)
+            or set(cast(dict[str, object], options)) - {"compile-bytecode"}
+            or type(cast(dict[str, object], options).get("compile-bytecode", True)) is not bool
+            or len(requirements) != 1
+        ):
             return None
         requirement = requirements[0]
         if requirement.get("name") != "yoetz" or set(requirement) - {"name", "specifier", "extras"}:

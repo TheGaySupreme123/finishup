@@ -94,7 +94,7 @@ source "$HOME/.local/bin/env"
 Then install the latest published Yoetz version:
 
 ```text
-uv tool install --managed-python --python 3.14.6 yoetz
+uv tool install --compile-bytecode --managed-python --python 3.14.6 yoetz
 yoetz version
 ```
 

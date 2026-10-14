@@ -239,6 +239,38 @@ install`, `service run`, `mcp serve`, Codex/Claude Code/Cursor hooks, `state cap
 three host setup previews; adding a second account to the runtime's group produced
 `release_runtime_group_writable` on each surface until the printed `chmod` was run.
 
+## Amendment — retained generations carry their bytecode (2026-10-14, owner request)
+
+A Linux/WSL compatibility run found every sealed generation without bytecode (0 of 384 `yoetz`
+modules), so every serving start compiled the whole package and, the tree being read-only, could
+never cache it: importing `yoetz.cli.app` took 11.7-12.0 s on a nested WSL 2 guest against
+6.1-6.6 s from the ordinary environment (macOS 0.85-0.96 s against 0.50 s). Clients then missed
+the five-second handshake and services the restart budget.
+
+1. **Sealed with bytecode.** Before sealing, every copied module gets an unchecked-hash pyc in
+   `__pycache__` at optimization level 0 (what the `-I` bootstrap loads; never
+   `sys.pycache_prefix`). Unchecked hashes never consult the source mtimes the copy does not
+   keep, and an immutable generation cannot make them stale. Bytecode the installation already
+   holds is reused when its header still matches the copied source (timestamp, or a hash) and no
+   other account can write it or its directory; only the header is rewritten. Anything else is
+   compiled with the generation's own file names. A module this interpreter cannot compile still
+   compiles at import. Pycs are sealed `0400` in `0500` directories like every other member.
+2. **Older generations are not reused.** The generation key includes a layout version, so a
+   generation sealed before this change never satisfies a newer start; the next start builds a
+   complete one and the ordinary lease-aware pruning removes the old one once unused.
+3. **Installs compile.** The documented install, `npx yoetz`, `yoetz upgrade --accept` and the
+   test-instance provisioner pass `--compile-bytecode`, so creating a generation reuses bytecode
+   instead of compiling (macOS: 3.1 s against 7.8 s without, 2.2 s for the old source-only
+   copy). uv records that flag as the receipt option `compile-bytecode`; the upgrade accepts
+   exactly that option and still refuses any other recorded option.
+4. **A slow start is named.** When on-demand start ends its budget while the service it spawned
+   (or a live singleton holder) is still starting, the error carries phase `handshake_timeout`
+   and is rendered as `service_handshake_timeout` (retry; no lifecycle command) on the CLI and
+   in MCP (`safe_details.phase`). A CLI command that finds nothing accepting while a live process
+   has stamped the singleton says the same instead of the supervisor hint. Budgets are
+   unchanged: hook auto-attach keeps its one-second fail-open budget and on-demand start its 30
+   seconds; with bytecode, a generation starts as fast as the ordinary environment.
+
 ## Implementation-lock identities
 
 The 2026-07-17 implementation lock freezes the direct dependency declarations below. All are
