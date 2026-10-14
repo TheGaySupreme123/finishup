@@ -112,3 +112,15 @@ def test_non_finishup_tools_and_non_tool_phases_are_unchanged() -> None:
     assert self_observation_deliverable("PostToolUse", {"tool_name": "status_check"}) is True
     assert self_observation_deliverable("PostToolUse", {"tool_name": "mcp__yoetzx__status"}) is True
     assert self_observation_deliverable("PostToolUse", {"tool_name": "yoetz:statusx"}) is True
+
+
+@pytest.mark.parametrize("name", (*_READS, *_MUTATIONS))
+def test_cursor_generic_mcp_spelling_is_not_proof_of_a_finishup_call(name: str) -> None:
+    """tb4 n5 round 2: ``MCP:<tool>`` names no server, so it may be another server's tool.
+
+    The policy alone never suppresses it; only the Cursor adapter, holding the bridge's record of
+    serving that exact call, may hand the policy FinishUP's scoped spelling instead.
+    """
+
+    for phase in ("PreToolUse", "PostToolUse"):
+        assert self_observation_deliverable(phase, {"tool_name": f"MCP:{name}"}) is True

@@ -13,11 +13,25 @@ from typing import Final, cast
 from packaging.version import InvalidVersion, Version
 
 from finishup import __version__
-from finishup.adapters.release_runtime import installation_prefix, release_update_lock
+from finishup.adapters.release_runtime import (
+    hash_bytecode_environment,
+    installation_prefix,
+    release_update_lock,
+)
 from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
 
 # An explicit lower bound replaces an old exact installation pin and forbids downgrade.
-PACKAGE_UPGRADE_ARGV: Final = ("uv", "tool", "install", "--upgrade", f"finishup>={__version__}")
+# --compile-bytecode, run with SOURCE_DATE_EPOCH in the child's environment: uv then writes
+# checked-hash bytecode, which the release runtime verifies and reuses for its sealed copy, so
+# the first serving start after an upgrade does not compile the whole package (ADR-007).
+PACKAGE_UPGRADE_ARGV: Final = (
+    "uv",
+    "tool",
+    "install",
+    "--upgrade",
+    "--compile-bytecode",
+    f"finishup>={__version__}",
+)
 # The uv tools this boundary upgrades in place: each tool directory, its receipt requirement and
 # its console script share one name. ``yoetz`` is a tool installed before the rename; it upgrades
 # through the transitional ``yoetz`` distribution, which installs the same-version ``finishup``
@@ -74,7 +88,8 @@ def plain_uv_tool_receipt(receipt: str, name: str) -> PlainToolReceipt | None:
     """Parse a uv tool receipt that records nothing beyond ``name``, known extras and Python.
 
     None unless the ``[tool]`` table holds only requirements, python and entrypoints (resolution
-    keys such as options, constraints, overrides or build constraints only when empty), with
+    keys such as options, constraints, overrides or build constraints only when empty; options
+    may record only ``compile-bytecode``), with
     exactly one ``name`` requirement carrying only a specifier and extras from
     ``PACKAGE_EXTRAS``. Any other recorded choice would be lost by a command rebuilt from this
     receipt, so callers refuse or ask the user instead of guessing.
@@ -90,7 +105,18 @@ def plain_uv_tool_receipt(receipt: str, name: str) -> PlainToolReceipt | None:
     table = cast(dict[str, object], tool)
     if set(table) - _PLAIN_TOOL_KEYS - _RESOLUTION_KEYS:
         return None
-    if any(table.get(key) for key in _RESOLUTION_KEYS):
+    if any(table.get(key) for key in _RESOLUTION_KEYS - {"options"}):
+        return None
+    # uv records `--compile-bytecode` (which the documented install and the upgrade use) as an
+    # option; any other recorded option is a custom resolution to keep, not drop.
+    options: object = table.get("options") or {}
+    if type(options) is not dict:
+        return None
+    recorded = cast(dict[str, object], options)
+    if (
+        set(recorded) - {"compile-bytecode"}
+        or type(recorded.get("compile-bytecode", True)) is not bool
+    ):
         return None
     requirements = table.get("requirements")
     if type(requirements) is not list:
@@ -172,9 +198,13 @@ def execute_package_upgrade() -> str:
             if command is None:
                 return "refused_custom_uv_installation"
             # Never capture arbitrary package-manager output or copy it to structural errors.
+            # umask 022: the replacement must not be writable by anyone but its owner, whatever
+            # the invoking shell's umask (Ubuntu and Fedora default to 0002).
             result = subprocess.run(  # noqa: S603 - closed argv, same supported carrier
                 command,
                 check=False,
+                env=hash_bytecode_environment(os.environ),
+                umask=0o022,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

@@ -4,6 +4,11 @@ Use the small `review.md` or `receipt.md` topic through `read_guidance` for a fo
 closure decision. This complete document remains authoritative for the full coverage vector,
 finding rules, recovery, and receipt fields.
 
+Read only the section you need, as `finishup://guidance/coverage-and-receipts.md#<anchor>`: a paged
+read lists every section anchor on page 0. Two are not obvious from their names: the order of
+repair, final check, and receipt is `#repair-then-finish`; a check waiting on a local decision
+(`awaiting_human`) is `#when-a-check-is-waiting-on-a-local-decision`.
+
 ## Coverage is a vector
 
 Coverage has six independent dimensions. Do not collapse them into a score or let strength in one compensate for weakness in another:
@@ -90,12 +95,14 @@ Lifecycle records are not material: `work_closed` (and the other work-state and 
 
 ## Repair then finish
 
-For a material repair, use one bounded status → repair → check → read → receipt sequence:
+For a material repair, use one bounded repair → check → read → receipt sequence:
 
-1. Read current `status` and retain its frontier. Before authoring replacement evidence or a
-   completion claim, cite the evidence IDs you published and find native captures with a filtered
-   `view=evidence` read at that frontier. Keep the cursor-bound filter and original `limit`; reuse
-   only permitted native IDs a structural link ties to the claim.
+1. Keep the frontier you hold (the `result_frontier` of your last accepted write) for the next
+   write; read `status` for one only when you hold none or after `frontier_changed`. Before
+   authoring replacement evidence or a completion claim, cite the evidence IDs you published, and
+   find native captures with a filtered `view=evidence` read only when you need them. Keep the
+   cursor-bound filter and original `limit`; reuse only permitted native IDs a structural link ties
+   to the claim.
 2. Publish the real repair results, corrected claim/evidence, and any required plan revision. Do not
    fabricate success or infer scope from the user's prompt. A feedback obligation is complete only
    when it is included in an effective plan revision or exact next-version restatement.
@@ -245,7 +252,7 @@ continuing the authorized task; it is not clean AI-powered review coverage. Pend
 approval is different: follow the exact continuation below, not the terminal fallback rules.
 
 
-A clean local-only check is not an implementation review: its receipt concludes `no_unresolved_deterministic_findings` at best. Where the route requires AI-powered review, `mode=deterministic_only` records `semantic_review_not_requested`, which bounds the receipt. Where it does not, the check records `semantic_route_required: false` and no review gap: it ran what you asked for. Omit `mode` to follow the configured default; use `semantic_if_configured` only for known-optional review, and disclose the limitation when local-only is deliberate. A check before your first material edit (no edit recorded and no workspace change observed, and not the closing review) also runs locally only, whatever the mode, and carries `semantic_review_deferred_before_first_edit`: nothing was sent, and the next check after an edit reviews as configured. Like `semantic_review_not_requested`, it bounds the receipt only where the route requires review; there, work that needs no edit still gets the closing review, which readiness asks for. Where review is optional it asks for nothing more than a local-only check. Reviewer challenges that something was never attempted while work is in progress, or about FinishUP's own state (a FinishUP tool call, a hook observation awaiting its result), are not recorded as findings; `semantic_process_state_filtered` discloses that they were filtered and never bounds the receipt.
+A clean local-only check is not an implementation review: its receipt concludes `no_unresolved_deterministic_findings` at best. Where the route requires AI-powered review, `mode=deterministic_only` records `semantic_review_not_requested`, which bounds the receipt. Where it does not, the check records `semantic_route_required: false` and no review gap: it ran what you asked for. Omit `mode` to follow the configured default; use `semantic_if_configured` only for known-optional review, and disclose the limitation when local-only is deliberate. A check before your first material edit (no edit recorded and no workspace change observed, and not the closing review) also runs locally only, whatever the mode, and carries `semantic_review_deferred_before_first_edit`: nothing was sent, and the next check after an edit reviews as configured. Like `semantic_review_not_requested`, it bounds the receipt only where the route requires review; there, work that needs no edit still gets the closing review, which readiness asks for. Where review is optional it asks for nothing more than a local-only check. Reviewer challenges that something was never attempted while work is in progress, about FinishUP's own state (a FinishUP tool call, a hook observation awaiting its result), or that only restate an unpaired action (or a result with no action), which the local check decides over the whole record, are not recorded as findings; `semantic_process_state_filtered` discloses that they were filtered and never bounds the receipt. Pair the action with its result and the local finding resolves.
 
 A non-succeeding `semantic_status` is a coverage gap, not a failure to retry away.
 
@@ -284,6 +291,7 @@ after a native host run.
 - `invalid` with reason `response_content_invalid` (an incomplete or overlong provider answer) may spend exactly one in-job repair retry — same frozen case, same job, one final check event, fresh attempt identity — when the profile has retry budget and deadline left. A recorded `response_content_invalid` therefore means that repair was already spent or not admitted; do not spend a second job on it.
 - `refused`, `failed`, and every other `invalid` reason (`response_schema_invalid`, `semantic_judgment_rejected`) are not retried inside the job at all, so a fresh request is a fresh gamble rather than a continuation. Their first answer is already terminal: for optional review, fall back to `deterministic_only` immediately rather than spending a second job to confirm. For required review, report the requirement as unmet and do not downgrade it.
 - A credential-like value is replaced in place by `[withheld-by-yoetz:possible-credential]` before the packet leaves the machine (`semantic_review_value_redacted`); the rest of the item is still reviewed. Only when that cannot be done is the item withheld individually (listed in the check's `semantic_withheld_item_ids` with the `semantic_review_item_withheld` gap). The check, status and receipt list each affected item with the line numbers involved (`semantic_redacted_values`, counted within the captured item, not the file), never the value. Both bound only the AI-powered review, never local checks; never change consent, rename, hide or reshape your work to clear them, and never supply the value. If a finding stays unresolved only because of them, that is a FinishUP limit: if you repaired this and FinishUP cannot prove it (a FinishUP limit), verify it yourself, record that evidence, and respond `self_verified` with how you verified it and the evidence ids. Do not reshape your work for FinishUP, and a FinishUP limit is never a `finishup-blocker`. Only a high-confidence credential blocks the whole review.
+- In the check-time change and the task inputs it carries, `[REDACTED]` (a detected credential) and `[withheld-by-yoetz:possible-credential]` (a value that only looks like one) are substitutions FinishUP made when it read the repository (`check_time_change_redacted`). A finding that reads either marker as your code (an undefined name, a syntax error, missing configuration) is a FinishUP limit: answer it with that reason and your readable evidence, and never edit your code around the marker.
 - `semantic_review_credential_heuristic_disabled` means the owner turned the possible-credential filter off in their privacy policy, so values that only look like passwords or tokens reached the reviewer as written. It is the owner's disclosure choice, not your work and not a review defect: do not act on it, and never change that setting yourself in either direction.
 - `blocked_forbidden_data/never_send_detected` and `classification_uncertain` stop before provider dispatch at the privacy boundary. Never resend the blocked case or reuse its proposal. When a bounded span replacement is safe, publish a new targeted item and run one new `semantic_required` check; FinishUP admits and rescans that replacement through the prepared and rendered-body gates. If no safe replacement exists, report the required review as unmet. A local-only check does not satisfy `semantic_required`; for optional review, run `deterministic_only` and disclose the recorded `semantic_status` and `semantic_reason`.
 
@@ -642,6 +650,12 @@ freshness rule runs, so the existing tolerated host-observation exception may al
 `redacted_gap` check when all remaining gaps are in that closed host/evidence set. Projection
 redactions, unreadable payloads, and unknown relations still fail closed.
 
+A linked result also decides that finding under content-capture limits: when the tested state holds
+a readable `result_recorded` whose `action_id` names the readable action, `truncated_payload` and
+`content_capture_unavailable` no longer keep it open, whatever obligations the action names, and
+stay check and receipt coverage limits, so do not answer `self_verified` for them. The command codes
+above keep the partition rule; an unreadable or later result proves nothing.
+
 
 ### Missing review content and concrete repair attempts
 
@@ -675,8 +689,8 @@ When `missing_for_assessment` contains an `agent_suppliable` item, supplying or 
 item is the overall next action before requesting an ordinary receipt. The structured
 `overall_next` projection names that action and its bounded target refs (which may be empty for a
 global input); `finding_checklist.next` remains a finding-only continuation and does not override
-it. When open obligations or undisclosed live failures remain, or a delivered file loads a file
-the change created that no item declares, its action is `review_recorded_work` with bounded
+it. When open obligations or undisclosed live failures remain, or a delivered file may read a
+file the change created that no item declares, its action is `review_recorded_work` with bounded
 obligation/result/action ids. When only standing,
 `structurally_unavailable_on_this_host` or FinishUP-limit items remain, `overall_next` reports
 `ready_with_limitations` and the receipt endpoint remains available for acknowledging the

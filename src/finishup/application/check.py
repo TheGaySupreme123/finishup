@@ -33,6 +33,7 @@ from finishup.domain.events import (
     ClaimKind,
     DeliverableState,
     LedgerRecord,
+    ResultRecordedPayload,
     undeclared_reference_path_valid,
 )
 from finishup.domain.findings import (
@@ -192,15 +193,25 @@ from finishup.kernel.policies.work_integrity import (
     reportable_absent_outputs,
     work_integrity_findings,
 )
-from finishup.kernel.projections import PROJECTION_VERSION, ProjectionState
+from finishup.kernel.projections import (
+    PROJECTION_VERSION,
+    EvidenceProjectionRecord,
+    ProjectionRecord,
+    ProjectionState,
+)
 from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
 from finishup.kernel.receipt_capacity import current_receipt_findings
 from finishup.kernel.receipt_prediction import predict_receipt_conclusion
 from finishup.kernel.reducers import replay
-from finishup.kernel.review_frame import agent_probe_only, finishup_process_state_only
+from finishup.kernel.review_frame import (
+    agent_probe_only,
+    finishup_process_state_only,
+    local_rule_owned,
+)
 from finishup.kernel.review_round import review_round_stopped
 from finishup.kernel.task_facts import (
     DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
+    DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP,
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
     agent_linked_run_events,
     confirmed_blocked_obligation_ids,
@@ -300,6 +311,7 @@ if TYPE_CHECKING:  # the inspection module imports status, which imports this mo
 __all__ = [
     "SEMANTIC_CASE_CONTENT_GAPS",
     "SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM",
+    "SEMANTIC_REJECTED_LOCAL_RULE_OWNED",
     "SEMANTIC_REJECTED_ROUTINE_COMPLETENESS",
     "SEMANTIC_REJECTED_FINISHUP_PROCESS_STATE",
     "SEMANTIC_REJECTED_REF_NOT_CARRIED",
@@ -356,11 +368,20 @@ SEMANTIC_REJECTED_ROUTINE_COMPLETENESS: Final = "routine_completeness"
 # challenge whose every subject is FinishUP's own capture or process record
 # (``kernel.review_frame.finishup_process_state_only``). Counted, never minted.
 SEMANTIC_REJECTED_FINISHUP_PROCESS_STATE: Final = "yoetz_process_state"
-# The two reasons above are about work in progress or FinishUP's own state, not about material the
-# check failed to carry: they are disclosed as ``semantic_process_state_filtered`` (never
-# bounding, never vetoing an absence proof) instead of ``semantic_challenges_rejected``.
+# tb4n5 follow-up of #1042: an ``action_without_result`` or ``result_without_action`` challenge
+# about readable ledger actions or results (``kernel.review_frame.local_rule_owned``). The local
+# work-integrity rule owns that relation over the whole ledger. Counted, never minted.
+SEMANTIC_REJECTED_LOCAL_RULE_OWNED: Final = "local_rule_owned"
+# The three reasons above are about work in progress, FinishUP's own state or a ledger relation
+# the local rule decides, not about material the check failed to carry: they are disclosed as
+# ``semantic_process_state_filtered`` (never bounding, never vetoing an absence proof) instead of
+# ``semantic_challenges_rejected``.
 _PROCESS_STATE_REJECTIONS: Final = frozenset(
-    {SEMANTIC_REJECTED_ROUTINE_COMPLETENESS, SEMANTIC_REJECTED_FINISHUP_PROCESS_STATE}
+    {
+        SEMANTIC_REJECTED_ROUTINE_COMPLETENESS,
+        SEMANTIC_REJECTED_FINISHUP_PROCESS_STATE,
+        SEMANTIC_REJECTED_LOCAL_RULE_OWNED,
+    }
 )
 # The closed packet content gaps a semantic evaluation may carry into check coverage. Each is
 # classified for finding resolution in ``kernel/finding_resolution.py`` (issue #904); adding one
@@ -509,6 +530,7 @@ class SemanticJudgmentReview:
 _SEMANTIC_REJECTION_REASONS: Final = frozenset(
     {
         SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM,
+        SEMANTIC_REJECTED_LOCAL_RULE_OWNED,
         SEMANTIC_REJECTED_REF_NOT_CARRIED,
         SEMANTIC_REJECTED_REF_OUTSIDE_CASE,
         SEMANTIC_REJECTED_ROUTINE_COMPLETENESS,
@@ -2113,8 +2135,16 @@ class FinalSemanticEvaluation:
     # Issue #1047: the refs whose content the exact sent packet's excerpts held (a captured
     # group's parts included), read from its provider-bound manifest, so an in-check follow-up
     # can tell what was shown and what a later packet adds. In process only; ``None`` when what
-    # was sent is unknown.
+    # was sent is unknown. A source split into parts counts only once every part was sent.
     case_excerpt_refs: frozenset[str] | None = None
+    # tb4n5: the excerpt parts (``excerpt_span_key``) the same sent packet carried, so a follow-up
+    # tells a later part of a partly shown source from a repeat. In process only; ``None`` when
+    # what was sent is unknown.
+    case_excerpt_parts: frozenset[str] | None = None
+    # tb4n5: each captured edit's evidence ref mapped to the check-time change sections of the
+    # paths it changed (``semantic_case.current_section_parts``), when this packet's recipe and
+    # channel could carry them. In process only; never recorded or logged.
+    case_current_section_parts: Mapping[str, frozenset[str]] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -2128,11 +2158,11 @@ class FinalSemanticEvaluation:
             or any(type(ref) is not str for ref in self.case_included_refs)
         ):
             raise _invalid("semantic_judgment_invalid")
-        if self.case_excerpt_refs is not None and (
-            type(self.case_excerpt_refs) is not frozenset
-            or any(type(ref) is not str for ref in self.case_excerpt_refs)
-        ):
-            raise _invalid("semantic_judgment_invalid")
+        for refs in (self.case_excerpt_refs, self.case_excerpt_parts):
+            if refs is not None and (
+                type(refs) is not frozenset or any(type(ref) is not str for ref in refs)
+            ):
+                raise _invalid("semantic_judgment_invalid")
         if (
             type(self.semantic_withheld_item_ids) is not tuple
             or self.semantic_withheld_item_ids
@@ -2964,6 +2994,7 @@ async def _requested_output_inputs(
 ) -> _OutputInputs:
 
     from finishup.application.check_change import (
+        UndeclaredReferenceRead,
         requested_output_states,
         undeclared_references,
     )
@@ -3002,7 +3033,7 @@ async def _requested_output_inputs(
     if content_moved_declared_items(case.projection, states, blocked=confirmed, history=history):
         # A non-blocking disclosure (ADR-035): never a Stop-gate token, never a finding.
         codes.add(DECLARED_OUTPUT_CONTENT_MOVED_GAP)
-    references = await undeclared_references(
+    read: object = await undeclared_references(
         projection=case.projection,
         capture=capture,
         source=source,
@@ -3011,6 +3042,18 @@ async def _requested_output_inputs(
         blocked=confirmed,
         request_id=request_id,
     )
+    # A reader that predates the ambiguous count returns the dependency pairs alone.
+    reading = (
+        read
+        if type(read) is UndeclaredReferenceRead
+        else UndeclaredReferenceRead(cast(tuple[tuple[str, str], ...], read))
+    )
+    references = reading.pairs
+    if reading.ambiguous:
+        # tb4n5 (the #1044 follow-up, ADR-035 amendment): a deliverable names created files only
+        # by an ambiguous basename, so they were not treated as dependencies. A standing
+        # disclosure with the count on the receipt; never a name, never a Stop-gate token.
+        codes.add(DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP)
     if references:
         # tb4n2 R2 / tb4n4 (#1044): a declared deliverable names a file the change created but
         # never declared, so the delivery may not carry what it needs. Agent work and a Stop-gate
@@ -3038,7 +3081,9 @@ async def _requested_output_inputs(
         partial(work_integrity_findings, absent_outputs=absent),
         gaps,
         bool(absent),
-        _with_undeclared_references(assessment.states, files, references),
+        _with_undeclared_references(
+            assessment.states, files, references, ambiguous=reading.ambiguous
+        ),
         files,
     )
 
@@ -3047,17 +3092,22 @@ def _with_undeclared_references(
     states: tuple[DeliverableState, ...],
     files: tuple[tuple[ObligationId, int, str], ...],
     references: tuple[tuple[str, str], ...],
+    *,
+    ambiguous: tuple[tuple[str, int], ...] = (),
 ) -> tuple[DeliverableState, ...]:
     """Each referencing deliverable's state, naming the undeclared files it names (#1044).
 
     ``references`` are ``(deliverable, referenced file)`` root-relative pairs from the check-time
     read; ``files`` maps each recorded state to its deliverable's root-relative path. At most
     ``MAX_UNDECLARED_REFERENCES`` nameable paths are recorded per state, sorted; when more were
-    found (or one cannot be named) the state also records how many.
+    found (or one cannot be named) the state also records how many. ``ambiguous`` counts, per
+    deliverable, the created files it names only by an ambiguous basename (tb4n5): recorded as
+    ``undeclared_reference_ambiguous``, never named.
     """
 
-    if not references:
+    if not references and not ambiguous:
         return states
+    unclear = dict(ambiguous)
     found: dict[str, set[str]] = {}
     for deliverable, referenced in references:
         found.setdefault(deliverable, set()).add(referenced)
@@ -3066,6 +3116,9 @@ def _with_undeclared_references(
     for state in states:
         relative = relatives.get((state.obligation_id, state.item_index))
         named = found.get(relative) if relative is not None else None
+        count = unclear.get(relative) if relative is not None else None
+        if count:
+            state = replace(state, undeclared_reference_ambiguous=count)
         if not named:
             recorded.append(state)
             continue
@@ -3854,6 +3907,25 @@ def _claims_unchanged_over_hidden_source(
     )
 
 
+def _ruling_material(
+    projection: ProjectionState, ref: str
+) -> EvidenceProjectionRecord | ProjectionRecord[ResultRecordedPayload] | None:
+    """The evidence or result a ruling cites, by its own id or by the event that recorded it."""
+
+    if ref.startswith("evd_"):
+        return projection.evidence.get(evidence_id(ref))
+    if ref.startswith("res_"):
+        return projection.results.get(result_id(ref))
+    if ref.startswith("evt_"):
+        for evidence_row in projection.evidence.values():
+            if str(evidence_row.source_event_id) == ref:
+                return evidence_row
+        for result_row in projection.results.values():
+            if str(result_row.source_event_id) == ref:
+                return result_row
+    return None
+
+
 def _ruling_supported(
     kind: str,
     cited: tuple[str, ...],
@@ -3861,17 +3933,19 @@ def _ruling_supported(
     finding: FindingId,
     projection: ProjectionState,
 ) -> bool:
-    """Whether the refs a ruling kept can carry what that ruling claims."""
+    """Whether the refs a ruling kept can carry what that ruling claims.
+
+    A ``fixed`` ruling needs readable evidence or a result recorded after the finding. The packet
+    offers both by the event that recorded them as well as by their own id, and reviewers cite the
+    event (tb4n5: 0 ``res_`` citations in 41 reviews; kv ``fnd_c96c2b9f`` was ruled supported on
+    ``evt_3318a99d``, the repair result's event), so an ``evt_`` resolves to the evidence or result
+    it recorded before the frontier test. An ``evt_`` that recorded anything else (an action, a
+    claim, a response) never supports ``fixed``.
+    """
 
     if kind == "fixed":
         for ref in cited:
-            row = (
-                projection.evidence.get(evidence_id(ref))
-                if ref.startswith("evd_")
-                else projection.results.get(result_id(ref))
-                if ref.startswith("res_")
-                else None
-            )
+            row = _ruling_material(projection, ref)
             if (
                 row is not None
                 and row.payload is not None
@@ -3891,6 +3965,12 @@ def _ruling_supported(
 
 # The reviewer rulings that keep an answered finding open (issue #1020).
 _HELD_OPEN_RULINGS: Final = frozenset({"still_present", "answered_not_fixed", "unassessable"})
+# The rulings that say the concern remains, the only ones ruling admission records as a standing
+# disagreement over the agent's position (tb4n5 follow-up of #1046). ``unassessable`` keeps the
+# item open but disagrees with nothing: the reviewer could not judge it, so it stays an open round.
+# A restatement of the concern is a re-raise and keeps its own dispute rule
+# (``_record_restatement``).
+_DISAGREEING_RULINGS: Final = frozenset({"still_present", "answered_not_fixed"})
 
 
 def _finding_concern(case: DeterministicCase, key: FindingId) -> ConcernKey:
@@ -4037,7 +4117,11 @@ def _admit_prior_verdicts(
         supported = _ruling_supported(
             kind, cited, record.source_frontier, record.payload.finding_id, projection
         )
-        if shown and _disputed_after_rebuttal(case, record.payload.finding_id, kind, cited):
+        if (
+            shown
+            and kind in _DISAGREEING_RULINGS
+            and _disputed_after_rebuttal(case, record.payload.finding_id, kind, cited)
+        ):
             # Issue #1020 (ADR-040): the reviewer saw the agent's reasoned position and kept the
             # item open without citing anything newer. Recorded as a standing disagreement.
             unsupported += lost_cite
@@ -4046,13 +4130,18 @@ def _admit_prior_verdicts(
             unsupported += 1
             if (
                 shown
-                and kind != "withdrawn"
+                and kind in _DISAGREEING_RULINGS
                 and _disputed_after_rebuttal(case, record.payload.finding_id, "unassessable", cited)
             ):
-                # tb4n3 RC-7 (D-6): a ruling that cannot stand over a standing position and cites
-                # nothing newer is the standing disagreement, not an open review round.
+                # tb4n3 RC-7 (D-6): a ruling that keeps the item open, cannot stand over a standing
+                # position and cites nothing newer is the standing disagreement, not an open
+                # review round.
                 kind = DISPUTED_AFTER_REBUTTAL_VERDICT
             else:
+                # tb4n5 follow-up of #1046: an unsupported ``fixed`` (the reviewer says the issue
+                # is gone), a ``withdrawn`` with no rejection to accept, or an honest
+                # ``unassessable`` is never a reviewer disagreement; it is unassessable, an open
+                # round the next review can rule on (kv ``fnd_c96c2b9f`` latched as a dispute).
                 kind = "unassessable"
         elif lost_cite and kind == "fixed":
             # A trimmed citation is disclosed, but a ``fixed`` the remaining cites still support
@@ -4268,6 +4357,15 @@ def validate_semantic_judgment(
             # work. Counted and disclosed, never minted.
             rejections[SEMANTIC_REJECTED_FINISHUP_PROCESS_STATE] = (
                 rejections.get(SEMANTIC_REJECTED_FINISHUP_PROCESS_STATE, 0) + 1
+            )
+            continue
+        if local_rule_owned(case.projection, challenge.finding_kind, refs):
+            # tb4n5 follow-up of #1042: the action/result relation is the local rule's, decided over
+            # the whole ledger; the reviewer's copy duplicated or misplaced it and latched
+            # ``disputed_after_rebuttal`` while the local twin resolved. Counted and disclosed,
+            # never minted. Every other kind about the same action is still reviewed.
+            rejections[SEMANTIC_REJECTED_LOCAL_RULE_OWNED] = (
+                rejections.get(SEMANTIC_REJECTED_LOCAL_RULE_OWNED, 0) + 1
             )
             continue
         if routine and challenge.finding_kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED:
@@ -5176,6 +5274,8 @@ async def _review_follow_up(
             previous=previous,
             shown_refs=result.case_excerpt_refs,
             privacy_withheld_refs=result.case_privacy_withheld_refs,
+            shown_parts=result.case_excerpt_parts,
+            section_parts=result.case_current_section_parts,
         )
         if follow_up is None:
             break
@@ -5212,6 +5312,9 @@ async def _review_follow_up(
         if following is None:
             break
         added = follow_up.added_by(following.case_excerpt_refs or ())
+        # tb4n5: the parts this round's sent packet carried that no earlier packet had, so a
+        # later round adds only parts no packet carried and never repeats one.
+        new_parts = follow_up.unseen(following.case_excerpt_parts or ())
         record_bounded_counts_without_raising(
             component="check",
             operation="semantic_review_follow_up",
@@ -5221,9 +5324,14 @@ async def _review_follow_up(
                 "semantic_follow_up_round": follow_up.round,
                 "semantic_follow_up_items": len(follow_up.items),
                 "semantic_follow_up_refs_added": len(added),
+                "semantic_follow_up_parts_added": len(new_parts),
             },
         )
-        previous = replace(follow_up, added_refs=follow_up.added_refs | added)
+        previous = replace(
+            follow_up,
+            added_refs=follow_up.added_refs | added,
+            added_parts=follow_up.added_parts | new_parts,
+        )
         result = following
     return result
 

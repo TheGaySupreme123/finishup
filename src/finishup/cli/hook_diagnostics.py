@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Lock
+from types import MappingProxyType
 from typing import Final, cast
 
 from finishup.cli.hook_timing import hook_pass_timing_summary
@@ -69,6 +70,12 @@ _EVENTS: Final = frozenset(
     }
 )
 _CONTROL_REASONS: Final = CONTROL_ERROR_REASONS
+_DRAIN_PASS_DELIVERED_NOTHING: Final = "drain_pass_delivered_nothing"
+# Reasons renamed after rows were written under the old name: read back under the new one so
+# one cause keeps one tally across an upgrade (tb4n5).
+_LEGACY_REASON_NAMES: Final = MappingProxyType(
+    {"drain_budget_exhausted": _DRAIN_PASS_DELIVERED_NOTHING}
+)
 _REASONS: Final = frozenset(
     {
         *(item.value for item in ObservationGapCode),
@@ -89,13 +96,17 @@ _REASONS: Final = frozenset(
         *("admission_loss_" + item.value for item in AdmissionLossCause),
         "service_unavailable",
         "service_incompatible",
+        # A running service of this installation closed the hello (#1040 follow-up).
+        "service_handshake_failed",
         "vault_locked",
         "mapping_missing",
         "mapping_stale",
         "observation_disabled",
         "paused",
         "timeout",
-        "drain_budget_exhausted",
+        # One hook drain pass delivered no row within its 0.2 s budget; the rows stay queued.
+        # Named `drain_budget_exhausted` before tb4n5 (read back under this name).
+        _DRAIN_PASS_DELIVERED_NOTHING,
         "drain_lease_contended",
         # Pre-tb4n2 rows conflated the service connect with native-content staging. New rows name
         # the stage: the connect timed out or failed, content staging raised, or (still
@@ -217,8 +228,9 @@ _REASONS: Final = frozenset(
         # The delivered continuation also asked the acceptance re-read (A-12) readiness announced
         # (tb4n3 RC-8): the count of extra Stop turns that re-read costs.
         "closure_gate_acceptance_rechecked",
-        # The host's final message addressed every resolved obligation's acceptance, so the
-        # acceptance re-read was not asked at this Stop (#1050). No text, ids or counts recorded.
+        # The host's final message attested (``finishup-acceptance:<obligation id>:met``) every
+        # obligation the acceptance re-read announced, so it was not asked at this Stop (#1050).
+        # No text, ids or counts recorded.
         "closure_gate_acceptance_covered",
         # The Stop pass drained this task's hook rows to the current frontier before the
         # closure gate read status, or the bounded Stop drain left some pending (tb4n1 B4/C6).
@@ -928,10 +940,11 @@ def _read_rows(
                     continue
                 if any(type(row.get(key)) is not str for key in ("event", "reason", "ts")):
                     continue
+                reason = cast(str, row["reason"])
                 rows.append(
                     {
                         "event": cast(str, row["event"]),
-                        "reason": cast(str, row["reason"]),
+                        "reason": _LEGACY_REASON_NAMES.get(reason, reason),
                         "ts": cast(str, row["ts"]),
                     }
                 )

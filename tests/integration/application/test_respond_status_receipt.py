@@ -3520,28 +3520,51 @@ async def test_host_observation_gaps_do_not_keep_repaired_action_finding_current
                 }
                 for offset, obligation in enumerate((obligation_a, obligation_b))
             ),
-            *(
-                {
-                    "event_id": protocol_id("evt_", 5009 + offset),
-                    "schema": {"name": "action_recorded", "version": "1.0.0"},
-                    "occurred_at": "2026-07-19T12:00:01.000Z",
-                    "causal_parents": (),
-                    "payload": {
-                        "action_id": action,
-                        "action_kind": "other",
-                        "description": f"Attempt result {offset + 1}.",
-                        "obligation_refs": (obligation,),
-                    },
-                    "artifact_refs": (),
-                    "evidence_refs": (),
-                }
-                for offset, (action, obligation) in enumerate(
-                    ((action_a, obligation_a), (action_b, obligation_b))
-                )
-            ),
+            {
+                "event_id": protocol_id("evt_", 5009),
+                "schema": {"name": "action_recorded", "version": "1.0.0"},
+                "occurred_at": "2026-07-19T12:00:01.000Z",
+                "causal_parents": (),
+                "payload": {
+                    "action_id": action_a,
+                    "action_kind": "other",
+                    "description": "Attempt result 1.",
+                    "obligation_refs": (obligation_a,),
+                },
+                "artifact_refs": (),
+                "evidence_refs": (),
+            },
         ),
     }
-    published = await app.publish_work(PublishWorkRequest.model_validate(publish_wire))
+    first_batch = await app.publish_work(PublishWorkRequest.model_validate(publish_wire))
+    # The unrelated later work arrives in its own batch: a sibling in the same batch is never
+    # subsequent work (tb4n5 follow-up).
+    published = await app.publish_work(
+        PublishWorkRequest.model_validate(
+            {
+                **_request_base(protocol_id("req_", 5090)),
+                "session_id": started.session_id,
+                "writer_id": started.writer_id,
+                "expected_frontier": _frontier(first_batch.result_frontier),
+                "event_drafts": (
+                    {
+                        "event_id": protocol_id("evt_", 5010),
+                        "schema": {"name": "action_recorded", "version": "1.0.0"},
+                        "occurred_at": "2026-07-19T12:00:01.000Z",
+                        "causal_parents": (),
+                        "payload": {
+                            "action_id": action_b,
+                            "action_kind": "other",
+                            "description": "Attempt result 2.",
+                            "obligation_refs": (obligation_b,),
+                        },
+                        "artifact_refs": (),
+                        "evidence_refs": (),
+                    },
+                ),
+            }
+        )
+    )
     first_check = await app.check(
         CheckRequest.model_validate(
             {
@@ -4423,6 +4446,11 @@ async def test_command_gap_partition_preserves_receipt_coverage(
             draft("obligation_published", oa),
             draft("obligation_published", ob),
             draft("action_recorded", action_a),
+        ]
+    )
+    # B is later, unrelated work in its own batch (a same-batch sibling never is, tb4n5).
+    await publish(
+        [
             draft("action_recorded", action_b),
             draft("result_recorded", {"result_id": rb, "action_id": ab, "outcome": "success"}),
             draft(

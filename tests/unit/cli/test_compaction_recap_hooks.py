@@ -29,7 +29,7 @@ from finishup.domain.compaction_recap import RECAP_CONTEXT_LIMIT
 from finishup.domain.observation import ObservationSource
 from finishup.protocol.models import StatusCompactPageModel, StatusSuccessModel
 
-_HELD_IDS_CUE = "For compaction in an already-started host session, use your held current ids"
+_HELD_IDS_CUE = "for compaction in an already-started host session, use your held current ids"
 
 
 class _Service:

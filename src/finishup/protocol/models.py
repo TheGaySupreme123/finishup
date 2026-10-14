@@ -176,6 +176,7 @@ __all__ = [
     "ReadGuidanceResult",
     "ReadGuidanceResultModel",
     "ReadGuidanceContinuationModel",
+    "ReadGuidanceSectionModel",
     "RespondRequest",
     "RespondRequestModel",
     "RespondResult",
@@ -1177,6 +1178,8 @@ def _annotation_accepts_tuple(annotation: object) -> bool:
     origin = get_origin(annotation)
     if origin is tuple:
         return True
+    if origin is Annotated:
+        return _annotation_accepts_tuple(get_args(annotation)[0])
     if origin is types.UnionType or origin is Union:
         return any(_annotation_accepts_tuple(argument) for argument in get_args(annotation))
     return False
@@ -1622,6 +1625,10 @@ def _validate_model_against_schema(model: BaseModel, schema_name: str) -> None:
                             # Schema-listed required names the instance lacks (frozen schema
                             # vocabulary), so the hint names the absent key, not the whole list.
                             "missing_fields": exc.missing_fields or None,
+                            # tb4n5 (#1049): the frozen const of the sibling that narrowed this
+                            # value (``evidence_kind`` for ``digest_binding/subject``).
+                            "condition_field": exc.condition_field,
+                            "condition_value": exc.condition_value,
                         },
                     }
                 ],
@@ -2046,6 +2053,7 @@ _MAX_GUIDANCE_DOCUMENT_BYTES: Final = 1_048_576
 _MIN_GUIDANCE_PAGE_SIZE: Final = 4
 _MAX_GUIDANCE_PAGE_SIZE: Final = 16_384
 _MAX_GUIDANCE_PAGE_COUNT: Final = 16_384
+_MAX_GUIDANCE_SECTIONS: Final = 128
 
 
 def _guidance_page_size(value: object) -> str:
@@ -2077,6 +2085,13 @@ class ReadGuidanceContinuationModel(_ClosedModel):
         if self.revision != self.digest:
             raise ValueError("guidance_revision_digest_mismatch")
         return self
+
+
+class ReadGuidanceSectionModel(_ClosedModel):
+    """One catalogued section a paged guidance read names on page zero (tb4n5)."""
+
+    uri: GuidanceResourceUri
+    byte_count: Annotated[int, Field(ge=0, le=_MAX_GUIDANCE_DOCUMENT_BYTES)]
 
 
 class ReadGuidanceRequestModel(_ClosedModel):
@@ -2127,6 +2142,7 @@ class ReadGuidanceSuccessModel(_ClosedModel):
             "page_count",
             "complete",
             "continuation",
+            "sections",
         }
     )
 
@@ -2146,6 +2162,15 @@ class ReadGuidanceSuccessModel(_ClosedModel):
     page_count: CanonicalPositiveUInt64Wire | None = None
     complete: bool | None = None
     continuation: ReadGuidanceContinuationModel | None = None
+    # Page zero of a paged read names the catalogued sections inside the resource (tb4n5), so a
+    # caller reads one section instead of paging the document.
+    sections: (
+        Annotated[
+            tuple[ReadGuidanceSectionModel, ...],
+            Field(min_length=1, max_length=_MAX_GUIDANCE_SECTIONS),
+        ]
+        | None
+    ) = None
 
     @model_validator(mode="after")
     def _validate_read_guidance_success(self) -> ReadGuidanceSuccessModel:
@@ -2165,7 +2190,7 @@ class ReadGuidanceSuccessModel(_ClosedModel):
             self.complete,
         )
         if not any(value is not None for value in page_fields):
-            if self.continuation is not None:
+            if self.continuation is not None or self.sections is not None:
                 raise ValueError("guidance_page_metadata_incomplete")
         else:
             if any(value is None for value in page_fields):
@@ -2210,6 +2235,15 @@ class ReadGuidanceSuccessModel(_ClosedModel):
                     raise ValueError("guidance_continuation_page_size_mismatch")
                 if self.continuation.revision != self.revision:
                     raise ValueError("guidance_continuation_revision_mismatch")
+            if self.sections is not None:
+                if page != 0:
+                    raise ValueError("guidance_sections_page_invalid")
+                document = self.uri.partition("#")[0]
+                if any(
+                    section.uri == self.uri or section.uri.partition("#")[0] != document
+                    for section in self.sections
+                ):
+                    raise ValueError("guidance_sections_document_mismatch")
         _validate_model_against_schema(self, "read-guidance-result")
         return self
 
@@ -2873,6 +2907,39 @@ class PublishWorkBlockerNoticeModel(_ClosedModel):
         return self
 
 
+# tb4n5 follow-up (owner decision 2026-10-13): the fixed publish-time text for an action the batch
+# recorded that no ``result_recorded`` names yet. It carries no caller value; the act_ id rides
+# beside it. 15 of 15 tb4n5 ``action_without_result`` findings were agent-published actions whose
+# result followed only after the check asked for it.
+PUBLISH_ACTION_NOTICE_TEXTS: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "result_not_linked": (
+            "No result names this action yet. Record its outcome as a result_recorded whose"
+            " payload action_id is this act_ id (outcome success, failure, partial or unknown,"
+            " with a summary), normally in the same publish_work batch as the action; evidence,"
+            " decisions and causal parents do not link it. If the work is still running, publish"
+            " the result when it ends; if it was abandoned, record outcome unknown and say so."
+            " Until a result names it, unrelated work in a later batch raises"
+            " action_without_result."
+        ),
+    }
+)
+
+
+class PublishWorkActionNoticeModel(_ClosedModel):
+    """One publish-time notice for an action no result names yet: closed code and fixed text."""
+
+    action_id: ActionIdWire
+    notice: Literal["result_not_linked"]
+    text: str
+
+    @model_validator(mode="after")
+    def _validate_fixed_text(self) -> PublishWorkActionNoticeModel:
+        if self.text != PUBLISH_ACTION_NOTICE_TEXTS[self.notice]:
+            raise ValueError("publish_action_notice_text_mismatch")
+        return self
+
+
 class PublishWorkSuccessModel(_ClosedModel):
     protocol_version: Literal["0.1"]
     schema_version: Literal["1.0.0"]
@@ -2892,8 +2959,10 @@ class PublishWorkSuccessModel(_ClosedModel):
     privacy_projection: PrivacyProjectionModel
     # Issue #985: present only when the batch carried a finishup-blocker line FinishUP has a notice for.
     blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
+    # tb4n5 follow-up: present only when the batch recorded an action no result names yet.
+    action_notices: tuple[PublishWorkActionNoticeModel, ...] | None = None
 
-    optional_non_null_fields = frozenset({"blocker_notices"})
+    optional_non_null_fields = frozenset({"blocker_notices", "action_notices"})
 
     @model_validator(mode="after")
     def _validate_publish_success(self) -> PublishWorkSuccessModel:
@@ -2902,6 +2971,7 @@ class PublishWorkSuccessModel(_ClosedModel):
         _require_unique(self.warning_codes, limit=1)
         _require_unique(self.gaps, limit=64)
         _validate_blocker_notices(self.blocker_notices)
+        _validate_action_notices(self.action_notices)
         _validate_model_against_schema(self, "publish-work-result")
         return self
 
@@ -2988,8 +3058,10 @@ class PublishWorkDryRunModel(_ClosedModel):
     gaps: tuple[CodeWire, ...]
     # Issue #985: the same publish-time blocker notices a real publish would return.
     blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] | None = None
+    # tb4n5 follow-up: the same unlinked-action notices a real publish would return.
+    action_notices: tuple[PublishWorkActionNoticeModel, ...] | None = None
 
-    optional_non_null_fields = frozenset({"blocker_notices"})
+    optional_non_null_fields = frozenset({"blocker_notices", "action_notices"})
 
     @model_validator(mode="after")
     def _validate_publish_dry_run(self) -> PublishWorkDryRunModel:
@@ -2999,6 +3071,7 @@ class PublishWorkDryRunModel(_ClosedModel):
             raise ValueError("dry_run_frontier_moved")
         _require_unique(self.gaps, limit=64)
         _validate_blocker_notices(self.blocker_notices)
+        _validate_action_notices(self.action_notices)
         _validate_model_against_schema(self, "publish-work-result")
         return self
 
@@ -3009,6 +3082,15 @@ def _validate_blocker_notices(notices: tuple[PublishWorkBlockerNoticeModel, ...]
     if not 1 <= len(notices) <= 64:
         raise ValueError("publish_blocker_notice_count_invalid")
     _require_unique(tuple((item.obligation_id, item.blocker_kind) for item in notices), limit=64)
+
+
+def _validate_action_notices(notices: tuple[PublishWorkActionNoticeModel, ...] | None) -> None:
+    # One row per unpaired action, so the bound is the batch bound: a full batch is never cut.
+    if notices is None:
+        return
+    if not 1 <= len(notices) <= MAX_EVENTS_PER_BATCH:
+        raise ValueError("publish_action_notice_count_invalid")
+    _require_unique(tuple(item.action_id for item in notices), limit=MAX_EVENTS_PER_BATCH)
 
 
 def _publish_work_result_kind(value: object) -> str:
@@ -5148,6 +5230,8 @@ class StatusUndeclaredReferenceModel(_ClosedModel):
     The declared item that names them, the root-relative files it names (repository-excerpt
     content: a privacy policy may withhold each one) and how many it names in all, from the
     applicable check's recorded deliverable state. The Stop gate and the receipt name them.
+    A name the requesting writer itself published in this session returns to it under the
+    ordinary ``self_authored`` rule (tb4n5); a withheld one is listed with the agent's own shell.
     """
 
     obligation_id: ObligationIdWire
@@ -6744,6 +6828,11 @@ _PUBLISH_STRUCTURAL_POINTERS: Final = (
         "/blocker_notices/*",
         ("blocker_kind", "notice", "obligation_id", "text"),
     )
+    # tb4n5 follow-up: the agent's own act_ id, a closed code and fixed repository text only.
+    + _prefix_leaf_patterns(
+        "/action_notices/*",
+        ("action_id", "notice", "text"),
+    )
 )
 
 # ADR-045: closed tokens, counts and service-minted ids only (no path, command text or prose).
@@ -7940,10 +8029,10 @@ def _build_result_leaf_rules() -> tuple[_ResultLeafRule, ...]:
         ):
             raise RuntimeError("invalid_result_leaf_classification")
     if (
-        len(result) != 1611
+        len(result) != 1614
     ):  # ... #1017 +3, #1027 +5, tb4n3 LO +9, W2-A +46, LF +34 (fact_lineage), W2-B +2,
         # tb4n4 #1044 +7 (closure_readiness.undeclared_references), #1048 +38 (inspection),
-        # #1047 +2 (follow_up_round)
+        # #1047 +2 (follow_up_round), tb4n5 +3 (publish action_notices)
         raise RuntimeError("incomplete_result_leaf_registry")
     return result
 

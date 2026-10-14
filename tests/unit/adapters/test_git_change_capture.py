@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -591,10 +592,10 @@ def test_deadline_inside_the_diff_lists_every_file_and_shows_none(
     assert "untracked words" not in text and "the untracked count above is a lower bound" in text
 
 
-def test_git_without_show_scope_fails_closed_before_any_diff(
+def test_an_unreadable_effective_config_fails_closed_before_any_diff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Git older than 2.26 rejects ``--show-scope``; the filter check is never skipped."""
+    """A Git that cannot list its effective config never gets to run a diff (filter check)."""
 
     repository = _repository(tmp_path)
     (repository / "selectors.ts").write_text("export const changed = 1;\n", encoding="utf-8")
@@ -603,8 +604,8 @@ def test_git_without_show_scope_fails_closed_before_any_diff(
 
     def run(handle: Any, arguments: tuple[str, ...], **kwargs: Any) -> tuple[int, bytes]:
         calls.append(arguments)
-        if "--show-scope" in arguments:
-            raise ValueError("git_failed")  # exit 129: unknown option
+        if "--list" in arguments and "--show-origin" in arguments:
+            raise ValueError("git_failed")  # exit 129: an option this Git does not know
         return real(handle, arguments, **kwargs)
 
     monkeypatch.setattr(capture_module, "run_read_only_git", run)
@@ -2202,3 +2203,38 @@ def strict_json_keys(data: bytes) -> list[str]:
     import json
 
     return list(json.loads(data))
+
+
+@pytest.mark.parametrize("private", [True, False], ids=["user-private-group", "shared-group"])
+def test_umask_0002_nested_repository_is_read_only_for_a_user_private_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, private: bool
+) -> None:
+    from finishup.config import foreign_write
+
+    monkeypatch.setattr(foreign_write, "owner_private_group", _private_group_is(private))
+    monkeypatch.setattr(capture_module, "owner_private_group", _private_group_is(private))
+    # The outer repository is owner-only whatever the runner's umask; only the nested one is g+w.
+    previous = os.umask(0o022)
+    try:
+        repository = _repository(tmp_path)
+    finally:
+        os.umask(previous)
+    adapter = GitChangeCaptureAdapter()
+    base = adapter.read_task_base(os.fspath(repository))
+    previous = os.umask(0o002)
+    try:
+        nested = _nested_repository(repository)
+        nested.chmod(0o775)
+        (nested / "server.py").write_text("NESTED_CANARY = 1\n", encoding="utf-8")
+    finally:
+        os.umask(previous)
+    text = _text(adapter.capture(os.fspath(repository), base))
+    assert ("NESTED_CANARY" in text) is private
+    assert ("it failed a safety check" in text) is not private
+
+
+def _private_group_is(value: bool) -> Callable[[int, int], bool]:
+    def answer(_uid: int, _gid: int) -> bool:
+        return value
+
+    return answer

@@ -284,7 +284,9 @@ SEMANTIC_MISSING_ITEMS_REJECTED_GAP: Final = "semantic_missing_items_rejected"
 SEMANTIC_MISSING_NON_CONVERGENT_GAP: Final = "semantic_missing_non_convergent"
 # tb4n1 D3: the reviewer twice in a row (the request and its one retry, no edit since), or four
 # times since the last assessed review, could not assess the packet, so the check runs without the
-# AI-powered review instead of looping on a packet that cannot show the work
+# AI-powered review instead of looping on a packet that cannot show the work. tb4n5 follow-up of
+# #1046: the same holds for one AI-powered finding ruled ``unassessable`` that often in a row
+# (``review_round.unassessable_review_exhausted``); it stays open and unresolved
 # (``kernel/review_round.py``). A FinishUP limit, never agent work; the receipt discloses it.
 SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP: Final = (
     "semantic_review_skipped_insufficient_packet"
@@ -342,9 +344,10 @@ SEMANTIC_PRIOR_VERDICTS_UNSUPPORTED_GAP: Final = "semantic_prior_verdicts_unsupp
 SEMANTIC_RESTATEMENTS_SUPPRESSED_GAP: Final = "semantic_restatements_suppressed"
 # Issue #1042: reviewer challenges the check did not record as findings because they called work
 # "never attempted" during a routine review (``routine_completeness``, ADR-040 section 5) or were
-# about FinishUP's own capture or process state (``finishup_process_state``). A disclosure of the review
-# dialogue, never a limit on what the review saw: it does not bound the receipt and does not veto
-# an absence proof.
+# about FinishUP's own capture or process state (``yoetz_process_state``), or (tb4n5 follow-up)
+# restated an action/result relation the local rule owns (``local_rule_owned``). A disclosure of
+# the review dialogue, never a limit on what the review saw: it does not bound the receipt and does
+# not veto an absence proof.
 SEMANTIC_PROCESS_STATE_FILTERED_GAP: Final = "semantic_process_state_filtered"
 # The check-time change (ADR-031) is the service's own read of the task's repository when a check
 # runs. Each code names one limit on what that single object could show the reviewer. None of
@@ -379,6 +382,10 @@ CAPTURE_HANDOFF_RETIRED_GAP: Final = "capture_handoff_retired"
 CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyType(
     {
         "git_unavailable": "Git is not installed where the FinishUP service runs.",
+        "git_version_unsupported": (
+            "the Git where the FinishUP service runs is older than 2.25, the oldest Git FinishUP "
+            "supports."
+        ),
         "not_git": "the check's directory is not a Git repository.",
         "unsafe_root": (
             "the repository failed a safety check (a link, another owner, a working tree "
@@ -386,7 +393,7 @@ CHECK_TIME_CHANGE_UNAVAILABLE_REASONS: Final[Mapping[str, str]] = MappingProxyTy
         ),
         "unsupported_repository": (
             "the repository uses a setup the capture does not read (a Git filter or include, a "
-            "partial clone, a borrowed object store, or Git older than 2.26)."
+            "partial clone or a borrowed object store)."
         ),
         "git_failed": "a Git command failed or ran out of time.",
         "changed_during_capture": (
@@ -549,11 +556,19 @@ TASK_FACT_GAP_SENTENCES: Final[Mapping[str, str]] = MappingProxyType(
             " it for the reviewer."
         ),
         "deliverable_references_undeclared_file": (
-            "A declared delivered source file names a file the change created that no requested"
-            " item declares; a grader may receive only the declared files, so the deliverable can"
-            " fail where the task delivers it. Embed the file's content in the deliverable,"
-            " rebuild it at run time, or declare it as a delivered output; disclosing the"
-            " dependency does not resolve it."
+            "A declared delivered source file references a file the change created that no"
+            " requested item declares, in a way that may read it (a read, or a use FinishUP's"
+            " syntactic check could not classify); a grader may receive only the declared files,"
+            " so the deliverable can fail where the task delivers it. Embed the file's content in"
+            " the deliverable, rebuild it at run time, or declare it, or the directory holding it,"
+            " as a delivered output; disclosing the dependency does not resolve it."
+        ),
+        "deliverable_references_ambiguous_name": (
+            "A declared delivered source file names files the change created only by an ambiguous"
+            " file name (a declared file shares it, or nothing in the file ties it to their"
+            " directory), so FinishUP's syntactic check did not treat them as dependencies and did"
+            " not name them. Check that the deliverable does not read them where the task"
+            " delivers it."
         ),
         # Frozen legacy identifier (ADR-048): the recorded advice reason code.
         "install_into_yoetz_runtime": (

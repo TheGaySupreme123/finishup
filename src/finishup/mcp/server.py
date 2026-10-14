@@ -31,6 +31,10 @@ from finishup.adapters.integrations.cursor_project_mcp import (
     CursorProjectMcpRegistrationSnapshot,
     inspect_project_mcp_registration,
 )
+from finishup.adapters.integrations.finishup_call_rejections import (
+    record_rejected_finishup_call,
+    record_served_finishup_read,
+)
 from finishup.adapters.mcp_stdio import MAX_JSON_FRAME_BYTES, bounded_stdio_server
 from finishup.adapters.workspace_binding import (
     MAX_WORKSPACE_LOCATOR_BYTES,
@@ -61,10 +65,13 @@ from finishup.mcp.errors import (
 from finishup.mcp.resources import (
     DEFAULT_GUIDANCE_PAGE_SIZE,
     GUIDANCE_RESOURCES,
+    GUIDANCE_SECTIONS_MARKER,
     MAX_GUIDANCE_PAGE_SIZE,
     GuidanceResource,
     GuidanceResourceError,
     GuidanceResourcePage,
+    GuidanceSection,
+    guidance_sections,
     resolve_guidance_topic_uri,
 )
 from finishup.mcp.resources import (
@@ -80,8 +87,14 @@ from finishup.mcp.semantic_destination import (
     SemanticDestinationDisclosure,
     read_semantic_destination_disclosure,
 )
+from finishup.mcp.status_streak import (
+    STATUS_STREAK_NUDGE_THRESHOLD,
+    StatusReadStreaks,
+    status_streak_nudge,
+)
 from finishup.mcp.summaries import (
     render_check_reviewer_output,
+    render_publish_action_notices,
     render_publish_blocker_notices,
     render_safe_compact_summary_detailed,
     summary_for_check_awaiting,
@@ -148,9 +161,11 @@ from finishup.service.client import (
     accepted_but_unresponsive,
     connect_service,
     connect_service_on_demand,
+    handshake_failure,
     holder_version_order,
     path_refusal_reason,
     service_holder_identity,
+    start_timed_out,
 )
 
 __all__ = [
@@ -499,6 +514,10 @@ class BridgeRuntime:
     cursor_launcher: tuple[str, ...] | None = field(default=None, repr=False, compare=False)
     cursor_isolation_root: str | None = field(default=None, repr=False, compare=False)
     cursor_project_binding: Literal["mcp-roots", "registered-project"] = "mcp-roots"
+    # tb4 n5: consecutive status reads per (session, actor) since the session's last write call.
+    status_streaks: StatusReadStreaks = field(
+        default_factory=StatusReadStreaks, repr=False, compare=False
+    )
 
 
 def _valid_runtime_launcher(value: object) -> bool:
@@ -625,6 +644,7 @@ def build_bridge_runtime(
     descriptors = TOOL_DESCRIPTORS[route_profile]
     for descriptor in descriptors:
         descriptor.input_schema
+        descriptor.advertised_input_schema
         descriptor.output_schema
     build_last_resort_internal_error_result()
     if workspace_locator is not None and type(workspace_locator) is not WorkspaceLocator:
@@ -1046,7 +1066,9 @@ def _result_text(
             return canonical_encode(cast(JsonValue, dict(wire))).decode("utf-8")
         except Exception as exc:  # noqa: BLE001 - fall back to the bounded summary below
             failures.append(("cursor.canonical_json", exc))
-    rendered = render_safe_compact_summary_detailed(wire)
+    # The host selects only the re-check note's acceptance wording (#1050 follow-up): Cursor,
+    # whose Stop receives no final answer, is never told to answer with a line.
+    rendered = render_safe_compact_summary_detailed(wire, host=host_profile)
     failures.extend(rendered.failures)
     compact = rendered.text
     if wire.get("preparatory_only") is True:
@@ -1073,7 +1095,11 @@ def _result_text(
         blocker_notices = _guarded_text(
             "blocker_notices", lambda: render_publish_blocker_notices(wire), failures
         )
-        parts = (compact, totals, manifest, reviewer, blocker_notices)
+        # tb4n5 follow-up: an action the batch recorded with no result naming it, dry runs included.
+        action_notices = _guarded_text(
+            "action_notices", lambda: render_publish_action_notices(wire), failures
+        )
+        parts = (compact, totals, manifest, reviewer, blocker_notices, action_notices)
     note = (
         _record_summary_degradation(failures, request_id=request_id, operation=operation)
         if failures
@@ -1861,6 +1887,68 @@ def _control_error_result(
                 host_profile=host_profile,
                 safe_details={"reason_code": "service_start_failed", "phase": startup.stage},
                 diagnostic_reason="service_start_failed",
+            )
+        handshake = handshake_failure(error)
+        if handshake is not None:
+            # A running service whose stamp names no other installation closed this bridge's
+            # hello without answering (#1040 follow-up). Calling it another installation sent
+            # agents to `finishup service restart`, which cannot replace an identical holder.
+            details: dict[str, object] = {
+                "reason_code": "service_handshake_failed",
+                "phase": handshake,
+            }
+            if handshake == "handshake_git_version":
+                details["continuation"] = "system_git_upgrade_required"
+                message = (
+                    "The local FinishUP service closed the connection while setting it up, and the "
+                    "system Git it reads this workspace's repository with is older than 2.25, "
+                    "the oldest Git FinishUP supports. Ask the user to install Git 2.25 or later as "
+                    "the system Git; a newer Git elsewhere on PATH does not help. Then retry this "
+                    "operation with the same request_id. Do not run service lifecycle commands "
+                    "for this."
+                )
+            else:
+                message = (
+                    "The local FinishUP service closed the connection while setting it up and "
+                    "answered nothing, so nothing was recorded. Its stamp does not show another "
+                    "installation, so it was not replaced. It recorded "
+                    "why: give the user this correlation_id and ask them to run 'finishup service "
+                    "diagnostics' on a local terminal. Do not run service lifecycle commands for "
+                    "this."
+                )
+            return _control_public_error_result(
+                error,
+                request_id,
+                operation,
+                code=PublicErrorCode.SERVICE_UNAVAILABLE,
+                message=message,
+                retryable=False,
+                host_profile=host_profile,
+                safe_details=details,
+                diagnostic_reason="service_handshake_failed",
+            )
+        if start_timed_out(error):
+            # This bridge's on-demand start found a live service of this installation still
+            # starting at the end of its budget: retry, never a lifecycle command.
+            return _control_public_error_result(
+                error,
+                request_id,
+                operation,
+                code=PublicErrorCode.SERVICE_UNAVAILABLE,
+                message=(
+                    "The local FinishUP service is still starting and did not answer in time "
+                    "(service_handshake_timeout). This is expected, not a failure: the first "
+                    "start after an install or update prepares FinishUP's retained copy and "
+                    "compiles it once when the installation has no reusable hash-verified "
+                    "bytecode (as after a plain 'uv tool install'), and slow machines such as "
+                    "WSL under nested virtualization take longer. "
+                    "Wait a few seconds, then retry this operation with the same request_id. "
+                    "Do not run service lifecycle commands for this."
+                ),
+                retryable=True,
+                host_profile=host_profile,
+                safe_details={"reason_code": "service_unavailable", "phase": "handshake_timeout"},
+                diagnostic_reason="service_unavailable",
             )
         if accepted_but_unresponsive(error):
             # A listener that accepted and then went silent is running. Prescribing
@@ -3071,6 +3159,7 @@ async def dispatch_closure_prepare(
             client_kind="cooperative_agent",
             integration="cooperative_mcp",
             scope_to_selection=True,
+            host=runtime.host_profile,
         )
         if len(canonical_encode(cast(JsonValue, prepared))) > _MAX_CLOSURE_RESULT_BYTES:
             raise ValueError("closure_result_too_large")
@@ -3357,10 +3446,15 @@ async def dispatch_read_guidance(
         }
         if page.continuation is not None:
             result_body["continuation"] = page.continuation
+        sections = _page_zero_sections(page)
+        if sections:
+            result_body["sections"] = [
+                {"uri": section.uri, "byte_count": section.byte_count} for section in sections
+            ]
         result = ReadGuidanceResult.model_validate(result_body)
         wire = public_model_to_wire(result)
         content_text = _guidance_page_content_text(
-            page, host_profile=runtime.host_profile, wire=wire
+            page, host_profile=runtime.host_profile, wire=wire, sections=sections
         )
     else:
         text = resource.text
@@ -3503,25 +3597,56 @@ def _guidance_page_error(
     )
 
 
+def _page_zero_sections(page: GuidanceResourcePage) -> tuple[GuidanceSection, ...]:
+    """The catalogued sections page zero names (tb4n5); none on later pages.
+
+    The list is advisory and outside the page bytes, so a registry failure omits it rather than
+    failing a page that was read correctly.
+    """
+
+    if page.page != 0:
+        return ()
+    try:
+        return guidance_sections(page.resource.uri)
+    except GuidanceResourceError:
+        return ()
+
+
 def _guidance_page_content_text(
     page: GuidanceResourcePage,
     *,
     host_profile: McpHostProfile,
     wire: Mapping[str, object],
+    sections: tuple[GuidanceSection, ...] = (),
 ) -> str:
-    """Render a page with explicit boundaries on hosts that consume the text channel."""
+    """Render a page with explicit boundaries on hosts that consume the text channel.
+
+    Page zero appends the resource's section list after the end marker (tb4n5). It is outside the
+    page bytes, so ``GuidancePageAssembler`` still checks exactly the text between the markers.
+    """
 
     if host_profile == "codex":
         return summary_for_read_guidance(wire)
     next_page = "none" if page.next_page is None else str(page.next_page)
     complete = "yes" if page.complete else "no"
-    return (
+    text = (
         f"FINISHUP_GUIDANCE_PAGE_BEGIN document={page.resource.uri} page={page.page} "
         f"page_count={page.page_count} offset={page.offset} bytes={page.byte_count} "
         f"total_bytes={page.total_byte_count} revision={page.revision} digest={page.digest}\n"
         f"{page.text}\n"
         f"FINISHUP_GUIDANCE_PAGE_END complete={complete} next_page={next_page} "
         f"revision={page.revision} digest={page.digest}"
+    )
+    if not sections:
+        return text
+    document = page.resource.uri.partition("#")[0]
+    rows = "\n".join(
+        f"#{section.uri.partition('#')[2]} {section.byte_count}" for section in sections
+    )
+    return (
+        f"{text}\n{GUIDANCE_SECTIONS_MARKER} document={page.resource.uri} count={len(sections)}\n"
+        "Read only the section you need instead of paging: call read_guidance with uri "
+        f"{document}#<anchor>. Anchor and UTF-8 bytes:\n{rows}"
     )
 
 
@@ -3556,7 +3681,7 @@ async def list_tools(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> list[types.Tool
             name=descriptor.name,
             title=descriptor.title,
             description=descriptor.description,
-            inputSchema=cast(dict[str, object], _mutable_json(descriptor.input_schema)),
+            inputSchema=cast(dict[str, object], _mutable_json(descriptor.advertised_input_schema)),
             outputSchema=cast(dict[str, object], _mutable_json(descriptor.output_schema)),
             annotations=types.ToolAnnotations(
                 title=descriptor.title,
@@ -3599,12 +3724,51 @@ async def call_tool(
             types.ErrorData(code=types.INVALID_PARAMS, message=sanitize_unknown_tool_name(name))
         )
     if name == "closure_prepare":
-        return await dispatch_closure_prepare(
+        result = await dispatch_closure_prepare(
             arguments,
             runtime,
             transport_request_id=transport_request_id,
         )
-    return await dispatcher(arguments, runtime)
+    else:
+        result = await dispatcher(arguments, runtime)
+    return _with_status_streak_nudge(name, arguments, result, runtime)
+
+
+def _with_status_streak_nudge(
+    name: str,
+    arguments: Mapping[str, object],
+    result: types.CallToolResult,
+    runtime: BridgeRuntime,
+) -> types.CallToolResult:
+    """Lead a repeated status read's text with one concrete next write (tb4 n5).
+
+    The structured result is unchanged; only the model-visible text gains one leading line. The
+    Cursor profile's text block is the exact canonical JSON of the result, which stays
+    ``content[0]``; there the line is a separate second block. A failure here never fails the
+    call: the result is returned as served.
+    """
+
+    try:
+        streak = runtime.status_streaks.note_call(name, arguments)
+        if streak < STATUS_STREAK_NUDGE_THRESHOLD or result.isError is True:
+            return result
+        wire = result.structuredContent
+        if not isinstance(wire, Mapping):
+            return result
+        nudge = status_streak_nudge(cast(Mapping[str, object], wire), streak)
+        if not nudge:
+            return result
+        content = list(result.content)
+        first = content[0] if content else None
+        if runtime.host_profile != "cursor" and isinstance(first, types.TextContent):
+            content[0] = first.model_copy(update={"text": f"{nudge}\n{first.text}"})
+        else:
+            # Cursor's first block is the exact canonical JSON a consumer may parse as the result;
+            # it stays first and the nudge follows it as its own block.
+            content.append(types.TextContent(type="text", text=nudge))
+        return result.model_copy(update={"content": content})
+    except Exception:  # noqa: BLE001 - the nudge is advisory text; the served result stands
+        return result
 
 
 async def _handle_call_tool_request(
@@ -3630,6 +3794,7 @@ async def _handle_call_tool_request(
             name,
         )
         if binding_error is not None:
+            _record_rejected_call(name, arguments, binding_error)
             return types.ServerResult(binding_error)
     try:
         transport_request_id = request_ctx.get().request_id
@@ -3644,7 +3809,41 @@ async def _handle_call_tool_request(
         )
     else:
         result = await call_tool(name, arguments, runtime)
+    _record_rejected_call(name, arguments, result)
+    _record_served_read(runtime, name, arguments, result)
     return types.ServerResult(result)
+
+
+def _record_served_read(
+    runtime: BridgeRuntime,
+    name: str,
+    arguments: Mapping[str, object],
+    result: types.CallToolResult,
+) -> None:
+    """On Cursor, record a successful FinishUP read so its hook can prove it is FinishUP's (tb4 n5).
+
+    Cursor's ordinary hooks name this call ``MCP:<tool>`` with no server. The record is written
+    before the host receives this result, so the call's post-event always finds it. Other hosts
+    name the server in every hook, so nothing is written for them. Never raises.
+    """
+
+    if runtime.host_profile == "cursor" and result.isError is not True:
+        record_served_finishup_read(name, arguments)
+
+
+def _record_rejected_call(
+    name: str, arguments: Mapping[str, object], result: types.CallToolResult
+) -> None:
+    """Keep FinishUP's own record of an error answer so its pending hook attempt can close (#1041).
+
+    A host fires no ``PostToolUse`` for an error result, so the call's ``PreToolUse`` would
+    otherwise expire as a pipeline loss. Only a commitment to the call (tool, FinishUP session,
+    writer and ``request_id``) is written; the call is never delayed or failed by this record.
+    """
+
+    if result.isError is not True:
+        return
+    record_rejected_finishup_call(name, arguments)
 
 
 async def list_resources(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> list[types.Resource]:

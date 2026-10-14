@@ -157,6 +157,17 @@ _CODEX_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
         _C.NO_TOOL_ACTIVITY,
     ),
     (
+        # tb4n5 react S: the agent slept while its check cell ran; two sleeps bounded the check.
+        "codex clock.sleep (hook spelling clocksleep; it only pauses the turn)",
+        _codex(
+            "clocksleep",
+            "call_z1",
+            {"duration_ms": 20000},
+            "Wall time: 20.0036 seconds\nSleep completed.",
+        ),
+        _C.NO_TOOL_ACTIVITY,
+    ),
+    (
         "codex cat (exploration)",
         _codex("Bash", "call_x1", {"command": "cat results.json"}, '{"exit_code":0,"output":"{}"}'),
         _C.EXPLORATION,

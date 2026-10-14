@@ -216,7 +216,7 @@ def test_staged_content_is_progress_when_structural_budget_is_spent(
     assert len(requests) == 1
     assert requests[0].get("content_chunks")
     assert len(store.list_pending_outbox_rows(workspace)) == 1
-    assert "drain_budget_exhausted" not in diagnostics
+    assert "drain_pass_delivered_nothing" not in diagnostics
     assert "content_capture_unavailable" not in store.status(ObservationStatusQuery(workspace)).gaps
 
 

@@ -258,6 +258,10 @@ REMEDIATION_MESSAGES: Final = MappingProxyType(
             "the repository's .git/config exceeds the bounded 1 MiB safety scan; remove stale local "
             "branch configuration or use a fresh clone"
         ),
+        "git_version_unsupported": (
+            "the system Git (the first 'git' in /bin or /usr/bin) is older than 2.25, the oldest "
+            "Git FinishUP supports; install Git 2.25 or later there, then retry"
+        ),
         "pending_expired": (
             "that pending decision expired before it was authorized; run "
             "'finishup consent prepare <operation>' again"

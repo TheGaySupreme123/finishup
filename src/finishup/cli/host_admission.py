@@ -14,7 +14,7 @@ import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 
 from finishup.adapters.integrations.host_admission import (
     ADMISSION_HOSTS,
@@ -67,6 +67,11 @@ class AdmissionFacts:
     # Codex only: whether a Yoetz-era ``[plugins."yoetz@yoetz"]`` activation may be enabled, which
     # the plugin-form legacy admission table serves; ``None`` when unread (ADR-048).
     legacy_plugin_activation: bool | None = None
+    # Codex only: how the route was read when several Codex installations are discoverable
+    # (``consistent``, ``inconsistent``, ``multiple`` = none readable, ``explicit_path_unresolved``)
+    # and the reported version of the installation read. Never a path.
+    codex_binary_selection: str | None = None
+    codex_version: str | None = None
 
     @property
     def grant_permits(self) -> bool | None:
@@ -112,6 +117,15 @@ class AdmissionFacts:
         return "shared" if self.legacy_plugin_activation else "unused"
 
     def as_json(self) -> dict[str, JsonValue]:
+        route: dict[str, JsonValue] = {
+            "observed": self.route_observed,
+            "owner": self.owner,
+            "route_profile": self.route_profile,
+        }
+        if self.codex_binary_selection is not None:
+            route["codex_binary_selection"] = self.codex_binary_selection
+        if self.codex_version is not None:
+            route["codex_version"] = self.codex_version
         return {
             "grant": {
                 "llm_inference_enabled": self.llm_inference_enabled,
@@ -120,12 +134,10 @@ class AdmissionFacts:
                 "service_state": self.service_state,
             },
             "route": {
+                **route,
                 "legacy_installation": self.legacy_installation,
                 "legacy_plugin_activation": self.legacy_plugin_activation,
                 "legacy_registration": self.legacy_registration,
-                "observed": self.route_observed,
-                "owner": self.owner,
-                "route_profile": self.route_profile,
             },
         }
 
@@ -353,12 +365,22 @@ async def gather_admission_facts(
     cursor_config_root: Path | None = None,
     ownership_name: str = "external-registration",
     route_name: str | None = None,
+    codex_path: Path | None = None,
+    codex_home: Path | None = None,
 ) -> AdmissionFacts:
     """Read the route and grant facts a grant preview must gate on, all fail-soft to unread."""
 
     from finishup.cli.provider_status import provider_status_report
 
-    report = await provider_status_report(workspace_locator=project_root)
+    report = (
+        await provider_status_report(
+            workspace_locator=project_root,
+            codex_path=None if codex_path is None else str(codex_path.expanduser()),
+            codex_home=None if codex_home is None else codex_home.expanduser(),
+        )
+        if harness == "codex" and (codex_path is not None or codex_home is not None)
+        else await provider_status_report(workspace_locator=project_root)
+    )
     grant_state = report.get("repository_grant_state")
     llm = report.get("llm_inference_enabled")
     service_state = report.get("service_state")
@@ -368,11 +390,17 @@ async def gather_admission_facts(
     legacy_registration: str | None = None
     legacy_installation: str | None = None
     legacy_plugin_activation: bool | None = None
+    binary_selection: str | None = None
+    codex_version: str | None = None
     if harness == "codex":
         route = report.get("mcp_route")
         if isinstance(route, Mapping):
             route_map = cast(Mapping[str, object], route)
             route_observed = route_map.get("observed") is True
+            selection = route_map.get("binary_selection")
+            binary_selection = selection if type(selection) is str else None
+            version = route_map.get("selected_codex_version")
+            codex_version = version if type(version) is str else None
             if route_observed:
                 registered = route_map.get("registered_profile")
                 route_profile = registered if type(registered) is str else None
@@ -410,6 +438,8 @@ async def gather_admission_facts(
         legacy_registration,
         legacy_installation,
         legacy_plugin_activation,
+        binary_selection,
+        codex_version,
     )
 
 
@@ -449,11 +479,44 @@ def reverse_sweep(host: HostAdmissionHost, project_root: Path) -> dict[str, Json
     return outcome.as_json()
 
 
-def _next_command(harness: str, action: HostAdmissionAction) -> str:
+def _codex_selectors(codex_path: Path | None, codex_home: Path | None) -> str:
+    selectors = ""
+    if codex_path is not None:
+        selectors += " --codex-path <codex-path>"
+    if codex_home is not None:
+        selectors += " --codex-home <codex-home>"
+    return selectors
+
+
+def _next_command(
+    harness: str,
+    action: HostAdmissionAction,
+    *,
+    codex_path: Path | None = None,
+    codex_home: Path | None = None,
+) -> str:
     verb = "grant" if action is HostAdmissionAction.GRANT else "revoke"
     return (
-        f"finishup integrate {harness} admission {verb} --project-root <root> "
+        f"finishup integrate {harness} admission {verb} --project-root <root>"
+        f"{_codex_selectors(codex_path, codex_home)} "
         "--accept --preview-digest <preview_digest>"
+    )
+
+
+# Codex installation-selection states that leave the route unread or read it with a caveat.
+_CODEX_SELECTION_CONTINUATION: Final = frozenset(
+    {"multiple", "inconsistent", "explicit_path_unresolved"}
+)
+
+
+def _codex_selection_continuation(command: str, selection: str | None) -> str | None:
+    """A path-free continuation naming the explicit Codex selector, when selection is the issue."""
+
+    if selection not in _CODEX_SELECTION_CONTINUATION:
+        return None
+    return (
+        f"next: finishup integrate codex admission {command} --project-root <root> "
+        "--codex-path <exact-codex-executable> [--codex-home <codex-home>]"
     )
 
 
@@ -474,11 +537,16 @@ async def run_host_admission_command(
     cursor_config_root: Path | None = None,
     ownership_name: str = "external-registration",
     route_name: str | None = None,
+    codex_path: Path | None = None,
+    codex_home: Path | None = None,
 ) -> int:
     """Run one path-explicit admission command and return a process exit code."""
 
     if harness not in ADMISSION_HOSTS or command not in ADMISSION_COMMANDS:
         sys.stderr.write("host_admission_command_invalid\n")
+        return 2
+    if harness != "codex" and (codex_path is not None or codex_home is not None):
+        sys.stderr.write("host_admission_codex_selector_invalid\n")
         return 2
     host: HostAdmissionHost = harness
     root = project_root.expanduser().absolute()
@@ -498,6 +566,7 @@ async def run_host_admission_command(
     if command != "preview" and action_name is not None:
         sys.stderr.write("host_admission_action_invalid\n")
         return 2
+    facts: AdmissionFacts | None = None
     try:
         facts = await gather_admission_facts(
             host,
@@ -509,6 +578,8 @@ async def run_host_admission_command(
             cursor_config_root=cursor_config_root,
             ownership_name=ownership_name,
             route_name=route_name,
+            codex_path=codex_path,
+            codex_home=codex_home,
         )
         observation = observe_host_admission(host, root, owner=facts.owner)
         if command == "status":
@@ -522,6 +593,8 @@ async def run_host_admission_command(
             }
             _emit(body, json_output=json_output)
             return 0
+        if action is HostAdmissionAction.GRANT and facts.codex_binary_selection == "inconsistent":
+            raise HostAdmissionError(HostAdmissionReason.CODEX_BINARY_INCONSISTENT)
         legacy_name = facts.legacy_name_for(observation.entries)
         preview = preview_host_admission(
             host,
@@ -540,7 +613,9 @@ async def run_host_admission_command(
             body = {
                 **preview.as_json(),
                 **facts.as_json(),
-                "next_command": _next_command(host, action),
+                "next_command": _next_command(
+                    host, action, codex_path=codex_path, codex_home=codex_home
+                ),
                 "scope": "project",
             }
             _emit(body, json_output=json_output)
@@ -553,6 +628,13 @@ async def run_host_admission_command(
         return 0
     except HostAdmissionError as error:
         sys.stderr.write(f"host_admission_{error.reason.value}\n")
+        continuation = (
+            _codex_selection_continuation(command, facts.codex_binary_selection)
+            if facts is not None and host == "codex"
+            else None
+        )
+        if continuation is not None:
+            sys.stderr.write(continuation + "\n")
         return 1
     except OSError:
         # Paths and raw OS errors are user-controlled content under the repository privacy rule.

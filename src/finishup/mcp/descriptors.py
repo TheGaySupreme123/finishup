@@ -11,6 +11,7 @@ from functools import cache
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
+from finishup.mcp.advertisement import ADVERTISED_INPUT_SCHEMA_MAX_BYTES, compact_input_schema
 from finishup.mcp.resources import read_resource
 from finishup.mcp.semantic_destination import (
     MAX_DISCLOSURE_ENCODED_BYTES,
@@ -158,25 +159,21 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 8,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 5_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
-        # obligation_published 1.1.0 (#1002) adds one draft branch, its payload definition and the
-        # payload's evidence/result oneOf: +3 branches, +1 definition, and about 1.7 KB for that
-        # payload (directory kind, item role, acknowledged_not_done status and its reason). The
-        # branch cannot be shared with 1.0.0, which must keep refusing those additions.
+        # Payload version discrimination remains in the full authoring/admission schemas.
         "publish-work-request": MappingProxyType(
             {
                 "max_oneof_nodes": 8,
                 "max_oneof_branches": 41,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 24,
-                "max_defs_nest_depth": 1,
-                # obligation_published 1.1.0 (#1002, #997) and blocker notices (#985).
-                "max_encoded_bytes": 55_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "check-request": MappingProxyType(
@@ -185,9 +182,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 12,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 8_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "respond-request": MappingProxyType(
@@ -196,9 +193,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 12,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 8_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "status-request": MappingProxyType(
@@ -207,9 +204,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 8,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 20,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 10_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "receipt-request": MappingProxyType(
@@ -218,9 +215,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 12,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 6_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "read-guidance-request": MappingProxyType(
@@ -229,9 +226,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 4,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 2_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "closure-prepare-request": MappingProxyType(
@@ -240,9 +237,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 4,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 6_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
     }
@@ -292,9 +289,10 @@ _STRICT_ROUTE_TAIL: Final = (
 # rule, in imperative form, because those are the only lines guaranteed to survive a host that
 # cuts the block; everything else is one `read_guidance` call away. Claude also renders this block
 # into native subagents, which see no hook cue saying they are children (issue #509), so the
-# scope sentences exempt a subagent whose assignment names neither child selector. The schema
-# hint names the current registration but defers to the listed name: a plugin prefixes it, and a
-# host registered before the rename lists `mcp__yoetz__start` (ADR-048).
+# scope sentences exempt a subagent whose assignment names neither child selector. Like the compact
+# body, it leaves the cadence to the operating card it names (tb4n5 startup dedup, ADR-047). The
+# schema hint names the current registration but defers to the listed name: a plugin prefixes it,
+# and a host registered before the rename lists `mcp__yoetz__start` (ADR-048).
 CLAUDE_CODE_INITIALIZE_INSTRUCTIONS: Final = (
     "# FinishUP: call start first\n"
     "\n"
@@ -306,10 +304,8 @@ CLAUDE_CODE_INITIALIZE_INSTRUCTIONS: Final = (
     "\n"
     "Before `start`, read `finishup://guidance/agent-instructions.md`; if empty or clipped, page and "
     "verify. Never list resources. After `start`, read workflow, publication, coverage or "
-    "template topics only on demand. Cadence: "
-    "`publish_work` per transition, `check`, `receipt` last. Never claim active before `start`; "
-    "never invent a task. If it fails, follow its continuation, then ask; do not work without a "
-    "task.\n"
+    "template topics only on demand. Never claim active before `start`; never invent a task. If "
+    "it fails, follow its continuation, then ask; do not work without a task.\n"
     "\n"
     "FinishUP records only what participants publish; a clean check does not mean the work "
     "is correct."
@@ -338,10 +334,12 @@ COMPACT_INSTRUCTIONS_BUDGET: Final[Mapping[str, int]] = MappingProxyType(
 )
 # The compact initialize text for the Codex and Cursor hosts. It keeps the rules an agent needs
 # before its first guidance read: when to call `start`, the late-start and no-false-activation
-# rules, where every guidance document is and when to read it, the cadence, the consent,
-# disclosure and recovery boundaries, and coverage-honest wording. The full
-# `agent-instructions.md` safety floor it summarizes is one `read_guidance` call away, and the
-# text says to read it before the first `start`. It names no host, so one body serves both.
+# rules, where every guidance document is and when to read it (never by listing resources: all 18
+# tb4n5 Codex attempts listed them first), the consent, disclosure and recovery boundaries, and
+# coverage-honest wording. The full `agent-instructions.md` safety floor it summarizes is one
+# `read_guidance` call away, and the text says to read it before the first `start`. The per-step
+# cadence is stated once, in that card (tb4n5 startup dedup, ADR-047), not here and in every skill.
+# It names no host, so one body serves both.
 COMPACT_INITIALIZE_INSTRUCTIONS: Final = (
     "# FinishUP: call start first\n"
     "\n"
@@ -351,14 +349,14 @@ COMPACT_INITIALIZE_INSTRUCTIONS: Final = (
     "names, load the `start` schema first. Read-only questions skip it.\n"
     "\n"
     "Before the first `start`, call `read_guidance` on `finishup://guidance/agent-instructions.md`; "
-    "page and verify empty or clipped guidance. After `start`, read workflow "
+    "page and verify empty or clipped guidance. Do not list resources; read the named topics. "
+    "After `start`, read workflow "
     "`finishup://guidance/workflow.md`, `finishup://guidance/publication-policy.md`, "
     "`finishup://guidance/coverage-and-receipts.md` or `finishup://guidance/request-templates.md` only "
     "when a result names one or you are unsure.\n"
     "\n"
-    "Cadence: `start`, `publish_work`, `check`, `respond`, `receipt`. Never claim active before "
-    "`start`; never invent a task, id, finding, verdict or receipt. If `start` fails, follow its "
-    "typed continuation, then ask; do not work without a task.\n"
+    "Never claim active before `start`; never invent a task, id, finding, verdict or receipt. If "
+    "`start` fails, follow its typed continuation, then ask; do not work without a task.\n"
     "\n"
     "Publish only material, state-bound facts, never hidden reasoning, transcripts, credentials, "
     "secrets or whole files. Setup, privacy, credential and recommendation changes need user "
@@ -417,7 +415,8 @@ def advertised_surface_metrics(
     )
     description_bytes = sum(len(item.description.encode("utf-8")) for item in descriptors)
     schema_bytes = sum(
-        presentation_schema_metrics(item.input_schema)["encoded_bytes"] for item in descriptors
+        presentation_schema_metrics(item.advertised_input_schema)["encoded_bytes"]
+        for item in descriptors
     )
     copies = len(descriptors) * ADVERTISED_SURFACE_BUDGET["instructions_copies_per_tool"]
     return {
@@ -1343,9 +1342,13 @@ def _describe_presentation_schema(name: str, schema: dict[str, JsonValue]) -> No
 
     expected_frontier = properties.get("expected_frontier")
     if isinstance(expected_frontier, dict):
+        # tb4n5 (#1048): every write returns its frontier, so the frontier an agent already holds
+        # is the one to send; a status read for it is needed only when none is held or the ledger
+        # moved under a cooperative write (frontier_changed).
         expected_frontier["description"] = (
-            "Use the sequence and head digest returned by status. Genesis is valid only with "
-            "sequence 0."
+            "Send the frontier you hold: the one start returned first, then your last accepted "
+            "write's result_frontier (later hook observations are tolerated). Read status only "
+            "when you hold none or after frontier_changed."
         )
 
     if name == "start-request":
@@ -1665,6 +1668,13 @@ def _product_named_titles(value: JsonValue) -> JsonValue:
     return value
 
 
+@cache
+def _advertised_input_schema(name: str, version: str) -> Mapping[str, JsonValue]:
+    return compact_input_schema(
+        name, _mcp_presentation_schema(f"{name.replace('_', '-')}-request", version)
+    )
+
+
 def presentation_schema_metrics(schema: Mapping[str, JsonValue]) -> dict[str, int]:
     """Return keyword-budget metrics for one advertised MCP JSON Schema object."""
 
@@ -1797,9 +1807,17 @@ class ToolDescriptor:
 
     @property
     def input_schema(self) -> Mapping[str, JsonValue]:
+        """Full authoring/repair schema; tools/list uses advertised_input_schema instead."""
+
         return _mcp_presentation_schema(
             f"{self.name.replace('_', '-')}-request", _tool_input_schema_version(self.name)
         )
+
+    @property
+    def advertised_input_schema(self) -> Mapping[str, JsonValue]:
+        """Bounded host-facing shape, independent of strict catalog admission."""
+
+        return _advertised_input_schema(self.name, _tool_input_schema_version(self.name))
 
     @property
     def output_schema(self) -> Mapping[str, JsonValue]:
@@ -1998,7 +2016,10 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "Respond to a finding",
         "Records an acknowledgement, self-verification, provenance dispute, or rejection for one "
         "finding at any frontier at or after its record, such as the current status frontier, "
-        "not its subject_frontier. For an unresolved finding: repair it and check first. "
+        "not its subject_frontier. A finding a check resolved (verified_resolved) or whose answer "
+        "is final (next_actions none) takes no response. Acknowledging an AI-powered finding "
+        "cites in evidence_refs an evd_ or res_ recorded after it. "
+        "For an unresolved finding: repair it and check first. "
         "If you repaired it and FinishUP still cannot confirm it (a FinishUP limit), verify it yourself, "
         "record that evidence, and respond self_verified saying how you checked it, with the "
         "evidence ids; it is refused (finding_not_rechecked, finding_not_proof_limited) while "
@@ -2054,8 +2075,9 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "response. Answer findings_unanswered; repair and recheck receipt_findings_unresolved once, "
         "then disclose if unchanged state still limits coverage. At state ready_with_limitations "
         "nothing is left to do: request the receipt; predicted_receipt names its conclusion. "
-        "Call after resume, compaction, or "
-        "delegate handoff and before a completion claim. Guidance: "
+        "After resume or compaction, read status once; keep the returned obligations and "
+        "findings, then do the work — do not reread status between ordinary steps. Read it "
+        "again after a delegate handoff and before a completion claim. Guidance: "
         "finishup://guidance/workflow.md.",
         read_only=True,
         idempotent=True,
@@ -2167,8 +2189,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:678c28071085258547d5379188a1e522c38bfd645ba618afa17d0a9e611b9e50",
                 "check": "sha256:dbee5513a344d7661f5866e1f898f585a3cfd0d228878c78e56f4db3dbf1168b",
-                "respond": "sha256:fd86417eb834164fc8f62d466e4e29ce6250c9272d7e8969777f67efba1390ba",
-                "status": "sha256:51c1546da9f9ffe512201ee57631571f89b9d64c30a0a20fb3425483ddbe3628",
+                "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
+                "status": "sha256:ecb3f784640f3cb1d367c6841de915325d4193b1cec9b58fa866b5b8764639a2",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
                 "closure_prepare": "sha256:3bccdce36db08efcebf9117e6432c7aa32f4ab424c51d3594d4ef05dae4a58fc",
@@ -2179,8 +2201,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "start": "sha256:4f0882901380efe04aa96f066a0bd56cd7511b091f0b5728d0efa02ef86a4499",
                 "publish_work": "sha256:678c28071085258547d5379188a1e522c38bfd645ba618afa17d0a9e611b9e50",
                 "check": "sha256:a846120a701e25cc66f39252287757a844c987795fdfded9f3d0d5d6f6a1a009",
-                "respond": "sha256:fd86417eb834164fc8f62d466e4e29ce6250c9272d7e8969777f67efba1390ba",
-                "status": "sha256:51c1546da9f9ffe512201ee57631571f89b9d64c30a0a20fb3425483ddbe3628",
+                "respond": "sha256:99984599aad2adb8e408c58415413e2fb96755ac9297ad885481affc5cc6c5a0",
+                "status": "sha256:ecb3f784640f3cb1d367c6841de915325d4193b1cec9b58fa866b5b8764639a2",
                 "receipt": "sha256:d1df1f04dfe1815b1b7f6e827f17b1d08f74d7f97018a87159080364a982f762",
                 "read_guidance": "sha256:dbcb10d90771cbf18e469e9646127d7966fd54771f360cdff77759d740efeb08",
                 "closure_prepare": "sha256:3bccdce36db08efcebf9117e6432c7aa32f4ab424c51d3594d4ef05dae4a58fc",
@@ -2190,8 +2212,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:cf32c2f257d131e7df23eabecf679dce8b03ef7ec27dcdacd287eef27b1976df",
-        "strict": "sha256:874768eec5a4eea76d50ebea2ab7516786a27b4ef2c1591d58d1e66b640bb718",
+        "policy": "sha256:a061a8645d1616c676fb82e3a6fb589f426df662db51f5ff4737b61e2a5453fb",
+        "strict": "sha256:2d9dcaa04e20293068cd0933828e4d656fb62a2474f0a417fe085b9aa85e7609",
     }
 )
 

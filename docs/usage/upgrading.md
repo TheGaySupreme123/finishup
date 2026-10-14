@@ -140,7 +140,7 @@ connected through that installation keep their launcher path.
 ### 2. Move to the `finishup` command
 
 ```text
-uv tool install --managed-python --python 3.14.6 finishup
+uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
 ```
 
 If you installed `yoetz` with extras, install the same ones, for example

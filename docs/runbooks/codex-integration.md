@@ -36,6 +36,19 @@ evidence is recorded in #767.
 
 ## Conditional agent guidance
 
+Every advertised MCP input schema has a CI-enforced 4,800-byte target, below Codex 0.162.1's 5,000-byte
+schema compaction threshold. Direct-tool mode receives inline request fields, required lists and
+enums without that size-triggered rewrite. Event payload variants and complete examples are in
+`read_guidance` at `finishup://guidance/request-templates.md`; read the matching template before
+authoring a payload. Server validation and output schemas remain unchanged. This shared
+advertisement also serves code mode, Claude Code and Cursor; a capture of the model request
+proves schema delivery only, not a completed workflow or platform certification.
+
+Field descriptions are preserved within that budget, with priority rules restored first for
+larger tools. A future description-free schema exceeding the target logs
+`mcp_advertised_input_schema_over_budget` and serves the minimal form so the bridge remains
+available; CI rejects that regression, and Codex may apply its rewrite to the oversized fallback.
+
 The skill keeps its activation boundary, core workflow, and safety floor in the entrypoint.
 Before `start` read the core, `agent-instructions.md`: it is the operating card and is enough for
 ordinary work. Workflow, publication policy, and coverage and receipts are read only when a result,
@@ -127,10 +140,15 @@ cell, preflight must show no external/global `finishup` registration, bind stric
 preview, and install the full digest-bound artifact without invoking `codex mcp add`. Dual,
 foreign, or unobservable ownership stops the operation. `finishup provider status --json` reports
 `owner_source`, `ownership_state`, and the observed route profile; only one exclusively observed
-policy owner can make `agent_route_semantic_ready` true. If more than one Codex executable is
-discovered, provide `--codex-path <exact-executable>` so the report can inspect one selected
-installation; the report keeps the route unread and supplies a bounded continuation retaining the
-selected home, launcher and isolation root when no selector is given.
+policy owner can make `agent_route_semantic_ready` true. When several Codex versions are installed, the report reads the registration through each
+against the selected home. Agreeing readings are usable without a selector. It reads the configured
+Codex runtime first when discoverable, otherwise the newest reported release; this preference does
+not prove which executable a host session launched. Disagreeing or failed readings require
+`--codex-path <exact-executable>` and retain the selected home, launcher and isolation root in the
+continuation. `integrate codex admission status|preview|grant|revoke` accepts both `--codex-path`
+and `--codex-home`; preview/grant refuse disagreement with `host_admission_codex_binary_inconsistent`,
+and revoke remains available. Admission
+output uses path-free placeholders for these selectors; repeat the exact values from your preview.
 
 ## 2. Prerequisites and exact supported scope
 
@@ -273,8 +291,8 @@ ceremony step and makes each one cheaper:
   bytes on the policy route without a disclosure, 2,098 bytes on the strict route, and at most
   3,132 bytes (`max_encoded_bytes`) with the longest admissible disclosure. The packaged
   advertised surface falls from 223,627 to 99,300 bytes. The body keeps the start trigger and
-  late-start rule, the schema-load step, all five guidance URIs and when to read each, the
-  cadence, the no-false-activation and no-fabrication rules, typed continuations, the
+  late-start rule, the schema-load step, all five guidance URIs and when to read each (never by
+  listing resources, tb4n5), the no-false-activation and no-fabrication rules, typed continuations, the
   unavailable-service statement, the disclosure, consent and recovery boundaries, and
   coverage-honest wording. It tells the agent to read `agent-instructions.md` with `read_guidance`
   before the first `start`, so the full safety floor is one call away.
@@ -966,9 +984,9 @@ still requires agent action, the `Stop` hook continues the agent once with `deci
 `stop_hook_active` on each Stop after the first (codex-rs `turn.rs`; its test
 `stop_hook_can_block_multiple_times_in_same_turn`), so the cap below is FinishUP's own: a
 single-turn `codex exec` run gets the gate once and at most one further continuation (an announced re-check or a withdrawn deliverable not yet voiced).
-Ordinary advice is withheld at Stop because Codex can only render it as `decision: block`. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`, read on the route the session's MCP server named on its last successful `status` or `check`, remembered across service restarts); it fires when `agent_actionable` holds open obligations, an unconfirmed blocker, an unrepaired receipt-blocking finding (agent work only), a finding the agent rejected that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`), a planned verification that was not observed, failed, or ran before the latest edit, an edit to the work after the last verification run (`edited_after_last_verification`; temporary scratch and FinishUP-owned writes such as a saved receipt never count, ADR-042), a git-ignored requested output, or a declared deliverable deleted or renamed away (`declared_output_removed`, ADR-035), or a declared deliverable that held content and is now empty or truncated (`declared_output_emptied`, ADR-041 and ADR-045: keyed on the file, not the obligation, so acknowledging or republishing the obligation does not clear it; the gate text says why from the file's recorded history and names the one exit, a `finishup-assumption` decision that names the file; a standing `declared_output_content_moved` disclosure adds an informational note to gate text that fires anyway, never a token), or a delivered source file that loads a file the agent created and no requested item declares (`deliverable_references_undeclared_file`, #1044, ADR-035 amendment: the text names each such file, quoted and bounded, from `closure_readiness.undeclared_references` and tells the agent to embed it, rebuild it at run time or declare it as a delivered output; disclosing the dependency does not clear it, and no path is remembered), at most once per ledger frontier and session (owner-only `observation/closure-gate.json`). Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). Verification items (planned verification and edits after the last verification run) are dropped only while this task's own hook rows are still draining after the Stop drain, and the text says so only then. The text pushes repair first: a receipt-blocking finding the agent repaired but FinishUP cannot prove (a FinishUP limit) is self-verified and answered with `respond` `self_verified`; `acknowledged_not_done` is the last resort; a FinishUP limit is never a `finishup-blocker`, and the blocker sentence appears only while obligations are open. An open obligation named by a `finishup-blocker:<kind>` decision is not listed as work, but each new `<obligation id>:<kind>` is re-asked once: the re-check names the obligation and claimed kind from the `blocker` entries of `closure_readiness.rechecks`, says recoverable data, a failing test, an infeasible-looking result or a FinishUP limit is not a blocker (finish the obligation and disclose the limit), and only there tells the agent how to confirm a genuine one: publish the same line again in a later decision (the blocker offer never says so, and a confirmed row is never re-asked). Because blockers are usually published after the first gate, the re-check also runs on a Stop the host already continued: there it reads status, continues the agent only for a re-check key status announced that the gate has not asked, or a withdrawn deliverable not yet voiced (never for ordinary items), at most once per Stop and at most two gate continuations per turn (owner-only `observation/closure-gate-turns.json`, reset at every Stop the host did not continue; an unreadable counter counts as the cap), and lets the agent stop on any error, a short budget, or a memory write failure. Asked keys are remembered per session (owner-only `observation/closure-gate-blockers.json`, at most 64). Ordinary advice is never delivered at Stop; it waits for the next tool event or session start. Standing advice a Stop withheld rides the first later `PostToolUse`. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_active_stop_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_acceptance_rechecked`, `closure_gate_turn_end_after_continue` (an already-continued Stop that emitted nothing: the normal end of a continued turn, renamed from `closure_gate_loop_guard`), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `finishup observe status`. The text also says an inherent verification limit or a best-effort choice is disclosed with a `finishup-assumption:` or `finishup-verification-limit:` decision line, never blocked, and names an obligation-level `acknowledged_not_done` as the last resort (#995, #997). Re-checks are not riders on other tokens (tb4n3 RC-8, #1031). Status announces them in `closure_readiness.rechecks` (acceptance, acknowledgement, blocker, premise, each with a content key; the same list `status`, `closure_prepare`, the CLI and the TUI show, and the status directive names it: "At Stop you will be asked once to re-read: ..."), and the gate asks exactly the announced ones, each once per session and key (`accept:<h8 of the resolved obligation ids>@<invite frontier>`, `ack:<obligation id>`, `<obligation id>:<kind>` for a blocker, `premise:<acknowledged count>`, all in the blocker-key file; closed items `acceptance_recheck`, `acknowledgement_recheck`, `blocker_recheck`, `premise_recheck`). A readiness without the list (a service older than the gate) announces none, so the gate asks none. The acceptance re-read (A-12) asks the agent to read each resolved obligation's acceptance_criteria against its final output and to republish an unmet one as `acknowledged_not_done`, or, when the criteria can only be checked outside this environment, to keep it resolved and record `finishup-verification-limit:<obligation id>`. It costs one extra Stop turn at most once per resolved set; it is never offered beside open obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared dependency (it stays unasked and is asked at a later Stop), and an acknowledgement published after it is not challenged by the acknowledgement re-check. Where it rides alone it ends by saying that a pure confirmation needs no new record, check or receipt (#1050). Final message (#1050, ADR-033 amendment): Codex's Stop body carries `last_assistant_message`, so the re-read is asked only for the resolved obligations that message neither cites by id nor addresses (at least two thirds of the criterion's terms), and names them; one bounded `status view=obligations` read (750 ms) supplies the criteria and is trusted only when its resolved set matches the announced key; a fully addressed set is not asked and records `closure_gate_acceptance_covered`; a body over the trusted size carries no message and keeps the re-read for every resolved set. The message is read in the hook process only, never stored, sent or put in a diagnostic. Host decision: supported. The premise ask stays on Stops the host has not already continued; the acknowledgement and acceptance re-checks may continue an already-continued Stop within the same caps. A finding the agent rejected with a reason that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`) sends the agent to `check` with `final_review: true` and never offers acknowledgement; `receipt_findings_unresolved` counts agent-work findings only, and `self_verified` is offered only while `finding_counts.self_verify_eligible` is positive. A deliverable that held content and is now empty or gone (`declared_output_emptied`, `declared_output_removed`) is voiced once per key (`emptied:<h8 of the declaring obligation items>`) even on an already-continued Stop, with the rule and obligation ids and never a path (every Stop after the first gate is an already-continued Stop in a single-turn run). The premise and acknowledgement texts say that if the agent cannot finish the work it keeps the working deliverable: acknowledgement never requires withdrawing or emptying it. Host decision: supported, same code path (the gate, its texts, its re-check list and its memory are shared by the Codex, Claude Code and Cursor Stop handlers; the only difference is how an already-continued Stop is detected, `stop_hook_active`). See ADR-033 and issues #977, #984, #985, #1031.
+Ordinary advice is withheld at Stop because Codex can only render it as `decision: block`. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`, read on the route the session's MCP server named on its last successful `status` or `check`, remembered across service restarts); it fires when `agent_actionable` holds open obligations, an unconfirmed blocker, an unrepaired receipt-blocking finding (agent work only), a finding the agent rejected that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`), a planned verification that was not observed, failed, or ran before the latest edit, an edit to the work after the last verification run (`edited_after_last_verification`; temporary scratch and FinishUP-owned writes such as a saved receipt never count, ADR-042), a git-ignored requested output, or a declared deliverable deleted or renamed away (`declared_output_removed`, ADR-035), or a declared deliverable that held content and is now empty or truncated (`declared_output_emptied`, ADR-041 and ADR-045: keyed on the file, not the obligation, so acknowledging or republishing the obligation does not clear it; the gate text says why from the file's recorded history and names the one exit, a `finishup-assumption` decision that names the file; a standing `declared_output_content_moved` disclosure adds an informational note to gate text that fires anyway, never a token), or a delivered source file that may read a file the agent created and no requested item declares (`deliverable_references_undeclared_file`, #1044, ADR-035 amendments: a name the deliverable provably only writes does not count, and a bare file name a declared file shares, or that nothing ties to the file's directory, is counted on the receipt as `deliverable_references_ambiguous_name` instead; the text names each such file, quoted and bounded, from `closure_readiness.undeclared_references`, where a name the agent itself published in this session returns to it even when its privacy policy withholds repository excerpts, and tells the agent to embed it, rebuild it at run time or declare it, or the directory holding it, as a delivered output; when a name is withheld it says why and gives the agent's own shell command that lists the files its change created; disclosing the dependency does not clear it, and no path is remembered. Host decision for the tb4n5 naming: supported, same code path), at most once per ledger frontier and session (owner-only `observation/closure-gate.json`). Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). Verification items (planned verification and edits after the last verification run) are dropped only while this task's own hook rows are still draining after the Stop drain, and the text says so only then. The text pushes repair first: a receipt-blocking finding the agent repaired but FinishUP cannot prove (a FinishUP limit) is self-verified and answered with `respond` `self_verified`; `acknowledged_not_done` is the last resort; a FinishUP limit is never a `finishup-blocker`, and the blocker sentence appears only while obligations are open. An open obligation named by a `finishup-blocker:<kind>` decision is not listed as work, but each new `<obligation id>:<kind>` is re-asked once: the re-check names the obligation and claimed kind from the `blocker` entries of `closure_readiness.rechecks`, says recoverable data, a failing test, an infeasible-looking result or a FinishUP limit is not a blocker (finish the obligation and disclose the limit), and only there tells the agent how to confirm a genuine one: publish the same line again in a later decision (the blocker offer never says so, and a confirmed row is never re-asked). Because blockers are usually published after the first gate, the re-check also runs on a Stop the host already continued: there it reads status, continues the agent only for a re-check key status announced that the gate has not asked, or a withdrawn deliverable not yet voiced (never for ordinary items), at most once per Stop and at most two gate continuations per turn (owner-only `observation/closure-gate-turns.json`, reset at every Stop the host did not continue; an unreadable counter counts as the cap), and lets the agent stop on any error, a short budget, or a memory write failure. Asked keys are remembered per session (owner-only `observation/closure-gate-blockers.json`, at most 64). Ordinary advice is never delivered at Stop; it waits for the next tool event or session start. Standing advice a Stop withheld rides the first later `PostToolUse`. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_active_stop_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_acceptance_rechecked`, `closure_gate_turn_end_after_continue` (an already-continued Stop that emitted nothing: the normal end of a continued turn, renamed from `closure_gate_loop_guard`), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `finishup observe status`. The text also says an inherent verification limit or a best-effort choice is disclosed with a `finishup-assumption:` or `finishup-verification-limit:` decision line, never blocked, and names an obligation-level `acknowledged_not_done` as the last resort (#995, #997). Re-checks are not riders on other tokens (tb4n3 RC-8, #1031). Status announces them in `closure_readiness.rechecks` (acceptance, acknowledgement, blocker, premise, each with a content key; the same list `status`, `closure_prepare`, the CLI and the TUI show, and the status directive names it: "At Stop you will be asked once to re-read: ..."), and the gate asks exactly the announced ones, each once per session and key (`accept:<h8 of the resolved obligation ids>@<invite frontier>`, `ack:<obligation id>`, `<obligation id>:<kind>` for a blocker, `premise:<acknowledged count>`, all in the blocker-key file; closed items `acceptance_recheck`, `acknowledgement_recheck`, `blocker_recheck`, `premise_recheck`). A readiness without the list (a service older than the gate) announces none, so the gate asks none. The acceptance re-read (A-12) asks the agent to read the acceptance_criteria of each resolved obligation the ledger flags (since tb4n5, #1050: a requested item never attempted, evidence not linked to a declared item, or only self-asserted evidence; `closure_readiness.rechecks` rule `resolved_obligations_acceptance_risk`, and a ledger that flags none announces no re-read) against its final output and to republish an unmet one as `acknowledged_not_done`, or, when the criteria can only be checked outside this environment, to keep it resolved and record `finishup-verification-limit:<obligation id>`. It costs one extra Stop turn at most once per flagged set; it is never offered beside open obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared dependency (it stays unasked and is asked at a later Stop), and an acknowledgement published after it is not challenged by the acknowledgement re-check. Where it rides alone it ends by saying that a pure confirmation needs no new record, check or receipt (#1050). Final message (#1050, ADR-033 amendments): Codex's Stop body carries `last_assistant_message`. A `finishup-acceptance:<obligation id>:met` line in it answers the re-read for that announced obligation, so only the unattested ones are named; a message attesting every announced obligation is not asked and records `closure_gate_acceptance_covered`. The attestation binds to the set this Stop's status read announced (an obligation outside it is ignored) and counts only when the announced list is the whole set its key names. No second status read is made (the tb4n4 word-coverage rule and its `status view=obligations` read are gone). A body over the trusted size carries no message and keeps the re-read for every announced obligation. The message is read in the hook process only, never stored, sent or put in a diagnostic. Host decision: supported. The premise ask stays on Stops the host has not already continued; the acknowledgement and acceptance re-checks may continue an already-continued Stop within the same caps. A finding the agent rejected with a reason that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`) sends the agent to `check` with `final_review: true` and never offers acknowledgement; `receipt_findings_unresolved` counts agent-work findings only, and `self_verified` is offered only while `finding_counts.self_verify_eligible` is positive. A deliverable that held content and is now empty or gone (`declared_output_emptied`, `declared_output_removed`) is voiced once per key (`emptied:<h8 of the declaring obligation items>`) even on an already-continued Stop, with the rule and obligation ids and never a path (every Stop after the first gate is an already-continued Stop in a single-turn run). The premise and acknowledgement texts say that if the agent cannot finish the work it keeps the working deliverable: acknowledgement never requires withdrawing or emptying it. Host decision: supported, same code path (the gate, its texts, its re-check list and its memory are shared by the Codex, Claude Code and Cursor Stop handlers; the only difference is how an already-continued Stop is detected, `stop_hook_active`). See ADR-033 and issues #977, #984, #985, #1031.
 
-Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `finishup check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Codex: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `finishup check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Codex: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012). On Codex the wait also covers this task's rollout rows held for their hook post (tb4n5): one read at least 10 s earlier is released by the wait with `unpaired_event`, so it lands before the check instead of minutes after it (biped S: 12m55s), and a younger one counts in the `bounded_timeout` pending count. `finishup observe status --json` shows the held account as `held_rollout_items`.
 
 Legacy synchronous `hooks spool` is a separate structural fast path. It only appends the owner-only
 structural spool record and returns; it does not normalize or pair the event, open the service, drain
@@ -987,11 +1005,33 @@ neither path reintroduces the rows. The shared host-spelling advice guard suppre
 recommendation delivery on a FinishUP-owned hook without an explicit failure; no hook delivers a
 frontier-motion notice at all (issue #915). Explicit
 self-call failures stay retained, enqueued, and eligible for pending advice. Ordinary tools are
-unchanged. To confirm closure converged,
+unchanged. The rollout's completed `McpToolCall` item (`event_msg`/`item_completed`) is read in the
+`PostToolUse` phase for this policy (tb4 n5): before, it had no phase, so every successful `status`
+read reached the ledger as action, result and evidence (about twelve events per read on the S
+arm) and changed the very task the agent was polling. A FinishUP read item is also never held for its
+hook post, and one an earlier build held is settled locally when released, never delivered. A
+failed FinishUP item (`error`, `isError`, or a non-success `status`), FinishUP writes and other servers'
+items are delivered as before. To confirm closure converged,
 run `finishup observe drain --workspace . --json` after the agent stops and require
 `terminal: drained` with `pending_after: 0`; `retry_pending` names the retryable head cause in
 `reasons` (a check barrier's `operation_pending` clears when the check completes), and
 `pass_limit` means a producer is still adding rows.
+
+### Cold parser startup (N5 robustness)
+
+The native stream parser imports its structural values and exact profiles without loading ledger
+publication models. `finishup.adapters.importers.codex_jsonl` and `finishup.ports.importer` retain their
+public names and lazily load mapping/publication implementations when those names are requested.
+The original class lookup paths remain usable for older serialized values. No profile, parser
+rule, stream-reconciliation cadence, capture scope, privacy decision or wire byte changes.
+
+The cold-hook process regression still enforces 1.5 seconds including startup and verifies that
+the realistic observation store changed. Its temporary home and workspace are mode 0700, so a
+shared-group umask does not turn the measurement into a workspace-safety refusal. A separate
+fresh-process regression parses a malformed rollout and checks that ledger events, ledger ports
+and public request models were not loaded. Parser and mapper suites still exercise both paths.
+The measured profiled pass fell from 1.39 seconds to 0.67 seconds on the development Mac; these
+are individual observations, not a latency guarantee for every host or installed package path.
 
 ### Legacy synchronous-hook latency
 
@@ -1640,6 +1680,7 @@ egress.
 | Symptom | Action |
 |---|---|
 | Target untrusted/unsafe | Correct the explicit root/permissions; there is no force option. |
+| MCP, service or hooks stop with `release_runtime_group_writable` / `release_runtime_world_writable` | A runtime another account can write (ADR-007, 2026-10-14) stops `finishup mcp serve` with `release_runtime_group_writable` or `release_runtime_world_writable` and the exact `chmod -R go-w` repair on stderr (Codex shows it as the MCP server's startup error). Its hooks exit 20 with no stdout, so they make no allow or block decision (exit 2 is the only blocking code); Codex continues the turn; their stderr names the token without local paths and points at `finishup service run`, which prints the repair. Group write through the user's own private group (the Ubuntu/Fedora umask 0002 default) is accepted. |
 | Resource invalid | Reinstall from a verified package artifact. |
 | Preview stale | Run `status`, then a fresh preview. |
 | Modified/partial content | Preserve and review manually; use `replace_modified` deliberately if desired. |
@@ -1788,14 +1829,17 @@ existing native-carrier identity rules; this repair changes only Codex external 
 Codex may be both the host carrying FinishUP and the selected external AI-powered evaluator, but those
 are independent cells. Host skill/plugin/MCP activation grants no ChatGPT evaluator login or
 privacy authority. Configure the evaluator only through
-`finishup provider codex-subscription setup`; it binds a separate owner-private `CODEX_HOME` and exact
-native `0.157.1` app-server cell. Never reuse the host's ambient home, environment, session, tools,
-instructions, or repository cwd for the evaluator.
+`finishup provider codex-subscription setup`; it binds a separate owner-private `CODEX_HOME` and the
+newest installed Codex release (at least `0.157.1`) that passes the evaluator's capability check.
+Never reuse the host's ambient home, environment, session, tools, instructions, or repository cwd
+for the evaluator.
 
-The evaluator binds FinishUP's own verified copy of that admitted release (issue #855), never the host
-Codex installation. Updating the host Codex therefore changes neither the evaluator nor its
-binding. A binding stranded by an earlier host update or a capability-identity change is repaired
-with `finishup provider codex-subscription repair`, which reuses the dedicated home's sign-in. Decision
+The evaluator binds FinishUP's own checked copy of that release (issue #855), never the host Codex
+installation. Updating the host Codex therefore changes neither the evaluator nor its binding until
+the owner runs `finishup provider codex-subscription repair`, which adopts the newer host release
+when it passes the check and keeps the previous one otherwise. Repair also moves a binding written
+under the pinned `0.157.1` cell and reuses the dedicated home's sign-in. The host's own Codex
+capability cells (this runbook) stay exact; only the evaluator is admitted by capability. Decision
 for this host: supported through the shared provider surfaces, with no Codex-specific step. Native
 Codex acceptance of a post-repair check is pending; see the
 [subscription evaluator runbook](codex-subscription-evaluator.md#evaluator-runtime-retention-and-repair).
@@ -1923,8 +1967,9 @@ names no tool when its tool has a FinishUP name, so it is never read as FinishUP
 under it is kept. A nested `apply_patch`, an `exec_command` that is
 not in the hook's `exploration` runner class and an unpaired stream output with no tool identity
 stay `other` and keep the
-disclosure; a `wait` poll (it only returns the output of a cell started earlier) is
-`no_tool_activity`; a nested deliverable or workspace `apply_patch` supersedes the check. A patch
+disclosure; a `wait` poll (it only returns the output of a cell started earlier) and a
+`clock.sleep` (hook spelling `clocksleep`; it only pauses the turn) are `no_tool_activity`; a
+nested deliverable or workspace `apply_patch` supersedes the check. A patch
 whose every path is `finishup_receipt.*`, a FinishUP tree or scratch is `non_counting_write`. Tests:
 `tests/unit/application/test_tb4n3_later_material_host_shapes.py` drives real Codex hook payloads
 through the ingress and the materializer.
@@ -1941,10 +1986,10 @@ unpaired result. A completed tool item
 (`event_msg`/`item_completed`) keeps its own `id` (`exec-<uuid>`, or the call id on a direct call):
 that is the id ADR-022 decision 15 compares with a hook call id, so the item-to-hook link is
 unchanged. On the recorded 0.159.3 slice (`tests/fixtures/codex/rollout-compaction-0.159.3.jsonl`)
-the 28 unpaired cell results are gone; the three cells that ran no nested tool at all still record
-their own `exec` action, as #917 decided, and stay `other`. Whether such itemless cells follow
-the check in the tb4n4 exports, and so still bound some receipts, is for the replay of those
-exports to show.
+the 28 unpaired cell results are gone. The three cells that ran no nested tool at all recorded
+their own `exec` action, as #917 decided, and stayed `other` until tb4n5 showed such a cell
+bounding a final check (medical S); since the tb4n5 amendment a cell with no observable tool call
+is no workspace activity (see [One action per tool call](#one-action-per-tool-call-and-the-standing-orphan-record-917)).
 
 ### Gaps FinishUP and the host made on every attempt (#1041)
 
@@ -1958,6 +2003,23 @@ than the agent's work. Their dispositions:
   --json`), not in task coverage.
 - **Shell `apply_patch <<EOF`.** A pre-only attempt closed by the observed `FileChange`; see
   [Reviewable native edits](#reviewable-native-edits).
+- **Rejected FinishUP calls (tb4n5).** Codex fires no `PostToolUse` for a tool result that is not a
+  success, and an MCP result with `isError: true` is not one, so every FinishUP call the service
+  rejected left its `PreToolUse` pending until it expired as `pending_attempt_expired` (17 of 18
+  tb4n5 attempts; the shell heredoc above did not occur once). The FinishUP MCP bridge now records each
+  error answer it returns (a commitment to the tool, the request's FinishUP session and writer, and
+  its `request_id`, nothing else), and the pending attempt of that call closes as
+  `rejected_by_yoetz` without the gap once the next hook runs at least 5 s later, or at once when
+  the session ends or its generation advances. Each rejection closes at most one attempt in any
+  workspace. Every other missing post still expires with the gap, and `finishup observe
+  status --json` names each ending under `pending_attempt_endings` (reason `ttl`, `session_end`,
+  `generation` or `rejected_by_yoetz`, the tool name and the source generation) so an export can
+  tell the producer.
+- **Local retention.** The 256-row local envelope ring, the state bound and the dedup fence keep
+  local copies of accepted rows; every tb4n5 attempt crossed the ring, and its eviction was
+  reported as `truncated_payload`. Eviction now reports only `local_retention` in `observe status`
+  (not content loss, not a gap). Clipped hook content keeps `truncated_payload` on the row it cut,
+  and an oversize or unreadable rollout line keeps it in the reconcile result.
 - **`HookPrompt`.** A Stop hook that continues the turn (FinishUP's closure gate) makes Codex 0.159.3
   write an `event_msg.item_completed` item of type `HookPrompt`. The compatibility profile admits it
   as bookkeeping (it pairs with nothing and is read as `no_tool_activity` after a check), so it is
@@ -1965,14 +2027,21 @@ than the agent's work. Their dispositions:
 - **`semantic_review_not_requested`.** Not recorded for a `deterministic_only` check on a route
   that does not require AI-powered review; see
   [Closure readiness and standing limitations](#closure-readiness-and-standing-limitations-913).
-- **Hook latency** (`drain_budget_exhausted`, `hook_followup_deferred`, `drain_connect_timeout`):
-  not lossy, and unchanged. Its material effect was rows landing after a check; with cells paired on
-  `call_id` and FinishUP-only cells kept local whatever the hook timing (#1038), it is to be measured
-  again on the next benchmark before any budget in `observe_hooks` is tuned.
+- **Hook latency** (`drain_pass_delivered_nothing`, named `drain_budget_exhausted` before tb4n5;
+  `hook_followup_deferred`; `drain_connect_timeout`): not lossy. Its material effect was rows
+  landing after a check; with cells paired on `call_id` and FinishUP-only cells kept local whatever the
+  hook timing (#1038), tb4n5 measured it again and found no regression. The owner kept the 0.2 s
+  budget (ADR-022 amendment of 2026-10-13): `drain_pass_delivered_nothing` counts hook passes that
+  delivered no row within it (the rows stay queued), and the measure of lateness is now the outbox
+  delivery lag, enqueue to acceptance, which `finishup observe status --json` reports as
+  `delivery_lag` (`count`, `p50_ms_at_most`, `p95_ms_at_most`, `max_ms`, `since`).
 
 Per host: Claude Code and Cursor have no rollout stream, no code-mode cell and no intercepted
-`apply_patch`, so the first three are Codex-only; the `semantic_review_not_requested` rule is
-service-side and the same on every host.
+`apply_patch`, so the held tail, the shell patch and `HookPrompt` are Codex-only; the
+`semantic_review_not_requested` rule is service-side and the same on every host. The rejected-call
+record and local retention are host-agnostic: the bridge records an error answer whichever host
+called it, and every host spelling of a FinishUP tool commits alike, so a paired ordinary profile on
+Claude Code or Cursor closes the same way.
 
 ### Inspection check on Codex (#1048)
 
@@ -2006,6 +2075,29 @@ repository grant that permits external review, so on a policy route without that
 inspection costs an approval (or, under policy `never`, a refusal) that the `status` reads it
 replaces do not. Closing it needs a read-only advertisement for inspection: one descriptor per
 tool cannot carry a hint per mode, and a separate tool is the alternative ADR-047 rejected.
+
+### Guidance delivery on Codex (tb4n5)
+
+- **Closure trigger in the skill description.** The skill description ends "Also use when a
+  FinishUP finding, Stop message or receipt needs an answer", so a host that selects skills by
+  description can load the skill again at closure. Decision: supported; whether this host
+  re-selects the skill at closure is unmeasured until its dogfood lane runs.
+- **Initialize body.** The compact body adds "Do not list resources; read the named topics": all
+  18 tb4n5 attempts called `list_mcp_resources` in their first cell. The per-step cadence left the
+  body; the operating card states it once (ADR-047 amendment). The Codex skill keeps one start
+  sentence that names its antecedent, the card pointer, `references/startup.md` and the closure
+  judgment rules; the capacity procedure is the catalogued topic
+  `workflow.md#change-local-retention-capacity`. Decision: supported.
+- **Page-zero sections.** Page zero of a paged `read_guidance` read carries
+  `structuredContent.sections`, one `{uri, byte_count}` per catalogued section, and the bounded
+  pointer in `content` names the anchors and sizes. A code-mode cell that prints the structured
+  result (the `startup.md` snippet prints the whole page) shows the list. Decision: supported.
+- **Check-cell deadline at closure.** A `check` cell without `yield_time_ms` yields, and the
+  yielded `exec` cell lands after the check and makes it stale (5 of 9 S attempts, a stale final
+  check in 6). The Codex Stop gate's close instruction now repeats
+  `// @exec: {"yield_time_ms": 300000}`, and the status `check_cause` sentence repeats it when the
+  cause's tool is `exec`. Decision: supported. Evidence boundary: unit tests only; the Codex
+  dogfood lane is pending.
 
 ### Closure readiness and standing limitations (#913)
 
@@ -2348,10 +2440,33 @@ item counts only while its cell is the session's only open cell; any other neste
 row the reader could not interpret, or a FinishUP item read while several cells are open removes the
 mark from every open cell, so no cell borrows another's FinishUP calls. Limit: after parallel cells,
 or in a session with a cell interrupted before its output (it stays open), later cells fall back to
-the hook rule alone. A cell whose tools fire
-no hook and leave no rollout item (only `tools.update_plan`, for example) delivers its output and is
-recorded, in any session. Since #1038 the output pairs with its call on `call_id`, which Codex
-0.159.3 needs (its rows also carry their own `ctc_`/`ctco_` ids).
+the hook rule alone. A cell that made no observable tool call stays local too (tb4n5, ADR-029
+amendment): in a session whose rollout has already written a completed tool item, a cell between
+whose call and output the rollout wrote no tool item (`CommandExecution`, `FileChange`,
+`McpToolCall`, or any other item family that is not a message, reasoning, compaction or hook
+prompt), and while which no tool hook of the session was ingested, did no workspace activity; such
+a cell (`text(load(...))`, `ALL_TOOLS.find(...)`, or only `tools.update_plan`) adds no `exec`
+action after a check. In a session whose rollout never wrote a tool item (an older Codex, or a
+session that has not called a tool yet) such a cell still delivers its output and is recorded.
+Since #1038 the output pairs with its call on `call_id`, which Codex 0.159.3 needs (its rows also
+carry their own `ctc_`/`ctco_` ids).
+
+A cell that outlives its yield window keeps its identity until it ends (tb4n5, #1038 follow-up).
+Codex writes `Script running with cell ID <id>` as the `exec` output, keeps the cell running, writes
+its nested calls after that output, and returns its further output on later `wait` calls (each
+naming the cell in its `cell_id` argument; the terminal one starts with `Script completed`,
+`Script failed` or `Script terminated`). FinishUP reads only those host-written headers (the output's
+first text item, which the cell's own output cannot forge) and the `wait` argument, never the cell's
+JavaScript. The yield output is held with the still-open cell, nested items read while it is the
+session's only open cell mark it as before, and the terminal `wait` output decides it by the same
+rules; only a cell that is not FinishUP's own, not tool-less and not hook-recorded then delivers its
+held yield output as its record. A yielded cell nobody waited on is decided at the turn's end
+(`task_complete` or `turn_aborted` in the rollout). The `wait` polls stay `no_tool_activity`, so a
+yielded check-only cell with any number of polls (or a `clock.sleep` while it runs, hook spelling
+`clocksleep`, also `no_tool_activity`) no longer makes its own check stale. In tb4n5's semantic arm
+20 such cells in 5 of 9 attempts did, and 3 final receipts kept `check_current_as_of_earlier_frontier`.
+Overlapping cells keep the no-borrowing rule above. Tests:
+`tests/integration/application/test_codex_yielded_cells.py`.
 Limits: a cell mixing hooked and unhooked tools stays local, so its unhooked tool is not recorded;
 a hooked cell whose call is read only after all its nested hooks, whose hooks' reconciles did not
 complete before its output was read, whose hooks fired before an upgrade from the earlier cell
@@ -2466,9 +2581,9 @@ redacted first (`check_time_change_redacted`), every part still passes the never
 named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and similar, a name heuristic)
 are listed by name only, and a change larger than the packet reports `check_time_change_truncated`.
 The whole capture has 20 seconds. It is `check_time_change_unavailable` for a linked Git worktree or
-a submodule checkout opened as the repository (its `.git` is a file), a group- or world-writable
-repository root, a repository whose effective Git config defines a filter or an include (for example
-a repository-local Git LFS or git-crypt setup), a partial clone, Git older than 2.26, a repository
+a submodule checkout opened as the repository (its `.git` is a file), a repository root another
+account can write (group write through the owner's own private group is fine, ADR-007), a repository whose effective Git config defines a filter or an include (for example
+a repository-local Git LFS or git-crypt setup), a partial clone, a system Git older than 2.25, a repository
 whose object store is reached through a link or borrowed from another repository (`.git/commondir`
 or alternates), a repository whose Git settings point its working tree elsewhere (`core.worktree`),
 a repository directory replaced at the same path between Git commands, or a working tree that kept

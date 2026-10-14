@@ -163,6 +163,23 @@ _REVOKE_COMMAND: Final = (
 _MIB: Final = 1024 * 1024
 
 
+def codex_sandbox_lines(status: Mapping[str, object]) -> tuple[str, ...]:
+    """One plain line when Codex reported its Linux sandbox unavailable (ADR-006, 2026-10-14)."""
+
+    if status.get("codex_sandbox_unavailable") is not True:
+        return ()
+    if status.get("codex_sandbox_unavailable_reason") == "bubblewrap_missing":
+        return (
+            "Codex sandbox: no system bubblewrap here, so the evaluator runs without Codex's "
+            "verified Linux sandbox; it runs no commands and writes no files, so reviews are "
+            "unaffected",
+        )
+    return (
+        "Codex sandbox: unavailable here (no user namespaces); the evaluator runs no commands "
+        "and writes no files, so reviews are unaffected",
+    )
+
+
 def _mapping_or_empty(value: object) -> Mapping[str, object]:
     return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
 
@@ -1868,17 +1885,18 @@ class FinishUpTui(App[int]):
                 Level.OPTIONAL,
                 "No eligible Codex evaluator runtime was found",
                 (
-                    "To download the admitted release, run this in your shell:",
+                    "Install or update Codex (for example: npm install -g @openai/codex@latest),",
+                    "or have FinishUP download the newest Codex into its private copy:",
                     "finishup provider codex-subscription runtime install --download",
                     "The command asks before downloading. Then return to /provider, or enter "
-                    "the path to a local admitted runtime below.",
+                    "the path to a local Codex below.",
                 ),
             )
         entries = (
             TextEntryView(
                 name="codex-subscription-executable",
                 title="Codex with ChatGPT subscription",
-                label="Codex evaluator executable (FinishUP keeps a verified private copy)",
+                label="Codex evaluator executable (FinishUP checks it and keeps a private copy)",
                 initial=executable_default,
                 placeholder="/absolute/path/to/codex",
             ),
@@ -1945,11 +1963,13 @@ class FinishUpTui(App[int]):
             return
         body = (
             f"Runtime source: {preview.get('executable_path')}",
-            "Bound runtime: FinishUP's verified private copy; updating your everyday Codex leaves it.",
+            "Bound runtime: FinishUP's private copy, capability-checked before it is bound; "
+            "a later Codex update is adopted on the next repair.",
+            f"Codex version: {preview.get('runtime_version')} "
+            f"(minimum {preview.get('runtime_floor')})",
             f"Executable digest: {preview.get('executable_sha256')}",
-            f"Codex version: {preview.get('runtime_version')}",
-            f"Capability cell: {preview.get('capability_cell_sha256')}",
-            f"Cell evidence expires: {preview.get('capability_evidence_expires_at')}",
+            f"Capability profile: {preview.get('capability_profile')}",
+            f"Evidence expires: {preview.get('capability_evidence_expires_at')}",
             f"Dedicated CODEX_HOME: {preview.get('codex_home')}",
             f"Model: {model}",
             f"Reasoning: final {effort} / routine {routine_effort}",
@@ -2020,6 +2040,7 @@ class FinishUpTui(App[int]):
                 f"Plan: {status.get('plan_type') or 'not reported'}",
                 f"Model available: {status.get('model_available')}",
                 f"Process cleanup: {status.get('process_cleanup')}",
+                *codex_sandbox_lines(status),
             ),
         )
         try:
@@ -2065,6 +2086,7 @@ class FinishUpTui(App[int]):
                 f"Model available: {status.get('model_available')}",
                 *(() if budgets is None else (f"Review budgets: {budgets}",)),
                 f"Process cleanup: {status.get('process_cleanup')}",
+                *codex_sandbox_lines(status),
             ),
         )
 
@@ -2136,11 +2158,9 @@ class FinishUpTui(App[int]):
         except RuntimeError_ as error:
             self._report(error)
             return
-        changed = plan.get("changed_fields")
-        changed_text = (
-            ", ".join(str(item) for item in cast(list[object], changed))
-            if isinstance(changed, list) and changed
-            else "none"
+        candidates = plan.get("candidates")
+        fallback_count = (
+            len(cast(list[object], candidates)) - 1 if isinstance(candidates, list) else 0
         )
         confirmed = await self.ask(
             ApprovalView(
@@ -2148,11 +2168,13 @@ class FinishUpTui(App[int]):
                 title="Repair the Codex evaluator binding?",
                 body=(
                     f"Current state: {plan.get('state_before')}",
-                    f"Runtime source: {plan.get('source_path')}",
+                    f"Runtime source: {plan.get('source_path')} (Codex "
+                    f"{plan.get('runtime_version_after')})",
                     f"Bound runtime: {plan.get('executable_path_after')}",
                     f"Capability profile: {plan.get('capability_profile_before')} -> "
                     f"{plan.get('capability_profile_after')}",
-                    f"Changed fields: {changed_text}",
+                    "Codex is capability-checked before anything is written; "
+                    f"{fallback_count} older release(s) remain as fallbacks if it fails.",
                     "Model, reasoning effort, timeout, retries, dedicated home, endpoint role, "
                     "and privacy grants are kept.",
                     "The existing sign-in is reused only if Codex reports it; repair never signs "
@@ -2179,6 +2201,7 @@ class FinishUpTui(App[int]):
                 f"Bound runtime: {status.get('executable_path')}",
                 f"Model available: {status.get('model_available')}",
                 f"Process cleanup: {status.get('process_cleanup')}",
+                *codex_sandbox_lines(status),
             ),
         )
 
@@ -2188,23 +2211,23 @@ class FinishUpTui(App[int]):
         except RuntimeError_ as error:
             self._report(error)
             return
-        managed = report.get("managed_runtime")
+        retained = report.get("retained_runtimes")
         binding = report.get("binding")
-        managed_state = (
-            cast(Mapping[str, object], managed).get("state")
-            if isinstance(managed, Mapping)
-            else None
-        )
-        host = (
-            cast(Mapping[str, object], managed).get("code_mode_host")
-            if isinstance(managed, Mapping)
-            else None
-        )
-        host_state = (
-            cast(Mapping[str, object], host).get("state") if isinstance(host, Mapping) else None
+        retained_lines = tuple(
+            f"Retained Codex {item.get('runtime_version')}: {item.get('state')}"
+            for item in (
+                cast(Mapping[str, object], entry)
+                for entry in (cast(list[object], retained) if isinstance(retained, list) else [])
+                if isinstance(entry, Mapping)
+            )
         )
         binding_state = (
             cast(Mapping[str, object], binding).get("state")
+            if isinstance(binding, Mapping)
+            else None
+        )
+        bound_version = (
+            cast(Mapping[str, object], binding).get("runtime_version")
             if isinstance(binding, Mapping)
             else None
         )
@@ -2213,9 +2236,17 @@ class FinishUpTui(App[int]):
             Level.ACTIVE if binding_state in {None, "ready"} else Level.BLOCKED,
             "Codex evaluator runtime",
             (
-                f"Retained runtime: {managed_state or 'unavailable on this platform'}",
-                f"Retained code-mode host: {host_state or 'unavailable on this platform'}",
-                f"Binding: {binding_state or 'not configured'}",
+                *(
+                    retained_lines
+                    or (
+                        "Retained runtime: none"
+                        if report.get("platform") is not None
+                        else "Retained runtime: unavailable on this platform",
+                    )
+                ),
+                f"Minimum Codex: {report.get('runtime_floor')}",
+                f"Binding: {binding_state or 'not configured'}"
+                + ("" if bound_version is None else f" (Codex {bound_version})"),
                 "Sign-in was not checked; use Codex subscription status for that.",
                 *(() if next_command is None else (f"Next: {next_command}",)),
             ),

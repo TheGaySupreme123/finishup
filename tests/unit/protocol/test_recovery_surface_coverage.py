@@ -63,6 +63,13 @@ def test_hook_and_tui_surfaces_resolve_registry_tokens() -> None:
     assert "Call start" in timeout_attach
     assert "service_incompatible" in _attachment_recovery_context("service_incompatible")
     assert "Continuation:" not in _attachment_recovery_context("service_incompatible")
+    # #1040 follow-up: a hello this installation's own service closed is neither a service still
+    # to start nor another installation to replace; start's typed result names the cause.
+    handshake_attach = _attachment_recovery_context("service_handshake_failed")
+    assert "service_handshake_failed" in handshake_attach
+    assert "Call start" in handshake_attach
+    assert "incompatible" not in handshake_attach
+    assert "finish service startup" not in handshake_attach
     assert render_hook_recovery_suffix("vault_locked") == " Continuation: vault_unlock_required."
     tui_lines = render_local_recovery_lines("vault_locked")
     assert tui_lines[0] == "Continuation: vault_unlock_required"

@@ -26,7 +26,7 @@ The npm command, `npx finishup`, starts setup directly.
 Install the latest published version through Python via [`uv`](https://docs.astral.sh/uv/):
 
 ```text
-uv tool install --managed-python --python 3.14.6 finishup
+uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
 finishup
 ```
 
@@ -39,11 +39,37 @@ say so in the error: `uv` configured never to download Pythons (`python-download
 without 3.14. `pip install finishup` or `pipx install finishup` on an older Python cannot work; the
 package requires 3.14, and a pip that resolves it anyway is not installing FinishUP.
 
+**Git.** FinishUP reads your repository with the system Git, the first `git` in `/bin` or
+`/usr/bin`, never one that only your shell's `PATH` puts first (a conda or Homebrew Git, for
+example). That Git must be 2.25 or later, the Git of Ubuntu 20.04; the Xcode Command Line Tools
+and every current Linux distribution ship a newer one. With an older system Git, FinishUP names the
+cause instead of failing obscurely: commands run inside a repository report
+`service_handshake_failed` with the Git requirement, `finishup state capture` reports
+`git_version_unsupported`, and a check discloses
+`check_time_change_unavailable_git_version_unsupported`. Upgrade the system Git, then retry;
+restarting the service does not help. A directory that is not a Git repository needs no Git.
+
 **Where it lands.** `uv tool install` places the `finishup` command in `~/.local/bin`. If a new
-terminal cannot find it, run `uv tool update-shell` once and open another terminal. Install into a
-directory only you can write: a group-writable prefix (Homebrew's `/opt/homebrew`, or a shared
-`venv`) is refused when FinishUP binds itself into an agent, because the agent would then launch a
-program anyone in that group can replace. The `uv tool` location is owner-only by construction.
+terminal cannot find it, run `uv tool update-shell` once and open another terminal.
+
+FinishUP refuses to run from files another account could change, because your agents would then
+launch a program someone else can replace. A file only you can write is fine. A file your *own*
+group can write is also fine when that group is yours alone: Ubuntu, Debian, Fedora and RHEL give
+each account a private group of the same name and a umask of `0002`, so an ordinary `uv tool
+install` there works as is (on a machine whose accounts come from a directory service such as
+LDAP or SSSD, FinishUP cannot prove the group is yours alone and treats it as shared; use the
+`umask 022` below). A file writable by everyone, or by a group someone else belongs to (a
+shared `venv`, Homebrew's `/opt/homebrew`, or a `users` group), is refused. The service, the agent
+connection (MCP) and the hooks then stop with `release_runtime_group_writable` or
+`release_runtime_world_writable`, and `finishup service run` in a terminal prints the exact repair
+for your installation, of the form
+
+```bash
+chmod -R go-w ~/.local/share/uv/tools/finishup ~/.local/share/uv/python/cpython-3.14.6-<platform>
+```
+
+To keep a later reinstall private from the start, run `umask 022` in that shell before
+`uv tool install`.
 
 `uvx --python 3.14 finishup` works for a one-off run, but do not connect an agent from it: a one-off
 run lives in `uv`'s cache, and connecting an agent binds the agent to that exact launcher. If you
@@ -145,7 +171,7 @@ every command except `finishup version`, `--version`, and `--help` then refuses 
    ```text
    curl -LsSf https://astral.sh/uv/install.sh | sh
    source "$HOME/.local/bin/env"
-   uv tool install --managed-python --python 3.14.6 finishup
+   uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
    finishup
    ```
 

@@ -34,6 +34,7 @@ from finishup.kernel.receipt_prediction import (
 )
 
 __all__ = [
+    "ACCEPTANCE_RISK_RULE",
     "MAX_RECHECK_SUBJECTS",
     "ClosureVerdict",
     "Recheck",
@@ -42,6 +43,8 @@ __all__ = [
 ]
 
 MAX_RECHECK_SUBJECTS: Final = 8
+# tb4n5 (#1050): the rule token of an acceptance re-read limited to the ledger-flagged obligations.
+ACCEPTANCE_RISK_RULE: Final = "resolved_obligations_acceptance_risk"
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,8 +71,10 @@ def rechecks_from_closures(
 ) -> tuple[Recheck, ...]:
     """The stateless once-per-frontier re-read candidates (RC-8); delivery memory stays in the gate.
 
-    * ``acceptance`` (A-12): at least one obligation is resolved; the key names the resolved set,
-      so a changed set asks again and an unchanged one does not.
+    * ``acceptance`` (A-12): at least one resolved obligation the ledger flags as risky to call
+      met (``facts.acceptance_risk_obligation_ids``, tb4n5 #1050); the key names that set, so a
+      changed set asks again and an unchanged one does not. A fact set without the risk list (a
+      hand-built one that predates the rule) names every resolved obligation, as before.
     * ``acknowledgement``: an obligation acknowledged as not done that is not disclosed as
       verifiable only outside this environment. ``since_frontier`` is when it was acknowledged,
       so an acknowledgement recorded after an acceptance re-read was delivered is not asked again.
@@ -79,17 +84,26 @@ def rechecks_from_closures(
 
     rows = tuple(obligations)
     out: list[Recheck] = []
-    resolved = sorted(
-        (str(item.obligation_id) for item in rows if item.basis == "resolved"), key=str.encode
-    )
+    risky_ids = None if facts is None else facts.acceptance_risk_obligation_ids
+    risky = None if risky_ids is None else frozenset(risky_ids)
+    asked = [
+        item
+        for item in rows
+        if item.basis == "resolved" and (risky is None or item.obligation_id in risky)
+    ]
+    resolved = sorted((str(item.obligation_id) for item in asked), key=str.encode)
     if resolved:
-        newest = max(item.since_frontier or 0 for item in rows if item.basis == "resolved")
+        newest = max(item.since_frontier or 0 for item in asked)
         out.append(
             Recheck(
                 "acceptance",
                 f"accept:{_digest8(resolved)}",
                 tuple(resolved[:MAX_RECHECK_SUBJECTS]),
-                "resolved_obligations_acceptance_reread",
+                (
+                    "resolved_obligations_acceptance_reread"
+                    if risky is None
+                    else ACCEPTANCE_RISK_RULE
+                ),
                 newest,
             )
         )

@@ -75,6 +75,7 @@ from finishup.kernel.task_facts import (
     cooperative_event_ids_from_coverage,
     non_counting_edits_exempt,
     observed_planned_commands,
+    superseded_unnamed_outputs,
 )
 from finishup.protocol.policy_packs import WORK_INTEGRITY_POLICY_ID, WORK_INTEGRITY_POLICY_VERSION
 
@@ -310,7 +311,13 @@ def _requested_item_findings(
     # The case's task-fact markers carry the confirmation rule (it needs the publish batches).
     blocked = confirmed_blocked_obligation_ids((gap.code, gap.subject_refs) for gap in case.gaps)
     matched_commands: frozenset[str] | None = None
-    for obligation_ref in sorted(_active_requested_obligations(case), key=_ascii):
+    active = _active_requested_obligations(case)
+    # tb4n5 (ADR-033 amendment): a superseded obligation whose requested output no replacement
+    # names carries that absent output still (``superseded_unnamed_outputs``); it is reported on
+    # the obligation that requested it, for its absence only.
+    dropped = frozenset(superseded_unnamed_outputs(case.projection)) & absent_outputs
+    carriers = frozenset(obligation for obligation, _index in dropped) - active
+    for obligation_ref in sorted(active | carriers, key=_ascii):
         record = case.projection.obligations[obligation_ref]
         payload = record.payload
         if (
@@ -346,13 +353,17 @@ def _requested_item_findings(
         # tb4n2 E4 (P1-7): an item the obligation only reads (``role: input``) is never "not
         # attempted", and "never attempted" waits for work on *this* obligation (or a completion
         # claim naming it), never for any action anywhere in the task.
-        unattempted = reportable and any(
-            not _item_attempted(item, attempted, matched_commands)
-            for item in payload.requested_items
-            if getattr(item, "role", None) is not RequestedItemRole.INPUT
+        unattempted = (
+            reportable
+            and obligation_ref in active
+            and any(
+                not _item_attempted(item, attempted, matched_commands)
+                for item in payload.requested_items
+                if getattr(item, "role", None) is not RequestedItemRole.INPUT
+            )
         )
         absent = reportable and any(
-            (obligation_ref, index) in absent_outputs
+            (obligation_ref, index) in (absent_outputs if obligation_ref in active else dropped)
             for index in range(len(payload.requested_items))
         )
         if not unattempted and not absent:
@@ -764,10 +775,22 @@ def _orphan_result_findings(case: DeterministicCase) -> list[DeterministicAssess
 
 
 def _unresolved_action_findings(case: DeterministicCase) -> list[DeterministicAssessment]:
+    """An action with no linked result that later unrelated work left behind.
+
+    Later work is an action recorded after it with a disjoint subject key. A sibling action the
+    same ``publish_work`` batch recorded is never later work (tb4n5 follow-up, owner decision
+    2026-10-13): 8 of 15 tb4n5 findings fired only on such a sibling, at the first check after
+    the batch. Its result is still owed: the batch's own publish result names the unpaired action,
+    and the next batch with unrelated work raises the finding.
+    """
+
     linked_actions = {
         record.payload.action_id
         for record in case.projection.results.values()
         if record.payload is not None
+    }
+    batch_of = {
+        member: index for index, group in enumerate(case.action_batches) for member in group
     }
     actions = tuple(
         sorted(
@@ -789,11 +812,13 @@ def _unresolved_action_findings(case: DeterministicCase) -> list[DeterministicAs
             continue
         # Reuse the later action's tuple instead of rebuilding its set for every pair.
         key = (subjects[0], frozenset(subjects[1]))
+        batch = batch_of.get(record.source_event_id)
         later = tuple(
             later_id
             for later_id, later_record in actions
             if later_record.source_frontier > record.source_frontier
             and later_record.payload is not None
+            and (batch is None or batch_of.get(later_record.source_event_id) != batch)
             and _keys_are_disjoint(
                 key,
                 _action_subject_key(

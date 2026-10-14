@@ -242,6 +242,18 @@ _DIRECTIVES: Final = (
         guidance_uri=_PUBLICATION_RECOVERY,
         nudge="A frontier conflict means the ledger moved, not that your content was wrong.",
     ),
+    # tb4n5 (#1048): a batch that sent no frontier is not a conflict. Every write already returned
+    # one, and the first plan uses the frontier start returned, so no status read is needed.
+    RecoveryDirective(
+        token="frontier_held_required",
+        directive=(
+            "This batch sent no expected_frontier, so nothing was written. Send the frontier you "
+            "hold: the one start returned for a first plan, else your last accepted write's "
+            "result_frontier. Retry with this same request_id."
+        ),
+        guidance_uri=_PUBLICATION_RECOVERY,
+        nudge="Read status for a frontier only when you hold none.",
+    ),
     RecoveryDirective(
         token="session_rebind_required",
         directive=(
@@ -616,6 +628,19 @@ _DIRECTIVES: Final = (
         nudge="Do not move state onto a network or shared filesystem to clear this.",
     ),
     RecoveryDirective(
+        token="system_git_upgrade_required",
+        directive=(
+            "The system Git where FinishUP runs is older than 2.25, the oldest Git FinishUP supports, "
+            "so the repository was not read. Ask the owner to install Git 2.25 or later as the "
+            "system Git, then run this command again."
+        ),
+        guidance_uri=_WORKFLOW_ERRORS,
+        nudge=(
+            "FinishUP uses only the system Git; a newer Git elsewhere on PATH does not change this. "
+            "Do not restart the service for it."
+        ),
+    ),
+    RecoveryDirective(
         token="privacy_audit_review",
         directive=(
             "The request was valid; a stored privacy receipt could not be read back. Run "
@@ -746,6 +771,7 @@ _LOCAL_REASON_CONTINUATIONS: Final[Mapping[str, str]] = MappingProxyType(
         "runtime_pin_invalid": "instance_identity_repair",
         # Local storage, workspace, and service lifecycle (issues #237, #428).
         "git_config_limit_exceeded": "local_state_repair",
+        "git_version_unsupported": "system_git_upgrade_required",
         # Ambient roots under both the FinishUP and the legacy Yoetz names (ADR-048).
         "installation_root_ambiguous": "local_state_repair",
         "path_contains_symlink": "local_state_repair",
@@ -989,6 +1015,10 @@ REASON_CODE_DIRECTIVE_EXEMPTIONS: Final[frozenset[str]] = frozenset(
         # #1040: a spawned service exited during startup; `phase` names its stage and the
         # correlation_id resolves its exception class and origin.
         "service_start_failed",
+        # #1040 follow-up: a running service whose stamp names no other installation closed a
+        # hello without answering. The service recorded why; a system Git below the minimum is
+        # named through the explicit `system_git_upgrade_required` continuation as well.
+        "service_handshake_failed",
         # Closure-preparation selection reasons: the reason names the selection to correct and
         # the fixed remedy sentence in ``finishup.domain.closure.PREPARATION_REMEDIATIONS`` reaches
         # the text channel beside it (tb4n3 formal-crypto S).
@@ -1097,6 +1127,12 @@ REASON_REMEDIES: Final[Mapping[str, str]] = MappingProxyType(
             "user the correlation_id: 'finishup service diagnostics --correlation-id' with it names "
             "the failing stage and exception class. Do not run service lifecycle commands."
         ),
+        "service_handshake_failed": (
+            "The local FinishUP service closed the connection while setting it up and answered "
+            "nothing, so nothing was recorded. Its stamp does not show another installation, so "
+            "it was not replaced. It recorded why: ask the user to run 'finishup service "
+            "diagnostics' on a local terminal. Do not run service lifecycle commands for this."
+        ),
     }
 )
 
@@ -1130,7 +1166,8 @@ CLAIM_REVISION_CORRECTIONS: Final[Mapping[str, str]] = MappingProxyType(
         ),
         "replacement_must_not_dispute": "do not combine supersedes_claim_refs with disputes_refs",
         "scope_overlap_required": (
-            "overlap obligation scope with every nonempty superseded claim; an empty-scope target "
+            "overlap obligation scope with every nonempty superseded claim (a replacement a "
+            "plan_revised supersession recorded counts); an empty-scope target "
             "may be explicitly replaced with empty or populated obligation_refs"
         ),
         "supporting_refs_must_exclude_limitations": (

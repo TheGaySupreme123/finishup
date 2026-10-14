@@ -27,6 +27,7 @@ from typing import Literal, cast
 
 from finishup.adapters.integrations.launcher import valid_launcher
 from finishup.adapters.integrations.legacy_launchers import launcher_aliases, recorded_launcher
+from finishup.config.foreign_write import writable_by_others
 from finishup.config.paths import ISOLATED_ROOT_ENV, LEGACY_ISOLATED_ROOT_ENV
 from finishup.legacy_names import LAUNCHER_NAMES, LEGACY_MCP_SERVER_NAME, MCP_SERVER_NAME
 from finishup.protocol.canonical import (
@@ -108,7 +109,7 @@ def _identity(info: os.stat_result) -> tuple[int, int]:
 
 
 def _owned(info: os.stat_result) -> None:
-    if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+    if info.st_uid != os.geteuid() or writable_by_others(info):
         raise _fail("target_unsafe")
 
 

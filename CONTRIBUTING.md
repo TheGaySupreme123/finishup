@@ -89,7 +89,10 @@ version manifest and validating it against the generated version-manifest schema
 catches a stale cardinality constant locally instead of in CI. When the number of inventory entries
 changes, review and update the single `REVIEWED_RESOURCE_COUNT` tripwire in `src/finishup/version.py`
 before running it; every per-kind count and generated cardinality is derived from the manifest
-entries.
+entries. Every file beneath `schemas/`, `migrations/`, `skills/`, `guidance/`, `fixtures/`, and
+`support/` must be either an inventory entry or under a declared repository-only prefix in
+`scripts/verify_resource_manifest.py`; otherwise the check fails with `source_unpackaged` rather
+than letting a committed vector silently miss the wheel.
 
 After the package digests converge, the same command renders `.agents/plugins/finishup` and
 `.agents/skills/finishup` through the supported integration renderers, including their ownership

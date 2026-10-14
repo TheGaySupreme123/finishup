@@ -47,9 +47,27 @@ does not narrow it.
 Before the receipt, run the closing review: `check` with `final_review: true`. It judges each stated
 requirement and requested output against the task, with or without a completion claim; closure
 readiness lists `closing_review_required` until one is current after the last material change.
-Answer every AI-powered finding with `respond` and a reason; `acknowledged` on a reviewer finding
-requires one. A finding whose `requested_next_step` is `answer_question` is a question: answer it
-in the reason (`rejected` when your answer shows the concern does not apply, `acknowledged` when it
+Answer each open AI-powered finding with `respond` and a reason; `acknowledged` on a reviewer
+finding requires one, plus an `evd_` or `res_` you recorded after it in `evidence_refs` (not for a
+question or a limitation request). A finding a check resolved (`verified_resolved`) or whose
+answer is final (`next_actions: ["none"]`) takes no response. A finding whose
+`requested_next_step` is `answer_question` is a question: answer it in the reason (`rejected` when your answer shows the concern does not apply, `acknowledged` when it
 does, then act). The next check shows the reviewer your answer, and it rules on it. Limitations
 outside your control (authority, credentials, unavailable external resources) stay acceptable when
 disclosed; a limitation you could reduce is work, not support.
+
+## How to answer a finding
+
+Read the finding's row in `status view=findings` and find its case below before you call
+`respond`. A refused call records nothing and costs a turn.
+
+| The finding | Do this |
+| --- | --- |
+| `todo_state` `verified_resolved`, `rejection_accepted` or `disputed_after_rebuttal`, or `next_actions: ["none"]` | Nothing. It takes no response; one is refused with `finding_terminal`. |
+| `todo_state` `acknowledged_not_done` | Repair and run `check`, or respond `reopened` with a reason to take the answer back. |
+| A problem you can fix | Repair it, publish the result and evidence, then run `check`. Only a later qualifying check resolves it; a response never does. |
+| You repaired it, and a later check still cannot prove the repair for a FinishUP reason | Verify it yourself, record that evidence, then respond `self_verified` citing it. Before a later check this is refused (`finding_not_rechecked`), and so is a check that still sees the issue (`finding_not_proof_limited`). |
+| `requested_next_step` `answer_question` | Answer in the `reason`: `rejected` when the concern does not apply, `acknowledged` when it does, then act. |
+| `requested_next_step` `state_unresolved_limitation` | `acknowledged` with the reason when the requirement may be met but cannot be verified here; `acknowledged_not_done` only when you know it is not met. |
+| You dispute an AI-powered finding | `rejected` with the reason, then `check` with `final_review: true` so the reviewer rules. |
+| You truly will not or cannot do it | `acknowledged_not_done` with the reason. Keep the working deliverable. |

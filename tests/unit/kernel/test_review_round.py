@@ -91,3 +91,62 @@ def test_edits_re_arm_the_round_at_most_until_the_task_cap() -> None:
     assert not _stopped(
         insufficient, insufficient, insufficient, insufficient, _check("challenges_returned")
     )
+
+
+# --- tb4n5 follow-up of #1046: a finding the reviewer keeps unassessable stops the round ---------
+
+
+def _ruled(*verdicts: tuple[int, str], conclusion: str = "no_material_discrepancy") -> object:
+    from builders.policy_cases import fnd
+    from finishup.domain.findings import PriorFindingVerdictRecord
+
+    record = cast(SimpleNamespace, _check(conclusion))
+    object.__setattr__(
+        record.payload,
+        "prior_finding_verdicts",
+        tuple(PriorFindingVerdictRecord(fnd(number), verdict, ()) for number, verdict in verdicts),
+    )
+    return record
+
+
+def _exhausted(*records: object) -> frozenset[object]:
+    from finishup.kernel.review_round import unassessable_review_exhausted
+
+    return cast(
+        frozenset[object],
+        unassessable_review_exhausted(cast(tuple[LedgerRecord, ...], records)),
+    )
+
+
+def test_two_unassessable_rulings_in_a_row_on_one_finding_stop_the_round() -> None:
+    """Codex check of fix/n5-findings: an unassessable ruling stays an open round, so without this
+    a reviewer that cannot judge one answered finding was asked again at every check."""
+
+    from builders.policy_cases import fnd
+
+    one = _ruled((1, "unassessable"))
+    assert not _stopped(one)
+    assert _stopped(one, _ruled((1, "unassessable")))
+    assert _exhausted(one, _ruled((1, "unassessable"))) == {fnd(1)}
+    # Evidence or responses do not re-arm it; a skipped (not completed) check neither counts nor
+    # resets.
+    skipped = _check(None, SemanticStatus.NOT_REQUESTED)
+    assert _stopped(one, _action(ActionKind.COMMAND), skipped, _ruled((1, "unassessable")))
+    # A review that did not rule on it neither counts nor ends the run.
+    assert _stopped(one, _ruled((2, "fixed")), _ruled((1, "unassessable")))
+
+
+def test_another_ruling_or_an_edit_re_arms_and_four_in_a_row_is_the_hard_cap() -> None:
+    assert not _stopped(_ruled((1, "unassessable")), _ruled((1, "still_present")))
+    assert not _stopped(_ruled((1, "still_present")), _ruled((1, "unassessable")))
+    assert not _stopped(
+        _ruled((1, "unassessable")), _action(ActionKind.EDIT), _ruled((1, "unassessable"))
+    )
+    # Different findings never add up.
+    assert not _stopped(_ruled((1, "unassessable")), _ruled((2, "unassessable")))
+    # Edits re-arm it only until four unassessable rulings in a row on the same finding.
+    runs: list[object] = []
+    for _ in range(3):
+        runs.extend((_ruled((1, "unassessable")), _action(ActionKind.EDIT)))
+    assert not _stopped(*runs[:-1])
+    assert _stopped(*runs, _ruled((1, "unassessable")))

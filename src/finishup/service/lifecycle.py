@@ -667,11 +667,14 @@ class ServiceLifecycle:
         # Version and schema-manifest identity let a client whose hello this service will
         # reject (an upgraded installation talking to a stale process) name what it found and
         # decide whether the holder is a supersede candidate, without a compatible channel.
+        # The version is always written, outside the best-effort digest lookup: a stamp with
+        # neither identity key reads as a pre-0.2 installation that may be replaced, and a
+        # current service must never write one, even when its manifest cannot be read (#1040).
+        body["service_version"] = __version__
         with contextlib.suppress(Exception):
             from finishup.protocol.schemas import schema_manifest_digest
 
             body["schema_manifest_digest"] = schema_manifest_digest()
-            body["service_version"] = __version__
         with contextlib.suppress(OSError):
             os.ftruncate(descriptor, 0)
             os.lseek(descriptor, 0, os.SEEK_SET)
@@ -694,10 +697,15 @@ class ServiceLifecycle:
 class SingletonHolder:
     """Advisory identity of the live process stamped in the singleton lock file.
 
-    ``schema_manifest_digest`` and ``service_version`` are absent for holders stamped by
-    installations that predate the identity fields; they are never inferred. ``instance_lifecycle``
-    and ``source_ref`` name the holder's instance identity (issue #604) and are absent for the
-    everyday (permanent) install and for holders stamped before that contract.
+    ``schema_manifest_digest`` and ``service_version`` are None when the stamp lacks them or holds
+    a value that does not validate; they are never inferred. ``identity_fields_absent`` tells the
+    first case apart: neither key is in the stamp at all, which is how installations that predate
+    the identity fields (Yoetz 0.1.x stamped only ``pid`` and ``instance_id``) wrote it. A current
+    writer always writes ``service_version`` (``_stamp_singleton_holder``), so it never produces
+    that shape. A key that is present but unreadable leaves it False, so missing information is
+    never mistaken for an older installation. ``instance_lifecycle`` and ``source_ref`` name the holder's instance
+    identity (issue #604) and are absent for the everyday (permanent) install and for holders
+    stamped before that contract.
     """
 
     pid: int
@@ -706,6 +714,7 @@ class SingletonHolder:
     service_version: str | None
     instance_lifecycle: str | None = None
     source_ref: str | None = None
+    identity_fields_absent: bool = False
 
 
 def probe_singleton_holder(path: Path) -> int | None:
@@ -774,6 +783,9 @@ def probe_singleton_holder_identity(path: Path) -> SingletonHolder | None:
         version if type(version) is str and 0 < len(version) <= 128 else None,
         lifecycle if type(lifecycle) is str and lifecycle in _HOLDER_LIFECYCLES else None,
         source_ref if type(source_ref) is str and _HOLDER_SOURCE_REF.match(source_ref) else None,
+        identity_fields_absent=(
+            "schema_manifest_digest" not in stamp and "service_version" not in stamp
+        ),
     )
 
 

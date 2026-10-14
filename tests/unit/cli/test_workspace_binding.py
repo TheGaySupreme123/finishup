@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
+
+import pytest
 
 from finishup.cli.workspace_binding import canonical_workspace_locator, resolve_workspace_locator
 
@@ -270,3 +273,37 @@ def test_group_writable_workspace_is_refused(tmp_path: Path) -> None:
     workspace.chmod(0o777)
 
     assert resolve_workspace_locator(explicit=workspace, payload={}, env=_env(home)) is None
+
+
+def test_umask_0002_workspace_of_a_user_private_group_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from finishup.config import foreign_write
+
+    home = tmp_path / "home"
+    repository = tmp_path / "repo"
+    current = repository / "src"
+    previous = os.umask(0o002)
+    try:
+        current.mkdir(parents=True)
+        _git(repository)
+    finally:
+        os.umask(previous)
+    for path in (repository, repository / ".git", current):
+        path.chmod(0o775)
+    monkeypatch.setattr(foreign_write, "owner_private_group", _private_group_is(True))
+    assert resolve_workspace_locator(
+        explicit=os.fspath(current), payload={}, env=_env(home)
+    ) == os.fspath(repository)
+    foreign_write.clear_cache()
+    monkeypatch.setattr(foreign_write, "owner_private_group", _private_group_is(False))
+    assert (
+        resolve_workspace_locator(explicit=os.fspath(current), payload={}, env=_env(home)) is None
+    )
+
+
+def _private_group_is(value: bool) -> Callable[[int, int], bool]:
+    def answer(_uid: int, _gid: int) -> bool:
+        return value
+
+    return answer

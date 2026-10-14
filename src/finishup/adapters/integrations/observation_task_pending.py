@@ -17,7 +17,9 @@ from finishup.adapters.integrations.codex_lifecycle import load_mapping
 from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     ObservationOutboxRow,
+    PendingRolloutItem,
 )
+from finishup.domain.observation import ObservationSource
 
 __all__ = [
     "session_pending_row_identities",
@@ -78,21 +80,54 @@ def task_pending_outbox_count(
     )
 
 
+def _stream_input_identity(source_identity: str) -> str:
+    """One rollout input's wait identity, the same while it is held and once it is an outbox row."""
+
+    return f"stream-input:{source_identity}"
+
+
 def session_pending_row_identities(
     store: LocalObservationStore,
     *,
     yoetz_session_id: str,
     _state: Path | None = None,
+    now: float | None = None,
 ) -> frozenset[str]:
-    """Return the opaque identities of every pending outbox row mapped to one FinishUP session.
+    """Return the opaque identities of every pending row mapped to one FinishUP session.
 
     Reads every workspace that still holds local delivery work; the identities are digests
     of the structural row, never its content, and are compared only inside the service.
+
+    Rollout tool items still held for their hook post (#910) count too (tb4n5): the wait
+    releases each one read long enough ago (``release_held_rollout_items_for_check``, delivered
+    with ``unpaired_event``) so it lands before the check, and counts a younger one as still
+    pending, under an identity that stays the same once it is released into the outbox.
     """
 
+    from finishup.adapters.integrations.codex_session_stream import (
+        release_held_rollout_items_for_check,
+    )
     from finishup.adapters.integrations.observation_admission import build_routine_read_summary
 
     identities: set[str] = set()
+    same_task: dict[str, bool] = {}
+
+    def task_item(item: PendingRolloutItem) -> bool:
+        host_session = item.codex_session_id
+        if host_session not in same_task:
+            mapping = load_mapping(host_session, _state=_state)
+            same_task[host_session] = (
+                mapping is not None and mapping.yoetz_session_id == yoetz_session_id
+            )
+        return same_task[host_session]
+
+    for workspace in store.held_rollout_workspaces():
+        identities.update(
+            _stream_input_identity(source_identity)
+            for source_identity in release_held_rollout_items_for_check(
+                store, workspace, task_item, now=now
+            )
+        )
     for workspace in store.pending_workspaces():
         # Inputs still held in the admission buffer (routine reads and pending attempts, held
         # up to a few seconds for summarization) are not outbox rows yet. Flush this task's
@@ -113,5 +148,9 @@ def session_pending_row_identities(
             yoetz_session_id=yoetz_session_id,
             _state=_state,
         ):
-            identities.add(row.row_identity)
+            identities.add(
+                _stream_input_identity(row.envelope.source_identity)
+                if row.envelope.source is ObservationSource.CODEX_SESSION_STREAM
+                else row.row_identity
+            )
     return frozenset(identities)

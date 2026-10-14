@@ -282,9 +282,10 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
     (StatusLineageChildModel, frozenset({"self_verified_finding_count"})),
     (ProjectTextRefModel, frozenset({"envelope_digest"})),
     (PublishWorkAcceptedEventModel, frozenset({"summary"})),
-    # #985 publish notices and blocker confirmation, absent when nothing applies.
-    (PublishWorkSuccessModel, frozenset({"blocker_notices"})),
-    (PublishWorkDryRunModel, frozenset({"blocker_notices"})),
+    # #985 publish notices and blocker confirmation, absent when nothing applies; tb4n5 action
+    # notices, absent when every action the batch recorded has a result naming it.
+    (PublishWorkSuccessModel, frozenset({"blocker_notices", "action_notices"})),
+    (PublishWorkDryRunModel, frozenset({"blocker_notices", "action_notices"})),
     (StatusBlockedObligationModel, frozenset({"confirmation", "confirmation_event_id"})),
     (StatusCheckCauseModel, frozenset({"tool"})),
     (PublicErrorModel, frozenset({"safe_details"})),
@@ -303,6 +304,7 @@ _RESULT_OPTIONAL_NON_NULL: tuple[tuple[type[BaseModel], frozenset[str]], ...] = 
                 "page_count",
                 "complete",
                 "continuation",
+                "sections",
             }
         ),
     ),
@@ -898,6 +900,8 @@ async def test_publish_accepted_events_omit_unset_summary() -> None:
     dry = await app.publish_work(PublishWorkRequest.model_validate(dry_body))
     dumped_dry = cast(object, getattr(dry, "model_dump")(mode="json", exclude_unset=True))
     assert "blocker_notices" not in cast(Mapping[str, JsonValue], dumped_dry)
+    # tb4n5: a batch that records no action carries no action_notices either.
+    assert "action_notices" not in cast(Mapping[str, JsonValue], dumped_dry)
     internal = await app.publish_work(PublishWorkRequest.model_validate(body))
     assert type(internal) is PublishWorkInternalResult
     projected = await project_case(
@@ -912,6 +916,7 @@ async def test_publish_accepted_events_omit_unset_summary() -> None:
         assert "summary" not in event
     # #985: a batch without finishup-blocker lines carries no blocker_notices at all.
     assert "blocker_notices" not in projected
+    assert "action_notices" not in projected
 
 
 def test_blocked_obligation_omits_an_unset_confirmation() -> None:
@@ -1888,6 +1893,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         )
     for model in ("PublishWorkSuccessModel", "PublishWorkDryRunModel"):
         covered[model, "blocker_notices"] = "test_publish_accepted_events_omit_unset_summary"
+        covered[model, "action_notices"] = "test_publish_accepted_events_omit_unset_summary"
     for field in ("confirmation", "confirmation_event_id"):
         covered["StatusBlockedObligationModel", field] = (
             "test_blocked_obligation_omits_an_unset_confirmation"
@@ -2027,6 +2033,7 @@ def test_every_result_optional_non_null_field_has_an_unset_projection_case() -> 
         "page_count",
         "complete",
         "continuation",
+        "sections",
     ):
         covered["ReadGuidanceSuccessModel", field] = (
             "test_legacy_guidance_result_omits_unset_paging_metadata"

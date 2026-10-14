@@ -116,7 +116,9 @@ agent must not be able to stop silently with known work left.
    change (tb4n1: `/app/src` with four new files was reported unchanged and `/app` outside; #987).
    A file that does not exist, and is not a tracked file the change deletes, raises
    `requested_item_never_attempted` with the fact `requested_output_absent`, whatever was
-   published: naming a file in `attempted_items` does not create it. It is raised only once a
+   published: naming a file in `attempted_items` does not create it (a file the request asks for
+   only under a condition is runtime behavior, corrected in the plan, not the deliverable: see the
+   tb4n5 amendment on conditional outputs). It is raised only once a
    completion claim covers that obligation (it names it, or names no obligation), or acting has
    started and one of the agent's own `edit`, `command` or `other` actions is attributed to it
    (an action with no `obligation_refs` is global; hook-observed actions name no obligation and
@@ -198,7 +200,8 @@ agent must not be able to stop silently with known work left.
    `test`, `lint`, `typecheck` or `build`, or any published action. Investigation commands
    (exploration, version control, and the unclassified `other`/`compound` shells) are not acting. Its repair text no longer
    offers "or revise its obligation" as the default exit; an absent output's text asks for a
-   best-effort artifact and names the blocker form. These rule changes move the work-integrity pack
+   best-effort artifact and names the blocker form, and (tb4n5 amendment) names the one plan
+   correction for a conditional output. These rule changes move the work-integrity pack
    to `0.3.0`; earlier versions stay decodable and form one lineage.
 4. **Blockers are explicit and closed.** A readable, unsuperseded `decision_recorded` whose
    statement holds the exact line `finishup-blocker:<kind>`, for a kind in `authority`, `consent`,
@@ -838,3 +841,190 @@ requested, so the code is no longer recorded for it at all:
    the recorded coverage, so none lists the code for such a check. The check's own result still
    states `semantic_status: not_requested` and the receipt conclusion names deterministic coverage
    only (`no_unresolved_deterministic_findings`). Same on every host.
+
+## Amendment (2026-10-13, tb4n5, issue #1050): the acceptance re-read asks only what the ledger flags
+
+Owner decision of 2026-10-13 (recorded in the tb4n5 follow-ups): re-read only the resolved
+obligations the ledger flags as risky, and delete the word-coverage check. It supersedes item 2's
+rule of the tb4n4 amendment above; the downgrade, verification-limit and once-only confirmation
+paths are kept.
+
+tb4n5 measured the tb4n4 rule: the re-read fired in 18 of 18 attempts and
+`closure_gate_acceptance_covered` was never recorded. Replaying `uncovered_acceptance` on the real
+pre-gate final messages covered 1 of 110 resolved obligations: real final messages (345-742
+characters) summarize results in other words and never cite an obligation id, and real criteria
+are long (a median of 14 terms), so a message reached 0-45% of a criterion's terms against the 2/3
+threshold. No lexical threshold works: at one third of the terms no attempt is fully covered. The
+rule's fixtures were short criteria and near-verbatim restatements.
+
+1. **The service flags; the gate names.** `kernel.acceptance_risk` derives, per request from the
+   projection and its record prefix, which resolved obligations (closure basis `resolved`) the
+   ledger flags, with three closed reasons: `requested_item_never_attempted` (a non-input requested
+   item with no attempt in any spelling and, for a command, no matching hook-observed run: the
+   work-integrity attempt test), `evidence_not_linked_to_declared_items` (it declares deliverables
+   or commands and no cited resolution evidence traces through a recorded link to an action naming
+   one: the inspection's `evidence_off_declared_items` or `evidence_unattributed`, now computed by
+   the shared `kernel.evidence_alignment`), and `evidence_self_asserted_only` (no cited reference
+   is a hook-observed run or its result, observation-captured evidence, an approved check or an
+   import report, and no requested command item has a matching observed attempt).
+   `ClosureReadinessFacts.acceptance_risk_obligation_ids` carries the set; the `acceptance` recheck
+   names only it (rule `resolved_obligations_acceptance_risk`, key `accept:<h8>` over that set, so
+   a changed flagged set asks again) and is absent when nothing is flagged. An unreadable resolved
+   obligation is flagged with every reason (fail closed). A fact set without the list (hand-built,
+   older) keeps every resolved obligation under the old rule token.
+2. **The word-coverage check is deleted.** `uncovered_acceptance`, its token and stopword rules and
+   the bounded `status view=obligations` read at Stop are removed: the gate reads compact status
+   once.
+3. **An explicit per-obligation attestation answers it.** A final message line
+   `finishup-acceptance:<obligation id>:met` (also inline or in a bullet; `:not_met` or any other
+   outcome is not one) for an announced obligation answers the re-read for it. The attestation is
+   bound to the set this Stop's status read announces: an id outside it is ignored, and it counts
+   only when the announced subjects hash to the announced key (at most eight; a longer or older
+   list is asked in full). The gate names only the unattested obligations; a message attesting all
+   of them is not asked and records `closure_gate_acceptance_covered`. The re-read text, and the
+   status directive's re-check note, name the line. An attestation is the agent's statement: it
+   records nothing, never changes a closure class, a finding, a receipt conclusion or coverage, and
+   never suppresses an independent finding or another gate item; a not-met outcome is answered by
+   the downgrade path (republish `acknowledged_not_done`) or the verification-limit decision,
+   unchanged.
+4. **Unchanged.** Keys, memory and once-per-session asking; the exclusions (never beside open
+   obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared
+   dependency); the once-only confirmation sentence where the re-read rides alone; the
+   acknowledgement-after-invite rule. Hosts: the service side is host-independent; Codex and Claude
+   Code pass the final message (attestations read), Cursor's `stop` carries none (every announced
+   obligation asked; issue #1050 owns the `afterAgentResponse` follow-up). Each runbook records it.
+
+Measured on tb4n5 (an approximate replay of the agent-published records before each first gate,
+with observed results and observation-captured evidence from the exports; the kernel's keyed
+command matcher was approximated by the exported command-attempt relation): 12 of 18 attempts and
+40 of 111 resolved obligations would still be asked (21 flagged `evidence_self_asserted_only`, 21
+`evidence_not_linked_to_declared_items`), against 18 of 18 and 110 of 110. Live-database S (every
+resolution self-asserted) is still asked. **Known gap:** formal-crypto S's honest downgrade
+followed a re-read of an obligation whose resolution cited an observed run of the requested
+command with the requested output attempted; the ledger flags nothing there (the shortfall was in
+the output, not in the record), so under this rule that downgrade relies on the closing review and
+the agent's own final answer, not on the gate.
+
+Verification: `tests/unit/kernel/test_tb4n5_acceptance_risk.py` (a clean resolution and one per
+flag in one ledger: the clean one no longer triggers, each flagged one does, the key names exactly
+the flagged set, a clean-only ledger announces none); `tests/unit/cli/test_closure_gate.py`
+(realistic tb4n5 summaries, attestation parsing, partial and stale attestations, a `:not_met`
+answer, the tb4n2 false-completion message, an incomplete list, an older service, absent host
+message per host, no second status read).
+
+Check follow-up (2026-10-13, Codex check D3): `acceptance_risk` runs on every status read, inside
+the Stop gate's 4,000 ms status deadline. The first version resolved every cited evidence id
+against the whole result inventory per obligation (200 resolved obligations, eight evidence refs
+each, 20,003 results: about 4.5 s, 9.1 s on a loaded host). The inventories are now indexed once
+per read (`evidence_alignment.results_by_evidence`, one pass over actions for attempted items, the
+command-attempt fallback only for an obligation that requests a command), and an identical call
+(same projection, prefix, resolved set and command-identity key generation) is answered from a
+one-entry memo; the same shape now takes about 0.02 s. No risk decision changed. Round 2 (check
+D3-R2): each cited reference's source actions are resolved once per read and deduplicated by
+action identity, so 200 obligations sharing eight items, one of them behind 1,000 linked actions
+(21,003 results), take about 0.07 s instead of about 9.3 s.
+`tests/unit/kernel/test_tb4n5_acceptance_risk_cost.py` holds it under one second and counts one
+index build per read.
+
+## Amendment (tb4n5, react-lead-form): a conditional output is corrected in the plan, never by a placeholder
+
+tb4n5/tb4n4 react-lead-form, 5 of 5 FinishUP attempts: the task asked for `incomplete_leads.json`
+only when a contactable lead is incomplete and for `rejected_ledgers.json` only when an existing
+ledger is malformed. Each agent declared both as unconditional `file` outputs; the final input was a
+complete, accepted lead, so neither existed and `requested_output_absent` (decision 2) blocked the
+receipt. The finding offered only "write each requested file", a reasoned `rejected` never rules on
+a deterministic finding, and `self_verified` was refused, so each agent invented an exit: a false
+`acknowledged_not_done` for work it had done (n4 D), an undocumented plan reclassification (n4 S
+twice, n5 S), or deliverable code that wrote empty ledgers on every accepted submit and tests
+rewritten from "absent" to "empty" (n5 D). Owner decision (2026-10-13): document the honest exit; no
+new protocol role.
+
+1. **What distinguishes them.** A `file` item with `role: output` is a promise to deliver that file
+   now. A file the request asks for only under a runtime condition is behavior of the deliverable,
+   not a delivered file: it is modelled as a `change` item whose value names the condition and the
+   path, beside `file` items (`role: output`) for the source files that implement it. The check
+   probes only `file` and `directory` items, so a `change` item is never reported absent.
+2. **The documented correction.** When a conditional output was declared as a `file` and the final
+   state does not meet the condition, the agent publishes a new obligation with the same acceptance
+   criteria modelled as in 1, supersedes the old one with `plan_revised` (`change: superseded`, a
+   reason, `replacement_obligation_ids`), records the work with each new item value in
+   `attempted_items`, resolves the new obligation with its evidence and replaces the completion
+   claim with one naming it. The old obligation leaves the effective plan, so the next qualifying
+   check does not return the issue and resolves the historical finding; nothing waives it
+   and no response resolves it. The `requested_output_absent` detail
+   (`render_deterministic_finding_text`), `workflow.md`, `publication-policy.md`,
+   `request-templates.md` and the operating card name this route, and every one forbids writing an
+   empty or placeholder file, or changing when the deliverable writes the file, to satisfy the
+   declaration. The decision-3 sentence "its repair is the deliverable itself, never a revised
+   obligation" keeps holding for every other absent output.
+3. **The claim follows the plan.** The claim-revision invariant `scope_overlap_required` now counts
+   the replacements a `plan_revised` supersession recorded (the replay-derived
+   `superseded_by_obligation_ids`, transitively) as overlap with the superseded claim's scope, so a
+   claim that named only the corrected obligations can be replaced by one naming only their
+   replacements. A replacement the plan never recorded is still refused. The same ancestry carries
+   failure disclosure (checker review): the claim scope plus every obligation a supersession
+   replaced by one in it, transitively (`claim_limitations.scope_with_supersession_ancestry`), is
+   the scope for admissible `limitation_refs` (always: a relaxation), for
+   `limitation_refs_complete` on a replacement whose overlap with a target exists only through a
+   supersession (the case this change newly admits, so no recorded ledger holds one), and for the
+   work-integrity failed-work relevance read at check time. A failure recorded on the superseded
+   obligation must therefore still be disclosed by the replacement claim, and naming it there is
+   admissible; a fresh claim over the replacement that omits it still replays as before and is
+   reported by the check. Recorded ledgers replay unchanged.
+4. **What does not change, and what a correction cannot drop.** A file the request asks for
+   unconditionally stays required: the replacement obligation that still declares it (or any other
+   obligation that does) raises the same `requested_output_absent`. A requested `file` or
+   `directory` item (role `output` or none) of an obligation a `plan_revised` superseded with
+   replacements stays requested on the superseded obligation
+   (`task_facts.superseded_unnamed_outputs`) unless a replacement, transitively, re-declares it as
+   a `file`/`directory` item that is not `role: input`, or releases it in the documented
+   correction form: a `change` item that spells its declared path (the same path, a longer
+   absolute spelling, or for an absolute declaration its tail with a directory; a bare file name
+   in another directory does not count), names none of the superseded obligation's other requested
+   outputs, states a condition (`when`, `if`, `unless`) and never calls it unconditional. Anything
+   else is ambiguous and keeps it required (checker R2: a basename mentioned in incidental prose,
+   or an output re-declared as an input, released a missing unconditional file). The check probes
+   a kept output and reports it absent exactly as before, so dropping a missing deliverable from
+   the correction does not launder it. A
+   supersession without replacements, and a waiver, are explicit plan decisions outside this rule.
+   `declared_output_removed`, `declared_output_emptied` and the closure gate are unchanged; the gate
+   still says "Do not reshape your work for FinishUP". No event schema, wire field or pack version
+   changes.
+
+Tests: `tests/integration/closure/test_conditional_output_shape.py` (the react shape: two
+conditional ledgers absent on an accepted lead resolve after the correction with no file written;
+an unconditional missing output still blocks; with a real repository, the production workspace
+probe and the real final receipt, the honest correction closes and a correction that drops an
+unconditional missing output reads `unresolved_findings_remain`, as does one whose change item
+mentions it in incidental prose or that re-declares it as an input) and
+`tests/unit/kernel/test_claim_correction_replay.py` (the supersession carries claim scope only to
+recorded replacements, and a failure or partial result on a superseded obligation, one or two
+supersessions back, must still be disclosed and may be).
+
+## Amendment (2026-10-14, issue #1050 follow-up): Cursor is never told to use the acceptance line
+
+The 2026-10-13 amendment left Cursor asking every flagged set, but its text still told the agent
+to end the final answer with `finishup-acceptance:<obligation id>:met`, a line Cursor's `stop`
+payload (status and `loop_count` only) can never carry to the gate.
+
+1. **`afterAgentResponse` is not registered.** Cursor's hook documentation gives it the response
+   text, but Cursor acknowledges that its CLI and Cloud Agents do not dispatch it, and it
+   documents no order between it and `stop`. Registering it would make the line work only on some
+   Cursor surfaces, and would change the advertised Cursor event set (ADR-010) and add a
+   cross-process memory of the attested ids. Revisit when Cursor dispatches it everywhere with a
+   documented order before `stop`.
+2. **Host-aware text, no new record.** The acceptance re-read sentence and the re-check note take
+   the host. On `cursor` they say that Cursor passes FinishUP no final answer, that a met criterion
+   stays resolved and is confirmed in the final answer, and that the re-read is not asked again for
+   the set; that is the existing per-session, per-key memory, so the continued Stop passes and a
+   later Stop with the same flagged set is not asked. The MCP bridge passes its host profile to
+   `closure_prepare` and to the status and `closure_prepare` summary text (so Cursor's summary
+   fallback and a generic bridge follow it too); the CLI and TUI, which do not know the agent's host, name Codex and Claude
+   Code as the hosts that read the line. Codex and Claude Code text is unchanged. No protocol,
+   schema or ledger record changes: a ledger-recorded acceptance answer would need a new event or
+   disposition and is not part of this amendment.
+
+Locked by `tests/unit/cli/test_closure_gate.py` (the Cursor Stop flow and the host-aware text),
+`tests/unit/kernel/test_tb4n5_acceptance_risk.py` (the note per host),
+`tests/integration/application/test_closure_composer.py` (the `closure_prepare` host) and
+`tests/unit/mcp/test_tb4n3_closure_verdict_text.py` (the MCP summaries per host).

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from finishup.application.review_quotes import REDACTION_MARKER, prove_quote
+from finishup.application.review_quotes import CREDENTIAL_PLACEHOLDER, REDACTION_MARKER, prove_quote
 
 
 def test_exact_substring_is_returned_unchanged() -> None:
@@ -52,6 +52,20 @@ def test_placeholder_only_quote_proves_nothing() -> None:
     assert prove_quote("[REDACTED]", (f"x {REDACTION_MARKER} y",)) is None
     assert prove_quote(" [REDACTED]  ", (f"x  {REDACTION_MARKER}   y",)) is None
     assert prove_quote("<redacted>", (f"x {REDACTION_MARKER} y",)) is None
+    assert prove_quote(CREDENTIAL_PLACEHOLDER, (f"x {CREDENTIAL_PLACEHOLDER} y",)) is None
+
+
+@pytest.mark.parametrize(
+    "placeholder", [CREDENTIAL_PLACEHOLDER, "[REDACTED]", "[withheld]", "[redacted]"]
+)
+def test_a_quote_across_the_possible_credential_placeholder_is_proven(placeholder: str) -> None:
+    """tb4n5: the check-time change now marks a look-alike value with the placeholder, and a
+    reviewer may quote across it in either spelling; it still has to line up with a marker."""
+
+    sent = f"URL.create(\n    username=config.USER,password={CREDENTIAL_PLACEHOLDER},host=h)"
+    quote = f"URL.create( username=config.USER,password={placeholder},host=h)"
+    assert prove_quote(quote, (sent,)) == sent
+    assert prove_quote(quote, ("URL.create( username=config.USER,password=x,host=h)",)) is None
 
 
 @pytest.mark.parametrize(

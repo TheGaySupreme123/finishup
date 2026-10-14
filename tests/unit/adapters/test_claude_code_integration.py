@@ -1318,3 +1318,34 @@ def test_refused_presence_surfaces_as_claude_error_before_any_mutation(tmp_path:
     # Preview and status only list; no marketplace, install, or enable command may run.
     assert all(call[:2] == ("plugin", "list") for call in commands.calls)
     assert not Path(target.marketplace_root).exists()
+
+
+@pytest.mark.parametrize("private", [True, False], ids=["user-private-group", "shared-group"])
+def test_umask_0002_claude_home_is_a_safe_target_only_for_a_user_private_group(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, private: bool
+) -> None:
+    """Claude Code under umask 0002 makes its config dir 775; setup must still connect."""
+
+    from finishup.config import foreign_write
+
+    def answer(_uid: int, _gid: int) -> bool:
+        return private
+
+    monkeypatch.setattr(foreign_write, "owner_private_group", answer)
+    target = _target(tmp_path)
+    for raw in (target.project_root, target.claude_config_root):
+        Path(raw).chmod(0o775)
+    Path(target.executable).chmod(0o775)
+    artifact = render_claude_code_plugin()
+    commands = _ClaudeFixture(artifact)
+    if private:
+        preview = preview_claude_code_plugin(
+            _REQUEST, target, ClaudeCodePluginAction.INSTALL, artifact, commands=commands
+        )
+        assert preview.preview_digest
+        return
+    with pytest.raises(ClaudeCodeIntegrationError) as refused:
+        preview_claude_code_plugin(
+            _REQUEST, target, ClaudeCodePluginAction.INSTALL, artifact, commands=commands
+        )
+    assert refused.value.reason is PluginArtifactReason.TARGET_UNSAFE

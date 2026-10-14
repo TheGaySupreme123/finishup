@@ -373,6 +373,35 @@ def spawned_startup_failure_line(error: BaseException) -> str | None:
     return None if startup is None else _spawned_startup_failure_line(startup)
 
 
+def _handshake_failure_line(error: ControlError, phase: str) -> str:
+    """The ``control_failure`` line for a hello a running service closed (#1040 follow-up)."""
+
+    if phase == "handshake_git_version":
+        from finishup.cli.render import render_recovery_directive_lines
+        from finishup.protocol.recovery import directive_for
+
+        head = (
+            "service_unavailable: service_handshake_failed: the local service closed the "
+            "connection while setting it up; the system Git (the first 'git' in /bin or "
+            "/usr/bin), which it reads this repository with, is older than 2.25, the oldest Git "
+            "FinishUP supports. Install Git 2.25 or later there, then retry; restarting the service "
+            "does not change this"
+        )
+        directive = directive_for("system_git_upgrade_required")
+        lines = [_with_correlation(_with_holder_pid(head), error)]
+        if directive is not None:
+            lines.extend(render_recovery_directive_lines(directive))
+        return "\n".join(lines)
+    head = (
+        "service_unavailable: service_handshake_failed: the local service closed the "
+        "connection while setting it up and answered nothing. Its stamp does not show "
+        "another installation, so it was not replaced; run 'finishup service diagnostics' to read "
+        "the reason it recorded. Only a holder stamped without any identity (an older FinishUP) "
+        "is replaced by an explicit 'finishup service restart'"
+    )
+    return _with_correlation(_with_holder_pid(head), error)
+
+
 def control_failure(
     error: ControlError,
     *,
@@ -486,7 +515,7 @@ def control_failure(
                 payload["holder"] = holder
             stdout_writer(payload)
         return exit_code_for(code)
-    from finishup.service.client import accepted_but_unresponsive
+    from finishup.service.client import accepted_but_unresponsive, handshake_failure
 
     startup = _spawned_startup_failure(error)
     if startup is not None:
@@ -503,6 +532,84 @@ def control_failure(
                 "correlation_id": startup.correlation_id,
             }
             stdout_writer(payload)
+        return exit_code_for(code)
+    handshake = handshake_failure(error)
+    if handshake is not None:
+        # A running service whose stamp names no other installation closed this command's hello
+        # (#1040 follow-up); ``service_incompatible`` and its restart remedy would be false here.
+        stderr_writer(_handshake_failure_line(error, handshake))
+        if json_output:
+            payload = {
+                "ok": False,
+                "public_code": code.value,
+                "reason": "service_handshake_failed",
+                "phase": handshake,
+                "retryable": False,
+            }
+            if error.correlation_id is not None:
+                payload["correlation_id"] = error.correlation_id
+            holder = _holder_identity_json()
+            if holder is not None:
+                payload["holder"] = holder
+            stdout_writer(payload)
+        return exit_code_for(code)
+    if code is PublicErrorCode.SERVICE_UNAVAILABLE:
+        from finishup.cli.runtime_refusal import installed_runtime_refusal_text
+
+        refusal = installed_runtime_refusal_text()
+        if refusal is not None:
+            # No service of this installation can start: name why and the repair, not a
+            # supervisor hint that would fail the same way.
+            token, text = refusal
+            stderr_writer(text.rstrip("\n"))
+            if json_output:
+                stdout_writer(
+                    {
+                        "ok": False,
+                        "public_code": code.value,
+                        "reason": token,
+                        "retryable": False,
+                    }
+                )
+            return exit_code_for(code)
+    from finishup.service.client import start_timed_out
+
+    starting = start_timed_out(error)
+    if (
+        not starting
+        and code is PublicErrorCode.SERVICE_UNAVAILABLE
+        and not accepted_but_unresponsive(error)
+    ):
+        # Nothing accepted, yet a live process stamped the singleton: it is still starting
+        # (importing, unlocking) before it publishes the endpoint. The stamp is read without
+        # touching the lock, so this diagnosis can never delay that start.
+        starting = _singleton_holder_pid() is not None
+    if code is PublicErrorCode.SERVICE_UNAVAILABLE and starting:
+        # A live service of this installation holds the singleton but has not finished starting
+        # (a slow machine, or the first start after an install or update). "Run it under a
+        # supervisor" or a restart would only race the process already starting.
+        stderr_writer(
+            _with_holder_pid(
+                "service_unavailable: service_handshake_timeout: the local service is still "
+                "starting and did not answer in time. This is expected, not a failure: the "
+                "first start after an install or update prepares FinishUP's retained copy and "
+                "compiles it once when the installation has no reusable hash-verified bytecode "
+                "(as after a plain 'uv tool install'), and slow machines such as WSL under "
+                "nested virtualization take longer. Wait a few seconds and retry; "
+                "'finishup service status' answers once it is ready. Do not run 'finishup service run' or 'finishup service restart' for this; "
+                "if it never becomes ready, run 'finishup service diagnostics'"
+            )
+        )
+        if json_output:
+            stdout_writer(
+                {
+                    "ok": False,
+                    "public_code": code.value,
+                    "reason": "service_handshake_timeout",
+                    "phase": "handshake_timeout",
+                    "retryable": True,
+                }
+            )
         return exit_code_for(code)
     if code is PublicErrorCode.SERVICE_UNAVAILABLE and accepted_but_unresponsive(error):
         stderr_writer(

@@ -15,6 +15,7 @@ from typing import Final, Literal, Never, Protocol, cast
 from pydantic import BaseModel
 
 from finishup.adapters.control.unix_socket import LocalControlTransportError
+from finishup.adapters.repository_identity import RepositoryIdentityError
 from finishup.domain.coordination import CoordinationErrorCode
 from finishup.domain.values import JsonObject, freeze_json
 from finishup.ports.control import (
@@ -114,6 +115,8 @@ _ERROR_REASONS: Final = frozenset(
         "frame_read_timeout",
         "frame_too_large",
         "handshake_rejected",
+        # Server-only: the service failed its own side of a handshake (``HandshakeServiceFault``).
+        "handshake_service_fault",
         "manifest_mismatch",
         "method_forbidden",
         "peer_untrusted",
@@ -187,6 +190,26 @@ class ControlProtocolError(Exception):
             raise ValueError("control_protocol_reason_invalid")
         self.reason = reason
         super().__init__(reason)
+
+
+class HandshakeServiceFault(ControlProtocolError):
+    """The service failed its own side of a handshake; the peer sent nothing wrong (#1040).
+
+    Raised by ``server_handshake`` after it closed the connection, for the daemon to record. The
+    peer only sees the close, which it reads as ``handshake_rejected``; this is the one place that
+    knows why. ``refusal`` is the closed token of a typed refusal (a ``RepositoryIdentityError``
+    reason such as ``git_version_unsupported``), or None for an unexpected exception, which stays
+    reachable as ``__cause__`` so its record names the exception class and origin. Neither carries
+    a path, Git output or any other caller content.
+    """
+
+    __slots__ = ("refusal",)
+
+    refusal: str | None
+
+    def __init__(self, refusal: str | None = None) -> None:
+        super().__init__("handshake_service_fault")
+        self.refusal = refusal
 
 
 @dataclass(frozen=True, slots=True)
@@ -969,6 +992,19 @@ async def server_handshake(
     except BaseException as exc:
         if isinstance(exc, asyncio.CancelledError):
             raise
+        if isinstance(exc, Exception) and not isinstance(
+            exc, (ControlProtocolError, LocalControlTransportError)
+        ):
+            # A service-side fault (the repository-identity resolver refusing, say) closes the
+            # connection like a rejected hello: the protocol has no frame for "I failed", and a
+            # session without its repository binding must not be admitted. The typed fault
+            # carries the closed reason to the daemon, which records it (#1040: every connection
+            # after vault unlock closed on an old Git, and nothing anywhere named why).
+            fault = HandshakeServiceFault(
+                exc.reason if isinstance(exc, RepositoryIdentityError) else None
+            )
+            fault.__cause__ = exc
+            await _close_after_failure(stream, fault)
         await _close_after_failure(stream, exc)
 
 

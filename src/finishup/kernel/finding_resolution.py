@@ -258,7 +258,8 @@ _SEMANTIC_ONLY_GAPS: Final = frozenset(
 # events, completion-scope gaps, import ranges, and any code not named here) means the check could
 # not read or bound the material, and blocks both proof classes. The set is closed on purpose: a
 # new gap code blocks resolution until someone decides otherwise here. Command gaps are never
-# added to this set: the separately proved subject partition below is their only exception.
+# added to this set: the separately proved subject partition below is their only exception, and
+# the two content-capture codes a proven action/result link tolerates are a second, narrower one.
 _EVIDENCE_STRENGTH_GAPS: Final = frozenset(
     {
         "evidence_content_digest_only",
@@ -423,6 +424,58 @@ _ACTION_WITHOUT_RESULT_POLICIES: Final = frozenset(
     }
 )
 ProofStateCache = MutableMapping[tuple[int, int, str], ProjectionState | None]
+# What a proven action/result link tolerates on a local ``action_without_result`` (tb4n5 follow-up,
+# owner decision 2026-10-13: a plain ledger link resolves it under capture gaps, disclosed on the
+# receipt). That rule reads only the action and result rows and the result's ``action_id``; a
+# readable result naming the readable action at the tested frontier decides the issue absent from
+# the ledger alone, and clipped or uncaptured content is never its input (tb4n5 react S stayed open
+# under ``truncated_payload`` and ``content_capture_unavailable`` after the agent linked the result
+# and had to answer ``self_verified``). Only those content-capture codes: the requested-command gaps
+# keep #682's partition below (the owner may widen this later), and redacted or unavailable ledger
+# rows keep blocking because they are the rule's input.
+_ACTION_LINK_TOLERATED_GAPS: Final = frozenset({"truncated_payload", "content_capture_unavailable"})
+
+
+def _action_link_candidate(finding: Finding, check: CheckRecordedPayload) -> bool:
+    """Whether a proven link could change this local finding's proof (cheap guards first)."""
+
+    return (
+        finding.origin is FindingOrigin.DETERMINISTIC
+        and finding.kind is FindingKind.ACTION_WITHOUT_RESULT
+        and (finding.policy_id, finding.policy_version) in _ACTION_WITHOUT_RESULT_POLICIES
+        and len(finding.subject_refs) == 1
+        and bool(set(check.coverage.known_gaps) & _ACTION_LINK_TOLERATED_GAPS)
+    )
+
+
+def _action_result_link_proven(
+    finding: Finding, check: CheckRecordedPayload, state: ProjectionState | None
+) -> bool:
+    """Whether the tested state holds a readable result naming this finding's readable action.
+
+    The subject is the event that recorded the action; the link is a result whose payload
+    ``action_id`` is that action's id, both recorded no later than the frontier the check tested.
+    Anything unreadable, or a state older than that frontier, proves nothing.
+    """
+
+    if state is None or not _action_link_candidate(finding, check):
+        return False
+    tested = check.subject_frontier.sequence
+    if state.frontier < tested:
+        return False
+    rows = [row for row in state.actions.values() if row.source_event_id == finding.subject_refs[0]]
+    if len(rows) != 1:
+        return False
+    action = rows[0]
+    if action.payload is None or action.redacted or action.source_frontier > tested:
+        return False
+    return any(
+        row.payload is not None
+        and not row.redacted
+        and row.source_frontier <= tested
+        and row.payload.action_id == action.payload.action_id
+        for row in state.results.values()
+    )
 
 
 def _command_gap_partition(
@@ -1313,6 +1366,14 @@ def resolution_blockers(
                 COMPLETION_SCOPE_UNDECLARED_GAP
             }
             freshness_gaps = freshness_gaps - {COMPLETION_SCOPE_UNDECLARED_GAP}
+        if gaps & _ACTION_LINK_TOLERATED_GAPS and _action_result_link_proven(
+            finding, check, proof_state
+        ):
+            # The agent linked a result to the action: the ledger relation decides the issue
+            # absent, and the content-capture limits stay disclosed on the receipt. Command gaps
+            # are still decided by the partition below.
+            tolerated = tolerated | _ACTION_LINK_TOLERATED_GAPS
+            freshness_gaps = freshness_gaps - _ACTION_LINK_TOLERATED_GAPS
         if gaps & _COMMAND_GAPS and (
             finding.kind in _COMMAND_INDEPENDENT_KINDS
             or _requested_items_without_commands(finding, proof_state)
@@ -1595,17 +1656,25 @@ def _finding_resolution_explanation(
             f"check {finding_record.rejection_accepted_by_check_event_id} withdrew it. The item "
             "is final and no longer blocks the receipt, which still lists it."
         )
-    if (
-        finding_record.disputed_after_rebuttal_by_check_event_id is not None
-        and disposition is ResponseDisposition.REJECTED
-        and not finding_is_resolved(state, finding_id)
+    if finding_record.disputed_after_rebuttal_by_check_event_id is not None and (
+        not finding_is_resolved(state, finding_id)
     ):
+        # tb4n3 RC-7 (#1030): a reasoned ``acknowledged`` is a standing position too, so the latch
+        # holds whatever the latest disposition is. tb4n5 (kv ``fnd_c96c2b9f``): read only for a
+        # ``rejected`` answer, an acknowledged item fell through to "repair it, then check" and
+        # ``self_verified``, which ``respond`` refuses on a final item.
+        standing = finding_record.standing_position
+        position = (
+            "rejected it"
+            if standing is None or standing.kind == ResponseDisposition.REJECTED.value
+            else "answered it"
+        )
         return (
-            "Disputed after rebuttal: the agent rejected this AI-powered finding with a reason "
-            f"and check {finding_record.disputed_after_rebuttal_by_check_event_id} kept it open "
-            "without citing anything recorded after that rejection. The item is final, is not "
-            "agent work and does not block; the receipt lists it as a standing disagreement and "
-            "cannot read clean."
+            f"Disputed after rebuttal: the agent {position} with a reason and check "
+            f"{finding_record.disputed_after_rebuttal_by_check_event_id} kept it open without "
+            "citing anything recorded after that answer. The item is final, is not agent work, "
+            "takes no further response and does not block; the receipt lists it as a standing "
+            "disagreement and cannot read clean."
         )
     superseded = _superseded_coordination_context(state, finding_record.payload)
     if finding_is_resolved(state, finding_id):
@@ -1789,6 +1858,7 @@ def _resolution_attempt(
     if (
         finding.origin is FindingOrigin.SEMANTIC_MODEL_DERIVED
         or _command_partition_candidate(finding, finding_record.source_frontier, check, keys)
+        or _action_link_candidate(finding, check)
         or (
             finding.kind is FindingKind.REQUESTED_ITEM_NEVER_ATTEMPTED
             and bool(set(check.coverage.known_gaps) & _COMMAND_GAPS)

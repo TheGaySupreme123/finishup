@@ -193,7 +193,7 @@ async def test_installed_server_advertises_the_frozen_mcp_inventory(tmp_path: Pa
     descriptor_set_digest = TOOL_DESCRIPTOR_SET_DIGEST["policy"]
     assert tuple(item.name for item in descriptors) == _EXPECTED
     for tool, descriptor in zip(listed.tools, descriptors, strict=True):
-        assert tool.inputSchema == _plain_json(descriptor.input_schema)
+        assert tool.inputSchema == _plain_json(descriptor.advertised_input_schema)
         assert tool.outputSchema == _plain_json(descriptor.output_schema)
     context = runtime_capability_context(
         fixture_digest=bytes_digest(descriptor_set_digest.encode("ascii")),

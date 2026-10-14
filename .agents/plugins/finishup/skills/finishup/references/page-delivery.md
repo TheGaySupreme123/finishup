@@ -12,6 +12,10 @@ host-visible text where the host requires them. Pages never split a UTF-8 scalar
 `continuation` fields (`uri`, next `page`, same `page_size`, `revision`, and `digest`) into the next
 request. A final `complete: true` is only a service-emission fact, not proof of host delivery.
 
+Page 0 also lists the sections inside the document (`sections`; on a text host, the
+`FINISHUP_GUIDANCE_SECTIONS` lines after the end marker). The list is not page bytes. When you need one
+procedure, read that section's URI instead of paging the document.
+
 Use `GuidancePageAssembler` for a model-visible reconstruction. Expose the document only after pages
 are contiguous, markers and byte counts match, and the final SHA-256 digest matches. If revision or
 digest changes, restart at page zero. Do not raise the limit or guess a size after an error; use the

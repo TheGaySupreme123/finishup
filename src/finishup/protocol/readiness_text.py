@@ -17,6 +17,8 @@ from collections.abc import Mapping
 from typing import Final, Literal, cast
 
 __all__ = [
+    "CODEX_CHECK_CELL_PRAGMA",
+    "CODEX_CHECK_YIELD_TIME_MS",
     "OBLIGATION_RESOLVE_RECIPE_VARIANTS",
     "READINESS_STATES",
     "awaiting_ruling_variants",
@@ -42,6 +44,14 @@ _ACTION_REQUIRED: Final = (
     "Work remains. Clear each agent-actionable item; standing limitations need no action."
 )
 _READY: Final = "Nothing further to do. Request the receipt."
+# tb4n5 (P6): a Codex code-mode `check` cell without this deadline yields, and the yielded `exec`
+# cell lands after the check and makes it stale. `startup.md` states the pragma; the status
+# sentence for an `exec` cause and the Codex Stop gate repeat it where they ask for that check.
+# The value is the bridge's `check` call deadline (a test pins the two together).
+CODEX_CHECK_YIELD_TIME_MS: Final = 300_000
+CODEX_CHECK_CELL_PRAGMA: Final = '// @exec: {"yield_time_ms": 300000}'
+# The tool name Codex records for a code-mode cell.
+_CODEX_CELL_TOOL: Final = "exec"
 _UNKNOWN: Final = (
     "Readiness is unknown at this frontier. Read status again once the projection is readable."
 )
@@ -95,19 +105,31 @@ def check_cause_sentence(
     """
 
     via = "" if tool is None else f" via {tool}"
+    # A Codex code-mode cell after the check is usually the yielded check cell itself (tb4n5).
+    cell = tool == _CODEX_CELL_TOOL
     if compact:
         # The short form for a byte-bounded text: no id, no rule, the same record and frontier.
         record = f"ledger record {_count(ledger_sequence)}"
         tested = f"frontier {_count(check_subject_frontier)}"
+        pragma = f" Start the next check cell with `{CODEX_CHECK_CELL_PRAGMA}`." if cell else ""
         if effect == "superseded":
             what = "observed edit" if material_class == "edit_or_write" else f"{family} record"
-            return f"Why check_not_applicable: {what}{via} ({record}) after the check at {tested}."
+            return (
+                f"Why check_not_applicable: {what}{via} ({record}) after the check at {tested}."
+                f"{pragma}"
+            )
         if effect == "bounds_conclusion":
             return (
                 f"Why check_current_as_of_earlier_frontier: {family} record{via} ({record}) "
-                f"after the check at {tested} is unclassified."
+                f"after the check at {tested} is unclassified.{pragma}"
             )
         raise ValueError("check_cause_effect_invalid")
+    pragma = (
+        " If it was a Codex `check` cell that yielded, start the next check cell with "
+        f"`{CODEX_CHECK_CELL_PRAGMA}` so the check finishes in its own cell."
+        if cell
+        else ""
+    )
     where = f"ledger record {_count(ledger_sequence)}, {event_id}"
     tested = f"subject frontier {_count(check_subject_frontier)}"
     if effect == "superseded":
@@ -118,14 +140,14 @@ def check_cause_sentence(
         )
         return (
             f"Why check_not_applicable: {what} ({where}) was recorded after the check at "
-            f"{tested} (rule {rule}). Re-run check after your last change."
+            f"{tested} (rule {rule}). Re-run check after your last change.{pragma}"
         )
     if effect == "bounds_conclusion":
         return (
             "Why check_current_as_of_earlier_frontier: after the check at "
             f"{tested}, a {family} record{via} ({where}) could not be classified as FinishUP's own "
             f"call, a read-only read or host bookkeeping (rule {rule}). FinishUP cannot tell whether "
-            "it changed the work; the receipt discloses it."
+            f"it changed the work; the receipt discloses it.{pragma}"
         )
     raise ValueError("check_cause_effect_invalid")
 
@@ -303,29 +325,71 @@ _RECHECK_PHRASES: Final[Mapping[str, str]] = {
     "blocker": "a blocker you recorded",
     "premise": "findings you acknowledged that the review says the task requires",
 }
+# tb4n5 (#1050): an acceptance re-read limited to the resolved obligations the ledger flags, and
+# the per-obligation line that answers it before the Stop.
+_ACCEPTANCE_RISK_RULE: Final = "resolved_obligations_acceptance_risk"
+_ACCEPTANCE_RISK_PHRASE: Final = (
+    "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; a line"
+    " `finishup-acceptance:<obligation id>:met` per obligation in your final answer answers it)"
+)
+# Cursor's Stop hook receives no final message, so the line above can never answer the re-read
+# there; the Cursor note names the path that works (the re-read is asked once per flagged set).
+_ACCEPTANCE_RISK_PHRASE_CURSOR: Final = (
+    "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; Cursor"
+    " passes FinishUP no final answer, so it is asked once and saying they are met in your final"
+    " answer ends it)"
+)
+# A surface that does not know its host (the CLI, the TUI, a generic MCP profile) names which
+# hosts read the line, so an agent on Cursor is never told it answers the re-read.
+_ACCEPTANCE_RISK_PHRASE_ANY_HOST: Final = (
+    "the acceptance criteria of the resolved obligations FinishUP flags (rechecks lists them; on"
+    " Codex and Claude Code a line `finishup-acceptance:<obligation id>:met` per obligation in your"
+    " final answer answers it; Cursor passes no final answer, so there it is asked once and saying"
+    " they are met ends it)"
+)
 _MAX_NAMED_RULING_FINDINGS: Final = 3
 
 
-def recheck_note(readiness: object) -> str | None:
+def recheck_note(readiness: object, *, host: str | None = None) -> str | None:
     """One sentence naming the re-checks the Stop gate will ask once (tb4n3 RC-8).
 
     ``closure_readiness.rechecks`` is the list status, ``closure_prepare`` and the Stop gate all
     read, so a surface that says "nothing further" never precedes a gate for an item it did not
     name. ``readiness`` is the wire mapping or the typed model. ``None`` when the readiness
     announces none (or an older service sent no list).
+
+    ``host`` decides how a flagged acceptance re-read is answered: ``None``, ``codex`` or
+    ``claude`` (the hosts whose Stop passes the final message) name the
+    ``finishup-acceptance:<obligation id>:met`` line; ``cursor`` (no final message at Stop) names
+    the confirmation that ends it there; ``generic`` (a surface that does not know its host)
+    names both.
     """
 
     raw = _field(readiness, "rechecks")
     if not isinstance(raw, (tuple, list)):
         return None
     kinds: list[str] = []
+    flagged = False
     for entry in tuple(cast("tuple[object, ...] | list[object]", raw)):
         kind = _field(entry, "kind")
         if type(kind) is str and kind in _RECHECK_PHRASES and kind not in kinds:
             kinds.append(kind)
+            flagged = flagged or (
+                kind == "acceptance" and _field(entry, "rule") == _ACCEPTANCE_RISK_RULE
+            )
     if not kinds:
         return None
-    named = "; ".join(_RECHECK_PHRASES[kind] for kind in kinds)
+    risk_phrase = (
+        _ACCEPTANCE_RISK_PHRASE_CURSOR
+        if host == "cursor"
+        else _ACCEPTANCE_RISK_PHRASE_ANY_HOST
+        if host == "generic"
+        else _ACCEPTANCE_RISK_PHRASE
+    )
+    named = "; ".join(
+        risk_phrase if kind == "acceptance" and flagged else _RECHECK_PHRASES[kind]
+        for kind in kinds
+    )
     return (
         "At Stop you will be asked once to re-read: "
         f"{named}. closure_readiness.rechecks lists each with its key."

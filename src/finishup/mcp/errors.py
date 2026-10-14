@@ -617,6 +617,12 @@ def safe_validation_locations(exc: object) -> tuple[dict[str, str], ...]:
             if family is not None and family_version is not None:
                 entry["family"] = family
                 entry["family_version"] = family_version
+                # tb4n5 (#1049): the frozen sibling const that narrowed this value, so the hint
+                # names that branch's subset (``evidence_kind`` ``test_result``).
+                condition = _conditional_requirement_from_validation_item(source)
+                if condition is not None:
+                    entry["condition_field"] = condition[0]
+                    entry["condition_value"] = condition[1]
         elif reason == _CONDITIONAL_FIELD_REQUIRED_REASON:
             family = _family_from_validation_item(source)
             family_version = _family_version_from_validation_item(source)
@@ -667,9 +673,14 @@ def authoring_hint(
     try:
         if not isinstance(document.get("properties"), Mapping):
             return ""
+        conditional_parts, conditional_pointers, conditional_families = (
+            _conditional_value_hint_parts(document, locations)
+        )
+        example_families.extend(conditional_families)
         # Fixed order, least specific last, so truncation at _MAX_HINT_FIELDS always keeps the
         # part that names the most about how to author the next request.
         keyed_parts: list[tuple[str, tuple[str, str]]] = [
+            *conditional_parts,
             *((text, (text, "")) for text in _obligation_version_hint_parts(locations)),
             *((text, (text, "")) for text in _result_action_link_hint_parts(locations)),
             *_family_payload_contract_hint_parts(document, locations),
@@ -697,6 +708,10 @@ def authoring_hint(
                 # Object-rule and unknown-property locations already contributed their own
                 # schema-derived text above; the union node itself admits no values to name.
                 if reason in _SAFE_VALUE_ERROR_REASON_TOKENS:
+                    continue
+                # A sibling-narrowed value already named its branch's subset above; the
+                # property's whole union would name values that branch refuses (#1049).
+                if pointer in conditional_pointers:
                     continue
                 label, admitted, family = _hint_for_pointer(
                     document,
@@ -1051,6 +1066,187 @@ def _conditional_requirement_hint_parts(
         if len(parts) == _MAX_HINT_FIELDS:
             break
     return parts
+
+
+_EVENT_DRAFT_PAYLOAD_NESTED_FIELDS: Final = re.compile(
+    r"/event_drafts/[0-9]{1,3}/payload((?:/[a-z][a-z0-9_]{0,63}){2,4})", re.ASCII
+)
+_MAX_CONDITIONAL_ROWS: Final = 8
+
+
+def _conditional_enum_rows(
+    payload: Mapping[str, JsonValue], tail: tuple[str, ...]
+) -> list[tuple[str, str, str]]:
+    """``(field, const, admitted)`` for each payload ``allOf`` rule narrowing ``tail`` to an enum.
+
+    Read from the frozen presentation schema only: a rule qualifies when its ``if`` holds exactly
+    one string ``const`` on a sibling field and its ``then`` narrows the path to an ``enum``.
+    """
+
+    rules = payload.get("allOf")
+    if not isinstance(rules, list):
+        return []
+    rows: list[tuple[str, str, str]] = []
+    for rule in cast(list[JsonValue], rules):
+        if not isinstance(rule, Mapping):
+            continue
+        condition = cast(Mapping[str, JsonValue], rule).get("if")
+        narrowed: JsonValue = cast(Mapping[str, JsonValue], rule).get("then")
+        if not isinstance(condition, Mapping):
+            continue
+        properties = cast(Mapping[str, JsonValue], condition).get("properties")
+        if not isinstance(properties, Mapping):
+            continue
+        consts = [
+            (name, cast(Mapping[str, JsonValue], spec).get("const"))
+            for name, spec in cast(Mapping[str, JsonValue], properties).items()
+            if isinstance(spec, Mapping)
+        ]
+        if len(consts) != 1:
+            continue
+        field, value = consts[0]
+        if (
+            type(value) is not str
+            or field == tail[0]
+            or field not in _SAFE_LOCATION_SEGMENTS
+            or EVENT_FAMILY_NAME_PATTERN.fullmatch(value) is None
+        ):
+            continue
+        for segment in tail:
+            nested = (
+                cast(Mapping[str, JsonValue], narrowed).get("properties")
+                if isinstance(narrowed, Mapping)
+                else None
+            )
+            narrowed = (
+                cast(Mapping[str, JsonValue], nested).get(segment)
+                if isinstance(nested, Mapping)
+                else None
+            )
+        admitted = _admitted_values(narrowed) if isinstance(narrowed, Mapping) else ""
+        if admitted and "enum" in cast(Mapping[str, JsonValue], narrowed):
+            rows.append((field, value, admitted))
+        if len(rows) == _MAX_CONDITIONAL_ROWS:
+            break
+    return rows
+
+
+def _peer_const_notes(payload: Mapping[str, JsonValue], tail: tuple[str, ...]) -> tuple[str, ...]:
+    """``<value> needs <peer> <const>`` for each rule of the enclosing object tying a value of
+    ``tail`` to a peer's const (``approved_check_receipt`` needs ``provenance``
+    ``approved_check``), so a listed value is never offered where its peer refuses it."""
+
+    parent: JsonValue = payload
+    for segment in tail[:-1]:
+        nested = (
+            cast(Mapping[str, JsonValue], parent).get("properties")
+            if isinstance(parent, Mapping)
+            else None
+        )
+        parent = (
+            cast(Mapping[str, JsonValue], nested).get(segment)
+            if isinstance(nested, Mapping)
+            else None
+        )
+    rules = (
+        cast(Mapping[str, JsonValue], parent).get("allOf") if isinstance(parent, Mapping) else None
+    )
+    if not isinstance(rules, list):
+        return ()
+    leaf = tail[-1]
+    notes: list[str] = []
+    for rule in cast(list[JsonValue], rules):
+        if not isinstance(rule, Mapping):
+            continue
+        condition = cast(Mapping[str, JsonValue], rule).get("if")
+        consequence = cast(Mapping[str, JsonValue], rule).get("then")
+        if not isinstance(condition, Mapping) or not isinstance(consequence, Mapping):
+            continue
+        when = cast(Mapping[str, JsonValue], condition).get("properties")
+        then = cast(Mapping[str, JsonValue], consequence).get("properties")
+        if not isinstance(when, Mapping) or not isinstance(then, Mapping):
+            continue
+        spec = cast(Mapping[str, JsonValue], when).get(leaf)
+        value = (
+            cast(Mapping[str, JsonValue], spec).get("const") if isinstance(spec, Mapping) else None
+        )
+        if type(value) is not str or EVENT_FAMILY_NAME_PATTERN.fullmatch(value) is None:
+            continue
+        for peer, peer_spec in cast(Mapping[str, JsonValue], then).items():
+            const = (
+                cast(Mapping[str, JsonValue], peer_spec).get("const")
+                if isinstance(peer_spec, Mapping)
+                else None
+            )
+            if (
+                peer != leaf
+                and peer in _SAFE_LOCATION_SEGMENTS
+                and type(const) is str
+                and EVENT_FAMILY_NAME_PATTERN.fullmatch(const) is not None
+            ):
+                notes.append(f"{value} needs {peer} {const}")
+    return tuple(dict.fromkeys(notes))
+
+
+def _conditional_value_hint_parts(
+    document: Mapping[str, JsonValue], locations: Sequence[Mapping[str, str]]
+) -> tuple[list[tuple[str, tuple[str, str]]], frozenset[str], tuple[str, ...]]:
+    """Name a sibling-narrowed value's admitted subset, and every branch's (tb4n5, #1049).
+
+    ``digest_binding.subject`` admits nine values in the property's union, but each
+    ``evidence_kind`` admits only some: five tb4n5 refusals named the union, and two agents then
+    sent ``artifact_bytes`` with ``test_result`` (inside the union, outside its branch) and were
+    refused again. When the validator named the branch the draft selected, its subset leads; the
+    other branches follow as the way to keep another value, and a value a peer field constrains
+    says so. Every token is frozen schema vocabulary. Returns the parts, the pointers they
+    answered (which the generic union hint then skips) and the families they name.
+    """
+
+    parts: list[tuple[str, tuple[str, str]]] = []
+    answered: set[str] = set()
+    families: list[str] = []
+    for location in locations:
+        if location.get("reason") != "invalid_type_or_value":
+            continue
+        pointer = location.get("field")
+        if type(pointer) is not str:
+            continue
+        match = _EVENT_DRAFT_PAYLOAD_NESTED_FIELDS.fullmatch(pointer)
+        if match is None:
+            continue
+        payload = _payload_schema(document, location.get("family"), location.get("family_version"))
+        if payload is None:
+            continue
+        tail = tuple(match.group(1).removeprefix("/").split("/"))
+        rows = _conditional_enum_rows(payload, tail)
+        fields = {field for field, _value, _admitted in rows}
+        if len(fields) != 1:
+            continue
+        (field,) = fields
+        leaf = tail[-1]
+        selected = (
+            location.get("condition_value") if location.get("condition_field") == field else None
+        )
+        chosen = [row for row in rows if row[1] == selected]
+        others = [row for row in rows if row[1] != selected]
+        recipe = "; ".join(f"{value} admits {admitted}" for _field, value, admitted in others)
+        notes = _peer_const_notes(payload, tail)
+        caveat = f"; {', '.join(notes)}" if notes else ""
+        if chosen:
+            text = f"{leaf} for {field} {chosen[0][1]} admits {chosen[0][2]}" + (
+                f" (other {field} values: {recipe}{caveat})" if recipe else caveat
+            )
+        else:
+            text = f"{leaf} depends on {field}: {recipe}{caveat}"
+        answered.add(pointer)
+        family = location.get("family")
+        if type(family) is str and family not in families:
+            families.append(family)
+        if text not in {item for item, _key in parts}:
+            parts.append((text, (text, "")))
+        if len(parts) == _MAX_HINT_FIELDS:
+            break
+    return parts, frozenset(answered), tuple(families)
 
 
 def _array_item_conditional_text(

@@ -99,7 +99,11 @@ What FinishUP records on your machine follows the same split. A concrete credent
 API-key or access-token format, a private-key header, or a password inside a URL) is replaced before
 anything is stored. Text that only looks like a credential is kept as captured in the encrypted
 local store, so local checks see your work as it is; it is replaced only when content would leave
-your machine.
+your machine. The one exception is the change FinishUP reads from your repository at check time for
+review (described below): it is redacted as it is read, so a concrete credential reads
+`[REDACTED]` and a value that only looks like one reads `[withheld-by-yoetz:possible-credential]`.
+The reviewer is told that both markers are values FinishUP withheld, never your code, so a line such
+as `password=[withheld-by-yoetz:possible-credential]` is not reported as a broken expression.
 
 ### Turning the possible-credential filter off
 
@@ -275,8 +279,10 @@ tracked files, plus untracked files Git does not ignore — from the repository 
 connection named (only when that directory is the repository's own working tree: a repository whose
 Git settings point its working tree elsewhere is not read), and shows it to the reviewer first, with
 a header naming every changed file. Files you declared as outputs come first, then small files,
-then the rest, so when the change is cut for room your deliverables are kept and scratch files go
-first. It covers edits made by scripts and commits that no hook captured. A declared output that
+then the rest from smallest to largest, then generated files (build output such as `dist/`,
+lockfiles, minified bundles and source maps, unless you declared them as outputs), so when the
+change is cut for room your deliverables and source are kept and scratch and build output go
+first. A generated file is still listed in the header, marked as placed after the other files. It covers edits made by scripts and commits that no hook captured. A declared output that
 lives outside the repository (for example `/output/result.json`) is never read by FinishUP itself; when
 the case already holds a capture of it (output a hook recorded, or evidence the agent published
 that names it), that capture is carried with the same priority as the change, under the same
@@ -426,8 +432,13 @@ output of a recorded run, its exact command, or a captured edit the packet had n
 answers inside the same check: it sends the packet again with that content first and asks again, up
 to three times. Each follow-up packet follows the same policy, limits and never-send rules as the
 first and is its own disclosure with its own privacy receipt, and the content added this way takes
-at most half of the packet's excerpt room. The check records the last answer; the check result and
-the receipt say which follow-up round it answered and what FinishUP added. A follow-up that fails ends
+at most half of the packet's excerpt room. FinishUP tracks what each packet carried part by part, so
+the parts of a long capture the first packet had no room for can still be added, and a part already
+sent is never sent again as if it were new. When the reviewer asks for the current diff of a file
+an earlier captured edit changed, FinishUP also sends that file's current section from the change it
+read for this check, never a fresh read of your repository. The check records the last answer; the
+check result and the receipt say which follow-up round it answered and what FinishUP added. A
+follow-up that fails ends
 the check the way a failed review does. Anything else the reviewer names (the task statement, plan
 or claim text, or material only the agent can record) still comes back to the agent as before.
 

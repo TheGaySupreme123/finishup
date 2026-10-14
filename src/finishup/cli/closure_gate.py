@@ -9,7 +9,7 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
   reviewer's ruling, and the task facts the agent can repair (a planned verification not
   observed, failing or stale; an edit to the work after the last verification run, ADR-042; a
   requested output Git would not deliver; a deliverable that was emptied or removed; a delivered
-  file that loads a file the agent created and never declared, #1044);
+  file that may read a file the agent created and never declared, #1044);
 * once per ledger frontier and session: a second Stop at the same frontier passes, so an agent
   that cannot or will not act is never trapped;
 * the four re-checks (tb4n3 RC-8) are not riders on those tokens. Readiness announces them in
@@ -20,7 +20,12 @@ the service's own ``status`` answer (``closure_readiness``), never the transcrip
   older than this gate) announces none, so the gate asks none;
 * the acceptance re-read (A-12) invites the agent to republish an obligation whose output does
   not meet its acceptance_criteria as ``acknowledged_not_done``. An acknowledgement published
-  after that invite answers it and is never challenged by the acknowledgement re-check;
+  after that invite answers it and is never challenged by the acknowledgement re-check. Since
+  tb4n5 (#1050) readiness announces it only for the resolved obligations the ledger flags, and a
+  ``finishup-acceptance:<obligation id>:met`` line in the host's final message answers it for that
+  obligation (``unattested_acceptance``). Cursor's ``stop`` carries no final message, so on
+  Cursor the text never names that line: a confirmation in the final answer ends the re-read,
+  which is asked once per flagged set;
 * an obligation a recorded blocker decision names (authority, consent, credentials, an
   unobtainable dependency) is a standing disclosure in readiness. FinishUP cannot verify the claim,
   so a Stop that finds a blocker the agent has not been asked about continues the agent once
@@ -84,7 +89,7 @@ from finishup.domain.task_fact_tokens import (
 )
 from finishup.kernel.fact_lineage import FactLineage, lineage_from_wire, lineage_texts
 from finishup.protocol.ids import IdKind, new_id
-from finishup.protocol.readiness_text import predicted_receipt_variants
+from finishup.protocol.readiness_text import CODEX_CHECK_CELL_PRAGMA, predicted_receipt_variants
 
 if TYPE_CHECKING:
     from finishup.ports.control import ControlClientKind
@@ -108,11 +113,13 @@ __all__ = [
     "closure_gate_from_readiness",
     "closure_gate_reasked_blockers",
     "closure_gate_turn_blocks",
+    "attested_acceptance",
     "read_closure_gate",
     "record_closure_gate_delivered",
     "reset_closure_gate_turn",
     "set_standing_advice_withheld",
     "standing_advice_withheld",
+    "unattested_acceptance",
 ]
 
 _FILE_NAME: Final = "closure-gate.json"
@@ -227,10 +234,12 @@ _ITEM_TEXT: Final[Mapping[str, str]] = {
     # created and never declared; the grader received only the declared files. Disclosing the
     # dependency is not a way out.
     DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP: (
-        "a delivered file loads a file you created but did not declare, and a grader may receive"
-        " only the declared files: embed its content in the deliverable, rebuild it at run time,"
-        " or declare it as a delivered output (a requested `file` item with role `output`), then"
-        " run `check`; disclosing the dependency does not clear this"
+        "a delivered file references a file you created but did not declare in a way that may"
+        " read it, and a grader may receive only the declared files: embed its content in the"
+        " deliverable, rebuild it at run time,"
+        " or declare it, or the directory holding it, as a delivered output (a requested `file`"
+        " or `directory` item with role `output`), then run `check`; disclosing the dependency"
+        " does not clear this"
     ),
 }
 # Repair-first guidance, one sentence per present item family (F1, #984). Acknowledgement is the
@@ -276,6 +285,24 @@ _BLOCKER_OFFER_SHORT_TEXT: Final = (
 _CLOSE_TEXT: Final = (
     "Then run `check` and request the receipt. A FinishUP limit is never a `finishup-blocker`."
 )
+# tb4n5 (P6): in Codex code mode a `check` cell without a yield deadline yields; the yielded cell
+# then lands after the check and makes it stale (FinishUP-only yielded check cells in 5 of 9 S
+# attempts, a stale final check in 6). The deadline pragma was only in `startup.md`, read at start
+# and forgotten by closure, so the Codex Stop gate repeats it where it asks for that check. The
+# value is the bridge's `check` deadline (``CODEX_CHECK_YIELD_TIME_MS``; a test pins the two
+# together). Claude Code and Cursor run a tool call to completion, so their text is unchanged.
+_CLOSE_TEXT_CODEX: Final = (
+    f"Then run `check`, starting its Codex cell with `{CODEX_CHECK_CELL_PRAGMA}` so it does not"
+    " yield, and request the receipt. A FinishUP limit is never a `finishup-blocker`."
+)
+
+
+def _close_text(host: str | None) -> str:
+    """The close instruction; on Codex it repeats the `check` cell's yield deadline (tb4n5)."""
+
+    return _CLOSE_TEXT_CODEX if host == "codex" else _CLOSE_TEXT
+
+
 # tb4n2 FH A-12 (cargo D): an obligation was published resolved while the agent's own output said
 # the outcome was infeasible. An acknowledged obligation is left out of the completion claim and no
 # longer traps closure (issue #1022). tb4n3 RC-1/RC-8: when the criteria can only be checked outside
@@ -295,13 +322,35 @@ _ACCEPTANCE_TEXT: Final = (
     "Before you stop, read each resolved obligation's acceptance_criteria against your final"
     " output. " + _ACCEPTANCE_TAIL
 )
-# tb4n4 (#1050): the re-read fired in 60 of 60 deterministic attempts and was followed by FinishUP
-# bookkeeping alone in 41. Where the host passes the agent's final message (Codex and Claude Code
-# ``last_assistant_message``), it is asked only for the resolved obligations whose acceptance that
-# message neither cites nor addresses, and names them; the rest of the sentence is unchanged.
+# tb4n5 (#1050, owner decision 2026-10-13): the word-coverage rule #1054 shipped never matched a
+# real final message (18 of 18 attempts asked, 1 of 110 obligations covered). The service now
+# announces the re-read only for the resolved obligations the ledger flags as risky to call met
+# (``kernel.acceptance_risk``: a requested item never attempted, evidence not linked to a declared
+# item, or only self-asserted evidence; rule ``resolved_obligations_acceptance_risk``), and the
+# gate names them. An explicit per-obligation attestation in the final message answers it.
+_ACCEPTANCE_RISK_RULE: Final = "resolved_obligations_acceptance_risk"
+_ACCEPTANCE_FLAGGED_HEAD: Final = (
+    "FinishUP flags the recorded resolution of obligation(s) {ids}: a requested item never"
+    " attempted, evidence not linked to a declared item, or only self-asserted evidence. Before"
+    " you stop, read each one's acceptance_criteria against your final output."
+)
 _ACCEPTANCE_NAMED_HEAD: Final = (
-    "Your final message does not address the acceptance criteria of resolved obligation(s) {ids}."
-    " Before you stop, read each one's acceptance_criteria against your final output."
+    "Before you stop, read the acceptance_criteria of resolved obligation(s) {ids} against your"
+    " final output."
+)
+# The attestation: one line per obligation, bound to the obligation ids the current status names.
+_ACCEPTANCE_ATTEST_TEXT: Final = (
+    " If it is met, end your final answer with the line `finishup-acceptance:<obligation id>:met`"
+    " for it."
+)
+# Cursor's ``stop`` payload carries no final message (status and ``loop_count`` only), and its
+# ``afterAgentResponse`` is not dispatched by the Cursor CLI or Cloud Agents and has no documented
+# order against ``stop``, so no answer line can reach the gate there (#1050 follow-up). The text a
+# Cursor agent sees names the path that does work on that host: the re-read is asked once per
+# flagged set and key, so a confirmation in the final answer ends it.
+_ACCEPTANCE_ATTEST_TEXT_CURSOR: Final = (
+    " If it is met, keep it resolved and say so in your final answer: Cursor passes FinishUP no final"
+    " answer, so no answer line is read, and this re-read is not asked again for this set."
 )
 # #1050 item 2: a pure "criteria confirmed" answer is the end of the re-read. Said only where the
 # re-read rides alone (no item asks for a check in the same text).
@@ -310,72 +359,78 @@ _ACCEPTANCE_CONFIRMED_TEXT: Final = (
     " no new record, check or receipt."
 )
 _MAX_NAMED_ACCEPTANCE: Final = 3
-# The deterministic "addressed" rule (ADR-033 amendment, #1050). A term is a lowercase ASCII run of
-# letters and digits (a decimal point between digits kept), at least three characters, or two with
-# a digit, and not a stopword; at most the first 64 distinct terms of the acceptance text count.
-_ACCEPTANCE_TOKEN: Final = re.compile(r"[a-z0-9]+(?:\.[0-9]+)*", re.ASCII)
-_ACCEPTANCE_STOPWORDS: Final = frozenset(
-    (
-        "about after all also and any are been before being both but can could did does done each "
-        "either every for from had has have its into may might more most must nor not one only "
-        "other our out own per same shall should such than that the their them then there these "
-        "they this those two under upon use used using via was were what when where which while who "
-        "will with within without would yes you your"
-    ).split()
-)
-_MAX_ACCEPTANCE_TERMS: Final = 64
 _MAX_FINAL_MESSAGE_CHARS: Final = 65_536
+# ``finishup-acceptance:<obligation id>:met`` anywhere in the message (a line, a bullet or inline
+# code); ``:not_met`` or any other outcome is not an attestation. The legacy
+# ``yoetz-acceptance:`` spelling a 0.3 development build taught is one marker with it (ADR-048).
+_ATTESTATION: Final = re.compile(
+    r"(?:finishup|yoetz)-acceptance:(obl_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
+    r":met(?![A-Za-z0-9_-])",
+    re.ASCII,
+)
 
 
-def _acceptance_terms(text: str) -> tuple[str, ...]:
-    terms: dict[str, None] = {}
-    for token in _ACCEPTANCE_TOKEN.findall(text.lower()):
-        if token in _ACCEPTANCE_STOPWORDS:
-            continue
-        if len(token) < 3 and not (len(token) == 2 and any(char.isdigit() for char in token)):
-            continue
-        terms.setdefault(token, None)
-        if len(terms) == _MAX_ACCEPTANCE_TERMS:
-            break
-    return tuple(terms)
+def attested_acceptance(final_message: str) -> frozenset[str]:
+    """The obligation ids the final message attests as meeting their acceptance criteria.
 
-
-def uncovered_acceptance(
-    final_message: str, rows: tuple[tuple[str, str | None], ...]
-) -> tuple[str, ...]:
-    """The resolved obligations whose acceptance the final message neither cites nor addresses.
-
-    ``rows`` are ``(obligation id, acceptance text)``: the obligation's ``acceptance_criteria``, or
-    its description when it has none, ``None`` when a privacy policy withheld it. An obligation is
-    covered when the first 65,536 characters of the message contain its id, or when at least two
-    thirds of the acceptance text's terms (``_acceptance_terms``) occur among the message's own
-    tokens. Deterministic and conservative: an unreadable or withheld text, or one with no term, is
-    covered only by its id (#1050, ADR-033 amendment).
+    Only the exact ``finishup-acceptance:<obligation id>:met`` form (or its legacy
+    ``yoetz-acceptance:`` spelling) counts, in the first 65,536
+    characters. The message is read in this process only: never sent, stored or logged.
     """
 
-    message = final_message[:_MAX_FINAL_MESSAGE_CHARS]
-    tokens = frozenset(_ACCEPTANCE_TOKEN.findall(message.lower()))
-    uncovered: list[str] = []
-    for obligation, text in rows:
-        if obligation in message:
-            continue
-        terms = _acceptance_terms(text) if text else ()
-        hits = sum(1 for term in terms if term in tokens)
-        if not terms or 3 * hits < 2 * len(terms):
-            uncovered.append(obligation)
-    return tuple(uncovered)
+    return frozenset(_ATTESTATION.findall(final_message[:_MAX_FINAL_MESSAGE_CHARS]))
 
 
-def _acceptance_sentence(uncovered: tuple[str, ...] | None) -> str:
-    """Today's acceptance sentence, or (#1050) the one that names the uncovered obligations."""
+def _subjects_key(subjects: tuple[str, ...]) -> str:
+    ordered = sorted(subjects, key=str.encode)
+    return "accept:" + hashlib.sha256("\n".join(ordered).encode("ascii")).hexdigest()[:8]
 
-    if uncovered is None:
+
+def unattested_acceptance(recheck: _Recheck, final_message: str | None) -> tuple[str, ...] | None:
+    """The announced obligations the final message does not attest, or ``None`` when unknown.
+
+    Unknown (``None``) when the host gave no final message, or the announced subjects are not the
+    whole set the key names (more than eight, or an older service's list): the re-read is then
+    asked for every announced obligation. The attestation binds to the set this Stop's status
+    read announced, so a message that attests an earlier set covers only what is still in it.
+    """
+
+    if final_message is None or not recheck.subjects:
+        return None
+    if not all(item.isascii() for item in recheck.subjects):
+        return None
+    if _subjects_key(recheck.subjects) != recheck.key:
+        return None
+    attested = attested_acceptance(final_message)
+    return tuple(
+        subject for subject in sorted(recheck.subjects, key=str.encode) if subject not in attested
+    )
+
+
+def _acceptance_sentence(
+    recheck: _Recheck, named: tuple[str, ...] | None, host: str | None = None
+) -> str:
+    """The re-read for the obligations still to read: named, flagged when the service flagged.
+
+    The answer it names is host-aware: Codex and Claude Code pass the final message, so the
+    ``finishup-acceptance:<obligation id>:met`` line answers it; Cursor passes none, so its text
+    never asks for a line the gate cannot read.
+    """
+
+    ids_source = named if named is not None else recheck.subjects
+    if not ids_source:
         return _ACCEPTANCE_TEXT
-    hidden = len(uncovered) - _MAX_NAMED_ACCEPTANCE
-    ids = ", ".join(uncovered[:_MAX_NAMED_ACCEPTANCE]) + (
+    hidden = len(ids_source) - _MAX_NAMED_ACCEPTANCE
+    ids = ", ".join(ids_source[:_MAX_NAMED_ACCEPTANCE]) + (
         f" and {hidden} more" if hidden > 0 else ""
     )
-    return _ACCEPTANCE_NAMED_HEAD.format(ids=ids) + " " + _ACCEPTANCE_TAIL
+    head = (
+        _ACCEPTANCE_FLAGGED_HEAD
+        if recheck.rule == _ACCEPTANCE_RISK_RULE
+        else _ACCEPTANCE_NAMED_HEAD
+    )
+    attest = _ACCEPTANCE_ATTEST_TEXT_CURSOR if host == "cursor" else _ACCEPTANCE_ATTEST_TEXT
+    return head.format(ids=ids) + " " + _ACCEPTANCE_TAIL + attest
 
 
 _BLOCKER_OFFER_TEXT: Final = (
@@ -436,6 +491,7 @@ _MAX_RECHECKS: Final = 256
 _MAX_NAMED_LINEAGE: Final = 3
 _SUBJECT_ID: Final = re.compile(r"(?:obl|fnd)_[0-9A-Za-z-]{1,60}")
 _OBL_ID_SHAPE: Final = r"obl_[0-9A-Za-z-]{1,60}"
+_RULE_TOKEN: Final = re.compile(r"[a-z][a-z0-9_]{0,127}", re.ASCII)
 # The closed key shapes of ``closure_readiness.rechecks`` (DESIGN_RC3 3.4). A key of another shape,
 # or a kind outside the four, is dropped: the gate never asks a re-check it cannot read.
 _RECHECK_KEY_SHAPES: Final[Mapping[str, re.Pattern[str]]] = {
@@ -506,6 +562,9 @@ class _Recheck:
     key: str
     subjects: tuple[str, ...]
     since: int | None
+    # The closed rule token readiness gave (``resolved_obligations_acceptance_risk``: the
+    # acceptance subjects are the ledger-flagged obligations, tb4n5 #1050).
+    rule: str = ""
 
     @property
     def memory_key(self) -> str:
@@ -546,8 +605,16 @@ def _announced_rechecks(readiness: object) -> tuple[_Recheck, ...]:
             if isinstance(subjects_raw, (tuple, list))
             else ()
         )
+        rule = _field(entry, "rule")
         found.setdefault(
-            key, _Recheck(kind, key, subjects, _decimal(_field(entry, "since_frontier")))
+            key,
+            _Recheck(
+                kind,
+                key,
+                subjects,
+                _decimal(_field(entry, "since_frontier")),
+                rule if type(rule) is str and _RULE_TOKEN.fullmatch(rule) else "",
+            ),
         )
     return tuple(found.values())
 
@@ -754,19 +821,26 @@ def _withdrawn_text(readiness: object, tokens: tuple[str, ...]) -> str:
     return sentence + (f" ({'; '.join(notes)}.)" if notes else "")
 
 
+# tb4n5 (ADR-035 amendment): how an agent lists the files its change created, in its own shell,
+# when its privacy policy withholds their names from the agent context.
+_CREATED_FILES_COMMAND: Final = "`git status --porcelain --untracked-files=all`"
+
+
 def _undeclared_variants(readiness: object) -> tuple[str, ...]:
     """Name the files ``deliverable_references_undeclared_file`` found (tb4n4, #1044).
 
     From ``closure_readiness.undeclared_references``: the declared item that names them by id and
     index, and each path quoted and bounded (``quoted_path``); a path a privacy policy withheld
     reads ``(path withheld)``. ``()`` when readiness names none (an older service), so the item's
-    own clause still says what to do.
+    own clause still says what to do. When a name was withheld (tb4n5), each variant ends with
+    the continuation: why, and the agent's own shell command that lists the files it created.
     """
 
     raw = getattr(readiness, "undeclared_references", None)
     if not isinstance(raw, (tuple, list)):
         return ()
     rows: list[tuple[str, int | None, tuple[str | None, ...], int]] = []
+    withheld = False
     for entry in tuple(cast(tuple[object, ...], raw))[:_MAX_RECHECKS]:
         obligation = _field(entry, "obligation_id")
         index = _decimal(_field(entry, "item_index"))
@@ -785,7 +859,21 @@ def _undeclared_variants(readiness: object) -> tuple[str, ...]:
             for item in tuple(cast(tuple[object, ...], paths_raw))[:8]
         )
         rows.append((obligation, index, paths, total))
-    return undeclared_reference_variants(rows)
+        if any(path is None for path in paths):
+            withheld = True
+    named = undeclared_reference_variants(rows)
+    if not named or not withheld:
+        return named
+    # tb4n5 (ADR-035 amendment): a withheld name is not actionable on its own. Say why and how to
+    # find the files without widening any privacy setting: the agent's own shell lists them.
+    full = (
+        " Your privacy policy withheld these names (FinishUP returns only a name you published"
+        f" yourself): list the files your change created with your own shell"
+        f" ({_CREATED_FILES_COMMAND}), then declare the ones the delivered file may read, or their"
+        " directory, or embed or rebuild them."
+    )
+    short = f" Names withheld: list the files you created with {_CREATED_FILES_COMMAND}."
+    return tuple(dict.fromkeys((named[0] + full, named[-1] + short)))
 
 
 # Informational only (ADR-035): appended when the gate already fires for another reason and
@@ -867,6 +955,7 @@ def _fallback_parts(
     accept_text: str,
     lineage: tuple[str, ...] = (),
     undeclared: tuple[str, ...] = (),
+    close_text: str = _CLOSE_TEXT,
 ) -> list[tuple[str, Part]]:
     """The gate's sentences as named parts, in reading order, for the composed fallback.
 
@@ -906,7 +995,7 @@ def _fallback_parts(
         parts.append(("limitations", Part((limitations,), priority=5)))
     if accept_text:
         parts.append(("acceptance", Part((accept_text,), priority=8)))
-    parts.append(("close", Part((_CLOSE_TEXT,), required=True)))
+    parts.append(("close", Part((close_text,), required=True)))
     if offers_blocker:
         parts.append(("offer", Part((_BLOCKER_OFFER_TEXT, _BLOCKER_OFFER_SHORT_TEXT), priority=4)))
     if unconfirmed:
@@ -932,14 +1021,22 @@ def closure_gate_from_readiness(
     observation_pending: bool,
     reasked_blockers: frozenset[str] = frozenset(),
     active_stop: bool = False,
-    acceptance_uncovered: tuple[str, ...] | None = None,
+    final_message: str | None = None,
+    host: str | None = None,
 ) -> ClosureGate | None:
     """Decide the gate from one ``closure_readiness`` object; ``None`` means let the agent stop.
 
-    ``acceptance_uncovered`` (#1050) is ``None`` when the host gave no final message (or the
-    resolved obligations could not be read): the acceptance re-read is asked as before. Otherwise
-    it names the resolved obligations the final message does not address: the re-read names them,
-    and an empty tuple means every one was addressed, so the re-read is not asked.
+    ``host`` is the hook host (``codex``, ``claude`` or ``cursor``). On ``codex`` the close
+    instruction repeats the `check` cell's ``yield_time_ms`` deadline (tb4n5). On ``cursor`` the
+    acceptance re-read never names the ``finishup-acceptance`` line, which Cursor cannot deliver.
+
+    ``final_message`` (#1050) is the agent's last message when the host passed one. The acceptance
+    re-read names the obligations readiness announced (since tb4n5 only the resolved obligations
+    the ledger flags as risky); those the message attests with ``finishup-acceptance:<obligation
+    id>:met`` are not asked, and when it attests every one the re-read is not asked at all
+    (``unattested_acceptance``). Without a message, or when the announced list is not the whole
+    set, every announced obligation is asked. An attestation never changes a record, a finding or
+    the receipt: it only answers this re-read.
 
     ``reasked_blockers`` holds the re-check keys this session was already asked (the historical
     name: blockers as ``<obligation id>:<kind>``, ``ack:<obligation id>``, ``premise:<n>``,
@@ -1013,10 +1110,13 @@ def closure_gate_from_readiness(
             DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP,
         }
     )
+    acceptance_named = (
+        None if acceptance is None else unattested_acceptance(acceptance, final_message)
+    )
     accept_allowed = (
         acceptance is not None
         and not accept_excluded
-        and (acceptance_uncovered is None or bool(acceptance_uncovered))
+        and (acceptance_named is None or bool(acceptance_named))
     )
     prediction = predicted_receipt_variants(
         getattr(readiness, "predicted_receipt", None), state=state
@@ -1047,7 +1147,9 @@ def closure_gate_from_readiness(
         )
         blocker = _blocker_text(rows) if rows else ""
         accept_sentence = (
-            _acceptance_sentence(acceptance_uncovered) + " " + _ACCEPTANCE_CONFIRMED_TEXT
+            _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host)
+            + " "
+            + _ACCEPTANCE_CONFIRMED_TEXT
             if accept_allowed
             else ""
         )
@@ -1149,7 +1251,11 @@ def closure_gate_from_readiness(
         else ()
     )
     why_text = _awaiting_clause(readiness) if FINDING_REJECTION_AWAITING_RULING_GAP in items else ""
-    accept_text = _acceptance_sentence(acceptance_uncovered) if accept_allowed else ""
+    accept_text = (
+        _acceptance_sentence(cast(_Recheck, acceptance), acceptance_named, host)
+        if accept_allowed
+        else ""
+    )
     # `self_verified` is offered only when `respond` would accept it for some finding; an older
     # service sends no counts and keeps the offer.
     self_verify = eligible is None or eligible > 0
@@ -1194,7 +1300,7 @@ def closure_gate_from_readiness(
             # FH A-12, announced by readiness: the first optional sentence dropped under the host
             # bound, with the drain note.
             parts.append(accept_text)
-        parts.append(_CLOSE_TEXT)
+        parts.append(_close_text(host))
         # The blocker exit is offered only for open obligations: findings, reviews and FinishUP
         # limits are never excused by a blocker (F1, #984).
         if offers_blocker:
@@ -1278,6 +1384,7 @@ def closure_gate_from_readiness(
             accept_text=accept_text,
             lineage=lineage_variants,
             undeclared=undeclared,
+            close_text=_close_text(host),
         )
         composed = compose_parts([part for _, part in parts], _MAX_TEXT_CHARS, ascii_only=False)
         # The predicted conclusion yields before anything else: it is added only when the whole
@@ -1317,9 +1424,7 @@ def closure_gate_from_readiness(
     )
 
 
-def _status_request(
-    session_id: str, writer_id: str, actor_id: str, *, view: str = "compact"
-) -> StatusRequest:
+def _status_request(session_id: str, writer_id: str, actor_id: str) -> StatusRequest:
     # Lazy: the protocol models load pydantic, which the ordinary hook path must not import.
     from finishup.protocol.models import StatusRequest
 
@@ -1332,60 +1437,12 @@ def _status_request(
         "client": {"kind": "yoetz_cli", "version": __version__, "integration": "local_cli"},
         "session_id": session_id,
         "writer_id": writer_id,
-        "view": view,
-        "limit": "1" if view == "compact" else _ACCEPTANCE_PAGE_LIMIT,
+        "view": "compact",
+        "limit": "1",
         "at_frontier": None,
         "cursor": None,
     }
-    if view == "obligations":
-        request["filter"] = {"include_resolved": True, "status": "resolved"}
     return StatusRequest.model_validate(request)
-
-
-# #1050: one page of resolved obligations (the acceptance key names at most this many reliably),
-# read only when the acceptance re-read would be asked and the host passed the final message.
-_ACCEPTANCE_PAGE_LIMIT: Final = "100"
-_ACCEPTANCE_READ_DEADLINE_MS: Final = 750
-
-
-def _text_value(value: object) -> str | None:
-    """A readable obligation text, or ``None`` for an omission marker or anything else."""
-
-    return value if type(value) is str and value else None
-
-
-def _resolved_acceptance_rows(
-    branch: object, key: str
-) -> tuple[tuple[str, str | None], ...] | None:
-    """``(obligation id, acceptance text)`` of the resolved set the acceptance key names.
-
-    ``None`` unless the page's obligations with closure basis ``resolved`` hash to exactly the
-    announced ``accept:<h8>`` key (the same digest readiness minted): a later frontier, a second
-    page or an older service then keeps today's re-read rather than guess which set it asks about.
-    """
-
-    page = getattr(branch, "page", None)
-    raw = getattr(page, "items", None)
-    if not isinstance(raw, (tuple, list)):
-        return None
-    rows: dict[str, str | None] = {}
-    for item in tuple(cast(tuple[object, ...], raw)):
-        obligation = _field(item, "obligation_id")
-        if type(obligation) is not str or _field(item, "closure_basis") != "resolved":
-            continue
-        criteria = _text_value(_field(item, "acceptance_criteria"))
-        rows[obligation] = (
-            criteria
-            if criteria is not None or _field(item, "acceptance_criteria") is not None
-            else _text_value(_field(item, "description"))
-        )
-    ordered = sorted(rows, key=str.encode)
-    if not ordered or not all(obligation.isascii() for obligation in ordered):
-        return None
-    digest = hashlib.sha256("\n".join(ordered).encode("ascii")).hexdigest()
-    if f"accept:{digest[:8]}" != key:
-        return None
-    return tuple((obligation, rows[obligation]) for obligation in ordered)
 
 
 def _final_message(value: object) -> str | None:
@@ -1407,6 +1464,7 @@ async def read_closure_gate(
     active_stop: bool = False,
     final_message: str | None = None,
     on_acceptance_covered: Callable[[], object] | None = None,
+    host: str | None = None,
 ) -> ClosureGate | None:
     """Read the mapped session's compact status and decide the gate.
 
@@ -1414,12 +1472,10 @@ async def read_closure_gate(
     could not answer raises ``ClosureGateUnavailable`` so the caller records it as unavailable;
     either way the agent may stop.
 
-    ``final_message`` (#1050) is the agent's last message when the host passed one. When the gate
-    would ask the acceptance re-read, one bounded ``obligations`` page names the resolved set's
-    acceptance texts, and the re-read is asked only for the obligations the message does not
-    address (``uncovered_acceptance``); ``on_acceptance_covered`` is called when that left nothing
-    to ask. The message is read in this process only: never sent, stored or logged. Any failure of
-    that second read keeps the re-read as it was.
+    ``final_message`` (#1050) is the agent's last message when the host passed one. An acceptance
+    re-read the message answers with a ``finishup-acceptance:<obligation id>:met`` line for every
+    announced obligation is not asked, and ``on_acceptance_covered`` is called. The message is
+    read in this process only: never sent, stored or logged. No second status read is made.
     """
 
     # Lazy: only a status read needs the control port and the protocol models (pydantic).
@@ -1444,6 +1500,7 @@ async def read_closure_gate(
         if type(sequence) is not str or type(digest) is not str:
             raise ClosureGateUnavailable("status_unreadable")
         readiness = getattr(branch, "closure_readiness", None)
+        message = _final_message(final_message)
         gate = closure_gate_from_readiness(
             readiness,
             frontier_sequence=sequence,
@@ -1451,49 +1508,29 @@ async def read_closure_gate(
             observation_pending=observation_pending,
             reasked_blockers=reasked_blockers,
             active_stop=active_stop,
+            final_message=message,
+            host=host,
         )
-        message = _final_message(final_message)
-        if gate is None or ACCEPTANCE_RECHECK_ITEM not in gate.items or message is None:
-            return gate
-        acceptance = next(
-            (
-                recheck
-                for recheck in _announced_rechecks(readiness)
-                if recheck.kind == "acceptance" and not _asked(recheck, reasked_blockers)
-            ),
-            None,
-        )
-        if acceptance is None:
-            return gate
-        try:
-            page = await cast(Callable[..., Awaitable[object]], status)(
-                _status_request(session_id, writer_id, actor_id, view="obligations"),
-                deadline_ms=_ACCEPTANCE_READ_DEADLINE_MS,
+        if (
+            message is not None
+            and on_acceptance_covered is not None
+            and (gate is None or ACCEPTANCE_RECHECK_ITEM not in gate.items)
+        ):
+            # Recorded only when the attestation is what kept the re-read from being asked: the
+            # same decision without the message would have asked it (a pure recomputation).
+            unanswered = closure_gate_from_readiness(
+                readiness,
+                frontier_sequence=sequence,
+                frontier_digest=digest,
+                observation_pending=observation_pending,
+                reasked_blockers=reasked_blockers,
+                active_stop=active_stop,
+                host=host,
             )
-            page_branch = getattr(page, "root", page)
-            rows = (
-                None
-                if isinstance(page_branch, OperationFailureModel)
-                else _resolved_acceptance_rows(page_branch, acceptance.key)
-            )
-        except Exception:
-            rows = None
-        if rows is None:
-            return gate
-        uncovered = uncovered_acceptance(message, rows)
-        decided = closure_gate_from_readiness(
-            readiness,
-            frontier_sequence=sequence,
-            frontier_digest=digest,
-            observation_pending=observation_pending,
-            reasked_blockers=reasked_blockers,
-            active_stop=active_stop,
-            acceptance_uncovered=uncovered,
-        )
-        if not uncovered and on_acceptance_covered is not None:
-            with contextlib.suppress(Exception):
-                on_acceptance_covered()
-        return decided
+            if unanswered is not None and ACCEPTANCE_RECHECK_ITEM in unanswered.items:
+                with contextlib.suppress(Exception):
+                    on_acceptance_covered()
+        return gate
     except ClosureGateUnavailable:
         raise
     except Exception as exc:

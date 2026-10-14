@@ -42,6 +42,7 @@ from finishup.domain.receipts import (
 )
 from finishup.domain.values import EventId, FindingId, ObligationId
 from finishup.kernel import finding_todo as _finding_todo_module
+from finishup.kernel.acceptance_risk import acceptance_risk
 from finishup.kernel.check_standing import CheckCause, CheckStanding, check_standing
 from finishup.kernel.claim_limitations import required_limitation_ids_for_projection
 from finishup.kernel.claims import completion_claim_present
@@ -56,7 +57,11 @@ from finishup.kernel.closure_class import (
     finding_closures,
     obligation_closures,
 )
-from finishup.kernel.delivered_set import deliverable_lineage, undeclared_reference_rows
+from finishup.kernel.delivered_set import (
+    UndeclaredReferenceRow,
+    deliverable_lineage,
+    undeclared_reference_rows,
+)
 from finishup.kernel.fact_lineage import MAX_FACT_LINEAGE_ITEMS, FactLineage
 from finishup.kernel.finding_resolution import finding_is_resolved
 from finishup.kernel.finding_todo import (
@@ -367,8 +372,15 @@ class ClosureReadinessFacts:
     # ADR-045: where each derived task fact came from, so the agent sees why a code fired.
     fact_lineage: tuple[FactLineage, ...] = ()
     # tb4n4 (#1044): the undeclared files the applicable check found delivered files naming,
-    # ``(obligation id, item index, paths, total)`` (``delivered_set.undeclared_reference_rows``).
-    undeclared_references: tuple[tuple[str, int | None, tuple[str, ...], int], ...] = ()
+    # ``(obligation id, item index, paths, total, created in task)``
+    # (``delivered_set.undeclared_reference_rows``).
+    undeclared_references: tuple[UndeclaredReferenceRow, ...] = ()
+    # tb4n5 (#1050, ADR-033): the resolved obligations the ledger flags as risky to call met
+    # (``kernel.acceptance_risk``: a requested item never attempted, evidence not linked to a
+    # declared item, or only self-asserted evidence), sorted. The Stop gate's acceptance re-read
+    # asks only for these. ``None`` marks a hand-built fact set that predates the rule: the
+    # re-read then names every resolved obligation, exactly as before.
+    acceptance_risk_obligation_ids: tuple[ObligationId, ...] | None = None
 
     def __post_init__(self) -> None:
         if (
@@ -429,6 +441,11 @@ class ClosureReadinessFacts:
         if type(self.disclosed_obligations) is not tuple or any(
             type(item) is not tuple or len(item) != 3 or item[1] not in _DISCLOSURE_CODES
             for item in self.disclosed_obligations
+        ):
+            raise ValueError("closure_readiness_facts_invalid")
+        risky = self.acceptance_risk_obligation_ids
+        if risky is not None and (
+            type(risky) is not tuple or risky != tuple(sorted(set(risky), key=str.encode))
         ):
             raise ValueError("closure_readiness_facts_invalid")
 
@@ -786,6 +803,18 @@ def closure_readiness_facts(
         ),
         fact_lineage=current_fact_lineage(state, records, applicability),
         undeclared_references=current_undeclared_references(state, records, applicability),
+        acceptance_risk_obligation_ids=tuple(
+            obligation
+            for obligation, _reasons in acceptance_risk(
+                state,
+                records,
+                (
+                    item.obligation_id
+                    for item in obligation_classes.values()
+                    if item.basis == "resolved"
+                ),
+            )
+        ),
     )
 
 
@@ -843,7 +872,7 @@ def current_undeclared_references(
     state: ProjectionState,
     records: tuple[LedgerRecord, ...],
     applicability: CheckApplicability,
-) -> tuple[tuple[str, int | None, tuple[str, ...], int], ...]:
+) -> tuple[UndeclaredReferenceRow, ...]:
     """The undeclared files the applicable check found delivered files naming (tb4n4, #1044).
 
     Read from the newest check's recorded deliverable states, and only while that check still

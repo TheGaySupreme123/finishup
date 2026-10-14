@@ -170,3 +170,39 @@ writes (redirect targets, `tee`, `sed -i`, the destination of `cp`/`mv`/`install
 `workspace` or `outside_workspace` as an edit, so `cat > solve.py <<EOF` after the last test makes
 the verification stale. A write the hook cannot attribute (`$VAR`, `~`, a script that opens files
 itself) is not counted.
+
+## Amendment (2026-10-13, tb4n5, issue #1049): a command mismatch is scoped like a task fact
+
+`command_attempt_mismatch` is agent-actionable and keyed per obligation and requested command item
+(`kernel.command_attempts`), but it is not a task fact, so decision 6 never scoped it: in tb4n5
+react-lead-form S a mismatch on a command obligation (one observed `npm run submit` run cited for
+its `npm test` and `npm run build` items) refused `self_verified` on an `action_without_result`
+finding about an edit action that named no obligation and asserted no command item. Formal-crypto
+S's refusal was about the mismatched obligation itself and stands (its agent cleared it with the
+PL6-3 link).
+
+`scoped_resolution_reasons` now drops `coverage:command_attempt_mismatch` when no mismatched item
+(`task_fact_scope.command_mismatches`, the effective obligations' `asserted_observed_mismatch`
+rows) is about the finding: the finding is about the mismatched obligation
+(`finding_obligation_scope`), or a subject is an action that asserted the item, a linked observed
+run event, or a result or evidence the obligation cites for its resolution (or that result's
+action). A subject this projection cannot place, or a mismatch the current prefix no longer shows,
+keeps it (fail closed), and an unrelated mismatch that is the only reason left still refuses (the
+agent clears it by repairing the link, and the next check can then resolve the finding). Finding
+resolution, closure readiness and the Stop gate are unchanged. A refusal on the mismatch now names
+the mismatched obligation, the requested item index, the asserting action and the linked observed
+run event, and the three ingredients of the PL6-3 link (`action_kind` command, `attempted_items`
+holding the exact value, `causal_parents` naming the run), or citing the result of an observed run
+of exactly that command; never the command text. Verification:
+`tests/unit/kernel/test_tb4n5_command_mismatch_scope.py` replays the react S shape.
+
+Check follow-up (2026-10-13, Codex check D1/D2): the scope fails closed on every unreadable link.
+A claim or obligation subject that is missing or redacted, the action an event subject records
+when that action is unreadable, or an event the projection cannot place keeps the mismatch;
+only a subject whose every link was read and found unrelated drops it. The same unreadable-subject
+rule now also keeps an obligation-scoped task fact (decision 6), which previously treated a
+redacted claim as naming nothing; an event subject no projection row records counts as unreadable
+there too (round 2, check D6). A finding on the linked observed run's result event (not only
+its action event) bears on the mismatch: a result subject resolves through its recorded action.
+`command_mismatches` is memoized for the last (projection, prefix, command-identity key
+generation), so a key change in the process recomputes it.

@@ -63,16 +63,26 @@ def test_step_zero_stops_on_an_empty_guidance_read() -> None:
     # clipped body is re-read through ``read_guidance`` (same URI, verified text and byte counts),
     # then the installed reference, and the skill itself says to page and verify before ``start``.
     assert "If a body is empty or clipped, call `read_guidance` with the same URI" in combined
-    assert "verify the text and byte counts" in combined
-    assert "`page_size` is 4 to 16,384 UTF-8 bytes" in combined
-    assert "use installed `references/<name>.md`" in combined
+    # #1054 moved the byte-count verification and the page-size range out of the card into the
+    # focused `page-delivery.md` topic the card routes a clipped page to (re-pinned in tb4n5, P11).
+    assert "clipped page `page-delivery.md`" in combined
+    page_delivery = " ".join(
+        (_PACKAGED_ROOT / "guidance" / "page-delivery.md").read_text(encoding="utf-8").split()
+    )
+    assert "Its usable `page_size` range is **4 through 16,384" in page_delivery
+    assert "markers and byte counts match" in page_delivery
+    assert "Only if that result is also empty, use installed `references/<name>.md`" in combined
     assert "page and verify empty or clipped guidance" in collapsed
     assert "The first workflow operation is `start`" in collapsed
-    assert "do not work without a task" in collapsed
+    # tb4n5 startup dedup (ADR-047): the skill states failed-start recovery once, in its
+    # description; "do not work without a task" is the initialize body's (tests/unit/mcp).
+    assert "ask for intro and guidance if startup remains blocked" in collapsed
     # The skill routes to the compact core; it does not claim that any full document is already in
-    # the host context. Other procedures remain addressable through the topic catalog.
+    # the host context. Other procedures remain addressable through the topic catalog, and the
+    # card, not the skill, names the workflow page for resume, recovery and delegation.
     assert "finishup://guidance/agent-instructions.md" in collapsed
-    assert "finishup://guidance/workflow.md#start-and-resume" in collapsed
+    assert "that core is the operating card" in collapsed
+    assert "resume/recovery/delegation/capacity `finishup://guidance/workflow.md`" in safety_floor
     assert "already include `agent-instructions.md`" not in collapsed
     assert "Both are already in initialize `instructions`" not in collapsed
 
@@ -85,7 +95,9 @@ def test_step_zero_does_not_use_resources_list_for_discovery() -> None:
     )
     collapsed = " ".join(text.split())
     assert "Do not call `resources/list` or `list_mcp_resources`" in collapsed
-    assert "The five index URIs are the complete legacy catalog" in collapsed
+    # #1054 dropped "The five index URIs are the complete legacy catalog" from the card; the
+    # initialize bodies name every URI and say not to list resources (re-pinned in tb4n5, P11).
+    assert "Focused topics by trigger:" in collapsed
     assert "a list failure is not a missing server or reason to read product source" in collapsed
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -78,6 +79,7 @@ from finishup.ports.privacy import (
     PrivacyReceiptView,
 )
 from finishup.protocol.canonical import parse_canonical_integer_string
+from finishup.protocol.errors import SERVICE_HANDSHAKE_PHASES, SERVICE_START_TIMEOUT_PHASE
 from finishup.protocol.ids import IdKind, new_id, validate_id, validate_opaque_item_id
 from finishup.protocol.models import (
     CheckRequest,
@@ -149,9 +151,10 @@ _PRIVATE_CONSTRUCTOR_TOKEN: Final = object()
 _CONNECT_HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
 _SERVICE_START_TIMEOUT_SECONDS: Final = 30.0
 _SERVICE_START_POLL_SECONDS: Final = 0.05
-# A listening service that rejected this client's hello is a different FinishUP installation (or
-# generation) sharing the one per-user endpoint. Both reasons name that condition; only these
-# may make on-demand startup replace the running process.
+# A listening service shown to be a different FinishUP installation (or generation) sharing the one
+# per-user endpoint: it answered with another manifest or protocol, or closed on this client's
+# hello while its singleton stamp names another identity (``_unanswered_hello``). Both reasons
+# name that condition; only these may make on-demand startup replace the running process.
 _SUPERSEDE_REASONS: Final = frozenset({"service_incompatible", "protocol_mismatch"})
 _SECRET_ENV_MARKERS: Final = (
     "API_KEY",
@@ -527,11 +530,11 @@ def _transport_error(error: LocalControlTransportError) -> ControlError:
 
 
 def _protocol_error(error: ControlProtocolError) -> ControlError:
-    if error.reason in {"manifest_mismatch", "handshake_rejected"}:
-        # The peer is a live FinishUP service from another installation: it either answered with a
-        # different schema-manifest digest or closed on our hello without answering (that is how
-        # a service rejects a manifest it does not share). Retryable: it heals once the endpoint
-        # is owned by a service of this installation.
+    if error.reason == "manifest_mismatch":
+        # The peer is a live FinishUP service from another installation: it answered with a
+        # different schema-manifest digest. Retryable: it heals once the endpoint is owned by a
+        # service of this installation. A hello closed without any answer (``handshake_rejected``)
+        # proves nothing by itself; ``_unanswered_hello`` classifies it.
         return ControlError("service_incompatible", retryable=True)
     if error.reason == "protocol_mismatch":
         return ControlError("protocol_mismatch")
@@ -547,6 +550,140 @@ def _protocol_error(error: ControlProtocolError) -> ControlError:
     # connection fact: the frame validated and encoded, so the caller never sees INVALID_REQUEST
     # for it and the retry stays open (issue #678).
     return ControlError("service_unavailable", retryable=True)
+
+
+type _StampIdentity = Literal["same", "other", "legacy", "unknown"]
+
+
+def _validated_version(value: str | None) -> str | None:
+    """A stamped package version that parses as one, else None (never evidence either way)."""
+
+    if value is None:
+        return None
+    from packaging.version import InvalidVersion, Version
+
+    try:
+        Version(value)
+    except InvalidVersion:
+        return None
+    return value
+
+
+def _stamp_identity(holder: SingletonHolder) -> _StampIdentity:
+    """How a stamped holder's identity compares with this installation's, on evidence only.
+
+    ``other`` needs a present, validated field that differs: a schema-manifest digest or a
+    package version that is not this installation's. ``same`` needs both fields readable and
+    equal. Anything else, a field absent or unreadable beside fields that match, is ``unknown``:
+    missing information is never read as another installation, so it never makes a holder
+    incompatible or an automatic supersede candidate.
+
+    ``legacy`` is a stamp with neither identity key at all. Yoetz 0.1.x wrote that shape, but so
+    did every writer from 0.2.1 until the #1040 follow-up whenever its schema-manifest lookup
+    failed, and such a stamp outlives the upgrade for as long as its process runs. Absence alone
+    therefore cannot tell an older installation from a compatible one: ``legacy`` is treated like
+    ``unknown`` everywhere automatic (an unanswered hello is ``service_handshake_failed``, never
+    ``service_incompatible``), and only an explicit ``finishup service restart`` may replace it
+    (``supersede_incompatible_service(replace_legacy=True)``).
+    """
+
+    if holder.identity_fields_absent:
+        return "legacy"
+    digest = holder.schema_manifest_digest
+    version = _validated_version(holder.service_version)
+    if (digest is not None and digest != _manifest_digest_for_client()) or (
+        version is not None and version != __version__
+    ):
+        return "other"
+    if digest is not None and version is not None:
+        return "same"
+    return "unknown"
+
+
+# The one stamp class that is evidence of another installation: reported as
+# ``service_incompatible`` and replaceable without an explicit human restart.
+_REPLACEABLE_STAMPS: Final[frozenset[_StampIdentity]] = frozenset({"other"})
+
+
+def _system_git_below_minimum() -> bool:
+    """True when the system Git (the one the service resolves workspaces with) is too old."""
+
+    from finishup.adapters.git_version import git_version, git_version_supported
+
+    executable = shutil.which("git", path=os.defpath)
+    return executable is not None and not git_version_supported(git_version(executable))
+
+
+def _unanswered_hello(workspace_locator: WorkspaceLocator | None) -> ControlError:
+    """Classify a hello the listening service closed without answering (#1040 follow-up).
+
+    Two different services do that. One of another installation closes on a hello it cannot
+    decode; one of this very installation closes when its own side of the handshake fails, such
+    as resolving the caller's repository with a Git it cannot use (it records why). Only the
+    owner-only singleton stamp tells them apart, so ``service_incompatible``, whose remedy is
+    replacing the service, is reported only when the stamp shows another identity: a validated
+    field that differs (``_stamp_identity``). A holder stamped with this installation's
+    identity, one whose stamp cannot be read, one whose identity fields are only partly readable,
+    and one stamped without any identity field is a failed handshake that is never replaced
+    automatically: non-retryable ``service_unavailable`` with ``phase`` ``handshake``, or
+    ``handshake_git_version`` when this hello named a workspace and the system Git is older than
+    the documented minimum. The correlation id resolves the client-side record; the service's
+    own record names the cause.
+    """
+
+    holder = service_holder_identity()
+    if holder is not None and _stamp_identity(holder) in _REPLACEABLE_STAMPS:
+        return ControlError("service_incompatible", retryable=True)
+    from finishup.observability.logging import record_public_error_without_raising
+
+    git_too_old = workspace_locator is not None and _system_git_below_minimum()
+    correlation_id = record_public_error_without_raising(
+        component="service.client",
+        operation="control_handshake",
+        reason="service_handshake_failed",
+        reason_code="git_version_unsupported" if git_too_old else None,
+    )
+    return ControlError(
+        "service_unavailable",
+        retryable=False,
+        phase="handshake_git_version" if git_too_old else "handshake",
+        correlation_id=correlation_id,
+    )
+
+
+def start_timed_out(error: BaseException) -> bool:
+    """True when a service of this installation was starting but did not answer in budget."""
+
+    return (
+        isinstance(error, ControlError)
+        and error.reason == "service_unavailable"
+        and error.phase == SERVICE_START_TIMEOUT_PHASE
+    )
+
+
+def starting_service_pid() -> int | None:
+    """The pid of a live singleton holder whose lock is held, or None.
+
+    The stamp alone is advisory; the flock corroborates that a service process really holds the
+    singleton (it may still be importing or unlocking before it accepts connections).
+    """
+
+    holder = service_holder_identity()
+    if holder is None or _singleton_holder_lock_is_held() is not True:
+        return None
+    return holder.pid
+
+
+def handshake_failure(error: BaseException) -> str | None:
+    """The ``SERVICE_HANDSHAKE_PHASES`` member a failed-handshake error carries, or None."""
+
+    if (
+        isinstance(error, ControlError)
+        and error.reason == "service_unavailable"
+        and error.phase in SERVICE_HANDSHAKE_PHASES
+    ):
+        return error.phase
+    return None
 
 
 def _object(value: object) -> Mapping[str, object]:
@@ -1538,6 +1675,8 @@ async def _connect_service_attempt(
     except ControlProtocolError as exc:
         if stream is not None:
             await _best_effort_close_stream(stream)
+        if exc.reason == "handshake_rejected":
+            raise _unanswered_hello(workspace_locator) from exc
         raise _protocol_error(exc) from exc
     except BaseException:
         if stream is not None:
@@ -1642,7 +1781,9 @@ def holder_version_order(holder_version: str | None) -> Literal["older", "same",
     return "newer" if holder > own else "same"
 
 
-async def supersede_incompatible_service(*, deadline: float, replace_newer: bool = False) -> bool:
+async def supersede_incompatible_service(
+    *, deadline: float, replace_newer: bool = False, replace_legacy: bool = False
+) -> bool:
     """Ask the live same-user singleton holder to stop and wait for it to release the endpoint.
 
     Called after a listening service rejected this client's hello, or when a new host session
@@ -1650,11 +1791,14 @@ async def supersede_incompatible_service(*, deadline: float, replace_newer: bool
     singleton stamp (never guessed from process listings), receives the daemon's ordinary
     bounded-shutdown signal, and is polled until it releases the lock. Returns ``True`` once the
     endpoint is free, ``False`` when no supersede candidate can be identified (no live stamped
-    holder, an identical-identity holder that rejected us anyway, a holder stamped by a newer
-    package than this one, or a platform without POSIX signals), and raises
-    ``service_incompatible`` when the holder outlives the deadline. Only an explicit human
-    ``finishup service restart`` passes ``replace_newer``: an upgrade moves forward, so a process
-    left over from before an in-place package upgrade never replaces its successor. A durable
+    holder, an identical-identity holder that rejected us anyway, a holder whose identity fields
+    are only partly readable, a holder stamped without any identity field unless
+    ``replace_legacy``, a holder stamped by a newer package than this one, or a platform without
+    POSIX signals), and raises ``service_incompatible`` when the holder outlives the deadline.
+    Only an explicit human ``finishup service restart`` passes ``replace_newer`` and
+    ``replace_legacy``: an upgrade moves forward, so a process left over from before an in-place
+    package upgrade never replaces its successor, and a stamp without identity fields may be a
+    compatible service (``_stamp_identity``), so only the owner's restart replaces it. A durable
     diagnostic names every attempt.
     """
 
@@ -1666,12 +1810,13 @@ async def supersede_incompatible_service(*, deadline: float, replace_newer: bool
     holder = probe_singleton_holder_identity(_singleton_lock_path())
     if holder is None:
         return False
-    if (
-        holder.schema_manifest_digest == _manifest_digest_for_client()
-        and holder.service_version == __version__
-    ):
+    identity = _stamp_identity(holder)
+    if identity not in _REPLACEABLE_STAMPS and not (replace_legacy and identity == "legacy"):
         # Same installation identity yet it rejected the hello: this is not an upgrade, and
-        # stopping it would not change the outcome. Report instead of restarting.
+        # stopping it would not change the outcome. A stamp whose identity is only partly
+        # readable, or absent, proves no other installation either, so it is never signalled
+        # here; only the owner's explicit restart may replace an identity-less stamp. Report
+        # instead of restarting.
         return False
     if not replace_newer and holder_version_order(holder.service_version) == "newer":
         # This process predates an in-place upgrade (an open session's bridge, typically). The
@@ -1763,7 +1908,9 @@ async def connect_service_on_demand(
         if exc.reason in _SUPERSEDE_REASONS and supersede_incompatible:
             if not await supersede_incompatible_service(deadline=deadline):
                 raise
-        elif exc.reason != "service_unavailable":
+        elif exc.reason != "service_unavailable" or handshake_failure(exc) is not None:
+            # A service of this installation that failed its own side of the handshake is
+            # running: spawning a successor only races its singleton, so report it now.
             raise
     else:
         if not (
@@ -1789,7 +1936,7 @@ async def connect_service_on_demand(
             except _AcceptedServiceUnresponsive:
                 raise
             except ControlError as exc:
-                if exc.reason != "service_unavailable":
+                if exc.reason != "service_unavailable" or handshake_failure(exc) is not None:
                     raise
     if time.monotonic() >= deadline:
         raise ControlError("service_unavailable", retryable=True)
@@ -1805,10 +1952,10 @@ async def connect_service_on_demand(
         # let the fixed launcher make a normal flock-protected attempt; it cannot supersede a live
         # holder and it gives a stale stamp a path back to startup.
         holder = None
-    elif holder is not None and (
-        holder.schema_manifest_digest != _manifest_digest_for_client()
-        or holder.service_version != __version__
-    ):
+    elif holder is not None and _stamp_identity(holder) in _REPLACEABLE_STAMPS:
+        # Only a stamp that shows another installation is reported as one. A holder of this
+        # installation, or one whose identity is only partly readable, holds the lock: it is
+        # waited for below (never spawned beside), and its handshake has the last word.
         raise ControlError("service_incompatible", retryable=True)
     spawned: _SpawnedService | None = None
     if holder is None:
@@ -1836,11 +1983,20 @@ async def connect_service_on_demand(
             continue
         except ControlError as exc:
             last_error = exc
-            if exc.reason != "service_unavailable":
+            if exc.reason != "service_unavailable" or handshake_failure(exc) is not None:
+                # The service answers connections but fails this one's handshake; waiting out
+                # the budget would only bury that under a generic ``service_unavailable``.
                 raise
         if spawned is not None and spawned.process.poll() is not None:
             startup_failure = _spawned_startup_failure(spawned)
             if startup_failure is not None:
                 raise startup_failure from last_error
             spawned = None
+    if (spawned is not None and spawned.process.poll() is None) or starting_service_pid():
+        # A service is alive and holds the singleton but never completed a handshake within the
+        # budget: still starting, not absent. A slow machine or the first start after an install
+        # or update takes longer; naming that keeps callers from a supervisor or restart remedy.
+        raise ControlError(
+            "service_unavailable", retryable=True, phase=SERVICE_START_TIMEOUT_PHASE
+        ) from last_error
     raise ControlError("service_unavailable", retryable=True) from last_error

@@ -105,6 +105,8 @@ __all__ = [
     "emptied_declared_items",
     "declared_output_removed",
     "removed_declared_items",
+    "UndeclaredReferenceRow",
+    "ambiguous_reference_count",
     "undeclared_reference_inputs",
     "undeclared_reference_rows",
 ]
@@ -837,9 +839,32 @@ def deliverable_lineage(
     return tuple(output)
 
 
+type UndeclaredReferenceRow = tuple[str, int | None, tuple[str, ...], int]
+
+
+def ambiguous_reference_count(states: Iterable[DeliverableState]) -> int:
+    """How many created files the recorded deliverables name only ambiguously (tb4n5).
+
+    The sum of ``undeclared_reference_ambiguous`` over the check's deliverable states, each keyed
+    path counted once: the count ``deliverable_references_ambiguous_name`` discloses.
+    """
+
+    seen: set[str] = set()
+    total = 0
+    for state in states:
+        if state.undeclared_reference_ambiguous is None:
+            continue
+        key = state.path_key or f"{state.obligation_id}:{state.item_index}"
+        if key in seen:
+            continue
+        seen.add(key)
+        total += state.undeclared_reference_ambiguous
+    return total
+
+
 def undeclared_reference_rows(
     states: Iterable[DeliverableState],
-) -> tuple[tuple[str, int | None, tuple[str, ...], int], ...]:
+) -> tuple[UndeclaredReferenceRow, ...]:
     """``(obligation id, item index, paths, total)`` of each recorded deliverable that names
     files the change created and no item declares (tb4n4, #1044), in the check's own order.
 
@@ -848,7 +873,7 @@ def undeclared_reference_rows(
     sentence the receipt and the Stop gate print, and of status ``undeclared_references``.
     """
 
-    rows: list[tuple[str, int | None, tuple[str, ...], int]] = []
+    rows: list[UndeclaredReferenceRow] = []
     seen: set[str] = set()
     for state in states:
         if not state.undeclared_references and state.undeclared_reference_count is None:

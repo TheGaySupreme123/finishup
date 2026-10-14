@@ -12,6 +12,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Final, Literal, Protocol, cast
 
+from finishup.config.foreign_write import writable_by_others
 from finishup.domain.values import JsonObject
 from finishup.ports.integrations import (
     HarnessId,
@@ -424,7 +425,7 @@ def _validated_project(target: IntegrationTarget) -> tuple[Path, str]:
         raise _error(IntegrationReason.TARGET_UNSAFE) from exc
     if hasattr(os, "geteuid") and facts.st_uid != os.geteuid():
         raise _error(IntegrationReason.TARGET_UNSAFE)
-    if facts.st_mode & 0o022:
+    if writable_by_others(facts):
         raise _error(IntegrationReason.TARGET_UNSAFE)
     identity = _inode_identity(facts)
     return root, identity
@@ -442,7 +443,7 @@ def _owned_stat_not_writable(facts: os.stat_result, *, directory: bool) -> None:
         raise _error(IntegrationReason.TARGET_UNSAFE)
     if hasattr(os, "geteuid") and facts.st_uid != os.geteuid():
         raise _error(IntegrationReason.TARGET_UNSAFE)
-    if facts.st_mode & 0o022:
+    if writable_by_others(facts):
         raise _error(IntegrationReason.TARGET_UNSAFE)
 
 

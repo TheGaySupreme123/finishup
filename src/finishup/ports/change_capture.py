@@ -94,6 +94,8 @@ _BASE_KINDS: Final = frozenset({"task_start", "first_check", "head", "empty"})
 CHANGE_CAPTURE_UNAVAILABLE_REASONS: Final = frozenset(
     {
         "git_unavailable",
+        # The system Git is older than the documented minimum (2.25).
+        "git_version_unsupported",
         "not_git",
         "unsafe_root",
         "unsupported_repository",

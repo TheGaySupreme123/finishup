@@ -423,6 +423,34 @@ def test_redact_high_confidence_content_flags_only_changed_bytes() -> None:
     assert heuristic_only in redacted
 
 
+def test_a_heuristic_marker_names_only_values_that_merely_look_like_credentials() -> None:
+    """tb4n5: the check-time change marks heuristic spans with the self-describing placeholder."""
+
+    heuristic = b'self.api_key = "Zx81Kq0Lm2Pq9Rs7"\n'
+    high = b"key=sk-abcdefghijklmnopqrstuvwxyz123456\n"
+    # Inside an assignment the heuristic span covers a concrete token: still [REDACTED].
+    assigned = b"TOKEN = 'ghp_" + b"Q" * 36 + b"'\n"
+
+    redacted, detected = redact_sensitive_content(
+        heuristic + high + assigned, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER
+    )
+
+    assert detected is True
+    assert b'self.api_key = "' + EGRESS_CREDENTIAL_PLACEHOLDER + b'"\n' in redacted
+    assert b"key=[REDACTED]\n" in redacted
+    assert b"TOKEN = '[REDACTED]'\n" in redacted
+    assert b"Zx81Kq0Lm2Pq9Rs7" not in redacted and b"sk-abc" not in redacted
+    # Converged: a second pass finds nothing, and the default still reads [REDACTED] alone.
+    assert redact_sensitive_content(redacted, heuristic_marker=EGRESS_CREDENTIAL_PLACEHOLDER) == (
+        redacted,
+        False,
+    )
+    plain, _ = redact_sensitive_content(heuristic)
+    assert plain == b'self.api_key = "[REDACTED]"\n'
+    with pytest.raises(ValueError, match="redaction_marker_invalid"):
+        redact_sensitive_content(heuristic, heuristic_marker=b"<withheld>")
+
+
 def test_privacy_helpers_are_deterministic() -> None:
     record = {
         "engine_version": "0.1.0",

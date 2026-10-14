@@ -51,6 +51,7 @@ _DRAFT_2020_12: Final = "https://json-schema.org/draft/2020-12/schema"
 _SCHEMA_MEDIA_TYPE: Final = "application/schema+json"
 _MAX_OUTPUT_BYTES: Final = 20_000_000
 _MAX_GUIDANCE_DOCUMENT_BYTES: Final = 1_048_576
+_MAX_GUIDANCE_SECTIONS: Final = 128
 
 
 class SchemaGenerationError(Exception):
@@ -3453,7 +3454,12 @@ def _add_deliverable_states(
     never its path. ``undeclared_references`` (tb4n4, #1044, added in place on the unreleased
     1.4.0) is the one path text: the root-relative files the change created that this source
     deliverable names and no item declares, so the receipt and the Stop gate can name them.
-    Absent on a check that read no declared output file, so those checks keep their bytes.
+    ``undeclared_reference_ambiguous`` (tb4n5, ADR-035 amendment, also in place) counts created
+    files the deliverable names only by an ambiguous file name; never a name.
+    ``undeclared_references_created_in_task`` is read-compatibility only: intermediate builds
+    (857a712de) wrote it before the provenance was withdrawn, so those ledgers still decode; no
+    build produces it now and it grants nothing. Absent on a check that read no declared output
+    file, so those checks keep their bytes.
     """
 
     count: dict[str, JsonValue] = {"maximum": 9007199254740991, "minimum": 0, "type": "integer"}
@@ -3503,6 +3509,13 @@ def _add_deliverable_states(
                 "type": "array",
                 "uniqueItems": True,
             },
+            "undeclared_reference_ambiguous": {
+                "maximum": 9007199254740991,
+                "minimum": 1,
+                "type": "integer",
+            },
+            # Read-compatibility only (857a712de wrote it; nothing produces it now).
+            "undeclared_references_created_in_task": {"const": True},
             "unreviewable": {"const": True},
         },
         "required": ["basis", "item_index", "obligation_id"],
@@ -6354,6 +6367,82 @@ def _publish_work_request_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _review_packet_row_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """The inner items[] rows of yoetz.review-packet-case/2, not the outer egress case."""
+
+    source = _load_versioned_template(entry, "privacy/outbound-case-1.2.0.schema.json")
+    definitions = cast(dict[str, JsonValue], source["$defs"])
+    item = cast(dict[str, JsonValue], definitions["content_item"])
+    from finishup.domain.privacy import DataCategory
+
+    definitions["data_category"] = {
+        "type": "string",
+        "enum": [category.value for category in DataCategory],
+    }
+    properties = dict(cast(dict[str, JsonValue], item["properties"]))
+    properties.update(
+        content_bytes={"type": "integer", "minimum": 0, "maximum": 131072},
+        occurred_order={"type": "integer", "minimum": 0},
+        latest_for={"$ref": "#/$defs/opaque_ref"},
+        superseded_by={"$ref": "#/$defs/subject_refs"},
+        follow_up_supplied={"type": "boolean", "const": True},
+        transformations={
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "before_bytes": {"type": "integer", "minimum": 0},
+                    "after_bytes": {"type": "integer", "minimum": 0},
+                    "kind": {"const": "redacted"},
+                    "reason": {"const": "sensitive_redacted"},
+                },
+                "required": ["before_bytes", "after_bytes", "kind", "reason"],
+            },
+        },
+    )
+    return _normalize(
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "description": "Provider-bound items[] row for yoetz.review-packet-case/2. The builder emits follow_up_supplied only as true; absence remains compatible with older rows.",
+            "$defs": {
+                key: definitions[key]
+                for key in (
+                    "data_category",
+                    "digest",
+                    "item_id",
+                    "opaque_ref",
+                    "subject_refs",
+                    "subject_ref",
+                )
+            },
+            "properties": properties,
+            "required": [
+                "category",
+                "content",
+                "content_bytes",
+                "content_digest",
+                "item_id",
+                "linked_subject_refs",
+                "occurred_order",
+                "section",
+                "source_kind",
+                "source_ref",
+            ],
+            "allOf": [
+                {
+                    "if": {"required": ["follow_up_supplied"]},
+                    "then": {"properties": {"section": {"const": "excerpt"}}},
+                }
+            ],
+        },
+        entry,
+    )
+
+
 def _outbound_case_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add observation provenance to outbound-case v1.1 without rewriting v1.0."""
 
@@ -6889,6 +6978,7 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                                     "page_count",
                                     "complete",
                                     "continuation",
+                                    "sections",
                                 )
                             ]
                         },
@@ -6921,6 +7011,11 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                         },
                         "then": {"required": ["continuation"]},
                     },
+                    {
+                        # tb4n5: only page zero of a paged read names the resource's sections.
+                        "if": {"required": ["sections"]},
+                        "then": {"properties": {"page": {"const": "0"}}},
+                    },
                 ],
                 "properties": {
                     "byte_count": {"maximum": 65536, "minimum": 0, "type": "integer"},
@@ -6940,6 +7035,12 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                     },
                     "page_size": {"$ref": "#/$defs/page_size"},
                     "revision": {"$ref": "#/$defs/digest"},
+                    "sections": {
+                        "items": {"$ref": "#/$defs/section"},
+                        "maxItems": _MAX_GUIDANCE_SECTIONS,
+                        "minItems": 1,
+                        "type": "array",
+                    },
                     "text": {"maxLength": 65536, "minLength": 0, "type": "string"},
                     "total_byte_count": {
                         "maximum": _MAX_GUIDANCE_DOCUMENT_BYTES,
@@ -6949,6 +7050,19 @@ def _read_guidance_result_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
                     "uri": {"$ref": "#/$defs/guidance_resource_uri"},
                 },
                 "required": ["byte_count", "media_type", "ok", "text", "uri"],
+                "type": "object",
+            },
+            "section": {
+                "additionalProperties": False,
+                "properties": {
+                    "byte_count": {
+                        "maximum": _MAX_GUIDANCE_DOCUMENT_BYTES,
+                        "minimum": 0,
+                        "type": "integer",
+                    },
+                    "uri": {"$ref": "#/$defs/guidance_resource_uri"},
+                },
+                "required": ["byte_count", "uri"],
                 "type": "object",
             },
             "canonical_positive_uint": {
@@ -8210,7 +8324,50 @@ def _publish_work_result_v1_1_schema(entry: _RegistryEntry) -> dict[str, JsonVal
     document = _load_versioned_template(entry, "operations/publish-work-result-1.0.0.schema.json")
     _admit_recorded_policy_identities(document)
     _add_publish_blocker_notices(document)
+    _add_publish_action_notices(document)
     return document
+
+
+def _add_publish_action_notices(document: dict[str, JsonValue]) -> None:
+    """Optional fixed publish-time notices for an action no result names (tb4n5 follow-up)."""
+
+    from finishup.protocol.models import PUBLISH_ACTION_NOTICE_TEXTS
+
+    definitions = cast(dict[str, JsonValue], document["$defs"])
+    definitions["action_id"] = {
+        "pattern": ("^act_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"),
+        "type": "string",
+    }
+    definitions["action_notice"] = {
+        "additionalProperties": False,
+        "oneOf": [
+            {
+                "properties": {
+                    "notice": {"const": notice},
+                    "text": {"const": text},
+                }
+            }
+            for notice, text in sorted(PUBLISH_ACTION_NOTICE_TEXTS.items())
+        ],
+        "properties": {
+            "action_id": {"$ref": "#/$defs/action_id"},
+            "notice": {"enum": sorted(PUBLISH_ACTION_NOTICE_TEXTS), "type": "string"},
+            "text": {"type": "string"},
+        },
+        "required": ["action_id", "notice", "text"],
+        "type": "object",
+    }
+    for branch in ("success", "dry_run"):
+        properties = cast(
+            dict[str, JsonValue], cast(dict[str, JsonValue], definitions[branch])["properties"]
+        )
+        properties["action_notices"] = {
+            "items": {"$ref": "#/$defs/action_notice"},
+            # One row per unpaired action: the batch bound (MAX_EVENTS_PER_BATCH), never a cut.
+            "maxItems": 100,
+            "minItems": 1,
+            "type": "array",
+        }
 
 
 def _add_publish_blocker_notices(document: dict[str, JsonValue]) -> None:
@@ -9046,6 +9203,14 @@ def _status_request_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
 
 _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
+    _RegistryEntry(
+        "privacy/review-packet-row-2.0.0.schema.json",
+        "review-packet-row",
+        "2.0.0",
+        "request_result",
+        "outbound-case",
+        lambda: dict,
+    ),
     _RegistryEntry(
         "common/actor-assertion-1.0.0.schema.json",
         "actor-assertion",
@@ -11820,6 +11985,8 @@ def build_schema_documents(
             normalized = _with_required_task_statement(
                 entry, "events/plan-revised-1.0.0.schema.json", title="Yoetz plan revised"
             )
+        elif entry.relative_path == "privacy/review-packet-row-2.0.0.schema.json":
+            normalized = _review_packet_row_schema(entry)
         elif entry.relative_path == "privacy/outbound-case-1.1.0.schema.json":
             normalized = _outbound_case_schema(entry)
         elif entry.relative_path == "privacy/outbound-case-1.2.0.schema.json":

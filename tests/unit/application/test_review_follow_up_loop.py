@@ -8,6 +8,7 @@ the keyword itself, so every older evaluator keeps today's single review.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -141,6 +142,31 @@ async def test_rounds_stop_at_the_bound_while_each_still_adds_something() -> Non
         frozenset(),
         frozenset({str(res(1))}),
         frozenset({str(res(1)), str(act(1))}),
+    ]
+
+
+async def test_the_parts_each_sent_packet_carried_carry_into_the_next_round() -> None:
+    """tb4n5: the first packet's parts are the shown baseline; each round adds only the parts no
+    earlier packet carried, so a later part of a partly shown source counts once."""
+
+    case, _refs = _verification_case(20)
+    shown = frozenset({f"{evd(1)}#0-10/30"})
+    first = replace(_evaluation(_insufficient(), frozenset(), case), case_excerpt_parts=shown)
+    rounds = [
+        replace(
+            _evaluation(_insufficient(), frozenset(), case),
+            case_excerpt_parts=shown | {f"{evd(1)}#10-20/30"},
+        ),
+        _evaluation(SemanticJudgment("no_material_discrepancy", ()), frozenset(), case),
+    ]
+    app = _ScriptedReviewer(case, list(rounds))
+
+    await _loop(app, case, first)
+
+    assert [item.shown_parts for item in app.follow_ups] == [shown, shown]
+    assert [item.added_parts for item in app.follow_ups] == [
+        frozenset(),
+        frozenset({f"{evd(1)}#10-20/30"}),
     ]
 
 

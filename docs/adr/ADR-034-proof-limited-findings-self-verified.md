@@ -308,3 +308,11 @@ planned-verification observer heuristics. The finding is `verified_resolved`; th
 receipt and the resolution explanation names them. Facts about the deliverable, agent-actionable
 facts and a silent review keep blocking, and the self-verification eligibility rule is unchanged.
 See the ADR-040 amendment of 2026-10-12.
+
+## Amendment (2026-10-13, tb4n5, issue #1049): the command mismatch is scoped too
+
+`coverage:command_attempt_mismatch` follows the same per-finding scope as an obligation-scoped task
+fact (ADR-042 amendment of 2026-10-13): it refuses `self_verified` only on a finding about the
+mismatched obligation, the action that asserted the item, or the run or cited result linked into
+that relation, and the refusal names the obligation, item and run ids it needs. The eligibility
+rule is otherwise unchanged.

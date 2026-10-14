@@ -1672,6 +1672,11 @@ _IMPORT_CHANNELS: Final = frozenset(
 )
 _MAX_ITEM_AUTHORSHIP: Final = 100
 _MAX_ITEM_SOURCES: Final = 64
+# At most 16 referencing deliverables of at most 8 named paths each (status-result 1.4.0).
+_MAX_LEAF_AUTHORSHIP: Final = 128
+_NAME_LEAF_POINTER: Final = re.compile(
+    r"/closure_readiness/undeclared_references/(?:0|[1-9][0-9]?)/paths/[0-7]", re.ASCII
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1768,6 +1773,11 @@ class ProjectionProvenanceContext:
     writer_id: str
     frontier: Frontier
     item_authorship: tuple[ProjectionItemAuthorship, ...] = ()
+    # tb4n5 (ADR-035 amendment): exact-leaf authorship of the undeclared-reference names: the
+    # ledger authorship of the publication that spelled each path, keyed by the path leaf itself.
+    # Service-derived from the ledger at the page's frontier, never from a caller, and only ever
+    # that one leaf family; the ordinary authorship rule decides what it grants.
+    leaf_authorship: tuple[ProjectionItemAuthorship, ...] = ()
 
     def __post_init__(self) -> None:
         validate_id(IdKind.SESSION, self.session_id)
@@ -1782,6 +1792,18 @@ class ProjectionProvenanceContext:
             raise _invalid()
         pointers = [item.item_pointer for item in self.item_authorship]
         if len(set(pointers)) != len(pointers):
+            raise _invalid()
+        if (
+            type(self.leaf_authorship) is not tuple
+            or len(self.leaf_authorship) > _MAX_LEAF_AUTHORSHIP
+            or any(
+                type(item) is not ProjectionItemAuthorship
+                or _NAME_LEAF_POINTER.fullmatch(item.item_pointer) is None
+                for item in self.leaf_authorship
+            )
+            or len({item.item_pointer for item in self.leaf_authorship})
+            != len(self.leaf_authorship)
+        ):
             raise _invalid()
 
 

@@ -48,6 +48,7 @@ from finishup.adapters.integrations.toml_tables import (
     exact_table_span,
     strip_exact_table,
 )
+from finishup.config.foreign_write import writable_by_others
 from finishup.ports.integrations import (
     IntegrationError,
     IntegrationReason,
@@ -479,7 +480,7 @@ def _validated_project(target: IntegrationTarget) -> Path:
         raise _error(IntegrationReason.TARGET_UNSAFE) from exc
     if hasattr(os, "geteuid") and stat.st_uid != os.geteuid():
         raise _error(IntegrationReason.TARGET_UNSAFE)
-    if stat.st_mode & 0o022:
+    if writable_by_others(stat):
         raise _error(IntegrationReason.TARGET_UNSAFE)
     resolved = root.resolve()
     if root.absolute() != resolved:
@@ -496,7 +497,7 @@ def _owned_not_writable(path: Path, *, directory: bool) -> None:
         raise _error(IntegrationReason.TARGET_UNSAFE)
     if hasattr(os, "geteuid") and facts.st_uid != os.geteuid():
         raise _error(IntegrationReason.TARGET_UNSAFE)
-    if facts.st_mode & 0o022:
+    if writable_by_others(facts):
         raise _error(IntegrationReason.TARGET_UNSAFE)
 
 
@@ -2392,7 +2393,7 @@ def _owned_stat_not_writable(facts: os.stat_result, *, directory: bool) -> None:
         raise _error(IntegrationReason.TARGET_UNSAFE)
     if hasattr(os, "geteuid") and facts.st_uid != os.geteuid():
         raise _error(IntegrationReason.TARGET_UNSAFE)
-    if facts.st_mode & 0o022:
+    if writable_by_others(facts):
         raise _error(IntegrationReason.TARGET_UNSAFE)
 
 

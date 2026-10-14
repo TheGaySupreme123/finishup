@@ -61,3 +61,18 @@ outside the trusted persistent service because the service owns task truth and s
 repository paths. The installed CLI import boundary allows only this exact read-only adapter in the
 state-capture command path.
 
+
+## Amendment (issue #1040 follow-up, tb4n5): no global configuration on any supported Git
+
+The hardened runner's "no global or system config" relied on `GIT_CONFIG_GLOBAL=/dev/null`, which
+only Git 2.32 and later honour, while it set `HOME` to the workspace root. On an older Git (2.25 is
+the supported minimum, ADR-031's #1040 amendment) a `.gitconfig` committed to the repository was
+therefore read as Git's global configuration, and a filter driver defined there ran during this
+capture's `git diff` of the working tree. The runner now also sets `HOME` and `XDG_CONFIG_HOME`
+to `os.devnull`, so no global configuration is read on any supported Git; a `~` in a repository's
+own path settings expands under `os.devnull` and names nothing. `core.fsmonitor` is pinned to the
+empty value, which disables it on every Git (`false` was run as a hook command before Git 2.36).
+`rev-parse` queries no longer use `--path-format` (Git 2.31): `--show-toplevel` and
+`--absolute-git-dir` print absolute paths on every supported Git. A system Git older than 2.25 is
+refused as `git_version_unsupported` before the workspace is opened; `finishup state capture` prints
+that token with its remedy.

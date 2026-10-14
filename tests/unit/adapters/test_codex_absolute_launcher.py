@@ -323,3 +323,23 @@ def test_preview_binds_a_replaced_but_valid_installed_script(launcher: Path) -> 
         )
     assert caught.value.reason is McpRegistrationReason.PREVIEW_STALE
     assert host.mutations == []
+
+
+@pytest.mark.parametrize("private", [True, False], ids=["user-private-group", "shared-group"])
+def test_umask_0002_launcher_is_proved_only_for_a_user_private_group(
+    launcher: Path, monkeypatch: pytest.MonkeyPatch, private: bool
+) -> None:
+    """``uv tool install`` under umask 0002 leaves the console script and its dir g+w."""
+
+    from finishup.config import foreign_write
+
+    def answer(_uid: int, _gid: int) -> bool:
+        return private
+
+    monkeypatch.setattr(foreign_write, "owner_private_group", answer)
+    launcher.chmod(0o775)
+    launcher.parent.chmod(0o775)
+    try:
+        assert (installed_launcher() is not None) is private
+    finally:
+        launcher.parent.chmod(0o700)

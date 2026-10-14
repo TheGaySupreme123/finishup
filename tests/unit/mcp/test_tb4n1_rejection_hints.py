@@ -180,8 +180,12 @@ def test_payload_missing_one_key_names_that_key() -> None:
     assert "the plan_revised 1.1.0 payload is missing task_statement; it requires" in message
 
 
-def test_digest_binding_subject_names_its_nine_members() -> None:
-    """music-harmony__vXXTjQJ: subject "file_bytes"; the 9-member enum was over the old bound."""
+def test_digest_binding_subject_names_the_members_its_evidence_kind_admits() -> None:
+    """music-harmony__vXXTjQJ: subject "file_bytes"; the 9-member enum was over the old bound.
+
+    tb4n5 (#1049): the union also named subjects the draft's ``evidence_kind`` refuses, so the
+    hint now names that kind's subset first and every other kind's beside it.
+    """
 
     message = _publish(
         "evidence_recorded",
@@ -200,7 +204,12 @@ def test_digest_binding_subject_names_its_nine_members() -> None:
             },
         },
     )
-    assert "subject admits approved_check_receipt, artifact_bytes" in message
+    assert (
+        "subject for evidence_kind artifact admits artifact_bytes, bounded_excerpt, source_diff"
+        in (message)
+    )
+    assert "test_result admits approved_check_receipt, static_analysis_report" in message
+    assert "file_bytes" not in message
 
 
 def test_status_limit_over_one_hundred_says_the_range() -> None:

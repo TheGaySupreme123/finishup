@@ -57,14 +57,20 @@ def test_launcher_delegates_to_pinned_uvx(tmp_path: Path) -> None:
     shim_dir.mkdir()
     record = tmp_path / "record.txt"
     uv_record = tmp_path / "uv-record.txt"
-    (shim_dir / "uv").write_text(f'#!/bin/sh\necho "$@" >> {uv_record}\nexit 0\n', encoding="utf-8")
+    (shim_dir / "uv").write_text(
+        f'#!/bin/sh\necho "$@${{SOURCE_DATE_EPOCH:+ epoch}}" >> {uv_record}\nexit 0\n',
+        encoding="utf-8",
+    )
     (shim_dir / "uvx").write_text(f'#!/bin/sh\necho "$@" > {record}\nexit 7\n', encoding="utf-8")
     os.chmod(shim_dir / "uv", 0o755)
     os.chmod(shim_dir / "uvx", 0o755)
 
     completed = subprocess.run(
         (node, str(_LAUNCHER_DIR / "bin" / "finishup.js"), "status", "--json"),
-        env={**os.environ, "PATH": str(shim_dir)},
+        env={
+            **{key: value for key, value in os.environ.items() if key != "SOURCE_DATE_EPOCH"},
+            "PATH": str(shim_dir),
+        },
         capture_output=True,
         timeout=30,
         check=False,
@@ -79,7 +85,9 @@ def test_launcher_delegates_to_pinned_uvx(tmp_path: Path) -> None:
     # entries bind a launcher that survives `uv cache clean` (issue #766).
     assert uv_record.read_text(encoding="utf-8").splitlines() == [
         "--version",
-        f"tool install --quiet --python 3.14 finishup=={version}",
+        # SOURCE_DATE_EPOCH in the install child only: checked-hash bytecode the sealed
+        # generation reuses instead of compiling on the first serving start.
+        f"tool install --quiet --compile-bytecode --python 3.14 finishup=={version} epoch",
     ]
 
 

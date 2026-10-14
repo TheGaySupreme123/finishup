@@ -314,7 +314,7 @@ _EXPECTED_RESULT_PATTERN_COUNTS: dict[tuple[str, str | None], int] = {
         None,
     ): 438,  # tb4n2 LA: counts/disputed_after_rebuttal; W2-A +8; tb4n3 LF +17; #1048 +38 inspection;
     # #1047 +1 follow_up_round
-    ("publish_work", None): 61,
+    ("publish_work", None): 64,
     ("receipt", None): 301,  # tb4n2 LA: disputed_after_rebuttal_finding_ids; #1017 +3; W2-A +8
     ("respond", None): 56,  # +2 tb4n3 W2-B: closure_after
     ("start", None): 72,
@@ -353,6 +353,12 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
         "PublishWorkBlockerNoticeModel",
         "operations/publish-work-result-1.1.0.schema.json",
         "blocker_notice",
+    ),
+    # tb4n5 follow-up: the optional unlinked-action notices (1.1.0, unreleased, changed in place).
+    (
+        "PublishWorkActionNoticeModel",
+        "operations/publish-work-result-1.1.0.schema.json",
+        "action_notice",
     ),
     (
         "PublishWorkAcceptedEventModel",
@@ -1364,7 +1370,7 @@ def test_protocol_models_public_exports_are_closed() -> None:
         ReceiptFormat ReceiptInclude ReceiptRedactionProfile
         ReceiptRequest ReceiptRequestModel ReceiptResult ReceiptResultModel
         REGISTERED_GUIDANCE_URIS ReadGuidanceRequest ReadGuidanceRequestModel
-        ReadGuidanceContinuationModel
+        ReadGuidanceContinuationModel ReadGuidanceSectionModel
         ReadGuidanceResult ReadGuidanceResultModel ClosurePrepareRequest
         ClosurePrepareRequestModel ClosurePrepareResult ClosurePrepareResultModel
         ClosureSelectionModel RespondRequest
@@ -2565,9 +2571,10 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     derived_patterns = _derived_result_success_patterns(catalog)
     assert (
-        len(derived_patterns) == 1584
+        len(derived_patterns) == 1587
     )  # +9 LO check_cause, W2-A +46 closure verdict, +34 LF fact_lineage, W2-B +2 closure_after,
-    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2
+    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
+    # tb4n5 +3 publish action_notices
 
     derived_counts = {
         context: sum(1 for method, view, _ in derived_patterns if (method, view) == context)
@@ -2577,9 +2584,10 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
 
     assert type(rules) is tuple
     assert (
-        len(rules) == 1611
+        len(rules) == 1614
     )  # #1027 +5, LO +9 check_cause, W2-A +46 closure verdict, LF +34 fact_lineage, W2-B +2,
-    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2
+    # tb4n4 #1044 +7 closure_readiness.undeclared_references, #1048 +38 inspection, #1047 +2,
+    # tb4n5 +3 publish action_notices
     assert rules == tuple(sorted(rules, key=_test_rule_sort_key))
 
     rule_keys = {
@@ -2588,8 +2596,8 @@ def test_result_leaf_registry_has_exhaustive_schema_parity() -> None:
     assert len(rule_keys) == len(rules)
 
     registry_patterns = {(rule.method, rule.status_view, rule.segments) for rule in rules}
-    assert len(registry_patterns) == 1584  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
-    # #1048 +38, #1047 +2
+    assert len(registry_patterns) == 1587  # #1027 +5, LO +9, W2-A +46, LF +34, W2-B +2, #1044 +7,
+    # #1048 +38, #1047 +2, tb4n5 +3
     assert registry_patterns == derived_patterns
 
     content_rules = _expected_nonpublish_content_rules(models)
@@ -3219,7 +3227,7 @@ def test_schema_catalog_reports_complete_registry() -> None:
     assert SCHEMA_NAMESPACE == "https://schemas.yoetz.dev/0.1/"
     assert SCHEMA_MANIFEST_SCHEMA == "yoetz.schema-manifest/1.0.0"
     assert SCHEMA_MANIFEST_VERSION == "1.0.0"
-    assert SCHEMA_MEMBER_COUNT == 228
+    assert SCHEMA_MEMBER_COUNT == 229
     assert len(catalog.documents) == SCHEMA_MEMBER_COUNT
 
     paths = tuple(document.relative_path for document in catalog.documents)
@@ -3304,10 +3312,11 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (
-        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_793
+        sum(_count_refs(document.json_schema) for document in catalog.documents) == 7_806
     )  # #1027 +3, tb4n3 LO +6, W2-A +25 closure verdict, LF +17, W2-B +1 closure_after,
     # tb4n4 #1044 +3 (status undeclared_references: obligation_id, resource_omission, total),
-    # #1048 +26 inspection branch
+    # #1048 +26 inspection branch, tb4n5 +3 (publish action_notices: two branches, action_id),
+    # tb4n5 +2 (read_guidance page-zero sections: the item and its uri)
 
 
 def test_schema_name_derivation_and_version_maps_are_exact() -> None:
@@ -3316,7 +3325,7 @@ def test_schema_name_derivation_and_version_maps_are_exact() -> None:
     event_versions = event_schema_versions(catalog)
     assert request_versions is catalog.request_result_versions
     assert event_versions is catalog.event_schema_versions
-    assert len(request_versions) == 53
+    assert len(request_versions) == 54
     assert len(event_versions) == 29
     assert tuple(request_versions) == tuple(sorted(request_versions, key=str.encode))
     assert tuple(event_versions) == tuple(sorted(event_versions, key=str.encode))

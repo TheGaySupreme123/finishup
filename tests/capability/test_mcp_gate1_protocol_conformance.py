@@ -394,7 +394,7 @@ async def test_mcp_tools_list_exact(tmp_path: Path) -> None:
         assert len(listed.tools) == 8
         for tool, descriptor in zip(listed.tools, TOOL_DESCRIPTORS["policy"], strict=True):
             assert tool.description == descriptor.description
-            assert tool.inputSchema == _plain_json(descriptor.input_schema)
+            assert tool.inputSchema == _plain_json(descriptor.advertised_input_schema)
             assert tool.outputSchema == _plain_json(descriptor.output_schema)
             assert tool.annotations is not None
             assert tool.annotations.title == descriptor.title

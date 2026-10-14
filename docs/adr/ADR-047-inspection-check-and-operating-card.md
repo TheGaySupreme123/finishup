@@ -190,3 +190,145 @@ Golden vectors CAN-017
 `tests/conformance/surfaces/test_operating_card.py`
 measures the card and holds the guidance changes. The real-data replay of the tb4n4 exports
 remains for the maintainer.
+
+## Amendment (2026-10-13, tb4n5, issues #1048 and #1049): where the next frontier comes from
+
+tb4n5 kept the requirement and half of decision 2. Dry runs fell from 123 to 10, but status reads
+before a write doubled (75 to 139 adjacent writes): 85 of 87 state-sensitive publishes read status
+first only to copy its head as `expected_frontier`, and six first-plan batches sent
+`expected_frontier: null` and were refused `expected_frontier_required`. The card called a status
+read optional while three surfaces still named status as the frontier source: the publication
+policy ("Read it from `status`"), the field description every write tool advertises ("returned by
+status") and the `expected_frontier_required` message and its continuation ("Call status to read
+the current frontier").
+
+- **The requirement stays.** `expected_frontier` remains ADR-022's optimistic-concurrency guard; a
+  server-side default would authorize a transition against unseen cooperative state.
+- **The held frontier is the source.** Every write already returns one, and an observation-only
+  suffix since is tolerated (ADR-022). The first plan sends the `frontier` `start` returned (its
+  `next_request_template` already carries it); every later write sends the `result_frontier` of
+  the last accepted `publish_work`, `check` or `respond`. A status read is for a caller holding no
+  frontier, or after a genuine `frontier_changed` conflict. The publication policy, the
+  `publication.md` topic, the request templates (the first-plan template and the replacement
+  rules), `workflow.md`, the card and the advertised field description say so; the `start` and
+  accepted `publish_work` text summaries say which write sends the returned frontier next.
+- **A missing frontier has its own continuation.** `expected_frontier_required` now maps to
+  `frontier_held_required` (ADR-030 registry): send the held frontier and retry under the same
+  `request_id`. `frontier_changed` keeps `frontier_refresh_required`, which reads `status`.
+- **Inspection is named by the question it answers.** The card's inspection sentence now reads
+  "What is left and why: `check` `mode: inspect` (records nothing)." Status stays the read for
+  exact ids and meaning fields; nothing forces the inspection. (A status-text continuation was
+  left out: it would change every frozen status summary vector for an optional sentence.)
+- **#1049 follow-ups in the same text surfaces.** The card asks for answers to each open AI-powered
+  finding (a `verified_resolved` or final finding, `next_actions: none`, takes no response), as do
+  the `respond` description, `workflow.md` and the respond template, which now also cites the
+  post-finding `evd_`/`res_` an acknowledgement needs. `request-templates.md#publish-work` and
+  `#ordinary-publication` are explicit aliases of `#publication-templates`, and both documents
+  alias `#plan-and-obligations`. The request-templates resource description counts the eighteen
+  families `publish_work` admits (nine ordinary, seven lifecycle, two coordination) instead of
+  "nine ordinary publication families"; the policy's sixteen are the core families and it says
+  so. A digest subject refused by its `evidence_kind` branch is hinted with that branch's subset
+  (INTERFACES, MCP error hints).
+
+The card stays inside the 8 KiB mandatory budget: the Codex surface sat 9 bytes under it, so the
+additions replaced the inspection sentence's list of what it returns (the `check` description
+keeps it); the optional `read_guidance` `page_size` reminder did not fit and stays in the
+`read_guidance` description.
+
+Verification: `tests/conformance/surfaces/test_frontier_source_consistency.py` scans the shipped
+guidance, skills, usage docs, every advertised tool and schema description and the missing-frontier
+error, directive and nudge for status-as-frontier-source wording and checks the stated rule;
+`tests/integration/application/test_held_frontier_sequence.py` drives start, hook observations,
+the first plan with the start frontier and a later write with the returned one, with no status
+read, and keeps a cooperative write in between a conflict; `tests/unit/mcp/test_summaries_text_fallback.py`
+holds the start and publish texts; `tests/unit/mcp/test_guidance_family_inventory.py`,
+`tests/unit/mcp/test_tb4n4_call_traps.py` and `tests/unit/mcp/test_tb4n5_digest_subject_hint.py`
+hold the counts, aliases and subject hint (the five recorded tb4n5 subject shapes).
+
+Check follow-up (2026-10-13, Codex check D4/D5): the two "Repair then finish" recipes
+(`publication-policy.md`, `coverage-and-receipts.md`) began with "Read current `status` and retain
+its frontier"; they now keep the held frontier and read `status` (or a filtered evidence view) only
+when IDs are needed, no frontier is held, or `frontier_changed` occurred. The focused review topic
+now answers each open AI-powered finding only; a `verified_resolved` or final finding takes no
+response. The consistency scan covers both spellings and the review topic.
+
+## Amendment (2026-10-13, tb4n5 guidance follow-up): one owner per startup rule
+
+tb4n5 left the Codex mandatory surface 6 bytes under its 8,192-byte budget (initialize, skill and
+card together), and three surfaces said the same startup rules: start first, recover then ask, never
+claim activation early, and the cadence. Each rule now has one owning surface per host family, and
+the tests pin it there instead of at every copy:
+
+- **Initialize (tier 0, ADR-010).** Keeps every rule an agent needs before its first guidance read:
+  when to call `start`, late start, schema loading, the read-only skip, reading the card first,
+  no false activation, never inventing state, start failure (continuation, then ask), consent,
+  disclosure and coverage wording, and the five URIs. The compact (Codex, Cursor) body adds "Do not
+  list resources; read the named topics": all 18 tb4n5 Codex attempts listed resources before their
+  first read. Both compact and Claude Code bodies drop the cadence sentence.
+- **Operating card.** Owns the cadence and the closure order (and stays the generic host's tier 0,
+  so its start paragraph is unchanged).
+- **Host skills.** Keep the catalog description (the #692 trigger, start first and failed-start
+  recovery), one start sentence, the pointer to the card and the closure judgment rules. The body no
+  longer repeats failed-start recovery, the read-only skip, the card's page routes or the cadence.
+  The start sentence now names its antecedent: "The first workflow operation is `start`, after a
+  discovery step that reads guidance and discovers schemas. This includes `read_guidance` and
+  commands." The capacity procedure leaves the skills: each keeps the one-line consent floor and
+  names the catalogued topic `workflow.md#change-local-retention-capacity`, where the procedure is
+  complete.
+
+Part of the freed budget pays for two routing changes. Each skill description, the trigger a host
+selects skills by, ends "Also use when a FinishUP finding, Stop message or receipt needs an answer", so
+a host that picks skills by description loads the skill again at closure. The card's catalog line
+says a long page lists its `#anchor` sections on page 0 (the generated `sections` list, ADR-010
+amendment of the same date) and to read one section, not the page.
+
+Mandatory surface after the change (budget 8,192): Codex 7,766 (was 8,186), Cursor 7,694 (8,140),
+portable 7,711 (8,157), Claude Code 7,252 (7,744). No rule left any host's mandatory surface;
+`tests/conformance/surfaces/test_session_start_start_first.py` checks that failed-start recovery
+and the read-only skip remain in the initialize bodies and the card.
+
+## Amendment 2026-10-14: repeated status reads (tb4 n5)
+
+In the tb4 n5 S arm (Codex 0.159.0, `mvcc-lsm-compaction`) the agent called `status` 45+ times
+over an hour with no `publish_work`, `check`, `respond` or `receipt` while five obligations stayed
+open and both test targets had passed. Two causes, two changes:
+
+- **Self-observation (bug).** The Codex rollout's completed `McpToolCall` item had no hook phase,
+  so the #564 delivery policy delivered every successful FinishUP `status` read: each read appended
+  action, result and evidence and moved the frontier the agent was polling. The item is now read in
+  the `PostToolUse` phase and held items are settled locally on release. Cursor's ordinary
+  `MCP:<tool>` names no server, so it is FinishUP's only when the bridge recorded serving that exact
+  read (commitment to tool, session, writer and `request_id`, written before the result returns,
+  claimed by at most one post-event within 120 s);
+  an unproven event, including every pre-event, is delivered as ordinary evidence. Explicit failures and denials, FinishUP
+  writes and other tools are delivered as before. Host runbooks record the per-host decision.
+- **Status loop (text only).** The MCP bridge keeps, per process (one host session), the number of
+  consecutive first-page `status` reads per `(session_id, actor_id)` since that session's last
+  write call (`start`, `publish_work`, `check`, `respond`, `receipt`, whatever the outcome).
+  Continuation pages (`cursor`) and `view: operation` neither count nor nudge. From the third such
+  read, the text channel leads with "Status read N times in a row with no write. No status read
+  is needed." and one next write derived from the same result's `closure_readiness` (`state`,
+  `agent_actionable`, in the service's order) and, for open obligations, the first `obligations`
+  view row that is `open`, `in_current_plan` and `closure_class: agent_work` (none is named from
+  the compact view or when the plan scope is unreadable): resolve that obligation with
+  `resolution_evidence_refs`, `respond`, run the planned verification then `check`, `check` with
+  `final_review: true`, or `receipt`. No line is added when the result itself asks for a
+  reread: readiness `unknown` (or a state this build does not know), `readiness_unknown`,
+  `projection_stale` or `check_in_progress` listed, a `rebuild_state` other than `current`, or a
+  non-zero `projection_lag`. The
+  structured result and every schema are unchanged; on the Cursor profile, whose text block is the
+  exact canonical JSON copy, that block stays `content[0]` and the line is a separate second
+  block, so a consumer that parses the first block keeps the exact result. A read appends nothing, so the
+  count cannot be derived from the ledger; a bridge restart only restarts the count. All three
+  hosts share the bridge, so the rule applies to Codex, Claude Code and Cursor alike.
+
+The `status` descriptor and the mapped SessionStart context now say "After resume or compaction,
+read status once; keep the returned obligations and findings, then do the work — do not reread
+status between ordinary steps." The SessionStart copy spells the dash as a semicolon because that
+context is ASCII-only (its character bound equals its byte bound, ADR-044). The mandatory startup
+surface is unchanged (Codex 7,766, Cursor 7,694, portable 7,711, Claude Code 7,252 of 8,192); the
+mapped SessionStart context, shared by the three hosts, grows from 1,048 to 1,190 bytes, inside
+its 2,000-character hook bound.
+
+A protocol-level alternative (a typed `next_write` on the status result) was not taken: it would
+need a status-result schema change, and the text line carries the same instruction.

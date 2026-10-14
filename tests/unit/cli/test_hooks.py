@@ -901,9 +901,12 @@ def test_session_start_active_with_fake_service(tmp_path: Path) -> None:
     # session/writer for `status`, and `mode=attach` by session id to continue.
     assert session_id in text
     assert writer_id in text
-    assert "Then call status with the returned session/writer ids" in text
-    assert text.index("call start with mode=attach") < text.index("Then call status")
-    assert "For compaction in an already-started host session" in text
+    assert "Then read status with the returned session/writer ids" in text
+    assert text.index("call start with mode=attach") < text.index("Then read status")
+    assert "for compaction in an already-started host session" in text
+    # tb4 n5: one status read after resume or compaction, not a poll between steps.
+    assert "read status once" in text
+    assert "do not reread status between ordinary steps" in text
     assert f"mode=attach and session_id {session_id}" in text
     assert "create_or_attach" in text
     assert "3:sha256:" in text

@@ -22,6 +22,7 @@ __all__ = [
     "DECLARED_OUTPUT_EMPTIED_GAP",
     "DECLARED_OUTPUT_NOT_REVIEWABLE_GAP",
     "DECLARED_OUTPUT_REMOVED_GAP",
+    "DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP",
     "DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP",
     "EDITED_AFTER_LAST_VERIFICATION_GAP",
     "FINDING_REJECTION_AWAITING_RULING_GAP",
@@ -90,6 +91,11 @@ DECLARED_OUTPUT_NOT_REVIEWABLE_GAP: Final = "declared_output_not_reviewable"
 # tb4n4 (issue #1044): a grader receives only the declared files, so the agent embeds the content,
 # rebuilds it at run time or declares the file; disclosing the dependency does not clear it.
 DELIVERABLE_REFERENCES_UNDECLARED_FILE_GAP: Final = "deliverable_references_undeclared_file"
+# tb4n5 (the #1044 follow-up, ADR-035 amendment): a declared source deliverable names created,
+# undeclared files only by an ambiguous file name (a declared file shares it, or nothing ties it to
+# the file's directory), so they were not treated as dependencies. A standing disclosure that
+# counts them on the receipt; never a name, never a Stop-gate token.
+DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP: Final = "deliverable_references_ambiguous_name"
 
 # Facts the agent removes by its own action: run the planned verification after the last edit
 # (or correct the requested item to the command it runs), or stop excluding a requested output.
@@ -128,6 +134,7 @@ STANDING_TASK_FACT_GAPS: Final = frozenset(
         REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
         DECLARED_OUTPUT_CONTENT_MOVED_GAP,
         DECLARED_OUTPUT_NOT_REVIEWABLE_GAP,
+        DELIVERABLE_REFERENCES_AMBIGUOUS_NAME_GAP,
     }
 )
 TASK_FACT_GAPS: Final = AGENT_ACTIONABLE_TASK_FACT_GAPS | STANDING_TASK_FACT_GAPS

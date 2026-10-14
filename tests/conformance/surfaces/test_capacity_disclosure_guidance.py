@@ -8,7 +8,9 @@ terminal interface actually emits the sentences the guidance and user documentat
 
 The MCP-initialize safety floor (`agent-instructions.md`) carries no capacity section: with its
 unrelated passages intact it already fills the replicated advertised-surface budget, so the rule
-lives in the workflow procedure and in every skill, which points there.
+lives in the workflow procedure. Since tb4n5 (P4) every skill keeps only the one-line consent
+floor and names that procedure's catalogued topic, `workflow.md#change-local-retention-capacity`;
+the commands, the lower/pause/resume path and the no-cap outcome are pinned once, there.
 """
 
 from __future__ import annotations
@@ -24,6 +26,8 @@ from finishup.domain.observation_capacity_policy import (
     capacity_change_disclosure,
     render_capacity_disclosure_lines,
 )
+from finishup.mcp.resources import read_resource
+from finishup.protocol.guidance_uris import GUIDANCE_TOPIC_URIS
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 _AGENT_INSTRUCTIONS: Final = _REPO_ROOT / "guidance" / "agent-instructions.md"
@@ -34,6 +38,7 @@ _SKILLS: Final = tuple(
     for host in ("codex", "claude-code", "cursor", "portable")
 )
 _SECTION_TITLE: Final = "Capacity and cost changes need a disclosed choice"
+_CAPACITY_TOPIC: Final = "finishup://guidance/workflow.md#change-local-retention-capacity"
 _NO_CAP_TOKEN: Final = "capacity_no_cap_unsupported"
 
 
@@ -108,19 +113,23 @@ def test_agent_instructions_keep_the_safety_floor_within_budget() -> None:
 
 
 @pytest.mark.parametrize("skill", _SKILLS, ids=lambda path: path.parents[1].name)
-def test_every_skill_points_to_the_disclosed_choice(skill: Path) -> None:
+def test_every_skill_keeps_the_consent_floor_and_names_the_capacity_topic(skill: Path) -> None:
     text = _collapsed(skill)
     for phrase in (
         f"{_SECTION_TITLE}: never choose a larger or uncapped local observation capacity for an "
         "ordinary task",
-        "run `finishup observe selection-preview`",
-        "apply only after the user accepts that preview",
-        "lower/pause/resume path",
-        f"returns `{_NO_CAP_TOKEN}`",
-        'See "Change local retention capacity" in [workflow.md](references/workflow.md)',
+        f"change it only on request, after the user accepts the preview in `{_CAPACITY_TOPIC}`",
     ):
         assert phrase in text, phrase
-    assert "\n### Change local retention capacity\n" in _WORKFLOW.read_text(encoding="utf-8")
+    # The procedure is stated once, in the topic, not repeated in four budgeted skills (tb4n5 P4).
+    for procedure in ("selection-preview", _NO_CAP_TOKEN, "lower/pause/resume"):
+        assert procedure not in text, procedure
+    assert _CAPACITY_TOPIC in GUIDANCE_TOPIC_URIS
+    topic = " ".join(read_resource(_CAPACITY_TOPIC).decode("utf-8").split())
+    assert topic.startswith("### Change local retention capacity")
+    assert f"{_SECTION_TITLE}." in topic
+    assert "finishup observe selection-preview --workspace /exact/project" in topic
+    assert f"return `{_NO_CAP_TOKEN}` and change nothing" in topic
 
 
 def test_renderer_emits_the_increase_consequences_the_guidance_names() -> None:

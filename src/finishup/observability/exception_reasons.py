@@ -77,6 +77,9 @@ EXCEPTION_REASONS: Final[Mapping[str, str]] = MappingProxyType(
         "ReadOnlyError": "exception_read_only_error",
         "RecursionError": "exception_recursion_error",
         "ReferenceError": "exception_reference_error",
+        # The control handshake resolves the caller's repository identity once the vault is
+        # ready; a Git that cannot answer closes the connection (#1040).
+        "RepositoryIdentityError": "exception_repository_identity_error",
         "RuntimeError": "exception_runtime_error",
         "SQLError": "exception_sql_error",
         "StopAsyncIteration": "exception_stop_async_iteration",

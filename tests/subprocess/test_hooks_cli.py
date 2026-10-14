@@ -155,12 +155,18 @@ def test_observe_hook_process_wall_clock_including_startup(
         pytest.skip("no installed console script to measure")
 
     home = tmp_path / "home"
+    home.mkdir(mode=0o700)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(home / ".codex"))
+    monkeypatch.setenv("CODEX_TESTING_HOME", str(home / ".codex"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(home / ".local/state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(home / ".cache"))
     state = state_dir()
     state.mkdir(parents=True)
     state.chmod(0o700)
     workspace_dir = home / "project"
-    workspace_dir.mkdir()
+    workspace_dir.mkdir(mode=0o700)
     _populate_wall_clock_store(state, workspace_dir)
     store_file = next((state / "observation" / "workspaces").glob("*.json"))
     assert store_file.stat().st_size >= 250_000, (
@@ -205,3 +211,14 @@ def test_observe_hook_process_wall_clock_including_startup(
     assert elapsed < 1.5, (
         f"one observe hook process took {elapsed:.2f}s end to end, startup included"
     )
+
+
+@pytest.mark.slow
+def test_cold_hook_fixture_survives_a_shared_group_umask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    previous = os.umask(0o002)
+    try:
+        test_observe_hook_process_wall_clock_including_startup(tmp_path, monkeypatch)
+    finally:
+        os.umask(previous)

@@ -9,10 +9,8 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from finishup.adapters.providers.codex_app_server import (
-    CODEX_EVALUATOR_RUNTIME_VERSION,
-    codex_evaluator_cell_for_platform,
-)
+from builders.codex_capability import LINUX, binding_for, record_for
+from finishup.adapters.providers.codex_capability import codex_source_identity
 from finishup.adapters.providers.codex_evaluator_runtime import (
     CodexBindingDiagnosis,
     managed_runtime_path,
@@ -25,7 +23,6 @@ from finishup.config.models import (
     SemanticFallbackConfig,
     VerificationConfig,
 )
-from finishup.config.write import codex_subscription_runtime
 from unit.cli.test_provider_status import (
     _UNREAD_ROUTE,  # pyright: ignore[reportPrivateUsage]
     _Client,  # pyright: ignore[reportPrivateUsage]
@@ -38,21 +35,12 @@ pytestmark = pytest.mark.anyio
 _REPAIR = "finishup provider codex-subscription repair"
 
 
-def _runtime(executable: str = "/opt/npm/lib/node_modules/@openai/codex/bin/codex.js"):
-    cell = codex_evaluator_cell_for_platform("linux", "x86_64")
-    return codex_subscription_runtime(
-        executable_path=executable,
-        executable_sha256=cell.executable_sha256,
-        runtime_version=CODEX_EVALUATOR_RUNTIME_VERSION,
-        source_identity=cell.source_identity,
-        app_server_schema_sha256=cell.app_server_schema_sha256,
-        capability_cell_sha256=cell.capability_cell_sha256,
-        isolated_config_sha256=cell.isolated_config_sha256,
-        capability_profile=cell.capability_profile,
-        capability_evidence_expires_at="2026-11-30T00:00:00Z",
-        codex_home="/opt/finishup/codex-home",
-        model="gpt-5.6-luna",
-        reasoning_effort="high",
+def _runtime(
+    executable: str = "/opt/npm/lib/node_modules/@openai/codex/bin/codex.js",
+) -> ExternalRuntimeProfileConfig:
+    record = record_for(b"codex", b"host", platform=LINUX)
+    return binding_for(
+        record, Path(executable), Path("/opt/finishup/codex-home"), model="gpt-5.6-luna"
     )
 
 
@@ -196,7 +184,7 @@ def test_the_runtime_fact_is_local_and_reports_role_and_ownership(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(codex_subscription.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr("platform.machine", lambda: "x86_64")
 
     def runtime_bundle(_config: FinishUpConfig | None = None) -> Path:
         return tmp_path
@@ -207,8 +195,7 @@ def test_the_runtime_fact_is_local_and_reports_role_and_ownership(
         return CodexBindingDiagnosis("ready", "current", "admitted", "ready")
 
     monkeypatch.setattr(codex_subscription, "diagnose_bound_runtime", diagnose)
-    cell = codex_evaluator_cell_for_platform("linux", "x86_64")
-    managed = str(managed_runtime_path(tmp_path, cell))
+    managed = str(managed_runtime_path(tmp_path, codex_source_identity(LINUX, "0.159.0")))
 
     host_bound = FinishUpConfig(profile="codex-subscription", external_runtime=_runtime())
     fact = module.external_runtime_fact(host_bound)

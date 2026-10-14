@@ -2,7 +2,9 @@
 
 **Status:** Working decision revised 2026-08-30 (issue #404 external-runtime authority). Amended
 2026-09-23 for issue #742 (adapter-boundary failure tokens, credential-retry exclusion, and
-attempt-status projection). Ratification requires the privacy/egress gates in
+attempt-status projection). Amended 2026-10-13: the Codex subscription evaluator is admitted by a
+capability check instead of one pinned build (see *Capability-checked evaluator admission*).
+Ratification requires the privacy/egress gates in
 ADR-009 plus recorded capability fixtures against every advertised provider/model/endpoint profile.
 **Implemented by:** `src/finishup/ports/semantic.py`,
 `src/finishup/ports/privacy.py`, `src/finishup/application/egress.py`,
@@ -372,6 +374,9 @@ exact-version admission and separates the **evaluator runtime** from the **host 
    executable digest. No newer Codex release is admitted, and nothing is inferred from a version
    string, path, or discovery order. Capability-based admission of further releases stays future
    work that needs its own evidence and amendment.
+   *Superseded 2026-10-13 by the capability-checked admission amendment below. Decisions 2, 3, 5,
+   6 and 7 stand, with the store keyed per checked release and "admitted" meaning "passed the
+   capability check"; decision 4's selection is replaced by newest-first with fallback.*
 2. **A retained runtime per data bundle.** Setup and repair bind an owner-private copy at
    `<data bundle>/external-runtimes/codex-evaluator/<source identity>/codex` (directory `0700`,
    file `0500`). Bytes are hashed while they are copied and committed by atomic replace only when
@@ -419,6 +424,9 @@ step.
 
 ### Codex 0.157.1 cell amendment (2026-09-27, issue #871)
 
+*Superseded 2026-10-13 by the capability-checked admission amendment below; 0.157.1 is now the
+floor, not the one admitted build.*
+
 The admitted release moves from Codex npm `0.150.1` to `0.157.1` on both platform cells. Each
 cell still admits exactly one reviewed native executable, so decision 1 of the #855 amendment
 holds. `0.150.1` cannot list or run the `gpt-6-luna` new-binding default on a ChatGPT account;
@@ -465,6 +473,236 @@ The isolated configuration is unchanged, so dedicated homes and sign-ins carry o
 moves through `repair`. Warnings keep failing closed, and disabling the host by configuration is
 not a substitute: it produces a different warning. Retaining Codex's bundled `bwrap` stays a
 separate decision on #874.
+
+### Capability-checked evaluator admission (2026-10-13)
+
+The owner decided on 2026-10-13 that the subscription evaluator uses the newest Codex available,
+not one pinned build. Pinning cost a FinishUP release for every Codex release, and it blocked models
+that only newer Codex catalogs list: with a ChatGPT login, Codex 0.157.1's `model/list` does not
+offer `gpt-6.1-sol`, Codex 0.159.0 does. Setup then refused the binding (#534 reuse needs the model
+listed), and the fallback login on a signed-in home ended as `codex_login_event_invalid`. This
+amendment supersedes decision 1 of the #855 amendment and the exact-version admission of the #871
+amendment. Retention, the mutation lock, `repair` as the explicit identity transition, the reverse
+operations and the privacy gateway are unchanged.
+
+1. **Admission by capability.** Any stable Codex npm release (`X.Y.Z`, no prerelease) at or above
+   the floor `0.157.1`, on macOS arm64 or Linux x86_64, is admitted when the bytes FinishUP will
+   launch pass the capability check. The floor is the oldest release whose evaluator-facing
+   behaviour was reviewed end to end (code-mode host, remote-control notice, `normalModelSlug`).
+   Native Windows still has no evaluator platform. ADR-005's exact-cell rule for the *host*
+   integration is not changed by this amendment.
+2. **The check** (profile `codex-evaluator/capability/v2`) runs against FinishUP's retained copy, so
+   the bytes checked are the bytes launched. In order, the first failure being one closed token:
+   - the release is at or above the floor (`codex_runtime_version_unsupported`); it comes from
+     the npm manifests, or from `codex --version` under a scratch home for a native path;
+   - `codex-code-mode-host` sits beside the executable (`codex_runtime_code_mode_host_missing`);
+   - **reviewed protocol subset**: the binary writes its app-server v2 schema
+     (`codex app-server generate-json-schema`), and every method, field, JSON type and value the
+     evaluator sends or reads must be present with a compatible shape, checked structurally, never
+     by a whole-schema digest. Additive methods, notifications and fields pass, because the
+     runtime allowlists still fail closed on anything unreviewed. Closed values the evaluator
+     interprets, such as `MessagePhase`, must not gain an unreviewed member. Every request the
+     evaluator sends must not require a field it does not send (a new required `turn/start`
+     field would otherwise fail only after the packet arrived), and every closed value it sends
+     (`approvalPolicy` `never`, `sandbox` `read-only`, `summary` `none`, ...) must still be
+     admitted by its field. The required sets and admitted sent values enter the subset digest
+     (`codex_runtime_protocol_incompatible`);
+   - **zero-inference probe** under a scratch home holding only the isolated config, with no
+     sign-in, and the same argv, `--strict-config`, overrides and environment allowlist as a
+     review. `initialize` must report exactly the release being checked and the bound home.
+     `account/read` must answer. `thread/start` must prove an ephemeral, read-only,
+     network-off thread in a new empty cwd with no instruction sources. Every notification seen
+     must be inside the reviewed pre-disclosure allowlist: remote control `disabled`; native
+     warnings, `configWarning`, unknown methods and server requests fail closed. A reply is
+     returned as soon as it is read, so the window is closed by a barrier `account/read`: Codex
+     writes stdout in order, so every line it wrote before the barrier reply (including events
+     still buffered behind the `thread/start` reply) is read and checked first. No `turn/start`
+     is sent, so nothing is sampled and no task content exists.
+   - **model**: the dedicated home's readiness probe (`account/read`, `model/list`, then the
+     same barrier and allowlist check, so a release that warns only under the signed-in home is
+     passed over) must list the configured model with every configured effort before the binding
+     is written
+     (`codex_model_unavailable` for a signed-in home whose model no admitted release lists; setup
+     no longer opens a sign-in in that case).
+3. **Provenance, not an admission list.** A passed check commits `capability.json`
+   (`yoetz.codex-evaluator-capability/1`) beside the retained runtime. It records the profile,
+   floor, release, source identity, platform, executable and code-mode-host SHA-256, the digest
+   of the checked subset facts, the isolated-config digest and the checks run. It holds no time,
+   path, account or model, so re-checking the same bytes is idempotent. The binding keeps its field
+   set: `runtime_version` is the resolved release, `app_server_schema_sha256` the subset-facts
+   digest, `capability_cell_sha256` the record digest, and `capability_profile` the profile above.
+   Receipts' `runtime_evidence` carries the same fields with an unchanged shape. No configuration
+   or receipt schema changes.
+4. **Launch fence.** Before every child, the executable and code-mode host must still match the
+   committed record, and the record must match the binding; a runtime replaced after its check
+   never starts. Every attempt still re-proves the `initialize` release, login, model and efforts,
+   thread isolation and pre-disclosure events (through the same barrier) before the case crosses
+   stdin. The full check is not
+   repeated per attempt; `repair` and `setup` run it.
+5. **Newest first, with fallback.** Setup and repair gather candidates: FinishUP's retained releases,
+   the binding's host installation, discovered everyday Codex installs, or one `--executable`.
+   They keep one candidate per release (the retained copy first) and try them newest first. A
+   candidate that fails the check, or whose catalog lacks the configured model for a signed-in
+   home, is passed over; the result names those as `runtimes_passed_over`. If none passes, the
+   first candidate's token is the refusal (or `codex_model_unavailable`). Interactive setup
+   (prompt and terminal interface) keeps this fallback when the owner accepts the offered
+   default; only a different, explicitly typed path pins setup to one runtime. A newer everyday Codex
+   is adopted by the next `setup` or `repair` without a FinishUP release. Earlier retained releases
+   stay as fallbacks until `runtime remove`, which now deletes every retained release the binding
+   does not use. `runtime install --download` installs `@openai/codex@latest`.
+   *Amended 2026-10-14:* every check subprocess (version, schema, probe, readiness) leads its own
+   process group, which is killed as a whole and confirmed empty on exit, timeout or any failure.
+   An unconfirmed cleanup is `codex_capability_probe_cleanup_unconfirmed`; it outranks, and
+   chains, any failure the check already raised, and it is never a fallback: candidate discovery
+   and selection stop, nothing further is launched, and nothing is written.
+6. **Existing bindings.** A pinned-cell binding (`codex-evaluator/0.150.1/*` or
+   `codex-evaluator/0.157.1/*`), or one checked under the unreleased first draft of this
+   amendment (`codex-evaluator/capability/v1`, which did not yet check required request fields,
+   sent values or the buffered pre-disclosure window), reports `codex_runtime_profile_outdated`, and its bytes are still
+   compared with the digest it names, so replaced bytes stay visible. `repair` re-checks and
+   rebinds it, keeping the sign-in and every owner choice. No privacy authority migrates.
+7. **Packaged cells removed.** `support/codex-evaluator/0.157.1/cell.json` and
+   `cell-linux-x64.json` are deleted; the isolated config moves to
+   `support/codex-evaluator/config.toml`. Keeping exact cells as known-good references would leave
+   two admission paths with two trust models. The 0.157.1 build simply passes the same check.
+8. **Unchanged.** The isolated config, launch argv, OAuth authority, cleanup fences, the
+   `2026-11-30T00:00:00Z` evidence expiry (now the review window of this FinishUP release's subset and
+   probe, not of a Codex build) and the `implementation_candidate` / pending release posture.
+
+**Tradeoff.** FinishUP no longer holds an exact binary identity for the evaluator. Trust now comes
+from the capability check plus the provenance record. The record proves which bytes were checked
+and launched; it does not prove they are benign. A new release can change behaviour that neither
+its schema nor a zero-inference probe shows, for example a new default-on feature or a hosted
+tool. What still holds for every admitted release, on every attempt:
+- the dedicated home, the environment allowlist, and `--strict-config` with the critical deny
+  overrides (a removed config key fails the launch);
+- the read-only, network-off thread posture proven before disclosure;
+- fail-closed handling of every tool request, tool item, unknown event and unknown phase.
+
+An unreviewed event that appears only after `turn/start` still fails closed. The privacy fence
+holds, and the review ends `unavailable`.
+
+**Evidence (2026-10-13, macOS arm64, unauthenticated, zero inference).**
+- The real check admitted npm `0.157.1`, `0.159.0` and `0.162.1`, including the machine's global
+  `0.162.1` install, retained into an isolated bundle. An installed `0.153.4` was refused by the
+  floor.
+- Subset diff, 0.157.1 to 0.159.0: `PlanType` adds `promax`; `CodexErrorInfo` adds
+  `flexUnavailable` and `tooManyDenials`; no method or notification changes.
+- Subset diff, 0.159.0 to 0.162.1:
+  - `MessagePhase` adds `partial_answer`;
+  - `ServerNotification` adds `thread/prediction/updated`, which stays outside every allowlist;
+  - `ClientRequest` adds `thread/attachmentOwner/list`;
+  - `TurnStartParams` and `Turn` add the optional `parentTurnId` and `rootTurnId`;
+  - `CodexErrorInfo` gains a catch-all variant.
+- Adaptations:
+  - `partial_answer` is discarded like `commentary`, so only `final_answer` is a judgment;
+  - rate-limit plan names are accepted as bounded identifiers and discarded;
+  - `promax` is a known account plan;
+  - `flexUnavailable` classifies as `provider_outage`.
+- Authenticated evidence, with `gpt-6.1-sol` listed on 0.159.0 under a ChatGPT login, is
+  pending. The runbook records the boundary.
+
+**Amendment (2026-10-14, owner-requested scoped fix; maintainer acknowledgement for the
+privacy/egress gate recorded here).** Codex 0.162.1 on Linux probes its bubblewrap sandbox at
+app-server start (`bwrap --unshare-user --unshare-net --ro-bind / / /bin/true`). When that fails
+with a user-namespace error (gVisor's `loopback: Failed RTM_NEWADDR`, Docker's default seccomp,
+kernels without unprivileged user namespaces), it writes one `configWarning` before any content:
+`{"summary": "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.",
+"details": null}` (`codex-rs/sandboxing/src/bwrap.rs` `USER_NAMESPACE_WARNING`). The
+pre-disclosure gate refused every warning, so the capability check and each attempt failed as
+`codex_app_server_predisclosure_event_forbidden` on such hosts.
+
+1. **What the warning means for a review.** Bubblewrap confines only the tools Codex runs as
+   child processes. Under the evaluator's isolated config, Codex 0.162.1 offers the model none of
+   them:
+   - `features.shell_tool=false` makes `add_shell_tools` (`core/src/tools/spec_plan.rs`) register
+     no `exec_command` or `write_stdin` handler;
+   - `apply_patch` stays registered, but `sandbox_mode="read-only"` has no writable roots and
+     `approval_policy="never"` rejects sandbox approval. So `assess_patch_safety`
+     (`core/src/safety.rs`) returns `Reject` before any patch runs, whether or not a sandbox
+     exists;
+   - the code-mode host is spawned as a plain child, not under bubblewrap. Its nested calls reach
+     only the same tool registry;
+   - no MCP server, plugin, app, web search, image or agent tool is enabled.
+
+   FinishUP's turn gate still ends the turn on any command, file-change or tool item and on every
+   server request. A missing user-namespace sandbox therefore widens nothing a review can do.
+2. **Narrow admission.** Only that exact notification is admitted before disclosure:
+   - method `configWarning`;
+   - `params` exactly `{summary, details}`, with `details` null;
+   - the summary byte-identical to the reviewed constant (Codex carries no structured code);
+   - an optional integer `emittedAtMs`.
+
+   Every other `configWarning` still fails closed as `codex_app_server_predisclosure_event_forbidden`.
+   That includes the WSL1 warning, any detail, path or range, and the same text sent through
+   `warning`. (The missing-bubblewrap warning was refused here too until the owner decision recorded
+   below, which admits it under the same rules.) Admission applies to the capability check, the readiness and
+   login probes, and every attempt.
+
+   **Bound to reviewed releases.** Point 1 was verified against one release's source and cannot be
+   proven at runtime. No app-server method returns the effective tool registry without a model
+   call: `config/read` returns config values, not registered handlers, and
+   `codex debug prompt-input` renders input items only. Even a tool list would not prove that a
+   patch is rejected before it runs. The admission is therefore limited to the reviewed set
+   `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES = {0.162.1}`, matched against the release that
+   `initialize` proved. That is the newest stable npm release on 2026-10-14; 0.159.x sends this
+   warning only in the terminal UI, not through the app-server.
+
+   Any other release that sends the same warning fails closed before disclosure with
+   `codex_sandbox_unavailable_unreviewed_runtime`, recorded as the `predisclosure_event_forbidden`
+   stage. That token is a per-candidate refusal, so newest-first selection falls back to an older
+   reviewed release when one is installed. Its continuation names a reviewed release and enabling
+   user namespaces. Adding a release to the set requires re-reviewing every item of point 1 in its source.
+3. **Surfaced, not hidden.** A probe that saw the warning reports `sandbox_unavailable`.
+   `provider codex-subscription status`, `setup` and `repair` add
+   `codex_sandbox_unavailable: true|false`, which `finishup setup` keeps. The terminal interface shows
+   a plain line saying reviews are unaffected.
+
+   The capability record is not changed: it stays a host-independent statement about the bytes.
+   Receipts' `runtime_evidence` does not carry the flag yet, because that needs a new
+   `runtime-attempt-evidence` schema version and its event/receipt cascade. That is a follow-up;
+   until then the receipt's claim is unchanged by this host fact (point 1).
+4. **Re-review trigger.** Each new Codex release is outside the reviewed set until its source is
+   re-checked: no command-running tool for this config, patch rejection under read-only and
+   `never`, and the code-mode host outside bubblewrap. A new text or shape fails closed regardless.
+
+**Amendment (2026-10-14 evening, owner decision: missing system bubblewrap).** Benchmark task
+containers must stay exactly as the official harness ships them, so the distribution `bubblewrap`
+package is not installed there. With no system `bwrap` on the evaluator's fixed `PATH`
+(`/usr/bin:/bin`), Codex 0.162.1 skips its user-namespace probe and writes one different
+`configWarning` before any content (`codex-rs/sandboxing/src/bwrap.rs` `MISSING_BWRAP_WARNING`,
+also byte-identical in the shipped linux-x64 binary, sha256 `628e3548…`):
+`{"summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package
+manager. See the sandbox prerequisites:
+https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled
+bubblewrap in the meantime.", "details": null}` with an integer `emittedAtMs`. A live probe on
+2026-10-14 (Codex 0.162.1 app-server, FinishUP's exact launch argv and environment, a
+`python:3.12-slim-bookworm` container on a Boat Docker host with no `bwrap`) received exactly that
+envelope after `initialize` and before the barrier reply. Codex writes at most one of the
+missing-bubblewrap, WSL1 and user-namespace warnings.
+
+1. **Same reasoning.** Point 1 above does not depend on which sandbox Codex has: no
+   command-running tool is registered, every patch is rejected before it runs, and the code-mode
+   host is not under bubblewrap. Without a system `bwrap`, Codex attempts its bundled copy when
+   that resource is present; FinishUP does not retain it (#874), and the warning itself proves
+   neither a usable sandbox nor user-namespace access, so its Linux sandbox is unverified. That
+   widens nothing a review can do.
+2. **Same narrow admission.** The warning is admitted only with the closed shape of point 2 and
+   that summary byte for byte. It is admitted only from `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES`
+   (`{0.162.1}`); any other release sending it fails closed with
+   `codex_sandbox_unavailable_unreviewed_runtime`, as before. Look-alikes (a detail, a path or
+   range, a missing `details`, trailing bytes, the same text through `warning`) and the WSL1
+   warning stay refused as `codex_app_server_predisclosure_event_forbidden`.
+3. **Disclosed with its reason.** The probe result carries `sandbox_unavailable_reason`
+   (`user_namespaces_unavailable|bubblewrap_missing`). `provider codex-subscription status`,
+   `setup` and `repair` report `codex_sandbox_unavailable: true` with
+   `codex_sandbox_unavailable_reason`, which `finishup setup` keeps. For `bubblewrap_missing` the
+   terminal interface says the evaluator runs without Codex's verified Linux sandbox and why
+   reviews are unaffected. Receipts' `runtime_evidence` still does not carry the fact (the same
+   schema follow-up as point 3 above); the diagnostic surfaces are the disclosure until then.
+4. **Not a general bubblewrap waiver.** This admits only the Codex evaluator's warning. Approved
+   external-command checks still need a usable system `bwrap` on Linux and keep failing closed
+   without it (`bwrap_missing`).
 
 ## Fallback endpoint amendment (2026-09-04, issue #582)
 
@@ -1728,7 +1966,8 @@ packet only lacked room for.
 - **Record and surfaces.** The check records the last round's review. Its `review_input_manifest`
   carries the optional `follow_up_round` (1–3) and, in a follow-up packet, `missing_inputs` lists
   the reviewer's in-check request: `supplied` with the excerpt sources FinishUP added (only excerpts
-  that crossed the provider boundary count), else `pending`. The field is added in place to the
+  that crossed the provider boundary count), `unavailable` when all composed supply refs were
+  privacy-withheld, otherwise `pending`. The field is added in place to the
   unreleased check-recorded 1.3.0/1.4.0, check-result 1.3.0/1.4.0, status-result 1.4.0 and
   outbound-case 1.2.0 schemas. The shared manifest renderer shows the round and the added items in
   the CLI, the MCP check text, and the receipt's coverage note in JSON, markdown and text. The
@@ -1736,3 +1975,78 @@ packet only lacked room for.
   Structural progress (`status view=operation`, and the terminal interface that renders it)
   follows the live round, else the latest round by the round its case object names, never by
   attempt count or random job id.
+
+**Amendment (2026-10-13, tb4n5 react-lead-form; #1047 follow-up).** Three follow-up rounds fired
+and none converted: each request named a stale hook-captured edit whose first part the first packet
+had carried, so the per-reference rule called it shown, and the file's current content existed only
+in the check-time change, which follow-ups could not draw from.
+
+- **Per part, never per source.** Every excerpt part is placed in its source text as a byte
+  interval (`excerpt_span_key`: `<ref>#<start>-<end>/<total>`, in process only, never recorded or
+  logged; the source of a check-time change part is `check-time-change`). The evaluation reports
+  the parts the exact sent packet carried (`case_excerpt_parts`, read from the provider-bound
+  manifest like `case_excerpt_refs`), and `case_excerpt_refs` now names only sources a sent packet
+  carried whole: every part the source has was sent. A source the first packet showed in part
+  therefore still has parts to add. `ReviewFollowUp` carries `shown_parts` (the first packet's) and
+  `added_parts` (parts later packets carried that no earlier one had). Intervals, not part numbers,
+  are compared, and each interval is placed over the source's own authenticated length whatever
+  the selection, so a narrowed case that splits a source differently never counts old bytes as
+  new. A head-and-tail clip holds two intervals (its head and its tail), never the elided middle,
+  so clipping never makes a source read as shown whole.
+- **What ranks first.** Within the same share, a requested source's parts that the first packet
+  carried keep their ordinary rank; parts an earlier round added rank first again (they keep their
+  place); the next parts no packet carried follow while they fit. A source larger than the share
+  has its next parts ranked first rather than none of it; its other parts keep their ordinary rank.
+- **The current section of a stale edit.** A `current_diff_for_path` item naming a hook-captured
+  edit is also answered with the current section of each path that edit changed, cut from the
+  check's frozen check-time change (the same authenticated, capture-time redacted object; nothing
+  is read again) when the recipe carries that change. Each section travels as
+  `change-section-NNN` (`NNN` its position in the change; `-part-MM` past one part)
+  `repository_excerpt` items beginning `[FinishUP check-time change, the current state of a file a
+  requested edit changed, section part i of n]`, linked to the requested edit, under the same
+  privacy admission as the change's own parts, and ranks first within the share. A section the
+  first packet's change parts already carried is not served again. Any requested edit qualifies,
+  not only one a newer capture superseded: the change is the state when the check ran, so it is
+  never older than a capture. Reviewer-chosen line ranges are not supported (that needs a typed
+  request field). A served section is a shown file (ADR-031 item 9): the shown-file record counts
+  the change bytes the sections in the bounded envelope carried beside its leading run, so a
+  finding raised on a served file needs a repair that shows that file too. A file whose shown
+  bytes are not one run from its section's start has no truthful view in that record: it is left
+  out and the record is marked incomplete, so that review's coverage is unknown and never
+  tolerates a check-time limit. (The first cut of this amendment counted only the leading run and
+  called the record complete, which let a repair that never showed the served file clear a
+  finding raised on it; the tb4n5 fix review caught it.)
+- **When a round runs.** A round is sent only when its packet carries a requested part that no
+  sent packet of the check carried (`follow_up_new_parts`), counting a served section for the edit
+  it answers even when the first packet showed that edit whole, and counting only items admission
+  keeps: rows the bounded envelope's catalog keeps, in categories the channel does not withhold.
+  The builder marks the excerpts that supply the request beyond the first packet
+  (`SemanticCase.follow_up_supplied_item_ids`, bound into a follow-up case's digest); the mark
+  travels on the packet row (`follow_up_supplied: true`), and the provider-bound manifest says
+  `supplied` only through a marked row admission kept, so an old part the first packet carried
+  never stands in for new parts admission dropped. A part egress then withholds under a privacy
+  rule is disclosed as `unavailable` on the sent packet when all composed supply refs were
+  withheld; its supplied refs are empty and its source is never asked for again. Admission
+  dropping new rows for room remains `pending`, because privacy did not make them unavailable. The
+  planner asks for a current section only while the requested edit's own paths have bytes no
+  packet carried (`current_section_parts`), never because other bytes of the change remain. It
+  also stops before rebuilding a case for a request whose targets name no action, result or
+  evidence row and record none (an obligation, the event that carried the task statement): that
+  request is the agent's to answer, as before. A
+  privacy-withheld source is still never re-sent. The three-round bound and the per-check share
+  are unchanged, so a request whose remaining parts do not fit stays unanswered and is returned to
+  the agent with its availability class. Each round's `semantic_review_follow_up` diagnostic also
+  counts `semantic_follow_up_parts_added`.
+
+### Follow-up row contract and withholding accounting (2026-10-14)
+
+Maintainer acknowledgement for the protocol and packaging gate: the owner explicitly requested
+“need not fragile but good and working, and also working with older versions when possible”.
+`schemas/privacy/review-packet-row-2.0.0.schema.json` governs the inner provider-bound `items[]`
+rows of `yoetz.review-packet-case/2`, including optional `follow_up_supplied: true`; absent marks
+remain readable and never claim new supply. The canonical row vectors cover absence, true,
+partial admission and privacy withholding. This adds no durable event field or privacy authority.
+A round already dispatched stays counted even if egress withholds every newly supplying row; its
+request is unavailable, not pending work, and receipts retain empty supply refs. Avoiding that one
+dispatch would require an egress preflight transaction; this change does not bypass egress or
+reuse a prior disclosure to save a round.

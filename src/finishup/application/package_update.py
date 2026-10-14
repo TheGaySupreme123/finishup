@@ -45,7 +45,9 @@ __all__ = [
 ]
 
 PACKAGE_UPDATE_UPGRADE_COMMAND: Final = "finishup upgrade"
-PACKAGE_INSTALL_COMMAND: Final = "uv tool install --managed-python --python 3.14.6 finishup"
+PACKAGE_INSTALL_COMMAND: Final = (
+    "uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup"
+)
 # Frozen legacy identifier (ADR-048): the cache file keeps its schema tag so earlier releases
 # sharing the state directory still read it. The optional ``package`` member names the PyPI
 # identity that was polled; a cache without one was written by a release that polled ``yoetz``.

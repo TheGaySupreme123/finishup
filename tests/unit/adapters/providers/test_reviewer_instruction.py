@@ -25,6 +25,7 @@ from finishup.adapters.providers.openai_responses import (
     SEMANTIC_REVIEW_INSTRUCTION,
     owner_declared_data_use_profile,
 )
+from finishup.application import semantic_case as semantic_case_module
 from finishup.application.semantic_case import (
     ACKNOWLEDGED_REVIEW_INSTRUCTION,
     OVER_CASE_ITEM_LIMIT_REASON,
@@ -340,6 +341,8 @@ def test_every_packet_gap_code_is_glossed_as_a_packet_limit() -> None:
         "not_selected",
         "withheld_by_policy",
         "redacted_never_send",
+        # tb4n5: the change's own redaction code.
+        "check_time_change_redacted",
         OVER_CASE_ITEM_LIMIT_REASON,
         # Capture, redaction and storage codes the deterministic case builder stamps.
         "captured_object_unavailable",
@@ -406,8 +409,54 @@ def test_image_and_binary_content_is_not_assessable_never_missing() -> None:
 def test_the_credential_placeholder_is_never_asked_for() -> None:
     """L2 seam: the exact egress placeholder marks a withheld value, never a missing item."""
 
-    assert "The exact token [withheld-by-yoetz:possible-credential] marks a value" in _TEXT
+    assert (
+        "[withheld-by-yoetz:possible-credential] replaced a value FinishUP withheld because it may "
+        "be a credential." in _TEXT
+    )
     assert "Never raise a finding or a missing_for_assessment item asking for that value." in _TEXT
+
+
+def test_every_redaction_marker_a_packet_can_carry_is_explained_as_never_code() -> None:
+    """tb4n5 live-database-cutover: ``password=[REDACTED]`` in the check-time change was read
+    as an undefined name and raised as a NameError ``code_defect``."""
+
+    for marker in (*_redaction_markers(), *_quote_markers()):
+        assert marker in _TEXT, marker
+    assert (
+        "The exact tokens [REDACTED] and [withheld-by-yoetz:possible-credential] are FinishUP's own "
+        "redaction markers" in _TEXT
+    )
+    assert "[REDACTED] replaced a credential FinishUP detected" in _TEXT
+    assert (
+        "Each stands for an original value or expression that is unavailable to you, not text "
+        "the agent wrote; the rest of the line is the agent's real content." in _TEXT
+    )
+    assert (
+        "Never read a marker as evidence of a syntax error, an undefined name, a missing value "
+        "or missing configuration." in _TEXT
+    )
+    # The packet's own code for a redacted change is glossed as a packet limit.
+    gloss = PACKET_GAP_GLOSSARY["check_time_change_redacted"]
+    assert "[REDACTED]" in gloss and "[withheld-by-yoetz:possible-credential]" in gloss
+    assert f"check_time_change_redacted: {gloss}" in _TEXT
+    # Every provider path sends the same bytes (Chat Completions appends only its shape suffix).
+    assert CHAT_COMPLETIONS_INSTRUCTION.startswith(SEMANTIC_REVIEW_INSTRUCTION)
+
+
+def _redaction_markers() -> tuple[str, ...]:
+    """The markers capture-time and egress redaction can leave in any packet item."""
+
+    from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+
+    markers = getattr(semantic_case_module, "_REDACTION_MARKERS")
+    assert EGRESS_CREDENTIAL_PLACEHOLDER in markers
+    return tuple(marker.decode("ascii") for marker in markers)
+
+
+def _quote_markers() -> tuple[str, ...]:
+    from finishup.application.review_quotes import CREDENTIAL_PLACEHOLDER, REDACTION_MARKER
+
+    return (REDACTION_MARKER, CREDENTIAL_PLACEHOLDER)
 
 
 def test_the_reviewer_never_advises_delivering_less() -> None:

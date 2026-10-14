@@ -31,6 +31,10 @@ from finishup.adapters.integrations.codex_lifecycle import (
     store_mapping,
     validate_codex_session_id,
 )
+from finishup.adapters.integrations.finishup_call_rejections import (
+    claim_served_finishup_read,
+    rejected_call_commitment,
+)
 from finishup.adapters.integrations.hook_spool import HookSpool
 from finishup.adapters.integrations.observation_admission import build_routine_read_summary
 from finishup.adapters.integrations.observation_local import (
@@ -232,7 +236,10 @@ _MAX_CONTENT_CHUNK: Final = 256 * 1024
 # The drain budget is spent on service delivery only: its clock starts after the
 # service connection is open (the connect has its own preflight bound below), so
 # loading local state and a cold handshake no longer consume it. tb4n1 measured
-# `drain_budget_exhausted` on 94% of hooks when the connect shared this clock.
+# `drain_budget_exhausted` on 94% of hooks when the connect shared this clock. The owner kept
+# the 0.2 s budget after tb4n5 and renamed that diagnostic `drain_pass_delivered_nothing`: it
+# counts hook passes that delivered no row within the budget (the rows stay queued for the next
+# pass or the sweeper), not lateness. Lateness is the outbox delivery lag in `observe status`.
 _HOOK_DRAIN_BUDGET_SECONDS: Final = 0.20
 _HOOK_DRAIN_ROW_LIMIT: Final = 8
 # Stop is the turn boundary the closure gate decides at. The Stop pass drains the
@@ -552,6 +559,12 @@ def _attachment_recovery_context(reason: str) -> str:
             "FinishUP attachment pending: service_incompatible. The selected service has an "
             "incompatible holder; the hook did not replace it. Call start and follow its exact "
             "service recovery continuation. "
+        )
+    if reason == "service_handshake_failed":
+        return (
+            "FinishUP attachment pending: service_handshake_failed. The running local service "
+            "closed the connection while setting it up; the hook did not replace it. Call start "
+            "and follow its typed result, which names the cause or the diagnostics to read. "
         )
     # A timed-out attachment may have sent start under the hook's own request identity, which
     # the agent never sees, so no timeout replay token applies: the agent's own start is the
@@ -1901,6 +1914,56 @@ def _intercepted_shell_apply_patch(
     )
 
 
+def _cursor_served_finishup_read(
+    event_name: str, payload: Mapping[str, JsonValue], state_root: Path | None
+) -> bool:
+    """Whether a Cursor ``MCP:<tool>`` post-event is provably FinishUP's own served read.
+
+    Cursor's ordinary ``postToolUse`` names no MCP server, so ``MCP:status`` may be another
+    server's tool whose result is real evidence. FinishUP's bridge records a commitment to each read
+    it served successfully (tool, FinishUP session and writer, ``request_id``) before returning it;
+    only a post-event whose own ``tool_input`` claims one, once and within its expiry, is treated
+    as FinishUP's. Anything else, including every pre-event and any replay, stays ordinary evidence.
+    """
+
+    if event_name != "PostToolUse":
+        return False
+    tool = payload.get("tool_name")
+    if type(tool) is not str or not tool.startswith("MCP:"):
+        return False
+    return claim_served_finishup_read(tool, payload.get("tool_input"), state_root=state_root)
+
+
+def _proven_finishup_structural(
+    structural: Mapping[str, DomainJsonValue], *, proven: bool
+) -> Mapping[str, DomainJsonValue]:
+    """The structural view the delivery policy reads; a proven FinishUP read gets its scoped name."""
+
+    tool = structural.get("tool_name")
+    if not proven or type(tool) is not str or not tool.startswith("MCP:"):
+        return structural
+    return {**structural, "tool_name": f"finishup:{tool[len('MCP:') :]}"}
+
+
+def _finishup_request_commitment(event_name: str, payload: Mapping[str, JsonValue]) -> str | None:
+    """The commitment to one FinishUP call on its pre-event (tb4n5, #1041).
+
+    It covers the tool, the request's FinishUP ``session_id``/``writer_id`` and its ``request_id``,
+    read from the host's own ``tool_input``. FinishUP's MCP server records the same commitment when
+    it answers the call with an error, which a host sends no post for; the pending attempt then
+    closes as rejected by FinishUP instead of expiring. Only the commitment is kept: never an
+    identifier or any other argument. Every host adapter computes it from the payload the host
+    sent, before normalization drops ``tool_input`` (Claude Code and Cursor pass it in).
+    """
+
+    if event_name not in {"PreToolUse", "preToolUse"}:
+        return None
+    arguments = payload.get("tool_input")
+    if not isinstance(arguments, Mapping):
+        return None
+    return rejected_call_commitment(payload.get("tool_name"), arguments)
+
+
 def _shell_edit_contents(
     command: str,
     *,
@@ -2732,7 +2795,7 @@ async def _drain_outbox_leased(
     # closure gate's reserve) clamps both.
     preflight_remaining = _drain_connect_timeout(deadline, monotonic)
     if preflight_remaining <= 0:
-        record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
+        record_hook_diagnostic("drain_pass_delivered_nothing", event_name, _state=_state)
         if content_by_source_identity:
             store.note_coverage_gap(
                 workspace_commitment,
@@ -2906,7 +2969,9 @@ async def _drain_outbox_leased(
             remaining = budget_seconds - (monotonic() - started)
             if remaining <= 0:
                 if progressed == 0:
-                    record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
+                    record_hook_diagnostic(
+                        "drain_pass_delivered_nothing", event_name, _state=_state
+                    )
                 break
             chunks = (
                 ()
@@ -2947,7 +3012,9 @@ async def _drain_outbox_leased(
                         ObservationGapCode.CONTENT_CAPTURE_UNAVAILABLE.value,
                     )
                 if progressed == 0:
-                    record_hook_diagnostic("drain_budget_exhausted", event_name, _state=_state)
+                    record_hook_diagnostic(
+                        "drain_pass_delivered_nothing", event_name, _state=_state
+                    )
                 break
             decision = route_observation_ingest(result, row=row)
             # One batch per row, opened only after this row's RPC returned and
@@ -3145,6 +3212,12 @@ async def _try_auto_start(
         # A validated local predecessor selects recovery before admission. An
         # ordinary create attempt would now succeed and strand predecessor work.
     except ControlError as error:
+        from finishup.service.client import handshake_failure
+
+        if handshake_failure(error) is not None:
+            # A running service of this installation closed the hello (#1040 follow-up): not a
+            # service that still has to start, and not another installation to replace.
+            return AutoAttachOutcome(None, "service_handshake_failed")
         return AutoAttachOutcome(
             None, _AUTO_ATTACH_CONTROL_REASONS.get(error.reason, "service_unavailable")
         )
@@ -4181,6 +4254,7 @@ def _decide_closure_gate(
                 reasked_blockers=reasked,
                 active_stop=active_stop,
                 final_message=final_message,
+                host=harness_id,
                 on_acceptance_covered=lambda: record_hook_diagnostic(
                     "closure_gate_acceptance_covered", "Stop", _state=_state
                 ),
@@ -4704,6 +4778,8 @@ def handle_observe(
     _pass_timing: HookPassTiming | None = None,
     _derived_runner_class: RunnerClass | None = None,
     _stop_final_message: str | None = None,
+    _request_commitment: str | None = None,
+    _proven_finishup_read: bool = False,
 ) -> int:
     """Bounded observation ingress for Codex lifecycle hooks. Always exits 0.
 
@@ -5478,6 +5554,13 @@ def handle_observe(
                 is_pre_event=_is_pre_event(resolved_event),
                 is_post_event=_is_post_event(resolved_event),
                 pre_only=_intercepted_shell_apply_patch(resolved_event, payload, source),
+                # Claude Code and Cursor normalize ``tool_input`` away before this ingress, so
+                # their adapters commit to the call first and pass only the commitment (tb4n5).
+                request_commitment=(
+                    _request_commitment
+                    if _request_commitment is not None
+                    else _finishup_request_commitment(resolved_event, payload)
+                ),
             )
             optional_routine = (
                 not read_protected
@@ -5585,7 +5668,12 @@ def handle_observe(
             if (
                 not child_attribution_gap
                 and local_result.disposition.value == "accepted"
-                and self_observation_deliverable(resolved_event, envelope.structural_payload)
+                and self_observation_deliverable(
+                    resolved_event,
+                    _proven_finishup_structural(
+                        envelope.structural_payload, proven=_proven_finishup_read
+                    ),
+                )
             ):
                 plan = store.prepare_selected_admission(
                     workspace_commitment,
@@ -7353,6 +7441,9 @@ def _handle_claude_observe(
             _stop_final_message=(
                 _payload_text(payload, "last_assistant_message") if raw_event == "Stop" else None
             ),
+            # The structural envelope drops ``tool_input``; commit to a FinishUP call here so a
+            # pending attempt FinishUP rejected can still close as rejected (tb4n5).
+            _request_commitment=_finishup_request_commitment(event_map[raw_event], payload),
         )
         if denied_output is not None:
             hook_io.stdout_json(denied_output, stdout)
@@ -7848,6 +7939,14 @@ def _handle_cursor_observe(
             _derived_runner_class=derived_runner_class,
             _ingress_gap=cursor_ingress_gap,
             _pass_timing=_pass_timing,
+            # The structural envelope drops ``tool_input``; commit to a FinishUP call here so a
+            # pending attempt FinishUP rejected can still close as rejected (tb4n5).
+            _request_commitment=_finishup_request_commitment(event_map[raw_event], payload),
+            # Cursor's ordinary ``MCP:<tool>`` names no server: only the bridge's own record of
+            # serving this exact read proves it was FinishUP's (tb4 n5 round 2).
+            _proven_finishup_read=_cursor_served_finishup_read(
+                event_map[raw_event], payload, _state
+            ),
         )
     except BaseException:
         if _pass_timing is not None:

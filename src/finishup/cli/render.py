@@ -515,8 +515,8 @@ def render_human_check(result: CheckSuccessModel) -> str:
         lines.append(
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
             "assessed review) "
-            "could not assess the packet. This is a FinishUP limit, not a blocker: verify the work "
-            "yourself; a real repair re-arms the review until that cap."
+            "could not assess the packet, or a finding you answered. This is a FinishUP limit, not a "
+            "blocker: verify the work yourself; a real repair re-arms the review until that cap."
         )
     if result.coverage.known_gaps:
         lines.append("Coverage gaps: " + ", ".join(result.coverage.known_gaps))
@@ -626,7 +626,8 @@ def render_closure_readiness_lines(readiness: StatusClosureReadinessModel) -> tu
         # The rejected findings that wait for a reviewer ruling and the re-reads a Stop will ask
         # once (tb4n3 RC-8), so "nothing further to do" is never followed by a surprise gate.
         lines.extend(awaiting_ruling_variants(readiness)[:1])
-        announced = recheck_note(readiness)
+        # The CLI and the TUI do not know the agent's host: name which hosts read the line.
+        announced = recheck_note(readiness, host="generic")
         if announced is not None:
             lines.append(announced)
     if readiness.agent_actionable and readiness.state != "unknown":

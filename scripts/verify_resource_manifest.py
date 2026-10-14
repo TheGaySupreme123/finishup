@@ -37,8 +37,10 @@ __all__ = [
     "load_inventory_config",
     "main",
     "sync_resource_tree",
+    "uninventoried_sources",
     "verify_codex_skill_manifest",
     "verify_resource_tree",
+    "verify_source_coverage",
 ]
 
 
@@ -152,9 +154,43 @@ _CODEX_SKILL_MEMBERS: Final = (
     ("references/page-delivery.md", "shared_guidance", "guidance", "guidance/page-delivery.md"),
 )
 
+# Source-root content that is deliberately NOT packaged: test corpora and repository-only artifacts
+# that the runtime never reads. Every other file beneath an allowed source root must appear in the
+# inventory below, so a new vector, schema, guidance page, or support file cannot silently miss the
+# wheel: ``--check`` and ``--sync`` both fail closed on an uninventoried source (``source_unpackaged``).
+# Each prefix is either a directory (trailing ``/``) or one exact file.
+_UNPACKAGED_SOURCE_PREFIXES: Final[tuple[str, ...]] = (
+    "fixtures/adversarial/",
+    "fixtures/backward-read/",
+    "fixtures/codex-tool-boundary/",
+    "fixtures/imports/",
+    "fixtures/integrations/",
+    "fixtures/manifest.json",
+    "fixtures/observations/",
+    "fixtures/privacy/",
+    "fixtures/receipts/",
+    "fixtures/replay/",
+    "fixtures/service/",
+    "support/npm-launcher/",
+)
+# Editor, OS, and interpreter droppings never count as sources.
+_IGNORED_SOURCE_NAMES: Final = frozenset({".DS_Store", "__pycache__"})
+
 # The reviewed, explicit v0.1 inventory across 6 canonical source roots. Every entry
 # is deliberately listed here; nothing is discovered by scanning the repository.
 _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
+    (
+        "schemas/privacy/review-packet-row-2.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "fixtures/canonical/review-packet-rows-2.0.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
     (
         "fixtures/canonical/check-inspection-1.4.0.case.json",
         "canonical_vector",
@@ -340,6 +376,12 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     ("fixtures/canonical/identifiers.case.json", "canonical_vector", "application/json", True),
     ("fixtures/canonical/object-envelope.case.json", "canonical_vector", "application/json", True),
+    (
+        "fixtures/canonical/publish-action-notices-1.1.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
     (
         "fixtures/canonical/publication-request-identity.case.json",
         "canonical_vector",
@@ -1738,21 +1780,9 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     ),
     ("support/runtime-support.json", "runtime_support", "application/json", True),
     (
-        "support/codex-evaluator/0.157.1/config.toml",
+        "support/codex-evaluator/config.toml",
         "runtime_config",
         "application/toml",
-        True,
-    ),
-    (
-        "support/codex-evaluator/0.157.1/cell.json",
-        "compatibility_manifest",
-        "application/json",
-        True,
-    ),
-    (
-        "support/codex-evaluator/0.157.1/cell-linux-x64.json",
-        "compatibility_manifest",
-        "application/json",
         True,
     ),
 )
@@ -1857,6 +1887,52 @@ def load_inventory_config() -> ResourceInventory:
     return ResourceInventory(
         package=_PACKAGE_NAME, resource_set_version=_RESOURCE_SET_VERSION, entries=ordered
     )
+
+
+def _is_unpackaged_source(path: str) -> bool:
+    return any(
+        path.startswith(prefix) if prefix.endswith("/") else path == prefix
+        for prefix in _UNPACKAGED_SOURCE_PREFIXES
+    )
+
+
+def uninventoried_sources(inventory: ResourceInventory, *, repo_root: Path) -> tuple[str, ...]:
+    """Return source-root files that are neither inventoried nor declared repository-only."""
+
+    inventoried = {entry.source_path for entry in inventory.entries}
+    found: list[str] = []
+    for source_root in _ALLOWED_SOURCE_ROOTS:
+        root = repo_root / source_root.rstrip("/")
+        if root.is_symlink():
+            raise ResourceManifestError("symlink_forbidden", detail=source_root.rstrip("/"))
+        if not root.is_dir():
+            continue
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if entry.name in _IGNORED_SOURCE_NAMES:
+                        continue
+                    path = Path(entry.path)
+                    relative = path.relative_to(repo_root).as_posix()
+                    if entry.is_symlink():
+                        raise ResourceManifestError("symlink_forbidden", detail=relative)
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(path)
+                        continue
+                    if relative in inventoried or _is_unpackaged_source(relative):
+                        continue
+                    found.append(relative)
+    return tuple(sorted(found, key=str.encode))
+
+
+def verify_source_coverage(inventory: ResourceInventory, *, repo_root: Path) -> None:
+    """Fail closed when a source file would silently miss the package."""
+
+    missing = uninventoried_sources(inventory, repo_root=repo_root)
+    if missing:
+        raise ResourceManifestError("source_unpackaged", detail=" ".join(missing))
 
 
 def build_codex_skill_manifest(*, repo_root: Path) -> bytes:
@@ -2209,6 +2285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             expected_skill_manifest = build_codex_skill_manifest(repo_root=repo_root)
             (repo_root / _CODEX_SKILL_MANIFEST).write_bytes(expected_skill_manifest)
         inventory = load_inventory_config()
+        verify_source_coverage(inventory, repo_root=repo_root)
         resources = collect_source_entries(inventory, repo_root=repo_root)
         if not args.sync:
             verify_codex_skill_manifest(repo_root=repo_root)

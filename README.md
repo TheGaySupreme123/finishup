@@ -83,7 +83,7 @@ carrying them after the fix: a later clean check never erases what was caught.
 
 ```sh
 # Install the latest published version from PyPI — the canonical distribution
-uv tool install --managed-python --python 3.14.6 finishup
+uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup
 
 # Via npm — a dependency-free launcher that makes the same persistent uv install (needs uv)
 npx finishup

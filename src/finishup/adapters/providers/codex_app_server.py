@@ -1,10 +1,11 @@
-"""Exact Codex app-server AI-powered evaluator with Codex-owned ChatGPT OAuth.
+"""Codex app-server AI-powered evaluator with Codex-owned ChatGPT OAuth.
 
-The adapter never opens or names Codex credential files.  It launches one exact, digest-bound
-native Codex executable with a dedicated owner-private ``CODEX_HOME``, performs structural
-readiness over the documented v2 JSONL protocol, discloses only the already-approved case, and
-terminates only the process group it spawned.  Codex remains the OAuth and upstream-request
-authority; FinishUP records that the upstream OpenAI body is unavailable to it.
+The adapter never opens or names Codex credential files.  It launches one capability-checked
+native Codex executable (any stable release at or above the floor whose retained bytes passed the
+check recorded beside them, ADR-006) with a dedicated owner-private ``CODEX_HOME``, performs
+structural readiness over the documented v2 JSONL protocol, discloses only the already-approved
+case, and terminates only the process group it spawned.  Codex remains the OAuth and
+upstream-request authority; FinishUP records that the upstream OpenAI body is unavailable to it.
 """
 
 from __future__ import annotations
@@ -12,12 +13,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import platform
 import re
 import shutil
 import signal
 import stat
-import sys
 import tempfile
 from collections import deque
 from collections.abc import Callable, Mapping
@@ -27,6 +26,18 @@ from pathlib import Path
 from typing import Final, Literal, cast
 from urllib.parse import urlsplit
 
+from finishup.adapters.providers.codex_capability import (
+    CODEX_CODE_MODE_HOST_NAME,
+    CODEX_EVALUATOR_CAPABILITY_PROFILE,
+    CODEX_EVALUATOR_RUNTIME_FLOOR,
+    CODEX_PROBE_CLEANUP_UNCONFIRMED,
+    CodexCapabilityRecord,
+    CodexPlatform,
+    codex_version_key,
+    host_codex_platform,
+    read_capability_record,
+    validate_capability_binding,
+)
 from finishup.adapters.providers.data_use_catalog import data_use_record_for_endpoint
 from finishup.adapters.providers.openai_responses import (
     SEMANTIC_REVIEW_INSTRUCTION,
@@ -55,7 +66,6 @@ from finishup.domain.privacy import (
     ProviderDataUseProfile,
     RequestCommitment,
 )
-from finishup.domain.values import validate_sha256_digest
 from finishup.observability.semantic_context import report_semantic_progress
 from finishup.ports.clock import ClockPort
 from finishup.ports.secret_memory import ProviderAttemptAuthBinding
@@ -88,62 +98,29 @@ from finishup.protocol.errors import ProtocolValueError
 from finishup.protocol.models import SemanticProgressPhase, SemanticStatus
 
 __all__ = [
-    "CODEX_APP_SERVER_SCHEMA_SHA256",
     "CODEX_BACKGROUND_ADVICE_EFFORT",
     "CODEX_CODE_MODE_HOST_NAME",
-    "CODEX_EVALUATOR_CODE_MODE_HOST_SHA256",
     "CODEX_EVALUATOR_CAPABILITY_PROFILE",
-    "CODEX_EVALUATOR_CAPABILITY_CELL_SHA256",
-    "CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT",
     "CODEX_EVALUATOR_CONFIG",
     "CODEX_EVALUATOR_CONFIG_SHA256",
-    "CODEX_EVALUATOR_RUNTIME_VERSION",
-    "CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256",
-    "CODEX_EVALUATOR_LINUX_X64_CODE_MODE_HOST_SHA256",
-    "CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256",
-    "CODEX_EVALUATOR_LINUX_X64_SOURCE_IDENTITY",
+    "CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT",
+    "CODEX_EVALUATOR_RUNTIME_FLOOR",
     "CodexAppServerExternalFactory",
     "CodexAppServerProfile",
-    "CodexEvaluatorCell",
     "CodexLoginChallenge",
     "CodexReviewBudget",
     "CodexRuntimeStatus",
     "codex_account_status",
     "codex_binding_from_config",
+    "codex_capability_probe",
     "codex_code_mode_host_path",
-    "codex_evaluator_cell_for_binding",
-    "codex_evaluator_cell_for_platform",
     "codex_factory_builders_from_config",
     "codex_login",
     "codex_logout",
     "prepare_codex_home",
 ]
 
-CODEX_EVALUATOR_RUNTIME_VERSION: Final = "0.157.1"
-CODEX_APP_SERVER_SCHEMA_SHA256: Final = (
-    "sha256:2719fccd25a97a7ce355497ca5e9123a63f6dce7f9f83724a5b73fd927811f59"
-)
-CODEX_EVALUATOR_CAPABILITY_PROFILE: Final = "codex-evaluator/0.157.1/v2"
-CODEX_EVALUATOR_CAPABILITY_CELL_SHA256: Final = (
-    "sha256:af37da789fd12c401870768845bd73ac99c7fbffb2c5ae81c6a0ecd3c27dfd1f"
-)
 CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT: Final = "2026-11-30T00:00:00Z"
-# Codex 0.157.1 starts this sibling helper at turn start and warns when it is missing (#874). It is
-# retained, verified, and launched from beside the native executable, never searched for.
-CODEX_CODE_MODE_HOST_NAME: Final = "codex-code-mode-host"
-CODEX_EVALUATOR_CODE_MODE_HOST_SHA256: Final = (
-    "sha256:80fdf166c3da068282d5692f67a852715a327ae7dc1913abb93b8c3d3030103f"
-)
-CODEX_EVALUATOR_LINUX_X64_CODE_MODE_HOST_SHA256: Final = (
-    "sha256:67b86142bac5cead11b8420cf32d3a2bf88c8868d71733f351ed7c5d95a953e0"
-)
-CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256: Final = (
-    "sha256:3e2584f3f3829a43a0495011a1cecb2facbe64a2403e2b682351fd9c2983f970"
-)
-CODEX_EVALUATOR_LINUX_X64_SOURCE_IDENTITY: Final = "openai-codex-npm-linux-x64-0.157.1"
-CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256: Final = (
-    "sha256:fa6a65e47fb7c7f647a31ae47625a3e99e80247cd412e4fdfe1922975f2fafa3"
-)
 _CAPABILITY_EVIDENCE_EXPIRES_AT: Final = datetime(2026, 11, 30, tzinfo=UTC)
 CODEX_EVALUATOR_CONFIG: Final = """approval_policy = "never"
 cli_auth_credentials_store = "file"
@@ -190,92 +167,13 @@ _INSTRUCTION_SHA256: Final = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class CodexEvaluatorCell:
-    """One exact Codex subscription runtime cell.
-
-    The app-server protocol and FinishUP-owned configuration are shared by the two supported
-    cells, but the native executable, its sibling code-mode host, package layout, and capability
-    identity remain bound to the selected platform.  Keeping these facts together prevents a persisted Linux source
-    identity from being paired with the macOS digest (or vice versa).
-    """
-
-    platform_os: Literal["darwin", "linux"]
-    platform_architecture: Literal["arm64", "x86_64"]
-    source_identity: str
-    executable_sha256: str
-    code_mode_host_sha256: str
-    app_server_schema_sha256: str
-    capability_cell_sha256: str
-    capability_profile: str
-    capability_evidence_expires_at: str
-    isolated_config_sha256: str
-    native_package_directory: str
-    native_package_version: str
-    native_executable_relative: Path
-
-    @property
-    def native_package_spec(self) -> str:
-        # The platform package is the optional-dependency key, while npm resolves the alias
-        # through the canonical @openai/codex package name (the upstream package metadata uses
-        # ``npm:@openai/codex@0.157.1-linux-x64`` and its darwin equivalent).
-        return f"npm:@openai/codex@{self.native_package_version}"
-
-
-_MACOS_ARM64_CELL: Final = CodexEvaluatorCell(
-    platform_os="darwin",
-    platform_architecture="arm64",
-    source_identity="openai-codex-npm-darwin-arm64-0.157.1",
-    executable_sha256="sha256:27ceb5f9b957b43a519efe4eaa3816a0bffb0a531a2c89af18840c0a3c016a7d",
-    code_mode_host_sha256=CODEX_EVALUATOR_CODE_MODE_HOST_SHA256,
-    app_server_schema_sha256=CODEX_APP_SERVER_SCHEMA_SHA256,
-    capability_cell_sha256=CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
-    capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
-    capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-    isolated_config_sha256=_CONFIG_SHA256,
-    native_package_directory="codex-darwin-arm64",
-    native_package_version=f"{CODEX_EVALUATOR_RUNTIME_VERSION}-darwin-arm64",
-    native_executable_relative=Path("vendor/aarch64-apple-darwin/bin/codex"),
-)
-_LINUX_X64_CELL: Final = CodexEvaluatorCell(
-    platform_os="linux",
-    platform_architecture="x86_64",
-    source_identity=CODEX_EVALUATOR_LINUX_X64_SOURCE_IDENTITY,
-    executable_sha256=CODEX_EVALUATOR_LINUX_X64_EXECUTABLE_SHA256,
-    code_mode_host_sha256=CODEX_EVALUATOR_LINUX_X64_CODE_MODE_HOST_SHA256,
-    app_server_schema_sha256=CODEX_APP_SERVER_SCHEMA_SHA256,
-    capability_cell_sha256=CODEX_EVALUATOR_LINUX_X64_CAPABILITY_CELL_SHA256,
-    capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
-    capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-    isolated_config_sha256=_CONFIG_SHA256,
-    native_package_directory="codex-linux-x64",
-    native_package_version=f"{CODEX_EVALUATOR_RUNTIME_VERSION}-linux-x64",
-    native_executable_relative=Path("vendor/x86_64-unknown-linux-musl/bin/codex"),
-)
-_EVALUATOR_CELLS_BY_PLATFORM: Final = {
-    ("darwin", "arm64"): _MACOS_ARM64_CELL,
-    ("linux", "x86_64"): _LINUX_X64_CELL,
-}
-
-
 def codex_code_mode_host_path(executable: Path) -> Path:
     """The code-mode host Codex starts from beside ``executable``; the only location checked."""
 
     return executable.parent / CODEX_CODE_MODE_HOST_NAME
 
 
-def codex_evaluator_cell_for_platform(platform_os: str, architecture: str) -> CodexEvaluatorCell:
-    """Return the exact reviewed cell for one normalized host platform."""
-
-    normalized_os = "linux" if platform_os.startswith("linux") else platform_os
-    normalized_architecture = "x86_64" if architecture == "amd64" else architecture
-    try:
-        return _EVALUATOR_CELLS_BY_PLATFORM[(normalized_os, normalized_architecture)]
-    except KeyError as error:
-        raise ValueError("codex_runtime_platform_unsupported") from error
-
-
-def codex_evaluator_cell_for_binding(
+def _validate_binding_fields(
     *,
     source_identity: str,
     executable_sha256: str,
@@ -285,32 +183,27 @@ def codex_evaluator_cell_for_binding(
     capability_profile: str,
     capability_evidence_expires_at: str,
     isolated_config_sha256: str,
-) -> CodexEvaluatorCell:
-    """Validate every compatibility-critical field against one exact platform cell."""
-
-    cell: CodexEvaluatorCell | None = None
-    if source_identity == _MACOS_ARM64_CELL.source_identity:
-        cell = _MACOS_ARM64_CELL
-    elif source_identity == _LINUX_X64_CELL.source_identity:
-        cell = _LINUX_X64_CELL
-    if cell is None or (
-        executable_sha256 != cell.executable_sha256
-        or runtime_version != CODEX_EVALUATOR_RUNTIME_VERSION
-        or app_server_schema_sha256 != cell.app_server_schema_sha256
-        or capability_cell_sha256 != cell.capability_cell_sha256
-        or capability_profile != cell.capability_profile
-        or capability_evidence_expires_at != cell.capability_evidence_expires_at
-        or isolated_config_sha256 != cell.isolated_config_sha256
-    ):
-        raise ValueError("codex_runtime_capability_unsupported")
-    return cell
+) -> CodexPlatform:
+    return validate_capability_binding(
+        source_identity=source_identity,
+        executable_sha256=executable_sha256,
+        runtime_version=runtime_version,
+        app_server_schema_sha256=app_server_schema_sha256,
+        capability_cell_sha256=capability_cell_sha256,
+        capability_profile=capability_profile,
+        capability_evidence_expires_at=capability_evidence_expires_at,
+        isolated_config_sha256=isolated_config_sha256,
+        expected_isolated_config_sha256=_CONFIG_SHA256,
+        expected_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
+    )
 
 
 def _codex_output_schema(value: JsonValue) -> JsonValue:
-    """Remove only constraints the exact Codex structured-output path rejects.
+    """Remove only constraints the Codex structured-output path rejects.
 
-    The exact Codex runtime forwards this schema to the Responses structured-output boundary,
-    which rejected ``uniqueItems`` when observed on 0.150.1; the omission is kept for 0.157.1.
+    The admitted Codex runtime forwards this schema to the Responses structured-output boundary,
+    which rejected ``uniqueItems`` when observed on 0.150.1; the omission is kept for every
+    admitted release.
     Domain normalization still enforces uniqueness after generation, so omitting that
     provider-side keyword weakens no accepted FinishUP judgment.
     """
@@ -363,6 +256,7 @@ _LOGIN_TIMEOUT_SECONDS_BY_MODE: Final = {
 _LOGIN_TERMINAL_GRACE_SECONDS: Final = 2.0
 _LOGIN_CANCEL_TIMEOUT_SECONDS: Final = 1.0
 _LOGIN_READINESS_GRACE_SECONDS: Final = 2.0
+_PLAN_TYPE_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_]{0,63}$", re.ASCII)
 _SAFE_PLAN_TYPES: Final = frozenset(
     {
         "business",
@@ -378,6 +272,7 @@ _SAFE_PLAN_TYPES: Final = frozenset(
         "plus",
         "pro",
         "prolite",
+        "promax",
         "self_serve_business_prolite",
         "self_serve_business_usage_based",
         "team",
@@ -391,7 +286,10 @@ _SAFE_PLAN_TYPES: Final = frozenset(
 _ALLOWED_ITEM_TYPES: Final = frozenset(
     {"agentMessage", "contextCompaction", "plan", "reasoning", "userMessage"}
 )
-_AGENT_MESSAGE_PHASES: Final = frozenset({"commentary", "final_answer"})
+_AGENT_MESSAGE_PHASES: Final = frozenset({"commentary", "final_answer", "partial_answer"})
+# Interim narration and stable-but-unfinished answer text (``partial_answer``, Codex 0.162.1) are
+# never judgment candidates; they are discarded unread.
+_NON_FINAL_PHASES: Final = frozenset({"commentary", "partial_answer"})
 # Informational notifications are validated for method only and discarded unread; none of them
 # authorizes anything, and none of their bodies is retained. ``model/rerouted`` is the one
 # informational event that changes the answer's provenance, so it is handled explicitly.
@@ -424,16 +322,56 @@ _ALLOWED_NOTIFICATION_METHODS: Final = frozenset(
         "warning",
     }
 )
+# The request id of the barrier that closes the pre-disclosure window (after ``thread/start``
+# 30 and before ``turn/start`` 31 in an attempt; after ``model/list`` in a readiness probe).
+_PREDISCLOSURE_BARRIER_REQUEST_ID: Final = 32
 _PREDISCLOSURE_NOTIFICATION_METHODS: Final = frozenset(
     {
         "account/updated",
         "account/rateLimits/updated",
         "remoteControl/status/changed",
+        "configWarning",
         "thread/started",
         "thread/status/changed",
         "warning",
     }
 )
+# The two native configuration warnings admitted before disclosure (ADR-006, 2026-10-14). Codex
+# 0.162.1 on Linux writes at most one of them at app-server start
+# (``codex-rs/sandboxing/src/bwrap.rs`` ``system_bwrap_warning_for_path``):
+# - ``USER_NAMESPACE_WARNING``: a system bubblewrap exists but cannot create user namespaces
+#   (Docker's default seccomp, gVisor, kernels without unprivileged user namespaces);
+# - ``MISSING_BWRAP_WARNING``: no system ``bwrap`` is on ``PATH`` (an official task container
+#   without the distribution ``bubblewrap`` package). Codex then attempts its bundled
+#   bubblewrap when that resource is present; FinishUP does not retain it (#874), and the warning
+#   proves neither a usable sandbox nor user-namespace access, so the sandbox is unverified.
+# The evaluator's isolated config exposes no tool that bubblewrap would confine:
+# ``features.shell_tool=false`` removes command execution, ``read-only`` with
+# ``approval_policy=never`` rejects every patch before it runs, and no MCP server, plugin, app or
+# agent is enabled. Either warning therefore widens nothing a review can do; each is admitted only
+# with this exact closed shape and recorded as ``codex_sandbox_unavailable`` with its reason. Every
+# other ``configWarning`` (including the WSL1 one) stays forbidden.
+SandboxUnavailableReason = Literal["user_namespaces_unavailable", "bubblewrap_missing"]
+_SANDBOX_UNAVAILABLE_SUMMARY: Final = (
+    "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
+)
+_MISSING_BWRAP_SUMMARY: Final = (
+    "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. "
+    "See the sandbox prerequisites: "
+    "https://developers.openai.com/codex/concepts/sandboxing#prerequisites. "
+    "Codex will use the bundled bubblewrap in the meantime."
+)
+_SANDBOX_WARNING_REASONS: Final[Mapping[str, SandboxUnavailableReason]] = {
+    _SANDBOX_UNAVAILABLE_SUMMARY: "user_namespaces_unavailable",
+    _MISSING_BWRAP_SUMMARY: "bubblewrap_missing",
+}
+# That reasoning was verified against one release's source; no app-server method exposes the
+# effective tool registry or patch-approval semantics without a model call, so it cannot be proven
+# at runtime. The admission is therefore bound to the releases whose source was reviewed (the
+# release ``initialize`` proved). Any other release sending either warning fails closed with
+# ``codex_sandbox_unavailable_unreviewed_runtime``; selection then falls back to an older
+# reviewed release when one is installed. Extend this set only after re-reviewing the source.
+SANDBOX_UNAVAILABLE_REVIEWED_RELEASES: Final = frozenset({"0.162.1"})
 _LAUNCH_OVERRIDES: Final = (
     "analytics.enabled=false",
     'approval_policy="never"',
@@ -478,6 +416,11 @@ class CodexRuntimeStatus:
     plan_type: str | None
     model_available: bool
     cleanup: Literal["not_started", "terminated", "killed", "failed"]
+    # Codex reported (only through an admitted closed warning) that its Linux sandbox cannot
+    # create user namespaces, or that no system bubblewrap is installed so the sandbox is
+    # unverified. It confines no evaluator tool; it is surfaced with its reason, not refused.
+    sandbox_unavailable: bool = False
+    sandbox_unavailable_reason: SandboxUnavailableReason | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -493,7 +436,7 @@ class CodexLoginChallenge:
 class CodexReviewBudget:
     """The exact per-check effort and output limit selected for one review profile.
 
-    ``output_limit`` counts output tokens. The pinned app-server protocol has no per-turn output
+    ``output_limit`` counts output tokens. The admitted app-server protocol has no per-turn output
     ceiling, so FinishUP enforces it against the runtime's reported visible (non-reasoning) output
     tokens and records it as ``sampling_params.max_output_tokens``.
     """
@@ -550,6 +493,10 @@ class CodexAppServerProfile:
     routine_reasoning_effort: str | None = None
     routine_output_limit: int = CODEX_ROUTINE_OUTPUT_LIMIT_DEFAULT
     final_output_limit: int = CODEX_FINAL_OUTPUT_LIMIT_DEFAULT
+    # The record a capability check is about to commit. It is held in memory only while that
+    # check probes the candidate; every persisted binding reads its record from the retained
+    # store, beside the executable, at each launch.
+    capability_record: CodexCapabilityRecord | None = None
 
     @classmethod
     def from_config(cls, config: ExternalRuntimeProfileConfig) -> CodexAppServerProfile:
@@ -579,7 +526,7 @@ class CodexAppServerProfile:
         )
 
     def __post_init__(self) -> None:
-        codex_evaluator_cell_for_binding(
+        _validate_binding_fields(
             source_identity=self.source_identity,
             executable_sha256=self.executable_sha256,
             runtime_version=self.runtime_version,
@@ -589,13 +536,8 @@ class CodexAppServerProfile:
             capability_evidence_expires_at=self.capability_evidence_expires_at,
             isolated_config_sha256=self.isolated_config_sha256,
         )
-        for digest in (
-            self.executable_sha256,
-            self.app_server_schema_sha256,
-            self.capability_cell_sha256,
-            self.isolated_config_sha256,
-        ):
-            validate_sha256_digest(digest)
+        if self.capability_record is not None and not self._record_matches(self.capability_record):
+            raise ValueError("codex_runtime_capability_record_invalid")
         if not self.executable_path.is_absolute() or not self.codex_home.is_absolute():
             raise ValueError("codex_runtime_path_invalid")
         if type(self.timeout_seconds) is not int or not 1 <= self.timeout_seconds <= 3600:
@@ -670,8 +612,45 @@ class CodexAppServerProfile:
     def launcher_sha256(self) -> str:
         return canonical_digest({"argv": list(self.launcher_argv), "version": 1})
 
+    def _record_matches(self, record: CodexCapabilityRecord) -> bool:
+        return (
+            record.current
+            and record.digest == self.capability_cell_sha256
+            and record.runtime_version == self.runtime_version
+            and record.source_identity == self.source_identity
+            and record.executable_sha256 == self.executable_sha256
+            and record.app_server_schema_sha256 == self.app_server_schema_sha256
+            and record.isolated_config_sha256 == self.isolated_config_sha256
+            and record.capability_profile == self.capability_profile
+        )
+
+    def bound_capability_record(self) -> CodexCapabilityRecord:
+        """The record this binding commits to: in memory during a check, else beside the bytes.
+
+        A missing record surfaces as ``FileNotFoundError`` (the retained runtime is incomplete);
+        any record that is unreadable or does not match the binding's digest and fields is
+        ``codex_runtime_executable_changed``.
+        """
+
+        if self.capability_record is not None:
+            return self.capability_record
+        try:
+            record = read_capability_record(self.executable_path.parent)
+        except ValueError as error:
+            raise ValueError("codex_runtime_executable_changed") from error
+        if not self._record_matches(record):
+            raise ValueError("codex_runtime_executable_changed")
+        return record
+
     def verify_local_binding(self) -> None:
-        bound_cell = codex_evaluator_cell_for_binding(
+        """The launch fence: the bytes and record launched are the ones that passed the check.
+
+        It re-hashes the executable and its code-mode host against the committed capability
+        record on every launch, so a runtime replaced after its check never starts. It does not
+        re-run the capability check itself; ``repair`` and ``setup`` do.
+        """
+
+        bound_platform = _validate_binding_fields(
             source_identity=self.source_identity,
             executable_sha256=self.executable_sha256,
             runtime_version=self.runtime_version,
@@ -681,22 +660,26 @@ class CodexAppServerProfile:
             capability_evidence_expires_at=self.capability_evidence_expires_at,
             isolated_config_sha256=self.isolated_config_sha256,
         )
-        host_os = "linux" if sys.platform.startswith("linux") else sys.platform
-        host_cell = codex_evaluator_cell_for_platform(host_os, platform.machine())
-        if host_cell != bound_cell:
+        if host_codex_platform() != bound_platform:
             raise ValueError("codex_runtime_platform_unsupported")
         facts = self.executable_path.stat()
         if not stat.S_ISREG(facts.st_mode) or not (facts.st_mode & stat.S_IXUSR):
             raise ValueError("codex_runtime_executable_invalid")
+        record = self.bound_capability_record()
+        if (record.platform_os, record.platform_architecture) != (
+            bound_platform.os,
+            bound_platform.architecture,
+        ):
+            raise ValueError("codex_runtime_platform_unsupported")
         if _sha256_file(self.executable_path) != self.executable_sha256:
             raise ValueError("codex_runtime_executable_changed")
-        # The sibling code-mode host is part of the same cell identity: a missing file surfaces as
-        # the executable's own FileNotFoundError, and other faults use the executable tokens.
+        # The sibling code-mode host is checked against the same record: a missing file surfaces
+        # as the executable's own FileNotFoundError, and other faults use the executable tokens.
         host = codex_code_mode_host_path(self.executable_path)
         host_facts = host.stat()
         if not stat.S_ISREG(host_facts.st_mode) or not (host_facts.st_mode & stat.S_IXUSR):
             raise ValueError("codex_runtime_executable_invalid")
-        if _sha256_file(host) != bound_cell.code_mode_host_sha256:
+        if _sha256_file(host) != record.code_mode_host_sha256:
             raise ValueError("codex_runtime_executable_changed")
         verify_private_local_bundle(self.codex_home)
         config_path = self.codex_home / "config.toml"
@@ -756,6 +739,8 @@ class _CodexProcess:
     workdir: Path
     stderr_task: asyncio.Task[bool]
     pending_notifications: deque[Mapping[str, object]]
+    sandbox_unavailable: bool = False
+    sandbox_unavailable_reason: SandboxUnavailableReason | None = None
 
     async def send(self, value: Mapping[str, object]) -> None:
         stdin = self.process.stdin
@@ -779,10 +764,15 @@ class _CodexProcess:
         if self.stderr_task.done() and self.stderr_task.result():
             raise ValueError("codex_app_server_stderr_limit")
         try:
-            return _object(strict_json_parse(line[:-1]))
+            message = _object(strict_json_parse(line[:-1]))
         except ProtocolValueError, ValueError:
             # A malformed JSONL envelope is transport failure, not a malformed final answer.
             raise ValueError("codex_app_server_message_invalid") from None
+        reason = _sandbox_warning_reason(message)
+        if reason is not None:
+            self.sandbox_unavailable = True
+            self.sandbox_unavailable_reason = reason
+        return message
 
     async def request(
         self,
@@ -1020,11 +1010,23 @@ def _remaining(deadline: Deadline, clock: ClockPort) -> float:
     return remaining
 
 
+_USER_AGENT_VERSION: Final = re.compile(
+    r"^[A-Za-z0-9_.-]{1,128}/([0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9})(?: |$)"
+)
+
+
 def _validate_initialize(profile: CodexAppServerProfile, result: Mapping[str, object]) -> None:
+    """The runtime must name the exact admitted release it was checked as, and the bound home."""
+
     if result.get("codexHome") != str(profile.codex_home):
         raise ValueError("codex_home_mismatch")
     agent = result.get("userAgent")
-    if type(agent) is not str or profile.runtime_version not in agent:
+    match = _USER_AGENT_VERSION.match(agent) if type(agent) is str else None
+    if (
+        match is None
+        or match.group(1) != profile.runtime_version
+        or codex_version_key(match.group(1)) is None
+    ):
         raise ValueError("codex_runtime_version_mismatch")
 
 
@@ -1118,7 +1120,7 @@ async def _initialize(runtime: _CodexProcess, profile: CodexAppServerProfile) ->
 
 
 async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeStatus:
-    """Probe exact runtime, login, plan, and model availability without sending task content."""
+    """Probe the bound runtime, login, plan, and model availability without sending task content."""
 
     runtime: _CodexProcess | None = None
     auth_mode: Literal["chatgpt"] | None = None
@@ -1142,15 +1144,99 @@ async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeSt
                 pass
             else:
                 model_available = True
-    finally:
-        cleanup = await _cleanup_guaranteed(runtime)
+        # The same fail-closed window an attempt applies before disclosure: a runtime that
+        # warns or emits an unreviewed event under the authenticated home is not ready, so
+        # runtime selection falls back to an older release instead of binding it.
+        try:
+            await _close_predisclosure_window(runtime, 10.0)
+        except _CodexRuntimeWarning as warning:
+            raise ValueError("codex_app_server_predisclosure_event_forbidden") from warning
+    except Exception as error:
+        await _cleanup_or_unconfirmed(runtime, error)
+        raise
+    except BaseException:
+        await _cleanup_guaranteed(runtime)
+        raise
+    cleanup = await _cleanup_guaranteed(runtime)
     return CodexRuntimeStatus(
         runtime_ready=runtime_ready,
         auth_mode=auth_mode,
         plan_type=plan_type,
         model_available=model_available,
         cleanup=cleanup,
+        sandbox_unavailable=_sandbox_unavailable(runtime),
+        sandbox_unavailable_reason=_sandbox_unavailable_reason(runtime),
     )
+
+
+def _thread_start_params(
+    runtime: _CodexProcess, profile: CodexAppServerProfile
+) -> dict[str, object]:
+    """The one isolated, ephemeral, read-only thread request a review and its probe both send."""
+
+    return {
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "baseInstructions": SEMANTIC_REVIEW_INSTRUCTION,
+        "cwd": str(runtime.workdir),
+        "ephemeral": True,
+        "model": profile.model,
+        "modelProvider": "openai",
+        "personality": "none",
+        "sandbox": "read-only",
+        "serviceName": "finishup-semantic-review",
+    }
+
+
+async def codex_capability_probe(profile: CodexAppServerProfile) -> None:
+    """Zero-inference capability probe of one candidate runtime (ADR-006 capability admission).
+
+    The candidate starts through the same launch fence, argv, environment and isolated config as
+    a review. Before any case could exist it must: report, in ``initialize``, the exact release it
+    is being checked as and the bound home; answer ``account/read``; start an ephemeral thread in
+    a new empty owner-private cwd whose returned posture is read-only, network-off, with no
+    persisted path and no instruction sources; and keep every notification seen so far inside the
+    reviewed pre-disclosure allowlist (an unknown event, a native warning, or remote control not
+    ``disabled`` fails closed). No ``turn/start`` is sent, so nothing is sampled and no task
+    content exists. Any refusal is one closed token; the process group is always cleaned up.
+    """
+
+    runtime: _CodexProcess | None = None
+    try:
+        try:
+            profile.verify_capability_evidence(datetime.now(UTC))
+            runtime = await _launch(profile)
+            await _initialize(runtime, profile)
+            await runtime.request(1, "account/read", {"refreshToken": False}, 10.0)
+            thread_result = await runtime.request(
+                30, "thread/start", _thread_start_params(runtime, profile), 10.0
+            )
+            _validate_thread(runtime, profile, thread_result)
+            await _close_predisclosure_window(runtime, 10.0)
+        except _CodexRuntimeWarning as warning:
+            raise ValueError("codex_app_server_predisclosure_event_forbidden") from warning
+        except TimeoutError as error:
+            raise ValueError("codex_capability_probe_timeout") from error
+    except Exception as error:
+        await _cleanup_or_unconfirmed(runtime, error)
+        raise
+    except BaseException:
+        await _cleanup_guaranteed(runtime)
+        raise
+    if await _cleanup_guaranteed(runtime) == "failed":
+        raise ValueError(CODEX_PROBE_CLEANUP_UNCONFIRMED)
+
+
+async def _cleanup_or_unconfirmed(runtime: _CodexProcess | None, failure: Exception) -> None:
+    """Clean up after a failed probe; an unconfirmed cleanup outranks, and chains, ``failure``.
+
+    The probe's own refusal stays the ``__cause__``, but the raised token is the unconfirmed
+    cleanup, which stops runtime selection instead of letting it fall back to another candidate
+    while a process group may still be running.
+    """
+
+    if await _cleanup_guaranteed(runtime) == "failed":
+        raise ValueError(CODEX_PROBE_CLEANUP_UNCONFIRMED) from failure
 
 
 def _login_challenge(result: Mapping[str, object]) -> CodexLoginChallenge:
@@ -1178,6 +1264,7 @@ def _login_challenge(result: Mapping[str, object]) -> CodexLoginChallenge:
 def _validate_predisclosure_notification(
     message: Mapping[str, object],
     *,
+    runtime_version: str,
     invalid_token: str = "codex_app_server_predisclosure_event_forbidden",
 ) -> bool:
     """Validate one reviewed pre-disclosure notification and retain no native payload."""
@@ -1193,6 +1280,11 @@ def _validate_predisclosure_notification(
         _discard_rate_limits_notification(message)
     elif method == "warning":
         raise _runtime_warning(message)
+    elif method == "configWarning":
+        if _sandbox_warning_reason(message) is None:
+            raise ValueError(invalid_token)
+        if runtime_version not in SANDBOX_UNAVAILABLE_REVIEWED_RELEASES:
+            raise ValueError("codex_sandbox_unavailable_unreviewed_runtime")
     elif method == "remoteControl/status/changed":
         params = _object(message.get("params"))
         if set(params) != {"environmentId", "installationId", "serverName", "status"}:
@@ -1202,8 +1294,35 @@ def _validate_predisclosure_notification(
     return False
 
 
+def _sandbox_warning_reason(message: Mapping[str, object]) -> SandboxUnavailableReason | None:
+    """The reason when ``message`` is exactly one of Codex's reviewed sandbox warnings.
+
+    The wire shape is closed: ``{"method": "configWarning", "params": {"summary": <one reviewed
+    text>, "details": null}}`` with an optional integer ``emittedAtMs``. Codex carries no
+    structured warning code, so the summary must equal a reviewed constant byte for byte; any
+    other summary, detail, path or range is a different warning and is not admitted.
+    """
+
+    if message.get("method") != "configWarning":
+        return None
+    if set(message) not in ({"method", "params"}, {"method", "params", "emittedAtMs"}):
+        return None
+    if "emittedAtMs" in message and type(message["emittedAtMs"]) is not int:
+        return None
+    params = message.get("params")
+    if type(params) is not dict:
+        return None
+    fields = cast(dict[str, object], params)
+    if set(fields) != {"summary", "details"} or fields["details"] is not None:
+        return None
+    summary = fields["summary"]
+    if type(summary) is not str:
+        return None
+    return _SANDBOX_WARNING_REASONS.get(summary)
+
+
 def _login_notification(
-    message: Mapping[str, object], login_id: str
+    message: Mapping[str, object], login_id: str, *, runtime_version: str
 ) -> Literal["account_updated", "completed", "predisclosure"]:
     """Validate one login notification without retaining any native payload text."""
 
@@ -1213,7 +1332,7 @@ def _login_notification(
     if type(method) is str and method in _PREDISCLOSURE_NOTIFICATION_METHODS:
         try:
             updated = _validate_predisclosure_notification(
-                message, invalid_token="codex_login_event_invalid"
+                message, runtime_version=runtime_version, invalid_token="codex_login_event_invalid"
             )
         except _CodexRuntimeWarning as warning:
             # A native warning is not a login event. It ends the login with the bounded login
@@ -1257,7 +1376,9 @@ def _take_account_updated(runtime: _CodexProcess) -> bool:
     pending = runtime.pending_notifications
     runtime.pending_notifications = deque()
     for message in pending:
-        notification = _login_notification(message, "")
+        notification = _login_notification(
+            message, "", runtime_version=runtime.profile.runtime_version
+        )
         if notification == "account_updated":
             updated = True
             continue
@@ -1275,7 +1396,9 @@ async def _wait_for_account_updated(runtime: _CodexProcess, deadline: float) -> 
             if remaining <= 0.0:
                 return False
             message = await runtime.read(remaining)
-            notification = _login_notification(message, "")
+            notification = _login_notification(
+                message, "", runtime_version=runtime.profile.runtime_version
+            )
             if notification == "account_updated":
                 return True
             if notification == "predisclosure":
@@ -1370,7 +1493,9 @@ async def codex_login(
                 except TimeoutError:
                     break
                 events_seen += 1
-                notification = _login_notification(message, login_id)
+                notification = _login_notification(
+                    message, login_id, runtime_version=runtime.profile.runtime_version
+                )
                 if notification == "account_updated":
                     account_updated_seen = True
                     continue
@@ -1401,7 +1526,9 @@ async def codex_login(
                     except TimeoutError as error:
                         raise TimeoutError from error
                     events_seen += 1
-                    notification = _login_notification(message, login_id)
+                    notification = _login_notification(
+                        message, login_id, runtime_version=runtime.profile.runtime_version
+                    )
                     if notification == "account_updated":
                         account_updated_seen = True
                         continue
@@ -1431,6 +1558,8 @@ async def codex_login(
         plan_type=plan_type,
         model_available=model_available,
         cleanup=cleanup,
+        sandbox_unavailable=_sandbox_unavailable(runtime),
+        sandbox_unavailable_reason=_sandbox_unavailable_reason(runtime),
     )
 
 
@@ -1450,7 +1579,30 @@ async def codex_logout(profile: CodexAppServerProfile) -> CodexRuntimeStatus:
             raise ValueError("codex_logout_unconfirmed")
     finally:
         cleanup = await _cleanup_guaranteed(runtime)
-    return CodexRuntimeStatus(runtime_ready, None, None, False, cleanup)
+    return CodexRuntimeStatus(
+        runtime_ready,
+        None,
+        None,
+        False,
+        cleanup,
+        _sandbox_unavailable(runtime),
+        _sandbox_unavailable_reason(runtime),
+    )
+
+
+def _sandbox_unavailable(runtime: _CodexProcess | None) -> bool:
+    return runtime is not None and getattr(runtime, "sandbox_unavailable", False) is True
+
+
+def _sandbox_unavailable_reason(runtime: _CodexProcess | None) -> SandboxUnavailableReason | None:
+    if runtime is None:
+        return None
+    reason = getattr(runtime, "sandbox_unavailable_reason", None)
+    if reason == "user_namespaces_unavailable":
+        return "user_namespaces_unavailable"
+    if reason == "bubblewrap_missing":
+        return "bubblewrap_missing"
+    return None
 
 
 def _validate_thread(
@@ -1610,7 +1762,7 @@ class _CodexRuntimeWarning(Exception):
 
 
 def _discard_rate_limits_notification(message: Mapping[str, object]) -> None:
-    """Validate the pinned schema's bounded sparse bookkeeping and retain no account state.
+    """Validate bounded sparse rate-limit bookkeeping and retain no account state.
 
     Codex 0.157.1 adds the nullable ``normalModelSlug`` (the model a quota alias describes); like
     every other field it is only type- and length-checked, then discarded.
@@ -1658,8 +1810,12 @@ def _discard_rate_limits_notification(message: Mapping[str, object]) -> None:
     nullable_text(rate_limits.get("limitId"), 128)
     nullable_text(rate_limits.get("limitName"), 128)
     nullable_text(rate_limits.get("normalModelSlug"), 128)
+    # Admitted releases add plan names (``promax`` in 0.159.0); the field is discarded unread, so
+    # any bounded lowercase identifier is accepted rather than the closed account-plan set.
     plan_type = rate_limits.get("planType")
-    if plan_type is not None and (type(plan_type) is not str or plan_type not in _SAFE_PLAN_TYPES):
+    if plan_type is not None and (
+        type(plan_type) is not str or _PLAN_TYPE_PATTERN.fullmatch(plan_type) is None
+    ):
         invalid()
     reached_type = rate_limits.get("rateLimitReachedType")
     if reached_type is not None and (
@@ -1733,11 +1889,11 @@ def _turn_failure(error: object) -> _CodexTurnFailure:
         if info in {"sessionBudgetExceeded", "usageLimitExceeded"}:
             return _CodexTurnFailure("unavailable", SemanticFailureClass.QUOTA_EXHAUSTED)
         if info == "rateLimitExceeded":
-            # Codex 0.157.1 names a native rate limit directly, as HTTP 429 is named below.
+            # Codex names a native rate limit directly (since 0.157.1), as HTTP 429 is below.
             return _CodexTurnFailure("unavailable", SemanticFailureClass.RATE_LIMITED)
         if info == "unauthorized":
             return _CodexTurnFailure("unavailable", SemanticFailureClass.AUTHENTICATION)
-        if info in {"serverOverloaded", "internalServerError"}:
+        if info in {"flexUnavailable", "serverOverloaded", "internalServerError"}:
             return _CodexTurnFailure("unavailable", SemanticFailureClass.PROVIDER_OUTAGE)
     elif isinstance(info, Mapping):
         detail = next(
@@ -1772,8 +1928,28 @@ def _turn_failure(error: object) -> _CodexTurnFailure:
 
 def _validate_predisclosure_notifications(runtime: _CodexProcess) -> None:
     for message in runtime.pending_notifications:
-        _validate_predisclosure_notification(message)
+        _validate_predisclosure_notification(
+            message, runtime_version=runtime.profile.runtime_version
+        )
     runtime.pending_notifications.clear()
+
+
+async def _close_predisclosure_window(runtime: _CodexProcess, timeout: float) -> None:
+    """Inspect everything Codex has written so far, then every queued notification.
+
+    A request's reply returns as soon as it is read, so an event, warning or server request
+    Codex wrote right after that reply can still sit unread in the reader buffer. Codex writes
+    stdout in order, so one zero-inference barrier request (``account/read`` without a token
+    refresh) is answered only after every line already written: reading up to its reply queues
+    each such notification and fails a server request at once. Every queued notification must
+    then be inside the reviewed pre-disclosure allowlist. Nothing is disclosed before this
+    returns; a native warning is raised as the bounded ``_CodexRuntimeWarning``.
+    """
+
+    await runtime.request(
+        _PREDISCLOSURE_BARRIER_REQUEST_ID, "account/read", {"refreshToken": False}, timeout
+    )
+    _validate_predisclosure_notifications(runtime)
 
 
 async def _interrupt(runtime: _CodexProcess, thread_id: str, turn_id: str) -> None:
@@ -1802,6 +1978,7 @@ _FAILURE_STAGE_BY_TOKEN: Final[Mapping[str, str]] = {
     "codex_model_catalog_invalid": "model_unavailable",
     "codex_thread_isolation_unproven": "thread_invalid",
     "codex_app_server_predisclosure_event_forbidden": "predisclosure_event_forbidden",
+    "codex_sandbox_unavailable_unreviewed_runtime": "predisclosure_event_forbidden",
     "codex_app_server_remote_control_state_invalid": "predisclosure_event_forbidden",
     "codex_app_server_remote_control_not_disabled": "predisclosure_event_forbidden",
     "codex_runtime_case_invalid": "case_invalid",
@@ -1987,22 +2164,11 @@ class CodexAppServerEvaluator:
             thread_result = await runtime.request(
                 30,
                 "thread/start",
-                {
-                    "approvalPolicy": "never",
-                    "approvalsReviewer": "user",
-                    "baseInstructions": SEMANTIC_REVIEW_INSTRUCTION,
-                    "cwd": str(runtime.workdir),
-                    "ephemeral": True,
-                    "model": self.profile.model,
-                    "modelProvider": "openai",
-                    "personality": "none",
-                    "sandbox": "read-only",
-                    "serviceName": "finishup-semantic-review",
-                },
+                _thread_start_params(runtime, self.profile),
                 _remaining(deadline, self.clock),
             )
             thread_id = _validate_thread(runtime, self.profile, thread_result)
-            _validate_predisclosure_notifications(runtime)
+            await _close_predisclosure_window(runtime, _remaining(deadline, self.clock))
             case_text = case.payload.decode("utf-8", errors="strict")
             strict_json_parse(case.payload)
             case_disclosed = True
@@ -2030,10 +2196,10 @@ class CodexAppServerEvaluator:
             turn_acknowledged = True
             await report_semantic_progress(SemanticProgressPhase.PROVIDER_SAMPLING)
 
-            # Codex tags each agent message as interim ``commentary`` or the ``final_answer``.
-            # Commentary is narration the constrained-output schema never governs; it is
-            # discarded unread. Legacy models omit the phase, so untagged messages are kept as
-            # the fallback candidate set. Exactly one candidate must remain.
+            # Codex tags each agent message as interim ``commentary``, a ``partial_answer`` or the
+            # ``final_answer``. The first two are text the constrained-output schema never
+            # governs; they are discarded unread. Legacy models omit the phase, so untagged
+            # messages are kept as the fallback candidate set. Exactly one candidate must remain.
             final_texts: list[str] = []
             untagged_texts: list[str] = []
             messages = runtime.pending_notifications
@@ -2098,7 +2264,7 @@ class CodexAppServerEvaluator:
                             else:
                                 token_usage = observed_usage
                                 if _visible_output_tokens(token_usage) > budget.output_limit:
-                                    # The pinned protocol has no per-turn output ceiling, so
+                                    # The app-server protocol has no per-turn output ceiling, so
                                     # the selected limit is enforced on the runtime's own
                                     # cumulative counters; the turn is interrupted below.
                                     raise ValueError("codex_app_server_output_oversize")
@@ -2121,7 +2287,7 @@ class CodexAppServerEvaluator:
                     if method == "item/completed" and item_type == "agentMessage":
                         if phase is not None and phase not in _AGENT_MESSAGE_PHASES:
                             raise ValueError("codex_app_server_event_forbidden")
-                        if phase == "commentary":
+                        if phase in _NON_FINAL_PHASES:
                             continue
                         if text is None or not text:
                             raise ValueError("codex_app_server_output_empty")

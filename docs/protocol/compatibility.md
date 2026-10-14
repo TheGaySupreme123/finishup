@@ -12,12 +12,12 @@ transcript, or one successful `check`, is never grounds for a blanket compatibil
 | Package / commit / release provenance | `version --json` |
 | Public protocol version (`PROTOCOL_VERSION = "0.1"`) and per-operation request/result schema version (`1.0.0`) | `version --json`, `schemas/operations/` |
 | Local-control hello/setup/proposal versions, including repository-locator and authority-digest support | `version --json`, `schemas/service/`, `schemas/privacy/` |
-| Each durable event schema name and version (sixteen families, each `1.0.0`) | `schemas/events/`, `version --json` |
+| Each durable event schema name and registered version | `schemas/events/`, `version --json` |
 | Canonical encoding / digest domain version | `docs/adr/ADR-002-canonical-protocol.md`, `fixtures/canonical/` |
 | Storage schema and its ordered migration set | `version --json` (catalog 5, bundle 13), `migrations/` |
 | Object envelope / encryption / key / recovery artifact formats | `version --json` (object format `yoetz-object/1`) |
 | Projection engine/generation and local policy/config digest | `version --json` (projection `yoetz/0.1.0`) |
-| Receipt schema and render version | `schemas/receipts/receipt-document-1.0.0.schema.json` |
+| Receipt schema and render version | `schemas/receipts/receipt-document-*.schema.json` |
 | Installed resource set / skill / reference compatibility | `version --json --resources`, `skills/codex/finishup/manifest.json` |
 | CLI contract / MCP SDK / MCP protocol | `version --json` (MCP SDK `mcp==1.28.1`, protocol negotiated against the latest published revision) |
 | Codex exact tested executable set and JSONL importer format profiles | `version --json`, `fixtures/imports/codex/` |
@@ -166,6 +166,41 @@ events currently in the ledger; projection compatibility never substitutes for l
 Policy and receipt wording changes are themselves versioned, and an old receipt's JSON remains
 addressable by its own schema version.
 
+## N5 intra-version audit (2026-10-14)
+
+The owner's request to keep older versions working acknowledges the storage and packaging audit
+gate. This is a bounded commit-pair probe, not a new supported-old-release cell. The old wheel was
+built from `0291f441d355ac9b740da3b37efc239337e3011a` in an external scratch clone; the candidate
+was `3e37fce639a70d6deb1e883757356a8271ad7b03` on integration base `0a4d4e8b7`, measured as its
+installed wheel (SHA-256
+`dc742ff57ea138a14c70de1d2fcfe384e3f1de70a8473389869ff0d66792413f`). Both are package version
+`0.3.0`, with separate ADR-028 disposable instances.
+
+- The old application wrote a synthetic 13-event SQLite ledger containing a plan, obligation,
+  evidence, completion claim, hook observations, check and receipts in all three formats. A
+  SQLite backup and synthetic test objects were copied into the candidate's private instance,
+  without vault material. The candidate reopened and replayed it, decoded all three historical
+  receipt documents and rendered them as markdown and text. Nine status views and new JSON,
+  markdown and text receipts preserved `insufficient_coverage`; closure retained the recorded
+  `host_outcome_unavailable` and `unpaired_event` limits instead of becoming clean.
+- To exercise one endpoint without retargeting either runtime's pin, the old daemon was imported
+  from the old installed wheel using the candidate instance's pinned interpreter. Its old schema
+  digest was `sha256:2322a2455459c3ca7687efe1c009b5a27c6e3a1e8c619d41adb5195c27073244`. The
+  candidate's status refused it as `service_incompatible`; the candidate's absolute launcher
+  then ran `service restart`. The old daemon exited 0, the successor stamped the candidate's
+  schema digest, and replacement completed in 15.041 seconds. The successor was stopped through
+  that same launcher.
+- The backward-read/resource-manifest conformance, withdrawn-field decoder and closure-shape
+  slices passed 27 tests locally. No additional product incompatibility was found in these
+  probes. The earlier decoder repair for the interim
+  `undeclared_references_created_in_task: true` shape remains in the candidate.
+
+The synthetic object store does not certify encrypted-vault migration or recovery, host
+reactivation, pending consent, provider credentials, or older clients reading new writes. The
+service probe used actual old wheel code inside an independent pin, not an in-place package
+upgrade or two runtimes pointing at one another's instance. Release support matrices remain the
+authority for broader claims.
+
 ## External integrations
 
 MCP compatibility names the exact SDK and protocol-revision pair tested against an installed
@@ -181,8 +216,12 @@ adapter/SDK/endpoint/model profile and is optional and advisory; the strict-loca
 FinishUP ships with is independent of any provider profile. New `codex-chatgpt-subscription@1`
 setups recommend `gpt-6-luna` with independent default reasoning `high`; that recommendation
 is not a live packaged Luna cell and does not rewrite historical Sol exact-cell evidence or
-existing bindings. It runs only on the exact Codex `0.157.1` evaluator cells (#871), because the
-superseded `0.150.1` cells cannot list it. Platform support is stated as an exact
+existing bindings. The subscription evaluator is not an exact-cell claim: it admits any stable
+Codex release at or above `0.157.1` whose retained bytes pass the capability check (reviewed
+app-server subset, zero-inference isolation probe, model listed for the dedicated home), newest
+first, and records the release, executable digest and capability-record digest as provenance
+(ADR-006, 2026-10-13). This does not change the exact-cell rule for the Codex *host* integration
+above. Platform support is stated as an exact
 artifact/runtime/SQLite/filesystem/key-backend cell (for example "macOS 11.0+ arm64, APSW
 `3.53.3.1`, SQLite source ID `2026-06-26 ...`"), never a generic "Python" or "macOS/Linux" claim.
 

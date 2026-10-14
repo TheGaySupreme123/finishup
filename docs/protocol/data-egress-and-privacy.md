@@ -151,8 +151,11 @@ nothing new. Everything else — other-writer material, imports, and every provi
 finding — requires the explicit `agent_context_categories` grant. The shipped resolver attributes
 status evidence rows from ledger authorship: an agent reads back the evidence it published in its
 current session, while host-observed rows, other writers' rows, and imports stay omitted without a
-grant. No sink or provenance combination ever admits `sensitive_confidential` content or anything in
-the never-send set. Serving the static
+grant. The names of undeclared files a delivered file may read (tb4n5, ADR-009 and ADR-035)
+follow the same rule, keyed on each name's own status leaf: a name returns only to the writer that
+published that exact name itself in this session, and no outbound channel ever carries those
+names. No sink or provenance combination ever admits `sensitive_confidential` content or anything
+in the never-send set. Serving the static
 `guidance/` documents over MCP resources is not a disclosure sink at all — those bytes carry no
 ledger, task, or user content and are identical for every installation.
 

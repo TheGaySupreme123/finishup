@@ -791,3 +791,28 @@ def test_compatible_hook_prompt_is_bookkeeping_without_promoting_an_exact_cell()
     )
     assert exact.statuses[1] is ImportLineStatus.UNKNOWN
     assert exact.reason_codes[1] == "unknown_item_type"
+
+
+def test_native_stream_parser_does_not_load_ledger_mapping_or_public_request_models() -> None:
+    import subprocess
+    import sys
+
+    probe = r"""
+import sys
+import pickle
+from finishup.adapters.importers.codex_jsonl import CodexCapabilityProfile
+from finishup.adapters.importers.codex_rollout_jsonl import parse_codex_rollout_jsonl, profile_for_rollout_version
+from finishup.adapters.integrations.codex_session_stream import should_trigger_stream_reconcile
+from finishup.ports.importer import ImportLineStatus
+assert pickle.loads(b'cfinishup.adapters.importers.codex_jsonl\nCodexCapabilityProfile\n.') is CodexCapabilityProfile
+assert pickle.loads(b'cfinishup.ports.importer\nImportLineStatus\n.') is ImportLineStatus
+assert parse_codex_rollout_jsonl(b'not-json\n', profile_for_rollout_version('0.148.0'), require_admission=False).statuses == (ImportLineStatus.MALFORMED,)
+assert should_trigger_stream_reconcile('PostToolUse', last_reconcile_mono=None)
+assert 'finishup.domain.events' not in sys.modules
+assert 'finishup.ports.ledger' not in sys.modules
+assert 'finishup.protocol.models' not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-I", "-c", probe], capture_output=True, check=False
+    )
+    assert completed.returncode == 0, completed.stderr.decode()

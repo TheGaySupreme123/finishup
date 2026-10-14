@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from types import MappingProxyType
-from typing import Final, Literal, Protocol, cast
+from typing import Final, Literal, Protocol, TypedDict, cast
 
 from finishup.application.ledger_snapshot import replay_off_loop, trusted_projection_at
 from finishup.application.unit_of_work import (
@@ -134,10 +134,12 @@ from finishup.protocol.errors import (
 from finishup.protocol.models import (
     MAX_CANONICAL_REQUEST_BYTES,
     MAX_EVENTS_PER_BATCH,
+    PUBLISH_ACTION_NOTICE_TEXTS,
     PUBLISH_BLOCKER_NOTICE_TEXTS,
     CoverageModel,
     FrontierModel,
     PublishWorkAcceptedEventModel,
+    PublishWorkActionNoticeModel,
     PublishWorkBlockerNoticeModel,
     PublishWorkDryRunModel,
     PublishWorkDryRunPreviewEventModel,
@@ -274,6 +276,8 @@ class PublishWorkInternalResult:
     versions: PublishWorkVersionSliceModel
     # Issue #985: fixed publish-time notices for finishup-blocker lines; empty means absent.
     blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...] = ()
+    # tb4n5 follow-up: fixed notices for actions no result names yet; empty means absent.
+    action_notices: tuple[PublishWorkActionNoticeModel, ...] = ()
 
     def as_json(self) -> dict[str, JsonValue]:
         """Serialize the closed internal result without materializing absent optional leaves."""
@@ -309,6 +313,11 @@ class PublishWorkInternalResult:
             # Absent when the batch carried no finishup-blocker line (never an empty list, #985).
             body["blocker_notices"] = tuple(
                 cast(JsonValue, item.model_dump(mode="json")) for item in self.blocker_notices
+            )
+        if self.action_notices:
+            # Absent when every action the batch recorded has a result naming it.
+            body["action_notices"] = tuple(
+                cast(JsonValue, item.model_dump(mode="json")) for item in self.action_notices
             )
         return body
 
@@ -547,12 +556,16 @@ def _event_invalid(
     item_index: int | None = None,
 ) -> PublicOperationError:
     # Only a stale frontier is fixed by rereading status; every other reason needs the event
-    # payload corrected first, and retrying it unchanged would fail the same way.
+    # payload corrected first, and retrying it unchanged would fail the same way. A missing
+    # frontier is fixed with the one the caller already holds (tb4n5, #1048): every write returns
+    # it, and the first plan uses the frontier start returned.
     if reason_code == "expected_frontier_required":
         message = (
             "The event batch is invalid. State-sensitive event families require "
-            "expected_frontier. Call status to read the current frontier, then retry "
-            "idempotently with the same request_id and expected_frontier set."
+            "expected_frontier (not null). Send the frontier you already hold: the frontier "
+            "start returned for your first plan, otherwise the result_frontier of your last "
+            "accepted write; read status only if you hold none. Retry idempotently with the "
+            "same request_id and expected_frontier set."
         )
     elif reason_code == "frontier_changed":
         message = (
@@ -1096,6 +1109,7 @@ async def _internal_result(
     projection = await _projection_at_result_frontier(runtime, result)
     coverage = with_completion_scope_coverage(prepared.coverage, projection)
     notices = _blocker_notices(projection, prepared)
+    action_notices = _action_notices(projection, prepared)
     return PublishWorkInternalResult(
         protocol_version="0.1",
         schema_version="1.0.0",
@@ -1119,6 +1133,44 @@ async def _internal_result(
             policy_packs=_POLICY_PACKS,
         ),
         blocker_notices=notices,
+        action_notices=action_notices,
+    )
+
+
+def _action_notices(
+    projection: ProjectionState, prepared: PreparedPublication
+) -> tuple[PublishWorkActionNoticeModel, ...]:
+    """Publish-time notices for each action the batch recorded that no result names yet.
+
+    tb4n5 follow-up (owner decision 2026-10-13): agents conveyed outcomes through evidence and
+    decisions, which link nothing, and learned the pairing rule only from a later
+    ``action_without_result`` finding. ``projection`` already includes the batch (the accepted
+    frontier, or a dry run's provisional fold), so a result in the same batch, or an earlier one
+    naming the id, answers it. Closed code and fixed text, so a replay returns the same body.
+    Every unpaired action gets its row: a batch admits at most ``MAX_EVENTS_PER_BATCH`` drafts and
+    the field admits as many rows, so nothing is cut.
+    """
+
+    recorded = tuple(
+        dict.fromkeys(
+            item.draft.payload.action_id
+            for item in prepared.drafts
+            if type(item.draft.payload) is ActionRecordedPayload
+        )
+    )
+    if not recorded:
+        return ()
+    linked = {
+        row.payload.action_id for row in projection.results.values() if row.payload is not None
+    }
+    return tuple(
+        PublishWorkActionNoticeModel(
+            action_id=str(action),
+            notice="result_not_linked",
+            text=PUBLISH_ACTION_NOTICE_TEXTS["result_not_linked"],
+        )
+        for action in recorded
+        if action not in linked
     )
 
 
@@ -1600,6 +1652,25 @@ def _validate_new_completion_scope(
             )
 
 
+class _DryRunNotices(TypedDict, total=False):
+    """The optional dry-run notice fields, present only when non-empty (never an empty list)."""
+
+    blocker_notices: tuple[PublishWorkBlockerNoticeModel, ...]
+    action_notices: tuple[PublishWorkActionNoticeModel, ...]
+
+
+def _dry_run_notices(
+    blocker: tuple[PublishWorkBlockerNoticeModel, ...],
+    action: tuple[PublishWorkActionNoticeModel, ...],
+) -> _DryRunNotices:
+    present: _DryRunNotices = {}
+    if blocker:
+        present["blocker_notices"] = blocker
+    if action:
+        present["action_notices"] = action
+    return present
+
+
 async def _execute_dry_run(
     app: Application,
     request: PublishWorkRequestModel,
@@ -1613,6 +1684,7 @@ async def _execute_dry_run(
     _validate_new_completion_scope(request, prepared)
     current, coverage, projected = await _preflight_dry_run_feasibility(runtime, request, prepared)
     notices = _blocker_notices(projected, prepared)
+    action_notices = _action_notices(projected, prepared)
     frontier = FrontierModel.model_validate(dict(current.as_wire()))
     preview = tuple(
         PublishWorkDryRunPreviewEventModel(
@@ -1640,7 +1712,7 @@ async def _execute_dry_run(
         would_accept=preview,
         coverage=CoverageModel.model_validate(coverage_to_json(coverage)),
         gaps=coverage.known_gaps,
-        **({"blocker_notices": notices} if notices else {}),
+        **_dry_run_notices(notices, action_notices),
     )
     return PublishWorkResultModel.model_validate(
         body.model_dump(mode="json", by_alias=True, exclude_unset=True)

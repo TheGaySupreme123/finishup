@@ -284,3 +284,14 @@ remedy sentence (`REASON_REMEDIES`) that renders on the text channel beside the 
   vocabulary are deleted, and the corrective phrases moved into the shared registry — which also
   gave the CLI a correction it never rendered. The clause no longer depends on message integrity,
   so rewording the message costs an agent nothing.
+
+## Amendment (2026-10-13, tb4n5, issue #1048): `frontier_held_required`
+
+`expected_frontier_required` (a state-sensitive batch that sent no frontier) no longer shares
+`frontier_refresh_required` with a genuine conflict. Its new token `frontier_held_required` says
+nothing was written and to send the frontier the caller already holds: the one `start` returned for
+a first plan, else the last accepted write's `result_frontier`, retrying under the same
+`request_id` (the replay semantics above are unchanged). `frontier_changed` and
+`frontier_digest_mismatch` keep `frontier_refresh_required`, which reads `status`. In tb4n5 the
+shared directive sent six first-plan agents to a status read they had just made (ADR-047
+amendment of 2026-10-13).

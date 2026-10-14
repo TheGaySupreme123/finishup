@@ -524,9 +524,11 @@ async def test_acknowledged_obligations_and_bookkeeping_findings_agree_on_every_
         _obligation(run, 3),
         _plan(run, 1, 2, 3),
         _action(run, 1),
-        _action(run, 2),
-        _action(run, 3),
     )
+    # Each action in its own batch: a same-batch sibling is never the later work that raises
+    # ``action_without_result`` (tb4n5 follow-up), so later batches raise the first two.
+    await run.publish(_action(run, 2))
+    await run.publish(_action(run, 3))
     first = await run.check_in("deterministic_only")
     bookkeeping = [
         item for item in first.findings if item.kind is FindingKind.ACTION_WITHOUT_RESULT

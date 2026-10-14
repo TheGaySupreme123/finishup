@@ -44,6 +44,7 @@ from finishup.adapters.integrations.portable_plugin import (
     RenderedPortablePlugin,
     build_portable_plugin_plan,
 )
+from finishup.config.foreign_write import writable_by_others
 from finishup.config.paths import ISOLATED_ROOT_ENV, LEGACY_ISOLATED_ROOT_ENV, isolated_root
 from finishup.domain.observation_profiles import (
     CURSOR_ORDINARY_HOOK_MAPPING_VERSION,
@@ -990,7 +991,7 @@ def _safe_existing_ancestor(path: Path) -> Path:
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
     if hasattr(os, "geteuid") and current.stat().st_uid != os.geteuid():
         raise _error(PluginArtifactReason.TARGET_UNTRUSTED)
-    if current.stat().st_mode & 0o022:
+    if writable_by_others(current.stat()):
         raise _error(PluginArtifactReason.TARGET_UNSAFE)
     for candidate in reversed(missing):
         if candidate.name in {"", ".", ".."}:
@@ -1025,7 +1026,7 @@ def _ensure_private_path(path: Path) -> None:
         if current.is_symlink() or not current.is_dir():
             raise _error(PluginArtifactReason.TARGET_UNSAFE)
         facts = current.stat()
-        if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or facts.st_mode & 0o022:
+        if (hasattr(os, "geteuid") and facts.st_uid != os.geteuid()) or writable_by_others(facts):
             raise _error(PluginArtifactReason.TARGET_UNSAFE)
 
 

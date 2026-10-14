@@ -1285,6 +1285,57 @@ def _capture_handoff_retirement_text(retirements: JsonObject) -> str:
     return f"{count} (recent: {details or 'none'})"
 
 
+def _pending_attempt_endings_text(endings: Mapping[str, JsonValue]) -> str:
+    """One line: counts per ending reason, then the newest few (reason, tool, generation)."""
+
+    counts = endings.get("counts")
+    recent = endings.get("recent")
+    count_text = (
+        ",".join(f"{reason}={count}" for reason, count in counts.items())
+        if isinstance(counts, Mapping) and counts
+        else "none"
+    )
+    entries = (
+        [entry for entry in recent if isinstance(entry, Mapping)]
+        if isinstance(recent, (tuple, list))
+        else []
+    )
+    recent_text = "; ".join(
+        f"{entry.get('reason')} {entry.get('tool') or 'unnamed'} "
+        f"generation {entry.get('generation')} at {entry.get('ended_at')}"
+        for entry in entries[-4:]
+    )
+    return f"{count_text} (open: {endings.get('open')}; recent: {recent_text or 'none'})"
+
+
+def _delivery_lag_text(lag: Mapping[str, JsonValue]) -> str:
+    """One line: accepted rows measured, then p50/p95 bucket bounds and the maximum."""
+
+    count = lag.get("count")
+    if not count:
+        return "no accepted rows measured"
+
+    def bound(value: JsonValue) -> str:
+        return "over 900000" if value is None else str(value)
+
+    return (
+        f"{count} accepted rows since {lag.get('since')}: p50 <= {bound(lag.get('p50_ms_at_most'))} "
+        f"ms, p95 <= {bound(lag.get('p95_ms_at_most'))} ms, max {lag.get('max_ms')} ms "
+        "(enqueue to acceptance)"
+    )
+
+
+def _local_retention_text(retention: Mapping[str, JsonValue]) -> str:
+    """One line naming which bounded local copies were shed; it is not content loss."""
+
+    shed = [
+        f"{name} since {cast(Mapping[str, JsonValue], seen).get('first_seen')}"
+        for name, seen in retention.items()
+        if isinstance(seen, Mapping)
+    ]
+    return ("; ".join(shed) + " (local copies only; not content loss)") if shed else "none"
+
+
 @_bounded_operation("status")
 def observe_status(
     *,
@@ -1335,6 +1386,15 @@ def observe_status(
     # that stranded it, so a retained ticket that held capture pressure can be
     # traced to its transition (issue #836).
     handoff_retirements = store.capture_handoff_retirements(commitment)
+    # How pending attempts ended without their post, named by reason and tool so an export can
+    # tell a missing post from a call FinishUP itself rejected; and the local copies the bounded
+    # stores shed, which are never content loss (tb4n5, #1041).
+    attempt_endings = store.pending_attempt_endings(commitment)
+    local_retention = store.local_retention(commitment)
+    held_rollout = store.held_rollout_summary(commitment)
+    # The delivery measure: enqueue-to-acceptance lag of accepted outbox rows (tb4n5). The
+    # ``drain_pass_delivered_nothing`` hook diagnostic counts passes, not lateness.
+    delivery_lag = store.delivery_lag(commitment)
     reclaim_guidance = (
         "reclaim with 'finishup observe reclaim --workspace .'"
         if root == Path.cwd().resolve()
@@ -1394,6 +1454,10 @@ def observe_status(
                 "hook_diagnostics": diagnostics,
                 "summary_refusals": summary_refusals,
                 "capture_handoff_retirements": handoff_retirements,
+                "pending_attempt_endings": attempt_endings,
+                "local_retention": local_retention,
+                "held_rollout_items": held_rollout,
+                "delivery_lag": delivery_lag,
                 "plugin_activation": plugin_activation,
             },
             json_output=True,
@@ -1451,6 +1515,14 @@ def observe_status(
             )
         ),
         "capture_handoff_retirements": _capture_handoff_retirement_text(handoff_retirements),
+        "pending_attempt_endings": _pending_attempt_endings_text(attempt_endings),
+        "local_retention": _local_retention_text(local_retention),
+        "held_rollout_items": (
+            f"{held_rollout.get('count')} (oldest read at {held_rollout.get('oldest_read_at')})"
+            if held_rollout.get("count")
+            else "0"
+        ),
+        "delivery_lag": _delivery_lag_text(delivery_lag),
         "hook_coverage": str(status.source_coverage.get(ObservationSource.CODEX_HOOK, False)),
         "stream_coverage": str(
             status.source_coverage.get(ObservationSource.CODEX_SESSION_STREAM, False)

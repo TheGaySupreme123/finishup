@@ -37,7 +37,7 @@ unreleased above reverse-chronological released versions.
   prints a one-line notice in interactive terminals only. Until you move, any `finishup` command
   shown works as `yoetz` with the same subcommand, and update tips, the upgrade plan and consent
   requests started through `yoetz` name `yoetz`. Move with
-  `uv tool install --managed-python --python 3.14.6 finishup` (plus any extras; `yoetz upgrade`
+  `uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup` (plus any extras; `finishup upgrade`
   prints the command), reconnect each host, then `uv tool uninstall yoetz`; see
   [Upgrading from Yoetz](docs/usage/upgrading.md#upgrading-from-yoetz).
 - **Some identifiers stay spelled `yoetz` permanently** under protocol 0.1, because they live inside
@@ -47,8 +47,40 @@ unreleased above reverse-chronological released versions.
   their `$id`s under `https://schemas.yoetz.dev/0.1/`. They are not leftovers.
 - A consent prepared before the upgrade stays reviewable after it, with the warning it was prepared
   with, and expires within 15 minutes as usual.
+### Fixed
+
+- The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
+  in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find
+  bubblewrap on PATH" warning is admitted the same way as its user-namespace warning: the reviewer
+  runs no commands and writes no files, so the sandbox confines nothing there. The fact is
+  disclosed, not hidden. `status`, `setup` and `repair` report `codex_sandbox_unavailable: true`
+  with the new `codex_sandbox_unavailable_reason` (`bubblewrap_missing` or
+  `user_namespaces_unavailable`), and the terminal interface says the evaluator runs without
+  Codex's verified Linux sandbox. Only reviewed Codex releases are admitted; others are refused
+  as `codex_sandbox_unavailable_unreviewed_runtime`. Every other warning, including Codex's WSL1
+  one, still stops setup. Approved network-denied checks still need a usable `bwrap`.
+  Receipts do not carry this fact yet.
+
+- MCP input schemas now target 4,800 bytes per tool so Codex does not apply its size-triggered
+  schema rewrite. Required fields, enums and event envelopes stay inline; full payload examples
+  and variant rules are available through `read_guidance` in request templates. Claude Code and
+  Cursor use the same compact inputs. Full server-side validation and output schemas are unchanged.
+  Field descriptions are preserved when they fit; larger tools keep priority field rules first.
+  If a future schema exceeds the budget even without descriptions, the bridge logs a diagnostic
+  and serves the minimal form instead of failing startup. CI still rejects oversized schemas.
 
 ### Added
+
+- Codex stream parsing defers ledger mapping imports until needed, reducing cold hook startup
+  work while preserving public import names, parser profiles and wire bytes.
+
+- Provider packet supply markers now have a packaged row schema and golden vectors. A follow-up
+  round whose requested excerpts are entirely withheld reports them unavailable with empty
+  supply refs; room cuts still report pending. The dispatch remains counted.
+
+- Codex admission commands accept `--codex-path` and `--codex-home`. Multiple installed versions
+  can read an agreeing registration without manual selection; disagreement has an explicit
+  continuation and cannot grant admission; the refusal is `host_admission_codex_binary_inconsistent`.
 
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap
@@ -261,6 +293,73 @@ unreleased above reverse-chronological released versions.
 
 ### Changed
 
+- Rereading `status` without writing now gets a direct answer. From the third first-page `status`
+  read in a row by the same agent on the same task with no `publish_work`, `check`, `respond`,
+  `receipt` or `start` in between, the result's text leads with one line: no status read is
+  needed, and the one next write the result's own closure state names (for example resolving the
+  first open obligation with `resolution_evidence_refs`, `respond`, `check`, or `receipt`). Paging
+  and polling a running check do not count. The structured result is unchanged, so no schema
+  changes; on Cursor the line is a separate block after the exact result copy. The start-of-session
+  text and the `status` tool description now say: after resume or compaction, read status once,
+  keep the returned obligations and findings, then do the work, and do not reread status between
+  ordinary steps (tb4 n5).
+
+- Agent guidance now routes reads to the one section an agent needs. The request templates,
+  workflow, coverage and publication pages each open with a map from situation to section anchor,
+  so a whole-page read (which returns only the first 4 KiB page of an 80 KiB document) leads
+  straight to the template or rule in question; in tb4n5 agents read the whole templates page 34
+  times before finding a section. The operating card names each focused topic by its trigger. The
+  publication topic adds a checklist to run before sending a batch, the review topic a table for
+  answering each kind of finding, and the receipt topic a numbered closing sequence with stop
+  conditions. The host skills state the `self_verified` precondition: a later check that still
+  cannot prove the repair. No tool, field or behavior changed, and the mandatory startup text
+  stays within its 8 KiB budget.
+
+- Reading a long guidance page by its plain address now shows, on its first page, the list of
+  sections it contains with their sizes, so an agent reads the one section it needs instead of
+  paging; the list comes from the same catalog the reader accepts, so it cannot go stale, and the
+  hand-written maps at the top of those pages shrink to the few rows a section name does not make
+  obvious. The startup text says each rule once: the Codex and Cursor startup text adds "do not
+  list resources", the per-step cadence lives only in the operating card, and the host skills
+  drop their repeated start, recovery and cadence lines and keep a one-line capacity consent rule
+  that points at the capacity procedure. Each skill's description now also names closure ("a
+  FinishUP finding, Stop message or receipt needs an answer"), so hosts that choose skills by
+  description load it again when closing, and the operating card says a long page lists its
+  sections on page 0. Together that leaves about 420 to 490 bytes of the 8 KiB startup budget free
+  on every host. On Codex, the Stop message that asks for a final `check` now repeats the
+  `yield_time_ms` setting for that cell, as does the status explanation when a code-mode cell made
+  the check stale (tb4n5).
+
+- The Codex subscription AI-powered reviewer now uses the newest Codex you have installed instead
+  of one pinned build, so updating Codex is enough. Any stable release from `0.157.1` on is used
+  once it passes a capability check, which runs with no sign-in and sends nothing to a model:
+  - the app-server protocol still carries everything the reviewer uses;
+  - Codex starts a read-only, network-off review thread;
+  - nothing unreviewed is reported before a review;
+  - your ChatGPT sign-in lists the chosen model.
+
+  `setup` and `repair` try installed releases newest first and fall back to the previous release
+  that passes (guided setup keeps this when you accept the Codex it offers; typing another path
+  uses only that one). They report the releases they skipped and why. This lets reviews use models only
+  newer Codex releases list, such as `gpt-6.1-sol`. A signed-in home whose model no installed
+  Codex lists now reports `codex_model_unavailable` instead of opening a new sign-in. Bindings
+  made with the pinned `0.157.1` (or `0.150.1`) build report `codex_runtime_profile_outdated`;
+  `finishup provider codex-subscription repair` moves them and keeps the sign-in and settings.
+  `runtime install --download` fetches the newest Codex, and `runtime remove` deletes the copies
+  no binding uses. Receipts keep recording the Codex release, executable digest and capability
+  record that ran. Newer Codex output (`partial_answer` messages, new plan names, the
+  `flexUnavailable` error) is handled, and unreviewed events still fail closed. Each check kills
+  every process the checked Codex started, including ones it left running; if FinishUP cannot confirm
+  they are gone, it stops with `codex_capability_probe_cleanup_unconfirmed` instead of trying
+  another release. On Linux hosts where Codex's sandbox cannot create user namespaces (gVisor,
+  Docker's default seccomp, some kernels), Codex's warning about it no longer blocks setup. The
+  reviewer runs no commands and writes no files, so the sandbox confines nothing there.
+  `status`, `setup` and `repair` report `codex_sandbox_unavailable`. This applies only to Codex
+  releases whose behaviour has been reviewed (today `0.162.1`). Another release sending that
+  warning is refused as `codex_sandbox_unavailable_unreviewed_runtime`, and an older reviewed
+  release is used instead if you have one. Every other warning still stops setup.
+  Authenticated live evidence through a capability-admitted release is pending.
+
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
   a data table) now stops closure instead of being only disclosed: the Stop hook continues the agent
   and names each such file, `status` lists them (`closure_readiness.undeclared_references`), the
@@ -269,6 +368,35 @@ unreleased above reverse-chronological released versions.
   declared as a delivered output. A `full_local` receipt names the files; an export or share receipt
   counts them and names none. Disclosing the dependency no longer resolves it. An untracked file the
   task started with is not counted (#1044).
+
+- A requested output the task writes only under a condition (an incomplete-records ledger, a
+  quarantine log for a malformed input) that you declared as a file and that is absent because the
+  condition did not occur now has one documented exit: correct the plan. The finding, the workflow,
+  publication and request-template guidance and the operating card say to model it as a `change`
+  item naming the condition, plus the source files that implement it, supersede the old
+  obligation, and replace the completion claim; the next check resolves the absence finding.
+  Writing an empty or placeholder file, or changing when your code writes the file, to satisfy the
+  declaration is named as wrong. A replacement completion claim may now name only the replacement
+  obligations a plan revision recorded. A file the task asks for unconditionally stays required:
+  only a `change` item of its own that spells the file's declared path and states its condition
+  re-models it; a mention beside another file, a file re-declared as an input, or prose calling it
+  unconditional keeps it required.
+
+- An undeclared file now stops closure only when a delivered file may read it. A file the code
+  provably only writes (`np.savez(...)`, a frame's `to_csv`, an `open(..., "w")`) no longer
+  counts; an unsupported wrapper, `ZipFile.write`, an `open` with no mode, an archive opened for
+  append (`ZipFile(..., 'a')` reads its members), or a read before a write still does. A path the code builds from literals (`os.path.join('checks', 'case_0',
+  'walk.npz')`) names exactly that file. A bare file name that a declared file shares, or that
+  the code never ties to the file's directory, is not treated as a dependency; the receipt
+  discloses how many such files there were (`deliverable_references_ambiguous_name`), never which
+  (#1044 follow-up).
+
+- When a delivered file may read a file you did not declare and your privacy settings withhold
+  its name, the Stop text now says so, says FinishUP shows you only a name you published yourself,
+  and tells you to list the files your change created with your own shell and declare them or
+  their directory. A name you published yourself in the same session is shown to you. The
+  AI-powered review no longer receives these names, or a digest of a check that held them, in a
+  check's history at all.
 
 - At Stop, the acceptance re-read now asks only about resolved obligations whose acceptance
   criteria the final answer neither names nor addresses, and names them, on Codex and Claude Code
@@ -294,6 +422,29 @@ unreleased above reverse-chronological released versions.
   decision its first attempt made. A reviewer ruling that a finding is fixed, citing material
   recorded after it, now closes the finding even when the check records environment facts such as
   verification run only as root; those facts stay disclosed on the receipt (#1046).
+
+- Every published action needs a result that names its `act_` id. The workflow guidance and the
+  operating card now say so up front, and a `publish_work` result (dry runs included) lists each
+  action it recorded that no result names yet in `action_notices`. A second action in the same
+  batch no longer raises `action_without_result` for the first; unrelated work in a later batch
+  still does. Once a result names the action, that finding resolves even when the check also
+  records content-capture limits, which stay disclosed on the receipt.
+
+- The AI-powered reviewer no longer adds its own copy of the local `action_without_result` or
+  `result_without_action` finding: a challenge under that label that cites only the unpaired action
+  (or orphan result) and its plain output is dropped and disclosed by
+  `semantic_process_state_filtered`. One that also cites a claim, an obligation, a paired action or
+  a failed run is kept, so failed or unrun verification and false completion are still reviewed
+  whatever their label (#1042 follow-up).
+
+- A reviewer ruling that a finding is fixed now counts when it cites the repair by the event that
+  recorded it, so a repaired and acknowledged finding the reviewer supports resolves instead of
+  ending as a standing disagreement. A ruling the reviewer could not assess, or a `fixed` that cites
+  nothing newer, stays an open round and is never recorded as a disagreement; after two such
+  rulings on one finding in a row with no edit (four at most), checks stop asking for the review
+  and say so, and the finding stays unresolved. A disputed
+  finding no longer tells you to repair or self-verify it. Answering a finding a recheck already
+  resolved now says that nothing is owed (#1046 follow-up).
 
 - A local-only check you asked for (`deterministic_only`) on a route that does not require
   AI-powered review no longer lists `semantic_review_not_requested` on the receipt, in `status` or
@@ -351,6 +502,49 @@ unreleased above reverse-chronological released versions.
   budget without dropping any rule.
 
 ### Fixed
+
+- Hooks, the agent connection (MCP) and the service start as fast as an ordinary run again. They
+  run from a sealed copy of the installation that held no compiled bytecode, so every start
+  compiled the whole package (12 s against 6 s on WSL, 0.9 s against 0.5 s on macOS) and slow
+  machines missed the service handshake. The copy now ships bytecode, reusing the installation's
+  own checked-hash bytecode when its source hash matches and compiling the rest once (timestamp
+  bytecode is never reused); an older copy is rebuilt on the next start. The documented install,
+  `npx finishup` and `finishup upgrade --accept` add `--compile-bytecode`, and `npx finishup` and the
+  upgrade set `SOURCE_DATE_EPOCH` for uv so that bytecode is checked-hash. A service that is
+  still starting when a command gives up is reported as `service_handshake_timeout` (retry)
+  instead of telling you to run it under a supervisor (ADR-007).
+
+- FinishUP runs for normal accounts on Ubuntu, Debian, Fedora and RHEL. Their default umask `0002`
+  makes every installed file writable by the account's own private group, and with the retained
+  release runtime the service, the agent connection (MCP) and every hook refused to start on
+  Codex, Claude Code and Cursor with only "The retained runtime could not be verified". The same rule refused such
+  users' repositories (`unsafe_root`), Codex launchers and host settings folders
+  (`target_unsafe`). Group write now counts as owner-only when the local account files prove the
+  group is the owner's own private group with no other member (machines whose accounts come
+  from a directory service such as LDAP or SSSD still need `umask 022`); world write, or group write through a group someone else
+  is in, is still refused, now as `release_runtime_group_writable` or
+  `release_runtime_world_writable` with the exact `chmod -R go-w …` repair on `finishup service run`,
+  `finishup mcp serve` and `finishup upgrade`, on `finishup service status` and other commands that find
+  no service, and in `finishup setup`; hooks name the token without local paths and still make no
+  decision. `finishup upgrade --accept` and `npx finishup` install under umask `022` (ADR-007).
+
+- On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
+  a `finishup-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so
+  that line could never answer it there. Cursor agents are told instead to confirm a met criterion
+  in the final answer and stop, which ends the re-read (it is asked once per flagged set), in the
+  Stop text, the `closure_prepare` notes and the MCP status and `closure_prepare` text. The CLI,
+  the terminal interface and a connection that does not name its agent say which hosts read the
+  line. Codex and Claude Code text is unchanged (#1050).
+
+- FinishUP no longer records an agent's own successful `status`, `receipt` or `read_guidance` call
+  that Codex wrote to its session log. Each such read was added to the task as an action, result
+  and evidence, so the task the agent was reading changed under every read and a closing loop could
+  keep growing it; on the tb4 n5 trial one hour of `status` polling grew the record by about twelve
+  events per read. A failed or denied FinishUP call, FinishUP's own writes and every other server's tools
+  are still recorded as before, and so is a held Codex log entry released later. On Cursor's
+  ordinary-work hooks, which name every MCP call `MCP:<tool>` without its server, a read is kept
+  out only when FinishUP's own server recorded serving that exact call; another server's tool named
+  `status` is still recorded (tb4 n5).
 
 - In a repository holding another Git repository inside it (an `api` directory with its own
   `.git`), FinishUP's local, names-only read of what changed no longer fails: it reads the nested

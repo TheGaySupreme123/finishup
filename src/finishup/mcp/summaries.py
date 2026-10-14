@@ -181,6 +181,11 @@ class SummaryRender:
 _FAILURE_SINK: ContextVar[list[tuple[str, BaseException]] | None] = ContextVar(
     "finishup_summary_failure_sink", default=None
 )
+# The bridge's host profile for the render in progress (#1050 follow-up). It only decides how the
+# re-check note says a flagged acceptance re-read is answered (``recheck_note``): ``cursor`` never
+# names the ``finishup-acceptance`` line its Stop cannot deliver, ``generic`` names which hosts read
+# it, and ``codex``/``claude`` (or a direct builder call, which leaves it unset) keep the line.
+_SUMMARY_HOST: ContextVar[str | None] = ContextVar("finishup_summary_host", default=None)
 
 
 class _Render:
@@ -1436,7 +1441,8 @@ def _check_lead_variants(
         return (
             "AI-powered review skipped: the reviewer twice in a row (or four times since the last "
             "assessed review) "
-            "could not assess the packet (verify it yourself; a repair re-arms it until that cap); "
+            "could not assess the packet or an answered finding (verify it yourself; a repair "
+            "re-arms it until that cap); "
             f"local check verdict: {verdict}; {counts}",
             f"AI-powered review skipped (verify it yourself); local check verdict: {verdict}; "
             f"{counts}",
@@ -2173,7 +2179,7 @@ def _verdict_parts(readiness: Mapping[str, JsonValue], state: str) -> list[Part]
     awaiting = awaiting_ruling_variants(readiness)
     if awaiting:
         parts.append(Part(awaiting, priority=_P_FACT_WHY))
-    announced = recheck_note(readiness)
+    announced = recheck_note(readiness, host=_SUMMARY_HOST.get())
     if announced is not None:
         parts.append(Part((announced, _RECHECK_SHORT), priority=_P_BOILERPLATE))
     counts = closure_counts_variants(
@@ -2526,7 +2532,8 @@ def summary_for_read_guidance(envelope: object) -> str:
                     f"Guidance page {page}/{page_count} for {uri}: {page_bytes} bytes of "
                     f"{total_bytes}; complete: {complete}; continuation: {continuation}; "
                     f"revision: {digest_text}; full page in structuredContent.text."
-                )
+                ),
+                _guidance_sections_part(source.get("sections")),
             ]
         )
     return _compose(
@@ -2537,6 +2544,32 @@ def summary_for_read_guidance(envelope: object) -> str:
             )
         ]
     )
+
+
+def _guidance_sections_part(raw: object) -> Part | None:
+    """Name the sections page zero lists (tb4n5), re-gated against the closed URI catalog."""
+
+    if not isinstance(raw, (list, tuple)):
+        return None
+    rows: list[str] = []
+    for entry in cast("list[object] | tuple[object, ...]", raw):
+        uri = _field_of(entry, "uri")
+        if type(uri) is not str or uri not in _REGISTERED_GUIDANCE_URIS or "#" not in uri:
+            return None
+        rows.append(f"#{uri.partition('#')[2]} {_safe_count(_field_of(entry, 'byte_count'))}")
+    if not rows:
+        return None
+    lead = (
+        f"{len(rows)} sections in structuredContent.sections; read only the one you need "
+        "instead of paging"
+    )
+    return _opt(f"{lead}: {', '.join(rows)}.", f"{lead}.", priority=_P_ACTION)
+
+
+def _field_of(entry: object, name: str) -> object:
+    if isinstance(entry, Mapping):
+        return cast(Mapping[str, object], entry).get(name)
+    return None
 
 
 def summary_for_closure_prepare(envelope: object) -> str:
@@ -2574,14 +2607,45 @@ def summary_for_closure_prepare(envelope: object) -> str:
     )
 
 
+# tb4n5 (#1048): six first-plan batches sent ``expected_frontier: null`` right after a status read,
+# and 85 of 87 later state-sensitive publishes read status first only to copy its frontier. The
+# start and accepted-publish texts say which frontier the next write sends; neither is required
+# text, so the identity and frontier are never displaced by them.
+_START_FRONTIER_NEXT: Final = (
+    "Send this frontier as expected_frontier on your first plan publish_work"
+    " (next_request_template carries it); no status read is needed for it."
+)
+_START_FRONTIER_NEXT_SHORT: Final = "Send this frontier as your first plan's expected_frontier."
+_WRITE_FRONTIER_NEXT: Final = (
+    "Send this frontier as the next write's expected_frontier; no status read is needed for it."
+)
+_WRITE_FRONTIER_NEXT_SHORT: Final = "Send it as the next expected_frontier."
+
+
+def _frontier_next_part(source: Mapping[str, JsonValue]) -> Part | None:
+    """Which write sends the returned frontier next, for a start or an accepted publish."""
+
+    if _frontier_clause(source) == "frontier: unavailable":
+        return None
+    if isinstance(source.get("next_request_template"), Mapping):
+        return _opt(_START_FRONTIER_NEXT, _START_FRONTIER_NEXT_SHORT, priority=_P_ACTION)
+    if source.get("accepted_events") is not None and source.get("outcome") in {
+        "accepted",
+        "replayed",
+    }:
+        return _opt(_WRITE_FRONTIER_NEXT, _WRITE_FRONTIER_NEXT_SHORT, priority=_P_ACTION)
+    return None
+
+
 def _summary_for_other_success(source: Mapping[str, JsonValue]) -> str:
     outcome = _safe_token(source.get("outcome"), fallback="recorded")
     identity = _identity_clause(source)
     accepted = source.get("accepted_events")
-    parts: list[Part] = [_req(f"Operation outcome: {outcome};")]
+    parts: list[Part | None] = [_req(f"Operation outcome: {outcome};")]
     if accepted is not None:
         parts.append(_req(f"accepted events: {_item_count(accepted)};"))
     parts.append(_req(f"{identity}{_frontier_clause(source)}."))
+    parts.append(_frontier_next_part(source))
     return _compose(parts)
 
 
@@ -2634,6 +2698,51 @@ def render_publish_blocker_notices(envelope: object) -> str:
         hidden = len(named) - _MAX_RENDERED_BLOCKER_NOTICES
         more = f" (+{hidden} more)" if hidden > 0 else ""
         lines.append(f"Blocker notice for {listed}{more}: {PUBLISH_BLOCKER_NOTICE_TEXTS[notice]}")
+    return "\n".join(lines)
+
+
+_ACTION_ID: Final = re.compile(
+    r"^act_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", re.ASCII
+)
+_MAX_RENDERED_ACTION_NOTICES: Final = 8
+
+
+def render_publish_action_notices(envelope: object) -> str:
+    """Render a publish result's unlinked-action notices as model-visible text (tb4n5 follow-up).
+
+    Only rows whose closed code and act_ id validate, and whose text is exactly the fixed
+    repository text for that code, are rendered; anything else renders nothing. One line per
+    notice code, naming the actions it covers.
+    """
+
+    from finishup.protocol.models import PUBLISH_ACTION_NOTICE_TEXTS
+
+    source = _mapping(envelope)
+    rows = source.get("action_notices")
+    if not isinstance(rows, Sequence) or isinstance(rows, str):
+        return ""
+    grouped: dict[str, list[str]] = {}
+    for row in cast(Sequence[JsonValue], rows):
+        if not isinstance(row, Mapping):
+            return ""
+        item = cast(Mapping[str, JsonValue], row)
+        notice, action, text = item.get("notice"), item.get("action_id"), item.get("text")
+        if (
+            type(notice) is not str
+            or notice not in PUBLISH_ACTION_NOTICE_TEXTS
+            or text != PUBLISH_ACTION_NOTICE_TEXTS[notice]
+            or type(action) is not str
+            or _ACTION_ID.fullmatch(action) is None
+        ):
+            return ""
+        grouped.setdefault(notice, []).append(action)
+    lines: list[str] = []
+    for notice in sorted(grouped):
+        named = grouped[notice]
+        listed = ", ".join(named[:_MAX_RENDERED_ACTION_NOTICES])
+        hidden = len(named) - _MAX_RENDERED_ACTION_NOTICES
+        more = f" (+{hidden} more)" if hidden > 0 else ""
+        lines.append(f"Action notice for {listed}{more}: {PUBLISH_ACTION_NOTICE_TEXTS[notice]}")
     return "\n".join(lines)
 
 
@@ -2718,17 +2827,21 @@ def _minimal_summary(envelope: object, builder: str) -> str:
         )
 
 
-def render_safe_compact_summary_detailed(envelope: object) -> SummaryRender:
+def render_safe_compact_summary_detailed(
+    envelope: object, *, host: str | None = None
+) -> SummaryRender:
     """Render the bounded projection and report every clause or builder that degraded.
 
     Never raises. A failing optional clause is omitted and named in the text; a failing required
     core is replaced by ``_minimal_summary``. Both are returned in ``failures`` so the bridge can
     record which builder and clause broke (tb4n3 RC-2: a committed operation must not become an
-    ``INTERNAL_ERROR`` because its text could not be built).
+    ``INTERNAL_ERROR`` because its text could not be built). ``host`` is the bridge's host
+    profile; it only selects the re-check note's acceptance wording (``recheck_note``).
     """
 
     failures: list[tuple[str, BaseException]] = []
     token = _FAILURE_SINK.set(failures)
+    host_token = _SUMMARY_HOST.set(host)
     builder = "summary"
     try:
         try:
@@ -2739,14 +2852,15 @@ def render_safe_compact_summary_detailed(envelope: object) -> SummaryRender:
             failures.append((builder, exc))
             text = _minimal_summary(envelope, builder)
     finally:
+        _SUMMARY_HOST.reset(host_token)
         _FAILURE_SINK.reset(token)
     return SummaryRender(text=text, failures=tuple(failures))
 
 
-def render_safe_compact_summary(envelope: object) -> str:
+def render_safe_compact_summary(envelope: object, *, host: str | None = None) -> str:
     """Render a bounded projection using only allowlisted structural result fields.
 
     Never raises; see ``render_safe_compact_summary_detailed`` for the failure report.
     """
 
-    return render_safe_compact_summary_detailed(envelope).text
+    return render_safe_compact_summary_detailed(envelope, host=host).text

@@ -30,9 +30,17 @@ from finishup.application.status_faults import (
     status_stage,
 )
 from finishup.application.task_views import LineageStatusSnapshot, ProjectStatusSnapshot
+from finishup.domain.events import (
+    AcceptedEvent,
+    ActionRecordedPayload,
+    ObligationPublishedPayload,
+    RedactionState,
+    is_observation_authored,
+    redaction_targets,
+)
 from finishup.domain.findings import FINDING_KIND_TRAITS, FindingOrigin
 from finishup.domain.observation import AdviceSnapshot
-from finishup.domain.privacy import ProjectionItemAuthorship
+from finishup.domain.privacy import ProjectionItemAuthorship, SourceAuthorship
 from finishup.domain.values import (
     Frontier,
     SemanticContinuation,
@@ -271,6 +279,11 @@ class StatusInternalResult:
     # ``(repository, machine_default)`` possible-credential filter state, composed by the service
     # from the owner's privacy policy (issue #982); ``None`` when not composed.
     credential_heuristic: tuple[str, str] | None = None
+    # tb4n5 (ADR-035 amendment): the ledger authorship of the publication that named each
+    # ``closure_readiness.undeclared_references`` path, keyed by that path leaf's pointer. It
+    # feeds the same agent-context provenance decision as ``item_authorship`` (only the writer who
+    # published the exact name, in this session, gets it back) and is never part of ``as_json``.
+    leaf_authorship: tuple[ProjectionItemAuthorship, ...] = ()
 
     def as_json(self) -> dict[str, JsonValue]:
         # Unset optional non-null leaves (today: obligation ``acceptance_criteria``, structural
@@ -1297,6 +1310,86 @@ _CHECK_ABSENCE_CODES: Final = frozenset(
 )
 
 
+def _published_value_names(value: str, path: str) -> bool:
+    """Whether a published item value spells ``path`` (root-relative), whole or as its tail."""
+
+    spelled = value.removeprefix("./")
+    return spelled == path or spelled.endswith("/" + path)
+
+
+async def _published_name_authorship(
+    runtime: TaskRuntime, frontier: Frontier, readiness: StatusClosureReadinessModel
+) -> tuple[ProjectionItemAuthorship, ...]:
+    """Who published each undeclared-reference name, read from the ledger (tb4n5, ADR-035).
+
+    A path in ``closure_readiness.undeclared_references`` is repository-excerpt content. When an
+    accepted, unredacted ``action_recorded`` ``attempted_items`` or ``obligation_published``
+    ``requested_items`` value spells that exact path (whole, or as the tail of an absolute
+    spelling), its event's ledger authorship is attached to the path's own leaf, preferring the
+    requesting writer's own event. The resolver then applies the ``DisclosureProvenance`` rule:
+    only that writer, in this session, through a cooperative channel, gets the name back
+    (``self_authored``): it already wrote that exact text. No authorship means the ordinary
+    ceiling. Read only on a head read (a pinned read cannot see a later redaction); any failure
+    attaches nothing.
+    """
+
+    rows = readiness.undeclared_references or ()
+    wanted = [
+        (f"/closure_readiness/undeclared_references/{row_index}/paths/{path_index}", path)
+        for row_index, row in enumerate(rows)
+        for path_index, path in enumerate(row.paths)
+        if type(path) is str
+    ]
+    if not wanted:
+        return ()
+    try:
+        loaded = await load_closure_basis(runtime, frontier)
+    except ClosureBasisUnavailable, PublicOperationError, TypeError, ValueError:
+        return ()
+    # A loaded envelope keeps its original redaction state after a later ``redaction_recorded``;
+    # a publication redacted by its event ID or its payload object ID no longer vouches for the
+    # name (checker R2 #1), exactly as the evidence self-authorship read excludes it.
+    redacted_events, redacted_objects = redaction_targets(loaded.records)
+    published: list[tuple[str, SourceAuthorship]] = []
+    for record in loaded.records:
+        if (
+            type(record) is not AcceptedEvent
+            or record.payload is None
+            or record.redaction is not RedactionState.PRESENT
+            or record.ledger.ingestion_sequence > frontier.sequence
+            or record.event_id in redacted_events
+            or record.payload_ref.object_id in redacted_objects
+        ):
+            continue
+        payload = record.payload
+        if type(payload) is ActionRecordedPayload:
+            values = tuple(payload.attempted_items)
+        elif isinstance(payload, ObligationPublishedPayload):
+            values = tuple(item.value for item in payload.requested_items)
+        else:
+            continue
+        source = SourceAuthorship(
+            record.writer.writer_id,
+            record.session_id,
+            record.ledger.ingestion_sequence,
+            record.publication_channel,
+            is_observation_authored(record),
+        )
+        published.extend((value, source) for value in values)
+    attached: list[ProjectionItemAuthorship] = []
+    for pointer, path in wanted:
+        sources = [source for value, source in published if _published_value_names(value, path)]
+        if not sources:
+            continue
+        own = [
+            source
+            for source in sources
+            if source.writer_id == runtime.writer_id and source.session_id == runtime.session_id
+        ]
+        attached.append(ProjectionItemAuthorship(pointer, ((own or sources)[0],)))
+    return tuple(attached)
+
+
 async def _closure_basis_or_none(
     runtime: TaskRuntime, frontier: Frontier, request_id: str | None
 ) -> LoadedClosureBasis | None:
@@ -2186,6 +2279,11 @@ async def execute_status(
             semantic_review_required=_semantic_review_required(app, route_profile),
             check_in_flight=frontier == head and await _check_in_flight(runtime),
         )
+        leaf_authorship = (
+            await _published_name_authorship(runtime, frontier, closure_readiness)
+            if frontier == head
+            else ()
+        )
         return StatusInternalResult(
             "0.1",
             "1.0.0",
@@ -2208,6 +2306,7 @@ async def execute_status(
             import_status,
             closure_readiness,
             item_authorship,
+            leaf_authorship=leaf_authorship,
         )
     except (StatusFault, TypeError, ValueError) as exc:
         # The request passed schema validation and every caller-shape rejection above is explicit,

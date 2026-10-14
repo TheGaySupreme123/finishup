@@ -134,8 +134,10 @@ without polling `status`, add `"await_observations": true` to the check request 
 `finishup check --await-observations`). FinishUP then waits up to about three seconds for this task's
 observations that are still being delivered before it checks, and the result's
 `observations_awaited` says whether they all arrived (`complete`), some were still on their way
-(`bounded_timeout`, with how many), or the wait could not see them (`unavailable`). The wait never
-fails the check; without the option nothing changes.
+(`bounded_timeout`, with how many), or the wait could not see them (`unavailable`). On Codex the
+wait also delivers session-log entries FinishUP was still holding to match with their hook reports,
+marked as unmatched, so they count before the check rather than after it. The wait never fails the
+check; without the option nothing changes.
 
 #### Inspecting what is left
 
@@ -298,8 +300,13 @@ findings you recorded as not done). Request the receipt; another check of unchan
 nothing. The receipt still lists every limitation, and its conclusion follows the prediction: a
 local-only check with limitations is still `insufficient_coverage`, and an acknowledged
 requirement keeps the conclusion at `unresolved_findings_remain`. `rechecks` lists the questions
-a Stop will ask you once to re-read (the acceptance criteria of resolved obligations, obligations
-you recorded as not done, a blocker you recorded); the status text announces them. `ready` means
+a Stop will ask you once to re-read (the acceptance criteria of the resolved obligations FinishUP
+flags because a requested item was never attempted or their evidence is unlinked or only your own
+assertion, obligations you recorded as not done, a blocker you recorded); the status text announces
+them. When a flagged obligation's criteria are met, the line `finishup-acceptance:<obligation id>:met`
+in your final answer answers its re-read in Codex and Claude Code. Cursor does not pass your final
+answer to FinishUP, so there the re-read is asked once and saying the criteria are met ends it.
+`ready` means
 nothing remains at all, and `unknown` means read status again once it is readable.
 
 Local checks also report facts about the task's own work: a planned verification command (an

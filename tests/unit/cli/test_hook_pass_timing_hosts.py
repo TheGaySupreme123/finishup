@@ -670,6 +670,37 @@ def test_observe_status_reports_pass_timing_in_json_and_text(
     assert "pass_timings" not in diagnostics_line
 
 
+def test_observe_status_reports_the_tb4n5_local_accounts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attempt endings, local retention, held rollout rows and delivery lag are exported (tb4n5)."""
+
+    def unexpected_inspection(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("status must not inspect activation without an exact executable")
+
+    monkeypatch.setattr(observe_cli, "inspect_activation", unexpected_inspection)
+    _consented(tmp_path)
+
+    assert (
+        observe_cli.observe_status(workspace=str(tmp_path), json_output=True, _state=tmp_path) == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["pending_attempt_endings"] == {"counts": {}, "open": 0, "recent": []}
+    assert payload["local_retention"] == {"dedup_fence": None, "envelope_ring": None}
+    assert payload["held_rollout_items"] == {"count": 0, "oldest_read_at": None}
+    assert payload["delivery_lag"]["measured"] == "enqueue_to_accept"
+    assert payload["delivery_lag"]["count"] == 0
+
+    assert (
+        observe_cli.observe_status(workspace=str(tmp_path), json_output=False, _state=tmp_path) == 0
+    )
+    lines = capsys.readouterr().out.splitlines()
+    assert "pending_attempt_endings: none (open: 0; recent: none)" in lines
+    assert "local_retention: none" in lines
+    assert "held_rollout_items: 0" in lines
+    assert "delivery_lag: no accepted rows measured" in lines
+
+
 def test_claude_pass_whose_fault_escapes_is_counted_as_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

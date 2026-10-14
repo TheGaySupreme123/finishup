@@ -8,6 +8,7 @@ from finishup.domain.events import (
     ClaimRecordedPayloadV1_1,
 )
 from finishup.domain.values import ClaimId, ObligationId, ResultId
+from finishup.kernel.claim_limitations import scope_with_supersession_ancestry
 from finishup.kernel.projections import ClaimProjectionRecord, ProjectionState
 
 __all__ = [
@@ -79,7 +80,8 @@ def result_is_relevant_to_claim(
     action = projection.actions.get(result.payload.action_id)
     if action is None or action.payload is None:
         return True
-    claim_scope = _scope(claim)
+    # tb4n5: a plan correction carries the claim's scope to the superseded obligations.
+    claim_scope = scope_with_supersession_ancestry(_scope(claim), projection.obligations)
     action_scope = frozenset(action.payload.obligation_refs)
     return not claim_scope or not action_scope or not claim_scope.isdisjoint(action_scope)
 

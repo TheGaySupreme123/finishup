@@ -112,7 +112,7 @@ _NEXT_PRIVACY: Final = "run 'finishup --privacy' to review or change the privacy
 _NEXT_PROVIDER_TOML: Final = (
     "run 'finishup provider endpoint' for an API provider, or "
     "'finishup provider codex-subscription setup' for Codex-managed ChatGPT login (it offers "
-    "FinishUP's verified evaluator runtime) — never put credentials in TOML"
+    "the newest capability-checked Codex) — never put credentials in TOML"
 )
 _NEXT_CREDENTIAL: Final = (
     "run 'finishup provider credential set' from a local terminal to provision the "
@@ -151,8 +151,31 @@ _PROVIDER_SETUP_DIRECT_REASONS: Final = frozenset(
         "codex_evaluator_runtime_download_failed",
         "codex_evaluator_runtime_download_timeout",
         "codex_evaluator_runtime_package_manager_unavailable",
+        # Capability admission (ADR-006, 2026-10-13): why a Codex release was not admitted.
+        "codex_runtime_version_unsupported",
+        "codex_runtime_version_unknown",
+        "codex_runtime_code_mode_host_missing",
+        "codex_runtime_protocol_incompatible",
+        "codex_runtime_protocol_unavailable",
+        "codex_app_server_predisclosure_event_forbidden",
+        "codex_sandbox_unavailable_unreviewed_runtime",
+        "codex_thread_isolation_unproven",
+        "codex_capability_probe_cleanup_unconfirmed",
+        "codex_model_unavailable",
     }
 )
+
+
+def _sandbox_unavailable_reason(status: Mapping[str, object]) -> str | None:
+    """The closed reason Codex gave for an unverified Linux sandbox (ADR-006, 2026-10-14)."""
+
+    reason = status.get("codex_sandbox_unavailable_reason")
+    if status.get("codex_sandbox_unavailable") is True and reason in {
+        "user_namespaces_unavailable",
+        "bubblewrap_missing",
+    }:
+        return cast(str, reason)
+    return None
 
 
 def _canonical_setup_workspace(workspace: Path | None = None) -> Path:
@@ -2059,6 +2082,12 @@ async def _service_reachability_observed(
         startup_line = spawned_startup_failure_line(error)
         if startup_line is not None:
             typer.echo(startup_line, err=True)
+        else:
+            from finishup.cli.runtime_refusal import installed_runtime_refusal_text
+
+            runtime_refusal = installed_runtime_refusal_text()
+            if runtime_refusal is not None:
+                typer.echo(runtime_refusal[1].rstrip("\n"), err=True)
         return unreachable, None
     vault_mode = getattr(status, "vault_mode", None)
     state = getattr(getattr(status, "state", None), "value", getattr(status, "state", None))
@@ -2375,6 +2404,8 @@ async def _interactive_provider_setup(
                 "plan_type": status.get("plan_type"),
                 "model_available": status.get("model_available"),
                 "process_cleanup": status.get("process_cleanup"),
+                "codex_sandbox_unavailable": status.get("codex_sandbox_unavailable") is True,
+                "codex_sandbox_unavailable_reason": _sandbox_unavailable_reason(status),
                 "login_reused": status.get("login_reused") is True,
             }
         )

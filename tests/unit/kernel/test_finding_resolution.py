@@ -1070,6 +1070,128 @@ def test_command_partition_never_upgrades_weak_or_overlapping_proof(weakness: st
         assert "command_relation_overlaps_obligation:" + obl(2) in reasons
 
 
+_CAPTURE_GAP_SETS = (
+    ("truncated_payload",),
+    ("content_capture_unavailable",),
+    ("content_capture_unavailable", "truncated_payload"),
+)
+
+
+@pytest.mark.parametrize("shape", ("unbound_action", "unknown_plan", "overlap", "bound"))
+@pytest.mark.parametrize("gaps", _CAPTURE_GAP_SETS)
+def test_a_linked_result_resolves_action_without_result_under_capture_gaps(
+    shape: str, gaps: tuple[str, ...]
+) -> None:
+    """tb4n5 react S (``fnd_da264f65``), owner decision 2026-10-13 ("under capture gaps").
+
+    The agent linked the result, yet ``truncated_payload`` and ``content_capture_unavailable``
+    kept the finding open, so the agent had to answer ``self_verified`` and the receipt read
+    "FinishUP could not prove". The rule reads only the action and result rows, so a readable link
+    proves the issue absent whatever obligations the action names; the gaps stay on the check and
+    its receipt.
+    """
+    from builders.policy_cases import act, record
+    from finishup.kernel.finding_resolution import resolution_blockers
+
+    state = _command_proof_state()
+    if shape in {"unbound_action", "overlap"}:
+        action = state.actions[act(1)]
+        assert action.payload is not None
+        state = replace(
+            state,
+            actions={
+                act(1): record(
+                    replace(
+                        action.payload,
+                        obligation_refs=() if shape == "unbound_action" else (obl(2),),
+                        attempted_items=("solve.sage",) if shape == "unbound_action" else (),
+                    ),
+                    10,
+                )
+            },
+        )
+    elif shape == "unknown_plan":
+        state = replace(state, plans={})
+    finding = _finding(kind=FindingKind.ACTION_WITHOUT_RESULT, subject_refs=(evt(10),))
+    check = _check(tested=100, coverage=_coverage(gaps=gaps))
+    assert resolution_blockers(finding, 4, check, frozenset(), proof_state=state) == ()
+    assert qualifying_check_resolves(finding, 4, check, frozenset(), proof_state=state)
+    # Without the tested state the link is unproven and the gaps keep blocking.
+    assert not qualifying_check_resolves(finding, 4, check, frozenset())
+    # Only the local action/result rule gets this: any other kind keeps the gaps as vetoes.
+    other = _finding(kind=FindingKind.FAILED_WORK_OMITTED, subject_refs=(evt(10),))
+    assert resolution_blockers(other, 4, check, frozenset(), proof_state=state)
+
+
+@pytest.mark.parametrize(
+    "weakness",
+    ("missing_result", "late_result", "unreadable_result", "unreadable_action", "foreign_result"),
+)
+def test_a_capture_gap_needs_an_exact_readable_link(weakness: str) -> None:
+    from builders.policy_cases import act, record, res
+    from finishup.domain.events import ResultOutcome, ResultRecordedPayload
+    from finishup.kernel.finding_resolution import resolution_blockers
+
+    state = _command_proof_state()
+    check = _check(tested=100, coverage=_coverage(gaps=("truncated_payload",)))
+    if weakness == "missing_result":
+        state = replace(state, results={})
+    elif weakness == "late_result":
+        check = _check(tested=15, coverage=check.coverage)
+    elif weakness == "unreadable_result":
+        state = replace(
+            state, results={res(1): replace(state.results[res(1)], payload=None, redacted=True)}
+        )
+    elif weakness == "unreadable_action":
+        state = replace(
+            state, actions={act(1): replace(state.actions[act(1)], payload=None, redacted=True)}
+        )
+    elif weakness == "foreign_result":
+        state = replace(
+            state,
+            results={
+                res(1): record(ResultRecordedPayload(res(1), act(9), ResultOutcome.SUCCESS), 20)
+            },
+        )
+    finding = _finding(kind=FindingKind.ACTION_WITHOUT_RESULT, subject_refs=(evt(10),))
+    assert "coverage:truncated_payload" in resolution_blockers(
+        finding, 4, check, frozenset(), proof_state=state
+    )
+
+
+@pytest.mark.parametrize("gap", ("command_attempt_uncorroborated", "command_attempt_mismatch"))
+def test_a_linked_result_does_not_widen_the_command_gap_partition(gap: str) -> None:
+    """Owner decision line 12 names capture gaps only: command gaps keep #682's partition.
+
+    tb4n5 formal S (``fnd_478fd885``: an action with no obligation refs, ``command_attempt_mismatch``)
+    stays open with ``command_relation_independence_unproven`` even with the result linked, and
+    a command gap beside a capture gap still blocks unless the partition proves independence.
+    """
+    from builders.policy_cases import act, record
+    from finishup.kernel.finding_resolution import resolution_blockers
+
+    state = _command_proof_state()
+    action = state.actions[act(1)]
+    assert action.payload is not None
+    unbound = replace(
+        state,
+        actions={
+            act(1): record(
+                replace(action.payload, obligation_refs=(), attempted_items=("solve.sage",)), 10
+            )
+        },
+    )
+    finding = _finding(kind=FindingKind.ACTION_WITHOUT_RESULT, subject_refs=(evt(10),))
+    for gaps in ((gap,), (gap, "truncated_payload")):
+        check = _check(tested=100, coverage=_coverage(gaps=gaps))
+        reasons = resolution_blockers(finding, 4, check, frozenset(), proof_state=unbound)
+        assert "command_relation_independence_unproven" in reasons, gaps
+        assert "coverage:truncated_payload" not in reasons, gaps
+    # A proven independent partition and a proven link together resolve it.
+    both = _check(tested=100, coverage=_coverage(gaps=(gap, "truncated_payload")))
+    assert resolution_blockers(finding, 4, both, frozenset(), proof_state=state) == ()
+
+
 def test_independent_command_gap_can_coexist_with_tolerated_host_gaps() -> None:
     finding = _finding(kind=FindingKind.ACTION_WITHOUT_RESULT, subject_refs=(evt(10),))
     check = _check(

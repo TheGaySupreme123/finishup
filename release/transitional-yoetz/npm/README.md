@@ -32,7 +32,7 @@ instead of the npm launcher. See the upgrade guide below.
 
 ## Move to FinishUP
 
-1. Install the new name: `uv tool install --managed-python --python 3.14.6 finishup` (or run
+1. Install the new name: `uv tool install --compile-bytecode --managed-python --python 3.14.6 finishup` (or run
    `npx finishup`). If you installed `yoetz` with extras, install the same ones, for example
    `'finishup[semantic-openai]'`. `yoetz upgrade` prints this command with your extras when
    it can read them from the installation, and otherwise says to add them yourself.

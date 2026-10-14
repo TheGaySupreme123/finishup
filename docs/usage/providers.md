@@ -45,8 +45,12 @@ This is a different credential authority from every API provider above. Choose i
 setup, the prompt-loop provider menu, `/provider`, or run:
 
 ```text
-finishup provider codex-subscription setup --executable /absolute/path/to/codex
+finishup provider codex-subscription setup
 ```
+
+Setup uses the newest Codex you have installed, as long as it is version 0.157.1 or later and
+passes FinishUP's capability check (below). Pass `--executable /absolute/path/to/codex` to use one
+specific installation instead.
 
 New setups preselect `gpt-6-luna` with reasoning effort `high` for final reviews and `medium`
 for routine checkpoints. A check counts as final when your task has recorded a completion claim;
@@ -66,13 +70,12 @@ exact model, reasoning effort, and output limit each review used.
 The selected executable can be an npm wrapper with the matching native package nested below that
 wrapper (`@openai/codex-darwin-arm64` on macOS arm64 or `@openai/codex-linux-x64` on Linux x86_64),
 an npm-prefix wrapper with that same platform package hoisted beside the wrapper package in the
-same prefix, or the exact native `codex` executable itself. FinishUP resolves only those bounded
+same prefix, or the native `codex` executable itself. FinishUP resolves only those bounded
 locations derived from the selected path: it does not search PATH, unrelated prefixes, or arbitrary
-parent directories. Every form still requires the supported platform, package version, native
-executable, and exact SHA-256 digest; a direct native path does not bypass those checks.
+parent directories. Every form still requires a supported platform, a stable Codex release at or
+above 0.157.1, and a passed capability check; a direct native path does not bypass them.
 
-Before opening a browser, FinishUP shows the resolved native executable and SHA-256 digest, Codex
-version, dedicated evaluator home, model and reasoning effort, OpenAI destination, unknown
+Before opening a browser, FinishUP shows the selected Codex and its version, dedicated evaluator home, model and reasoning effort, OpenAI destination, unknown
 plan-specific data-use posture, privacy implications, and the reverse commands. After the explicit
 confirmation, FinishUP first asks Codex whether that dedicated home is already signed in with the
 selected model available; if it is, the binding is written without a new sign-in and the result
@@ -90,30 +93,39 @@ its own authentication in the dedicated home; that is separate from FinishUP con
 `disconnect` when you want Codex to log out, or `rollback` when you want to remove the FinishUP
 binding while preserving the home and installation.
 
-The exact evaluator cells are Codex npm `0.157.1-darwin-arm64` on macOS arm64 and
-`0.157.1-linux-x64` on Linux x86_64. An x86_64 WSL2 Linux userspace follows the Linux cell when run
-there, but WSL-specific smoke evidence remains pending. Both use capability
-`codex-evaluator/0.157.1/v2`. FinishUP's own verified copy includes Codex's `codex-code-mode-host`
-helper, which Codex needs beside its executable. A binding set up with Codex `0.150.1` reports
-`codex_runtime_capability_unsupported`. A binding set up with the earlier `0.157.1` `v1` cell,
-whose copy lacks the helper, reports `codex_runtime_executable_missing`. In both cases, run
-`finishup provider codex-subscription repair` with a current Codex installed, or after
-`finishup provider codex-subscription runtime install --download`. Your sign-in, model and settings
-are kept.
-The selected native binary digest, app-server v2 schema digest,
-capability-cell identity digest and evidence expiry, strict configuration digest, model, reasoning
-effort, and dedicated owner-private `CODEX_HOME` are bound in nonsecret config and rechecked before
-every attempt. Expired capability evidence fails before a child starts. A shell alias, neighboring
-version, moved binary, modified evaluator config, API key, proxy variable, or ambient Codex home is
-not a fallback. Native Windows has no evaluator cell. The only fallback is an API provider you
+The evaluator runs on macOS arm64 and Linux x86_64. An x86_64 WSL2 Linux userspace follows Linux
+when run there, but WSL-specific smoke evidence remains pending; native Windows is not supported.
+Before FinishUP binds a Codex release, it checks that release without signing in or sending anything
+to a model:
+- the release is 0.157.1 or later;
+- the app-server protocol still carries every request, field and value the evaluator uses;
+- starting it with FinishUP's isolated settings yields a read-only, network-off review thread;
+- nothing unexpected is reported before a review could begin.
+
+Your ChatGPT sign-in must also list the model you chose. A release that fails any of these is
+not used, and FinishUP falls back to the newest older release that passes. A binding set up before
+this capability check, on the pinned Codex `0.150.1` or `0.157.1` builds, reports
+`codex_runtime_profile_outdated`; run `finishup provider codex-subscription repair` to move it. Your
+sign-in, model and settings are kept.
+
+The bound Codex release, its native binary digest, FinishUP's record of the passed check, the strict
+configuration digest, model, reasoning effort, and dedicated owner-private `CODEX_HOME` are kept
+in nonsecret config. Before every review, FinishUP checks that the bound files still match that record
+and re-proves the sign-in, model, and isolated thread. Expired capability evidence fails before a
+child starts. A shell alias, an unchecked binary, a moved binary, a modified evaluator config, an
+API key, a proxy variable, or the ambient Codex home is never a fallback. The only fallback is an
+API provider you
 explicitly pair with it (see
 [Pairing a fallback endpoint](#pairing-a-fallback-endpoint)). Guided first-run, the prompt-loop
 provider menu, and `/provider` can log out the
 dedicated home first when you choose to switch ChatGPT accounts.
 
-On Linux, Codex's read-only sandbox needs bubblewrap (`bwrap`) and unprivileged user
-namespaces. A container or VM without them fails closed before any case is disclosed. Use an
-environment that provides both and keep the sandbox checks enabled. See the
+On Linux, Codex's read-only sandbox uses bubblewrap (`bwrap`) and unprivileged user
+namespaces. The evaluator runs no commands and writes no files, so with a reviewed Codex release
+(today 0.162.1) a container or VM without them still works. `finishup provider codex-subscription
+status` then reports `codex_sandbox_unavailable: true` with the reason (`bubblewrap_missing` or
+`user_namespaces_unavailable`). Any other Codex warning, or the same warning from an unreviewed
+release, fails closed before any case is disclosed. See the
 [evaluator runbook](../runbooks/codex-subscription-evaluator.md#linux-authenticated-smoke-evidence-2026-09-13)
 for the current acceptance evidence and remaining release checks.
 
@@ -133,25 +145,32 @@ finishup provider codex-subscription rollback             # remove binding; pres
 
 ### Keeping the evaluator working when Codex updates
 
-Your everyday Codex can stay on any version. Setup keeps its own verified private copy of the one
-Codex release the evaluator admits, in FinishUP's data directory, and binds that copy instead of your
-Codex installation. Updating or replacing your everyday Codex therefore leaves AI-powered review
-working. `--executable` is optional: setup uses FinishUP's copy first, then any installation that
-already holds the admitted release. It never offers a newer Codex that the evaluator does not
-admit. When nothing eligible is found, first-run setup and the prompt menu offer to download the
-admitted release. The terminal interface's `/provider` shows the download command. You can also
-run it yourself:
+Updating Codex is enough. Setup keeps its own private copy of the Codex release it checked, in
+FinishUP's data directory, and binds that copy instead of your Codex installation. Updating or
+replacing your everyday Codex never breaks AI-powered review. To move the evaluator to your newer
+Codex, run `finishup provider codex-subscription repair` (or setup again): it checks the newest
+installed release and binds it if it passes. If the newer release fails the check, or does not
+list your model, FinishUP keeps using the previous release that passes, and tells you which releases
+it skipped and why. No FinishUP update is needed for a new Codex release.
+
+`--executable` is optional: setup and repair consider FinishUP's own copies, the installation your
+binding came from, and the Codex installations on your PATH, newest first. Guided setup offers the
+newest as its default; accepting it keeps that fallback, while typing a different path uses only
+that Codex. When none is 0.157.1 or
+later, first-run setup and the prompt menu offer to download the newest Codex. The terminal
+interface's `/provider` shows the download command. You can also run it yourself:
 
 ```text
 finishup provider codex-subscription runtime status              # what is bound, and what to do next
-finishup provider codex-subscription runtime install --download  # uses your npm; asks first
+finishup provider codex-subscription runtime install --download  # newest Codex via your npm; asks first
 finishup provider codex-subscription runtime install --from /absolute/path/to/codex
-finishup provider codex-subscription runtime remove              # only when no binding uses it
+finishup provider codex-subscription runtime remove              # removes copies no binding uses
 ```
 
-The download runs your own npm with install scripts disabled. FinishUP keeps only the executable whose
-SHA-256 matches the reviewed evaluator and deletes the rest. It sends no task content, credential,
-or account data, and it does not change your Codex installation, settings, or sign-ins.
+The download runs your own npm with install scripts disabled. FinishUP keeps only Codex's native
+executable and its code-mode helper, checks them, and deletes the rest. It sends no task content,
+credential, or account data, and it does not change your Codex installation, settings, or
+sign-ins. Earlier copies stay as fallbacks until `runtime remove` deletes them.
 
 If AI-powered review stops working after a Codex update or a FinishUP upgrade, `runtime status`,
 `codex-subscription status`, and `finishup provider status` name the exact cause, for example
@@ -166,7 +185,9 @@ Repair shows what will change and asks first. It keeps your model, reasoning eff
 retries, dedicated home, fallback role, and privacy permissions. It reuses your existing ChatGPT
 sign-in only when Codex reports the dedicated home still signed in; it never starts a new sign-in,
 logs out, or switches accounts. If the home is not signed in, repair changes nothing and tells you
-to run `setup`. Re-running `setup` also keeps an existing binding's timeout, retries, and reasoning
+to run `setup`. If you are signed in but no Codex you have installed lists your model, it reports
+`codex_model_unavailable`: update Codex, choose another `--model`, or set up again with
+`--switch-account`. Re-running `setup` also keeps an existing binding's timeout, retries, and reasoning
 effort unless you pass new values.
 
 When an attempt fails after the case was disclosed, the receipt keeps the closed
