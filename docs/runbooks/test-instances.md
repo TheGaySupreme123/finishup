@@ -192,10 +192,11 @@ is explicit home, `CODEX_HOME`, `CODEX_TESTING_HOME`, then `~/.codex`. Both home
 to the selected value for each Codex subprocess. Plugin removal still requires an explicit home;
 use it for MCP removal and reconnection too. Do not retarget the process by changing only one
 ambient variable. A foreign home is preserved; use a newly created mode-0700 home for a separate
-installation, and inspect any project marketplace conflict independently. When discovery finds more
-than one Codex executable, provider status stays unread for the agent route and prints a quoted
-continuation with `--codex-path <exact-executable>` and the selected `--codex-home`; pass the same
-selector to every follow-up probe. The continuation retains the invoking launcher and isolation
+installation, and inspect any project marketplace conflict independently. When discovery finds several Codex executables, provider status reads each against the selected
+home. Agreeing registrations are usable; disagreement or failed readings print a quoted
+continuation with `--codex-path <exact-executable>` and the selected `--codex-home`. The configured
+Codex runtime is read first when discoverable, otherwise the newest reported version. Pass the same
+selectors to admission preview and grant and to every follow-up probe. The continuation retains the invoking launcher and isolation
 root. An explicitly missing selector reports the same bounded next action without echoing the path.
 
 A service-dependent approval first probes the selected service without starting it. Known

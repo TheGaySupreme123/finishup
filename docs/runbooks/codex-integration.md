@@ -127,10 +127,14 @@ cell, preflight must show no external/global `yoetz` registration, bind strict o
 preview, and install the full digest-bound artifact without invoking `codex mcp add`. Dual,
 foreign, or unobservable ownership stops the operation. `yoetz provider status --json` reports
 `owner_source`, `ownership_state`, and the observed route profile; only one exclusively observed
-policy owner can make `agent_route_semantic_ready` true. If more than one Codex executable is
-discovered, provide `--codex-path <exact-executable>` so the report can inspect one selected
-installation; the report keeps the route unread and supplies a bounded continuation retaining the
-selected home, launcher and isolation root when no selector is given.
+policy owner can make `agent_route_semantic_ready` true. When several Codex versions are installed, the report reads the registration through each
+against the selected home. Agreeing readings are usable without a selector. It reads the configured
+Codex runtime first when discoverable, otherwise the newest reported release; this preference does
+not prove which executable a host session launched. Disagreeing or failed readings require
+`--codex-path <exact-executable>` and retain the selected home, launcher and isolation root in the
+continuation. `integrate codex admission status|preview|grant|revoke` accepts both `--codex-path`
+and `--codex-home`; preview/grant refuse disagreement, and revoke remains available. Admission
+output uses path-free placeholders for these selectors; repeat the exact values from your preview.
 
 ## 2. Prerequisites and exact supported scope
 

@@ -8,6 +8,10 @@ reverse-chronological released versions.
 
 ### Added
 
+- Codex admission commands accept `--codex-path` and `--codex-home`. Multiple installed versions
+  can read an agreeing registration without manual selection; disagreement has an explicit
+  continuation and cannot grant admission.
+
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap
   in Yoetz's own observation), what the host's hooks observed since the last check, and whether each

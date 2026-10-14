@@ -6420,10 +6420,16 @@ legacy external-registration fields `registration_state`, `registered_profile`, 
 `external_registration|plugin_managed|dual|foreign|null`; `ownership_state` uses
 `McpOwnershipState`. `observed: false` means exclusive ownership was not read unambiguously, not
 that none is registered. `registered_profile: null` with `observed: true` means the observed state
-has no single Yoetz route (`absent|dual|foreign`). A host with multiple discovered Codex
-executables is left unobserved until the caller selects one with `--codex-path`; `provider status`
-reports the closed `codex_binary_selection` blocker and a quoted continuation retaining the
-invoking launcher, isolation root and inspected Codex home. An explicitly unresolved
+has no single Yoetz route (`absent|dual|foreign`). For multiple discovered Codex executables, `binary_selection: consistent` reports agreeing
+registration readings against one selected home. Read order prefers the configured Codex runtime
+when discoverable, otherwise the newest reported version; `selected_codex_version` names its
+version without a path. This does not attest the executable a host session launched. Disagreement
+or a failed reading reports `binary_selection: inconsistent`, blocks agent readiness and admission
+grants, and offers an explicit selector. If no executable can read the registration, selection is
+`multiple`. `provider status` reports the closed `codex_binary_selection` blocker and a quoted
+continuation retaining the invoking launcher, isolation root and inspected Codex home. Codex
+admission commands accept `--codex-path` and `--codex-home` too; their path-free next commands
+retain selector placeholders, and the caller must repeat the exact selected values. An explicitly unresolved
 `--codex-path` uses the `not_found` state of that blocker. No arbitrary executable is chosen for a
 readiness claim.
 A strict registered route adds a `mcp_route_profile` blocker
