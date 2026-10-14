@@ -137,12 +137,13 @@ CEREMONY_REFUSAL_MESSAGES: Final = MappingProxyType(
         ),
         "ceremony_busy": (
             "ceremony_busy: another confirmation is already open on this computer, so this one "
-            "did not start. Finish or cancel it (cancel any system dialog you did not start "
-            "yourself), then run the command again"
+            "did not start. Finish it where it was started, and cancel any system dialog you did "
+            "not start yourself; if nothing is on screen, 'yoetz service restart' ends it. Then "
+            "run the command again"
         ),
         "reauthentication_rate_limited": (
-            "reauthentication_rate_limited: too many recent confirmations did not succeed; wait a "
-            "minute, then run the command again"
+            "reauthentication_rate_limited: recent confirmations did not succeed, so Yoetz waits "
+            "before asking again; wait up to five minutes, then run the command again"
         ),
         "state_forbidden": (
             "state_forbidden: the vault must be unlocked before this ceremony; "

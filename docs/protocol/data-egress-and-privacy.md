@@ -324,18 +324,21 @@ repository excerpts, or the requesting writer published that exact name in this 
 accepted, unredacted cooperative publication, the whole path token becomes
 `(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the quoted
 path the receipt prints, the bare path when it has a directory, or a basename with an extension. Any
-name, a top-level one without an extension included, is also a span behind a leading `./` or an
-absolute directory prefix, quoted or not: the prefix may start at `/`, `~`, `~user`, `$VAR` or
-`${VAR}`, optionally behind `file://`, and empty or `.` segments (`//`, `/./`) inside the prefix or
-the name still spell the same file. The whole prefixed token is withheld. A path in single quotes,
-double quotes or backticks may run through directories with spaces and the whole quoted token is
-withheld. An unquoted absolute path through a directory with spaces has no token boundary in prose
-and is not recognised as one path. A different relative directory (`../`, `x/`), a longer name, a
-suffix, a plain word such as `Summary` (or a top-level name written without a prefix or quotes), and
-a different letter case stay readable: spellings are compared exactly, because folding case or
-Unicode would conflate distinct files on a case-sensitive filesystem. Every bound in the span
-pattern is fixed, so a search stays linear in the prose it reads. The rule applies to JSON, markdown
-and text and to every profile, `full_local` included: a format or profile is not a disclosure grant.
+name, a top-level one without an extension included, is also a span behind a leading `./` (also
+`.//` or `././`), quoted or not, and empty or `.` segments inside the name still spell the same
+file. Behind an absolute prefix (`/`, `~`, `~user`, `$VAR` or `${VAR}`, optionally behind `file://`)
+any directories may come before the name's last component: an absolute path that ends in a withheld
+file's base name counts as that file, which can only withhold more. Unquoted, the prefix's
+directories stop at whitespace and at `,` `;` `:` and brackets, so the next path in a list starts
+afresh. The whole prefixed token is withheld. A path in single quotes, double quotes or backticks
+may run through directories with spaces and the whole quoted token is withheld. An unquoted absolute
+path through a directory with spaces has no token boundary in prose and is not recognised as one
+path. A different relative directory (`../`, `x/`), a longer name, a suffix, a plain word such as
+`Summary` (or a top-level name written without a prefix or quotes), and a different letter case stay
+readable: spellings are compared exactly, because folding case or Unicode would conflate distinct
+files on a case-sensitive filesystem. Every bound in the span pattern is fixed, so a search stays
+linear in the prose it reads. The rule applies to JSON, markdown and text and to every profile,
+`full_local` included: a format or profile is not a disclosure grant.
 
 The token can be longer than the name it replaces. A field that would then pass its wire bound
 (32,768 characters for `human_text`, at least its original length for a document field) or the
@@ -376,9 +379,12 @@ asks for a passphrase kept in the platform credential store (setup's system-keyc
 generates one its owner never saw) unless the owner passes `--use-passphrase`, which also skips the
 dialog, for example over SSH. A cancelled or failed dialog is `presence_refused` and an unanswered
 one is `presence_timeout` after 60 seconds; neither grants anything, and the next dialog then waits
-(`reauthentication_rate_limited`, 5 seconds rising to 5 minutes). Another open confirmation is
-`ceremony_busy` (`owner_view_busy`, naming this command's code), never a locked vault. Linux and WSL
-2 compose no provider: there only a vault passphrase the owner types completes the ceremony, and a
+(`reauthentication_rate_limited`, 5 seconds rising to 5 minutes). That wait lives in the service
+process and a restart clears it, so it slows repeated dialogs rather than capping them, and an agent
+that causes misses can delay the owner's own dialog by up to 5 minutes. Another open confirmation is
+`ceremony_busy` (`owner_view_busy`, naming this command's code), never a locked vault; a silent one
+holds the slot until its five-minute binding expires or the service restarts. Linux and WSL 2
+compose no provider: there only a vault passphrase the owner types completes the ceremony, and a
 vault without one, or with one kept in the credential store, fails closed with
 `owner_view_unavailable`. A command with no foreground terminal to prompt on (for example a headless
 session) fails with `owner_view_requires_terminal`. Either way it shows nothing and points to the

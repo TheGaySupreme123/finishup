@@ -2154,13 +2154,15 @@ class YoetzRuntime:
                 raise RuntimeError_(
                     "owner_view_busy",
                     "another confirmation is already open, perhaps one an agent started; if a "
-                    "system dialog is on screen it is not for this request, so cancel it and try "
-                    "again",
+                    "system dialog is on screen it is not for this request, so cancel it; if "
+                    "nothing is on screen, 'yoetz service restart' ends it; then try again",
                 ) from error
             if reason == "reauthentication_rate_limited":
                 raise RuntimeError_(
                     "owner_view_refused",
-                    "too many recent confirmations did not succeed; wait a little, then try again",
+                    "recent confirmations did not succeed, so Yoetz waits up to five minutes "
+                    "before asking again; another program may have caused this, and 'yoetz "
+                    "service restart' clears the wait",
                 ) from error
             raise RuntimeError_(reason, "the full receipt was not authorized") from error
 

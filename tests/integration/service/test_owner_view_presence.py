@@ -541,13 +541,16 @@ async def test_prompts_that_do_not_approve_back_off_before_the_next_one(tmp_path
 
 
 async def test_a_prompt_cancelled_while_it_is_up_counts_as_a_miss(tmp_path: Path) -> None:
+    from yoetz.service.human_control import PRESENCE_MIN_SHOWN_SECONDS
+
     runner = _Runner(hold=True)
-    service, _grants, _admission, _clock, _ = _owner(tmp_path, "os_keyring", runner)
+    service, _grants, _admission, clock, _ = _owner(tmp_path, "os_keyring", runner)
     opened = await _open(service)
     action = asyncio.create_task(
         service.submit_action(ClientActionEnvelope(opened.ceremony_id, 2, _PRESENCE))
     )
     await asyncio.wait_for(runner.started.wait(), 5.0)
+    clock.monotonic += PRESENCE_MIN_SHOWN_SECONDS  # the dialog was up long enough to be seen
     await service.cancel(opened.ceremony_id)
     with pytest.raises(HumanControlError, match="cancelled"):
         await asyncio.wait_for(action, 5.0)
@@ -663,3 +666,61 @@ async def test_the_real_ceremony_client_drives_presence_end_to_end(tmp_path: Pat
     assert service._active is None
     assert grants.consume(admission, _DIGEST) is False
     await client.close()
+
+
+async def test_a_prompt_cancelled_at_once_cannot_lock_the_owner_out(tmp_path: Path) -> None:
+    """#1073 review round 2: an agent that opens and cancels at once shows no dialog, so it
+    must not push the owner's next dialog behind a backoff."""
+
+    runner = _Runner(hold=True)
+    service, grants, admission, _clock, _ = _owner(tmp_path, "os_keyring", runner)
+    for nonce in ("1", "2", "3", "4"):
+        runner.started.clear()
+        opened = await _open(service, nonce)
+        action = asyncio.create_task(
+            service.submit_action(ClientActionEnvelope(opened.ceremony_id, 2, _PRESENCE))
+        )
+        await asyncio.wait_for(runner.started.wait(), 5.0)
+        await service.cancel(opened.ceremony_id)
+        with pytest.raises(HumanControlError, match="cancelled"):
+            await asyncio.wait_for(action, 5.0)
+    runner.hold = False
+    opened = await _open(service, "5")
+    result = await service.submit_action(ClientActionEnvelope(opened.ceremony_id, 2, _PRESENCE))
+    assert type(result) is ServerResultEnvelope
+    assert grants.consume(admission, _DIGEST) is True
+
+
+async def test_the_backoff_decays_after_ten_quiet_minutes(tmp_path: Path) -> None:
+    from yoetz.service.human_control import PRESENCE_BACKOFF_SECONDS, PRESENCE_MISS_DECAY_SECONDS
+
+    runner = _Runner(stdout=b"cancelled\n")
+    service, _grants, _admission, clock, _ = _owner(tmp_path, "os_keyring", runner)
+    for nonce in ("1", "2", "3"):
+        opened = await _open(service, nonce)
+        with pytest.raises(HumanControlError, match="presence_refused"):
+            await service.submit_action(ClientActionEnvelope(opened.ceremony_id, 2, _PRESENCE))
+        clock.monotonic += PRESENCE_BACKOFF_SECONDS[-1]
+    assert service._presence_misses == 3
+    clock.monotonic += PRESENCE_MISS_DECAY_SECONDS
+    opened = await _open(service, "4")
+    with pytest.raises(HumanControlError, match="presence_refused"):
+        await service.submit_action(ClientActionEnvelope(opened.ceremony_id, 2, _PRESENCE))
+    # The quiet period reset the count, so this miss waits the first delay, not the fourth.
+    assert service._presence_misses == 1
+    assert service._presence_backoff_until == clock.monotonic + PRESENCE_BACKOFF_SECONDS[0]
+
+
+async def test_a_silent_ceremony_past_its_expiry_does_not_hold_the_slot(tmp_path: Path) -> None:
+    """#1073 review round 2: a client that opens and goes quiet cannot keep others busy."""
+
+    runner = _Runner()
+    service, grants, admission, clock, _ = _owner(tmp_path, "os_keyring", runner)
+    await _open(service, "1")  # opened, then silent; its connection stays up
+    with pytest.raises(HumanControlError, match="ceremony_busy"):
+        await _open(service, "2")
+    clock.monotonic += 301.0  # past the five-minute binding expiry
+    opened = await _open(service, "3")
+    result = await service.submit_action(ClientActionEnvelope(opened.ceremony_id, 2, _PRESENCE))
+    assert type(result) is ServerResultEnvelope
+    assert grants.consume(admission, _DIGEST) is True

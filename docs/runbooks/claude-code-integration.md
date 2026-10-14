@@ -1998,9 +1998,11 @@ the owner chose is asked for once when the service cannot show a dialog, or dire
 `--use-passphrase`; a passphrase kept in the system credential store is never prompted for on its
 own. On Linux and WSL 2 there is no presence provider: only a vault passphrase the owner types
 completes it, and a vault without one, or with one kept in the credential store, fails closed with
-`owner_view_unavailable`. Claude Code's Bash tool gives the command no terminal, so an agent-run
-`--owner-view` ends with `owner_view_requires_terminal` before any dialog opens; the owner runs it
-in their own terminal. If an agent's own ceremony is open, the owner's command reports
+`owner_view_unavailable`. Run directly, Claude Code's Bash tool gives the command no terminal, so an
+agent-run `--owner-view` ends with `owner_view_requires_terminal` before any dialog opens; the
+owner runs it in their own terminal. The agent can still wrap the command in a pseudo-terminal
+(for example with `script`), and then the dialog appears on the owner's screen as it does under
+Codex: cancel any dialog whose code you did not just see in your own terminal. If an agent's own ceremony is open, the owner's command reports
 `owner_view_busy` with its own code, and any dialog on screen is not the owner's. The dialog itself is covered only by stub-helper tests until
 the manual check in [test-instances.md](test-instances.md#owner-view-with-touch-id-manual-check-on-a-real-mac-1073)
 runs on a real Mac.

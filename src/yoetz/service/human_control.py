@@ -62,6 +62,8 @@ from yoetz.service.unlock import UnlockChallenge, UnlockCoordinator, UnlockError
 
 __all__ = [
     "PRESENCE_BACKOFF_SECONDS",
+    "PRESENCE_MIN_SHOWN_SECONDS",
+    "PRESENCE_MISS_DECAY_SECONDS",
     "HumanControlError",
     "HumanControlService",
     "PresenceScope",
@@ -97,10 +99,14 @@ _HUMAN_CONTROL_REASONS: Final = frozenset(
 )
 
 
-# After an OS presence prompt that did not approve (refused, unanswered, or cancelled while it
-# was up), the next prompt waits this long, escalating per consecutive miss and reset by an
-# approval, so a same-UID caller cannot re-raise dialogs without limit (#1073 review P3).
+# After an OS presence prompt that did not approve (refused, unanswered, or cancelled after it was
+# up for PRESENCE_MIN_SHOWN_SECONDS), the next prompt waits this long, escalating per consecutive
+# miss. An approval resets it, and so do PRESENCE_MISS_DECAY_SECONDS without a miss. It lives in
+# this service process, so a restart clears it: it slows repeated dialogs, it does not cap them
+# (#1073 review).
 PRESENCE_BACKOFF_SECONDS: Final = (5.0, 15.0, 30.0, 60.0, 120.0, 300.0)
+PRESENCE_MIN_SHOWN_SECONDS: Final = 2.0
+PRESENCE_MISS_DECAY_SECONDS: Final = 600.0
 
 _PRESENCE_ERROR_CODES: Final = {
     "unavailable": "presence_unavailable",
@@ -268,6 +274,7 @@ class _Ceremony:
     secret_task: Task[SecretHandle] | None = None
     proof: HumanAuthorizationProof | None = None
     presence_task: Task[UserPresenceAttestation] | None = None
+    presence_started: float = 0.0
     approved: bool = False
     installation_recovery_secret: SecretHandle | None = None
     installation_recovery_continuation: str | None = None
@@ -303,13 +310,18 @@ class HumanControlService:
         self._mutex = Lock()
         self._presence_misses = 0
         self._presence_backoff_until = 0.0
+        self._presence_last_miss = 0.0
 
     async def open_ceremony(self, request: ClientOpenEnvelope) -> ServerOpenedEnvelope:
         async with self._mutex:
             if self._closed:
                 raise HumanControlError("closed")
             if self._active is not None:
-                raise HumanControlError("ceremony_busy")
+                if not self._binding_expired(self._active):
+                    raise HumanControlError("ceremony_busy")
+                # A ceremony past its binding expiry can never complete; a client that went
+                # silent must not hold the one slot for as long as its socket stays open.
+                await self._consume_failed(self._active)
             session: _Ceremony | None = None
             try:
                 preview, target_digest, policy_generation = await self._effects.prepare(request)
@@ -774,6 +786,7 @@ class HumanControlService:
         challenge = self._unlock.user_presence_challenge(self._require_unlock_challenge(session))
         task = create_task(presence.assert_presence(challenge))
         session.presence_task = task
+        session.presence_started = self._sample_monotonic()
         return task
 
     async def _complete_presence(
@@ -989,9 +1002,16 @@ class HumanControlService:
         session.presence_task = None
         if presence_task is not None and not presence_task.done():
             # Cancelling the provider's task stops its OS prompt (the helper is killed). A prompt
-            # cancelled while it was up counts as a miss, like a refusal.
+            # that was up long enough to be seen counts as a miss, like a refusal; one cancelled
+            # at once never showed and does not (another caller could otherwise lock the owner
+            # out without a single dialog).
             presence_task.cancel()
-            self._note_presence_miss()
+            try:
+                shown = self._sample_monotonic() - session.presence_started
+            except HumanControlError:
+                shown = 0.0
+            if shown >= PRESENCE_MIN_SHOWN_SECONDS:
+                self._note_presence_miss()
         await self._secret_ingress.cancel_pending()
         await self._unlock.cancel()
         if type(session.request.target) is InstallationRecoveryTarget:
@@ -1025,15 +1045,25 @@ class HumanControlService:
         self._active = None
 
     def _note_presence_miss(self) -> None:
-        self._presence_misses += 1
-        delay = PRESENCE_BACKOFF_SECONDS[
-            min(self._presence_misses, len(PRESENCE_BACKOFF_SECONDS)) - 1
-        ]
         try:
             now = self._sample_monotonic()
         except HumanControlError:
             return
+        if now - self._presence_last_miss >= PRESENCE_MISS_DECAY_SECONDS:
+            self._presence_misses = 0
+        self._presence_last_miss = now
+        self._presence_misses += 1
+        delay = PRESENCE_BACKOFF_SECONDS[
+            min(self._presence_misses, len(PRESENCE_BACKOFF_SECONDS)) - 1
+        ]
         self._presence_backoff_until = max(self._presence_backoff_until, now + delay)
+
+    def _binding_expired(self, session: _Ceremony) -> bool:
+        try:
+            now_ms = monotonic_milliseconds(self._sample_monotonic())
+        except HumanControlError:
+            return False
+        return now_ms >= session.binding.expires_at_monotonic_ms
 
     def _presence_available(self, purpose: str | None) -> bool:
         """Whether OS presence may stand in for ``purpose`` (None: an unscoped use)."""

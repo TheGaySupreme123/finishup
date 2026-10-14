@@ -84,8 +84,10 @@ documents that Yoetz cannot independently authenticate its chat provenance.
    session, or any unreadable helper result) is `presence_unavailable`; none grants anything.
    Prompts that do not approve back off (5 seconds rising to 5 minutes,
    `reauthentication_rate_limited`), and a ceremony opened while another is active is
-   `ceremony_busy`, so an agent can neither flood the owner with dialogs nor make the owner's
-   command read as a locked vault.
+   `ceremony_busy`, so an agent cannot make the owner's command read as a locked vault. The
+   backoff lives in the service process and a restart clears it: it slows repeated dialogs, it
+   does not cap them, and an agent that causes misses can delay the owner's own dialog by up to
+   5 minutes (ADR-009 round 5 lists both lockouts and their ways out).
    This decision's console review is unchanged: `yoetz consent review` does not use this
    adapter and still returns `human_authority_unavailable`, and the adapter authorizes no vault,
    credential, privacy-policy, setup, keyring or plugin operation.

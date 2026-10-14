@@ -1733,11 +1733,14 @@ def owner_view_confirmation_code(target: OwnerReceiptViewTarget) -> str:
 
 
 def vault_passphrase_held_by_credential_store() -> bool:
-    """True when this installation's vault passphrase is kept in the platform credential store.
+    """True unless this installation's vault passphrase is known not to be in the credential store.
 
     Setup's system-keychain choice generates that passphrase and stores it there, so its owner
-    was never shown it. An unreadable store answers False: the passphrase was then typed by a
-    person, the only other way a vault gets one.
+    was never shown it. Only a definite answer allows a prompt: the slot is absent, or no
+    approved credential store exists here at all (so setup could not have stored one). A slot
+    that is present, unreadable or refused, or a store that cannot be asked, answers True: the
+    passphrase may be one its owner never saw, and ``--use-passphrase`` remains for an owner
+    who chose it.
     """
 
     from yoetz.adapters.keys.os_keyring import AutoUnlockPassphraseStore
@@ -1747,13 +1750,13 @@ def vault_passphrase_held_by_credential_store() -> bool:
     try:
         config = load_config({}, os.environ, None)
         store = AutoUnlockPassphraseStore(bundle_root(_data_dir=config.storage.data_dir))
-        value, _reason = store.load_with_reason()
+        value, reason = store.load_with_reason()
     except Exception:
-        return False
-    if value is None:
-        return False
-    overwrite_secret_buffer(value)
-    return True
+        return True
+    if value is not None:
+        overwrite_secret_buffer(value)
+        return True
+    return reason not in {"auto_unlock_absent", "auto_unlock_backend_unavailable"}
 
 
 async def authorize_owner_receipt_view(

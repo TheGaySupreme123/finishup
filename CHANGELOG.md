@@ -433,7 +433,10 @@ reverse-chronological released versions.
   on its own for a passphrase it keeps in the system keychain. Cancelling the dialog or leaving it
   unanswered for a minute shows nothing, and the next dialog waits a few seconds, longer after
   repeated misses. If another confirmation is already open, perhaps one an agent started, the
-  command says so and names its own confirmation code instead of reporting a locked vault. On
+  command says so and names its own confirmation code instead of reporting a locked vault; every
+  confidential ceremony now reports another open one as `ceremony_busy` and a throttled
+  passphrase as `reauthentication_rate_limited` (wait up to five minutes), where both used to
+  read `state_forbidden`. On
   Linux and WSL 2 only a vault passphrase you type works for now: a system-keychain installation
   there, whose generated passphrase you were never shown, reports that the full receipt is
   unavailable and shows nothing.

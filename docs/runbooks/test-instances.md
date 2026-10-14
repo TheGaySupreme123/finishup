@@ -243,21 +243,34 @@ the Codex check the owner asked for has not been run either; an independent Clau
    scope), `Authorization: os_user_presence`, and a line naming Touch ID or your login password
    with the same code. A system dialog appears that names your full Yoetz receipt and shows that
    code. Approve it: the full receipt prints with the names spelled out, and the command exits 0.
+Each dialog that does not approve lengthens the wait before the next one: 5, 15, 30, 60, 120,
+then 300 seconds, reset by an approval or by 10 minutes without a miss, and cleared by
+`$L service restart`. A dialog cancelled within 2 seconds does not count. The steps below approve
+between misses so each wait stays at 5 seconds.
+
 5. Repeat step 4 and choose Cancel in the dialog. Expect `owner_view_refused: the
    operating-system confirmation was cancelled or did not confirm it is you`, nothing on stdout,
-   and a nonzero exit. Run step 4 again at once: expect `owner_view_refused: too many recent
-   confirmations did not succeed` and no dialog; after 5 seconds a dialog appears again.
+   and a nonzero exit. Run step 4 again at once: expect `owner_view_refused: recent
+   confirmations did not succeed`, naming `yoetz service restart` and `--use-passphrase`, and no
+   dialog. Wait 5 seconds and run step 4 again: a dialog appears; approve it (this resets the
+   wait).
 6. Repeat step 4 and leave the dialog unanswered. After about a minute it closes by itself;
-   expect `owner_view_refused: ... was not answered within a minute`.
-7. Repeat step 4 and press Ctrl-C in the terminal while the dialog is up. The dialog should close
-   at once and nothing is shown; after the 5-second wait a new `$L receipt --owner-view` raises a
-   fresh dialog.
+   expect `owner_view_refused: ... was not answered within a minute`. Wait 5 seconds, run step 4
+   and approve.
+7. Repeat step 4 and press Ctrl-C in the terminal at least 2 seconds after the dialog appears. The
+   dialog should close at once and nothing is shown. Wait 5 seconds; a new `$L receipt
+   --owner-view` raises a fresh dialog; approve it.
 8. With a dialog from step 4 on screen, run step 4 again in a second terminal. Expect
-   `owner_view_busy` naming that second command's code, which differs from the dialog's, and no
-   second dialog. Cancel the dialog.
-9. Agent shells, per host, each pointed at this instance's launcher (approve nothing):
+   `owner_view_busy` naming that second command's code, which differs from the dialog's, and
+   `yoetz service restart` for the case with nothing on screen; no second dialog. Approve the
+   first dialog.
+9. Agent shells, per host, each pointed at this instance's launcher (approve nothing; wait out
+   each backoff between attempts, or run `$L service restart`):
    - Claude Code: ask the agent to run the step-4 command through its Bash tool. Expect
-     `owner_view_requires_terminal` and no dialog.
+     `owner_view_requires_terminal` and no dialog. Then ask it to run the same command wrapped
+     in a pseudo-terminal (`script -q /dev/null $L receipt --owner-view --request ...`): expect
+     a dialog on your screen; cancel it, and the agent gets `owner_view_refused` and no withheld
+     name.
    - Codex: ask the agent to run it through `exec_command` with a pseudo-terminal. Expect a
      dialog on your screen; cancel it, and the agent gets `owner_view_refused` and no withheld
      name. Without a pseudo-terminal, expect `owner_view_requires_terminal`.

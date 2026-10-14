@@ -204,10 +204,13 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    `(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the
    quoted path the receipt prints, the bare path when it has a directory, or a basename with an
    extension. Any name, a top-level one without an extension included, is also a span behind a
-   leading `./` or an absolute directory prefix, quoted or not: the prefix may start at `/`, `~`,
-   `~user`, `$VAR` or `${VAR}`, optionally behind `file://`, and empty or `.` segments (`//`, `/./`)
-   inside the prefix or the name still spell the same file. The whole prefixed token is withheld. A
-   path in single quotes, double quotes or backticks may run through directories with spaces and the
+   leading `./` (also `.//` or `././`), quoted or not, and empty or `.` segments inside the name
+   still spell the same file. Behind an absolute prefix (`/`, `~`, `~user`, `$VAR` or `${VAR}`,
+   optionally behind `file://`) any directories may come before the name's last component: an
+   absolute path that ends in a withheld file's base name counts as that file, which can only
+   withhold more. Unquoted, the prefix's directories stop at whitespace and at `,` `;` `:` and
+   brackets, so the next path in a list starts afresh. The whole prefixed token is withheld. A path
+   in single quotes, double quotes or backticks may run through directories with spaces and the
    whole quoted token is withheld. An unquoted absolute path through a directory with spaces has no
    token boundary in prose and is not recognised as one path. A different relative directory (`../`,
    `x/`), a longer name, a suffix, a plain word such as `Summary` (or a top-level name written
@@ -307,12 +310,16 @@ case → single-use authorization → bounded gateway → bound sink/provider �
      ceremony client end the dialog at once instead of waiting out its deadline. One prompt runs
      at a time, and a second action on the same ceremony is refused while it is up. A ceremony
      opened while another is active fails with the closed `ceremony_busy` code, never with the
-     locked-vault `state_forbidden`; a throttled passphrase is `reauthentication_rate_limited`.
-   - *Backoff.* After a prompt that did not approve (refused, unanswered, or cancelled while it
-     was up), the next prompt waits 5 seconds, then 15, 30, 60, 120 and at most 300 seconds per
-     consecutive miss; an approval resets it. Within the wait no dialog is raised and the
-     ceremony fails with `reauthentication_rate_limited`, so a same-account caller cannot raise
-     dialogs without limit.
+     locked-vault `state_forbidden`, unless the active one is past its five-minute binding
+     expiry: such a ceremony can never complete, so the next open ends it and proceeds. A
+     throttled passphrase is `reauthentication_rate_limited` on every ceremony.
+   - *Backoff.* After a prompt that did not approve (refused or unanswered, or cancelled after it
+     was up for at least 2 seconds), the next prompt waits 5 seconds, then 15, 30, 60, 120 and
+     at most 300 seconds per consecutive miss. An approval resets it, and so do 10 minutes
+     without a miss. A prompt cancelled sooner never showed and does not count. Within the wait
+     no dialog is raised and the ceremony fails with `reauthentication_rate_limited`. The
+     backoff lives in the service process, so a restart clears it: it slows repeated dialogs,
+     it does not cap them.
    - *Why a helper process, not ctypes.* The same Apple executable and program shape already
      serve the `plugin_artifact_apply` cell (ADR-016, issue #409), so this adds no dependency and
      no new native surface. ctypes against `libobjc` and LocalAuthentication would need a
@@ -320,8 +327,10 @@ case → single-use authorization → bounded gateway → bound sink/provider �
      wedged prompt could not be killed without killing the service; a child process can.
    - *Residual risks, stated.* An agent that can run the command from a pseudo-terminal can make
      the dialog appear but cannot answer it: that takes the owner's fingerprint or device
-     password. (An agent shell without a terminal, such as Claude Code's Bash tool, is refused
-     with `owner_view_requires_terminal` before any dialog.) An owner who approves a dialog they
+     password. An agent shell without a terminal, such as Claude Code's Bash tool run directly,
+     is refused with `owner_view_requires_terminal` before any dialog, but the agent can wrap
+     the command in a pseudo-terminal (for example with `script`), and then the dialog appears
+     as it does under Codex. An owner who approves a dialog they
      did not ask for gives that command the view, so the dialog says what it shows, shows the
      code the owner's own terminal prints, and says to cancel unless they just asked. An agent
      can also open its own ceremony just before the owner runs the command. The service runs one
@@ -331,8 +340,18 @@ case → single-use authorization → bounded gateway → bound sink/provider �
      digits of a digest of the exact request and its connection, so it is request-specific but
      short; it is a cross-check, not a secret. The dialog appears in the desktop session the
      service runs in; a service started outside one (for example over SSH) is expected to report
-     that no dialog can be shown. Same-account code tampering with the installed runtime is
-     outside this boundary, as for every presence and passphrase check (ADR-008).
+     that no dialog can be shown. Two lockouts remain, each bounded. A client that opens a
+     ceremony and goes silent holds the one slot until its binding expires (five minutes) or
+     the service restarts; meanwhile the owner sees `owner_view_busy`, which names
+     `yoetz service restart`. An agent that raises dialogs and lets each be refused, time out or
+     stay up for 2 seconds before cancelling can push the owner's next dialog behind the
+     backoff (at most 5 minutes); `yoetz service restart` clears it, and `--use-passphrase`
+     confirms with an owner-chosen passphrase instead. A program running as the owner's account
+     that can read the credential-store entry can confirm with that passphrase instead of the
+     dialog (`--use-passphrase`), so the dialog protects against agents that cannot read the
+     owner's keychain, not against everything that runs as the owner. Same-account code
+     tampering with the installed runtime is outside this boundary, as for every presence and
+     passphrase check (ADR-008).
    - *Evidence.* Unit and integration tests drive the real adapter, scope, ceremony, vault proof,
      daemon handler and ceremony client with a stub helper; no real Touch ID prompt has been
      exercised. The manual check on a real Mac in the test-instance runbook (*Owner view with

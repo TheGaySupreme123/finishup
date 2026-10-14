@@ -393,6 +393,26 @@ _DIRECTIVES: Final = (
         nudge="A refusal is an answer; re-running the ceremony does not obtain a different one.",
     ),
     RecoveryDirective(
+        token="ceremony_in_progress",
+        directive=(
+            "Another confirmation is open on this computer; nothing changed. Never approve a "
+            "system dialog you did not start: cancel it. If none is on screen, 'yoetz service "
+            "restart' ends it. Then retry once."
+        ),
+        guidance_uri=_TEMPLATES_SETUP,
+        nudge="A confirmation someone else opened is never yours to approve.",
+    ),
+    RecoveryDirective(
+        token="ceremony_retry_after_wait",
+        directive=(
+            "Recent confirmations did not succeed, so the service waits before asking again; it "
+            "is healthy and nothing changed. Wait up to five minutes, then retry once. Retrying "
+            "sooner gets the same answer."
+        ),
+        guidance_uri=_TEMPLATES_SETUP,
+        nudge="Agents must not loop on this; report it and let the owner retry.",
+    ),
+    RecoveryDirective(
         token="vault_unlock_required",
         directive=(
             "The vault must be unlocked before this ceremony can run, and nothing was changed. "
@@ -713,10 +733,10 @@ _LOCAL_REASON_CONTINUATIONS: Final[Mapping[str, str]] = MappingProxyType(
         "unknown_config_env_var": "config_correction_required",
         "unknown_config_key": "config_correction_required",
         # Human ceremony and consent (issues #147, #489, #519).
-        # Another ceremony is open (#1073): wait for it to finish instead of opening a second.
-        "ceremony_busy": "pending_decision_in_flight",
-        # Recent confirmations did not succeed (#1073): retrying sooner gets the same answer.
-        "reauthentication_rate_limited": "ceremony_refusal_terminal",
+        # Another ceremony is open (#1073): never approve it; finish or cancel it, then retry.
+        "ceremony_busy": "ceremony_in_progress",
+        # Recent confirmations did not succeed (#1073): wait up to five minutes, retry once.
+        "reauthentication_rate_limited": "ceremony_retry_after_wait",
         "ceremony_service_unavailable": "local_service_unavailable",
         "ceremony_unsupported": "ceremony_refusal_terminal",
         "chat_user_attestation_invalid": "consent_relay_correction",

@@ -391,7 +391,23 @@ def test_the_credential_store_check_reads_one_slot_and_wipes_it(
         del self
         raise RuntimeError("backend")
 
+    # #1073 review round 2: a store that cannot be asked, or refuses, may hold a passphrase
+    # its owner never saw, so it fails closed.
     monkeypatch.setattr(os_keyring.AutoUnlockPassphraseStore, "load_with_reason", broken)
+    assert unlock.vault_passphrase_held_by_credential_store() is True
+
+    def rejected(self: object) -> tuple[bytearray | None, str]:
+        del self
+        return None, "auto_unlock_rejected"
+
+    monkeypatch.setattr(os_keyring.AutoUnlockPassphraseStore, "load_with_reason", rejected)
+    assert unlock.vault_passphrase_held_by_credential_store() is True
+
+    def no_store(self: object) -> tuple[bytearray | None, str]:
+        del self
+        return None, "auto_unlock_backend_unavailable"
+
+    monkeypatch.setattr(os_keyring.AutoUnlockPassphraseStore, "load_with_reason", no_store)
     assert unlock.vault_passphrase_held_by_credential_store() is False
 
 
@@ -416,3 +432,22 @@ async def test_a_passphrase_the_owner_typed_is_still_asked_for() -> None:
     )
     assert asked == [True]
     assert session.actions == [SelectAuthorizationSourceAction("secret_reauthentication")]
+
+
+def test_busy_and_throttled_directives_never_ask_for_approval() -> None:
+    """#1073 review round 2, P2-2: the directives must agree with the refusal text."""
+
+    from yoetz.cli.exits import ceremony_refusal_message
+    from yoetz.protocol.recovery import RECOVERY_DIRECTIVES, continuation_for_local_reason
+
+    busy = continuation_for_local_reason("ceremony_busy")
+    throttled = continuation_for_local_reason("reauthentication_rate_limited")
+    assert busy == "ceremony_in_progress"
+    assert throttled == "ceremony_retry_after_wait"
+    busy_text = RECOVERY_DIRECTIVES["ceremony_in_progress"].directive
+    assert "Never approve" in busy_text and "yoetz service restart" in busy_text
+    assert "Authorize" not in busy_text
+    wait_text = RECOVERY_DIRECTIVES["ceremony_retry_after_wait"].directive
+    assert "five minutes" in wait_text and "policy" not in wait_text
+    assert "five minutes" in (ceremony_refusal_message("reauthentication_rate_limited") or "")
+    assert "yoetz service restart" in (ceremony_refusal_message("ceremony_busy") or "")

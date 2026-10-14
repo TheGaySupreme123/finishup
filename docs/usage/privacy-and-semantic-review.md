@@ -585,9 +585,12 @@ terminal prints a confirmation code first, and the dialog shows the same code; a
 dialog whose code matches a request you just made yourself. An agent that runs the command in a
 terminal of its own can make the dialog appear, but it cannot answer it for you. Cancelling the
 dialog, or leaving it unanswered for a minute, shows nothing, and Yoetz then waits a few seconds
-(longer after repeated misses) before it raises another one. If another confirmation is already
-open, perhaps one an agent started, the command says so and names its own code instead of
-opening a second dialog: cancel any dialog whose code you do not recognise.
+(longer after repeated misses, up to five minutes) before it raises another one. Another program
+can cause that wait too; restarting the Yoetz service (`yoetz service restart`) clears it. If
+another confirmation is already open, perhaps one an agent started, the command says so and
+names its own code instead of opening a second dialog: cancel any dialog whose code you do not
+recognise, and never approve one you did not start. If nothing is on screen, `yoetz service
+restart` ends the other confirmation.
 
 This works with either secure storage choice, including the system keychain, whose vault
 passphrase you were never shown. The dialog appears on the screen of the Mac session where the
@@ -599,6 +602,10 @@ session) is expected to report that, and then Yoetz asks for a passphrase you ch
 ask on its own for a passphrase kept in the system keychain, since you may never have seen it:
 there it says the full receipt is unavailable, and `--use-passphrase` lets you type one you chose.
 These SSH cases have not yet been checked on a real Mac.
+
+The dialog guards against agents that cannot read your keychain, not against everything running
+as you: a program running as your account that can read the system keychain entry can confirm
+with that passphrase instead of the dialog.
 
 On Linux and on Windows through WSL 2 there is no system dialog yet, so Yoetz confirms it is you
 only with a vault passphrase you type. A system-keychain installation there keeps a generated

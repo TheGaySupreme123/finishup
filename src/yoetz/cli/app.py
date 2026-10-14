@@ -1535,13 +1535,16 @@ _OWNER_VIEW_REFUSALS: Final = MappingProxyType(
         "ceremony_busy": (
             "owner_view_busy: another confirmation is already open on this computer, perhaps "
             "one an agent started, so this one did not start. If a system dialog is on screen, "
-            "it is not for this command: cancel it, then run the command again. Nothing was "
-            "shown and nothing changed."
+            "it is not for this command: cancel it, never approve it. If nothing is on screen, "
+            "'yoetz service restart' ends the other confirmation. Then run the command again. "
+            "Nothing was shown and nothing changed."
         ),
         "reauthentication_rate_limited": (
-            "owner_view_refused: too many recent confirmations did not succeed, so Yoetz waits "
-            "before asking again (from a few seconds, growing to five minutes after repeated "
-            "misses). Nothing was shown and nothing changed; run the command again shortly."
+            "owner_view_refused: recent confirmations did not succeed, so Yoetz waits before "
+            "asking again (5 seconds, growing to five minutes after repeated misses). Another "
+            "program may have caused this; 'yoetz service restart' clears the wait, and "
+            "--use-passphrase confirms with a vault passphrase you chose. Nothing was shown and "
+            "nothing changed."
         ),
         "presence_refused": (
             "owner_view_refused: the operating-system confirmation was cancelled or did not "
