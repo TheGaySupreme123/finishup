@@ -47,7 +47,10 @@ removes the marketplace and its source as before. Status reports `connected_proj
 Code's own rows name the projects, so no Yoetz record is kept for this host. A second path to an
 already connected directory is refused as `project_connected_via_other_path`. Because the shared
 source carries the launcher and route, connecting a project with another route or launcher
-re-renders it for every project.
+re-renders it for every project. `setup disconnect --remove-shared` is the explicit home-wide disconnect:
+it runs the marketplace removal even while other projects keep their rows, so they stop using
+Yoetz too. A disconnect whose approval file (`.claude/settings.local.json`) cannot be read safely,
+such as a symlink, stops before any change as `connection_admission_cleanup_failed`.
 
 On macOS the presence step uses LocalAuthentication; Linux and WSL 2 use the trusted PAM console
 path. A missing mechanism is a reported local continuation, not permission to bypass it. The

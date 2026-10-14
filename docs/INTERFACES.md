@@ -6426,9 +6426,22 @@ the cleanup detail (`admission_cleanup`: per-surface state and file digest) and,
 `admission_other_projects` travel in the preview report's `status` and are folded into
 `preview_digest` (a grant or revoke after preview makes the plan stale). Apply sweeps before any
 registration removal; a sweep that ends `unknown|write_failed` stops the disconnect as
-`connection_admission_cleanup_failed` before anything else changes. Codex adds the warning token
-`admission_present_in_other_projects` and reports `status.project_config_load:
-loads|fails|unknown`; `fails` is `connection_project_config_unloadable`. `setup status --host codex` reports a transport-less project
+`connection_admission_cleanup_failed` before anything else changes; an `unknown` surface (or an
+unreadable observation) refuses the same way when the plan is prepared and again before the sweep,
+whatever else the surfaces hold, with `status.admission_unreadable_surfaces`. Codex additionally
+projects the project's `.codex/config.toml` after the sweep (`codex_mcp.project_transport_dependence`
+`none|depends|unknown`): when it removes the user-level transport and `depends`, preparation
+refuses `connection_project_mcp_tables_retained` (`status.project_mcp_retained`). Other projects
+whose layer `depends` (or is `unknown`) keep the transport: `status.admission_other_projects`
+entries carry `project_root`, `dependence`, and a revoke `next_command` only when exact Yoetz
+tables alone remain; warning `mcp_registration_kept_for_other_projects`; a bound of 32 inspected
+candidates is reported as `admission_other_projects_known|_inspected` with warning
+`other_projects_partially_checked`. `setup disconnect --remove-shared` (disclosure
+`remove_shared: true`, carried by the continuation) removes the shared pieces for every project and
+refuses `connection_other_projects_need_registration` while one still depends. Codex reports
+`status.project_config_load: loads|fails|unknown`; `fails` is
+`connection_project_config_unloadable`; `project_mcp_leftover` is `tools_only` (revoke) or
+`retained_tables` (reconnect), and status adds `project_mcp_needs_registration` while it loads. `setup status --host codex` reports a transport-less project
 `mcp_servers.yoetz` table as `project_mcp_leftover: "tools_only"` with its revoke `next_command`.
 Several projects per host configuration root (ADR-012, 2026-10-14, #1058): the record
 `<config root>/.yoetz-connected-projects.json` (`host_projects.CONNECTED_PROJECTS_FILE`, owner-only

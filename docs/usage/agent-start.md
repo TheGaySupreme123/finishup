@@ -21,7 +21,12 @@ installation. Do not substitute a testing profile for the selected regular insta
 The same host choice works with `setup status --host ... --project ... --json` and
 `setup disconnect --host ... --project ...`. Disconnect previews before changing anything and
 preserves Yoetz data. It also removes the project's Yoetz tool-approval entry, so the agent still
-starts normally in that project afterwards, and lists other projects that still carry one. Claude/Cursor connection can require an OS-authenticated local prompt;
+starts normally in that project afterwards; if it cannot do that safely (an approval file it cannot
+read, or approval settings you added yourself), it stops before changing anything and says which
+file to fix. Other projects connected to the same agent installation keep working: a disconnect
+keeps whatever they still use, and only `--remove-shared` removes it for all of them. For Codex,
+the preview also names other projects whose configuration uses the Yoetz server and says when it
+could not check them all. Claude/Cursor connection can require an OS-authenticated local prompt;
 hand the exact continuation to a trusted local terminal when your host cannot provide it.
 An installed or configured report is not a connected session: open a fresh native session in the
 selected project and demonstrate a successful Yoetz `start`. Treat observation permission,

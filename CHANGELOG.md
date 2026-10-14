@@ -30,7 +30,12 @@ reverse-chronological released versions.
   way. After a Codex disconnect, Yoetz checks that Codex still loads its configuration in the
   project. `setup status --host codex` explains such a leftover and prints the exact command
   that removes it, and Yoetz's own Codex registration commands no longer fail because of it. A
-  Codex disconnect preview lists other projects that still carry an approval entry.
+  disconnect that cannot remove the entry safely (an approval file Yoetz cannot read, such as a
+  symlink, or approval settings you added or edited yourself that still need the Yoetz server)
+  now stops before changing anything and names the file to fix, instead of leaving the project
+  unable to start. A Codex disconnect keeps the Yoetz server registered while another project's
+  configuration uses it, lists those projects, and says when it could not check them all.
+  `setup disconnect --remove-shared` removes the pieces shared by every connected project.
 
 - MCP input schemas now target 4,800 bytes per tool so Codex does not apply its size-triggered
   schema rewrite. Required fields, enums and event envelopes stay inline; full payload examples

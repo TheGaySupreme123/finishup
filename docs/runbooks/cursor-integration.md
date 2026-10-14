@@ -47,7 +47,13 @@ the record. Status reports `connected_projects`. A project connected by an earli
 in the record until its setup runs again (`record_connected_project` is then the only change);
 run `setup run` once in each connected project after upgrading, or a disconnect elsewhere can
 still remove the plugin that project uses. A second path to an already connected directory is
-refused as `project_connected_via_other_path`; disconnecting under the current path clears it.
+refused as `project_connected_via_other_path`; disconnecting under the current path clears it. A
+moved project's `.cursor/mcp.json` entry still names its old path and reads as foreign under the
+new one; remove that entry by hand before that disconnect. `setup disconnect --remove-shared` is
+the explicit home-wide disconnect: it removes the user plugin and the record even while other
+projects use them (their project MCP entries stay). A disconnect whose approval file
+(`.cursor/permissions.json` or `.cursor/cli.json`) cannot be read safely, such as a symlink, stops
+before any change as `connection_admission_cleanup_failed`.
 
 macOS uses LocalAuthentication; Linux and Windows through WSL 2 use the trusted PAM console path.
 Windows-side IDE discovery/configuration is not inferred from a Linux executable or directory.

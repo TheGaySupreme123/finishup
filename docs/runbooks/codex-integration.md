@@ -31,10 +31,26 @@ its own user-scope `codex mcp …` and `codex plugin …` commands from the sele
 broken project layer in the invoking directory cannot fail status or a repeated disconnect. A
 transport-less leftover is reported by `setup status --host codex` (and on any failed Codex
 setup command) as `status.project_mcp_leftover: "tools_only"` with the revoke continuation.
-Disconnect also reads the home's `[projects."<path>"]` entries and Yoetz marketplace source and
-lists other projects that still carry an admission table in the preview's
-`status.admission_other_projects`, warning `admission_present_in_other_projects`; it does not
-edit them. The preview's `status.admission_cleanup` names the selected project's surfaces. Record native installation, fresh-session
+Before any change, disconnect refuses an approval file it cannot read safely (a symlinked,
+oversized or unparsable `.codex/config.toml`: `connection_admission_cleanup_failed`, rechecked
+again before removal), and projects the project's `.codex/config.toml` after the sweep: if tables
+Yoetz did not write or that were edited (a comment inside the generated table, your own
+`[mcp_servers.yoetz.tools.status]`) would still name the server, removing the registration would
+stop Codex loading there, so it refuses with `connection_project_mcp_tables_retained` and names
+the file; `setup status` reports `project_mcp_needs_registration` meanwhile, and an already broken
+project with such tables reports `project_mcp_leftover: "retained_tables"` with the reconnect
+continuation (a revoke cannot remove them). Disconnect also reads the projects this home knows
+(its `[projects."<path>"]` entries, the Yoetz binding and the connected-projects record, at most 32;
+more are reported as `admission_other_projects_known`/`_inspected` with the warning
+`other_projects_partially_checked`) and keeps the user-level registration when another project's
+layer names the server without a transport of its own or cannot be read: the preview lists them
+in `status.admission_other_projects` (with a revoke continuation where only exact Yoetz tables
+remain) and warns `mcp_registration_kept_for_other_projects`. Projects with only the plugin-scoped
+approval table or their own transport load without it and are not listed. `setup disconnect
+--remove-shared` is the explicit home-wide disconnect: it also removes the shared plugin, binding,
+cache, record and registration even while other connected projects use them, and still refuses
+(`connection_other_projects_need_registration`) while another project's configuration needs the
+registration. It does not edit other projects. The preview's `status.admission_cleanup` names the selected project's surfaces. Record native installation, fresh-session
 discovery/start, disconnect and reconnect for macOS, Linux and WSL 2 separately in #767. Desktop
 app availability and CLI availability remain distinct; an untested version/platform does not
 inherit certification from executable discovery or unit tests.
