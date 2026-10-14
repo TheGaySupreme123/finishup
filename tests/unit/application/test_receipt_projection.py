@@ -42,3 +42,63 @@ def test_a_distinctive_basename_is_withheld_but_never_inside_a_longer_name() -> 
     assert withheld_text(text, (excerpt,)) == (
         f"Reads {WITHHELD}, data.npz, a.npz.bak and x/a.npz; {WITHHELD}."
     )
+
+
+def _named(path: str) -> ReceiptExcerpt:
+    from yoetz.application.receipt_projection import (
+        _spellings,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    return ReceiptExcerpt("/human_text/@repository_name/0", "/human_text", path, _spellings(path))
+
+
+def test_dot_slash_quoted_and_absolute_spellings_withhold_the_whole_token() -> None:
+    """r3 F2: ``./`` (any number, quoted or not) and an absolute spelling are the same file."""
+
+    excerpt = _named("artifacts/english_words.npz")
+    for text in (
+        "Loads ./artifacts/english_words.npz at start.",
+        'Loads "./artifacts/english_words.npz" at start.',
+        "Loads ././artifacts/english_words.npz at start.",
+        "Loads '/home/u/repo/artifacts/english_words.npz' at start.",
+        "Loads `artifacts/english_words.npz` at start.",
+    ):
+        shown = withheld_text(text, (excerpt,))
+        assert "english_words" not in shown, text
+        assert shown.startswith("Loads ") and shown.endswith(" at start."), shown
+        assert "./" not in shown and "/home" not in shown
+
+
+def test_different_files_and_case_variants_stay_readable() -> None:
+    excerpt = _named("artifacts/english_words.npz")
+    for text in (
+        "x/artifacts/english_words.npz",
+        "my_english_words.npz",
+        "english_words.npz.bak",
+        "data.npz",
+        # Exact comparison: on a case-sensitive filesystem this is a different file.
+        "Artifacts/English_words.npz",
+    ):
+        assert withheld_text(text, (excerpt,)) == text
+
+
+def test_expansion_is_bounded_visibly_without_splitting_a_token() -> None:
+    """r3 F3: replacing short names with the longer token cannot overflow a field or item."""
+
+    from yoetz.application.receipt_projection import HUMAN_TEXT_MAX_CHARS
+    from yoetz.domain.privacy import MAX_EGRESS_ITEM_BYTES
+    from yoetz.protocol.canonical import canonical_encode
+
+    excerpt = _named("artifacts/english_ngrams.npz")
+    text = "english_ngrams.npz " * 400
+    for max_chars in (HUMAN_TEXT_MAX_CHARS, None):
+        shown = withheld_text(text, (excerpt,), max_chars=max_chars)
+        assert "english_ngrams" not in shown
+        assert len(canonical_encode(shown)) <= MAX_EGRESS_ITEM_BYTES
+        assert len(shown) <= (max_chars or max(len(text), 4096))
+        body, marker = shown.rsplit(" [receipt text truncated after withholding: ", 1)
+        assert marker.endswith(" characters not shown]")
+        # Only whole tokens survive the cut.
+        assert body.replace(WITHHELD, "").strip() == ""
+    # A short text that fits is never truncated.
+    assert withheld_text("Reads english_ngrams.npz.", (excerpt,)) == f"Reads {WITHHELD}."

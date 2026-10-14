@@ -2992,10 +2992,16 @@ class Application:
         # and per-name provenance decide that span alone; the leaf's ordinary-category item
         # carries the prose with every name span already withheld. Owner views skip this.
         from yoetz.application.receipt_projection import (
+            HUMAN_TEXT_MAX_CHARS,
             ReceiptExcerpt,
             bounded_omitted_pointers,
             withheld_text,
         )
+
+        def field_chars(pointer: str) -> int | None:
+            # ``human_text`` has its own 32,768-character wire bound; a document field keeps
+            # at least its original length (see ``withheld_text``).
+            return HUMAN_TEXT_MAX_CHARS if pointer == "/human_text" else None
 
         receipt_excerpt_items: dict[str, ReceiptExcerpt] = {}
         leaf_excerpts: dict[str, list[ReceiptExcerpt]] = {}
@@ -3050,7 +3056,9 @@ class Application:
                     scope,
                     pointer,
                     canonical_encode(
-                        withheld_text(value, spans) if type(value) is str and spans else value
+                        withheld_text(value, spans, max_chars=field_chars(pointer))
+                        if type(value) is str and spans
+                        else value
                     ),
                 )
             )
@@ -3150,7 +3158,7 @@ class Application:
                 projected = _replace_pointer(
                     projected,
                     pointer,
-                    withheld_text(value, withheld_spans[pointer]),
+                    withheld_text(value, withheld_spans[pointer], max_chars=field_chars(pointer)),
                 )
         for omission in marking_omissions:
             # An omission whose pointer does not resolve means the privacy decision and the body

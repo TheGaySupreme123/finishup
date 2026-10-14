@@ -19,6 +19,7 @@ from yoetz.application.status import published_name_authorship
 from yoetz.domain.bounded_text import quoted_path
 from yoetz.domain.events import CheckRecordedPayload
 from yoetz.domain.privacy import (
+    MAX_EGRESS_ITEM_BYTES,
     MAX_RECEIPT_NAME_AUTHORSHIP,
     DataCategory,
     ProjectionItemAuthorship,
@@ -28,7 +29,7 @@ from yoetz.kernel.delivered_set import undeclared_reference_rows
 from yoetz.ports.diagnostics import RuntimeCapability
 from yoetz.ports.ledger import ProjectionView
 from yoetz.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand
-from yoetz.protocol.canonical import JsonValue
+from yoetz.protocol.canonical import JsonValue, canonical_encode
 from yoetz.protocol.models import MAX_PROJECTION_CONTENT_LEAVES, classify_result_leaf
 
 WITHHELD: Final = "(receipt prose withheld: repository_excerpt)"
@@ -76,7 +77,9 @@ def _spellings(path: str) -> tuple[str, ...]:
     # The builder spells a name as a bounded quoted path (the shared Stop-gate sentence); a name
     # with a directory may also occur bare, and so may a distinctive basename (one with an
     # extension, such as ``english_ngrams.npz``). A plain word does not count: a file named
-    # "Summary" or "1" must not withhold a heading or a count that uses the same word.
+    # "Summary" or "1" must not withhold a heading or a count that uses the same word. Case and
+    # Unicode spellings are compared exactly: folding them would conflate distinct files on a
+    # case-sensitive filesystem, and Yoetz has no per-platform path-equivalence fact here.
     forms = {quoted_path(path)}
     if "/" in path:
         forms.add(path)
@@ -87,12 +90,30 @@ def _spellings(path: str) -> tuple[str, ...]:
     return tuple(sorted(forms, key=lambda spelling: (-len(spelling), spelling)))
 
 
+# A harmless spelling of the same repository-relative path: any number of leading ``./``, or an
+# absolute path that ends in it. Either prefix is part of the matched token, so the whole path
+# token is withheld. A different relative directory (``x/artifacts/a.npz``) never matches.
+_SAME_PATH_PREFIX: Final = r"(?:(?:\./)+|/(?:[^\s/\"'`<>|]+/)*)?"
+
+
 def _pattern(spellings: Iterable[str]) -> re.Pattern[str]:
     # Longest first, and never inside a longer path-like token: ``a.npz`` does not match within
     # ``data.npz`` or ``x/a.npz.bak``, so unrelated names and prose stay readable.
     ordered = sorted(set(spellings), key=lambda s: (-len(s), s))
-    alternatives = "|".join(re.escape(spelling) for spelling in ordered)
-    return re.compile(rf"(?<![\w./-])(?:{alternatives})(?![\w/-]|\.\w)")
+    quoted = [s for s in ordered if len(s) >= 2 and s[0] == '"' and s[-1] == '"']
+    bare = [s for s in ordered if s not in quoted]
+    alternatives: list[str] = [
+        '"' + r"(?:\./)*" + re.escape(spelling[1:-1]) + '"' for spelling in quoted
+    ]
+    if bare:
+        alternatives.append(
+            r"(?<![\w./-])"
+            + _SAME_PATH_PREFIX
+            + "(?:"
+            + "|".join(re.escape(spelling) for spelling in bare)
+            + r")(?![\w/-]|\.\w)"
+        )
+    return re.compile("|".join(f"(?:{alternative})" for alternative in alternatives))
 
 
 async def receipt_excerpts(
@@ -159,13 +180,61 @@ async def receipt_excerpts(
         await runtime_port.release(runtime)
 
 
-def withheld_text(text: str, excerpts: Sequence[ReceiptExcerpt]) -> str:
-    """Replace only the withheld name spans; titles, counts and other prose stay."""
+def withheld_text(
+    text: str, excerpts: Sequence[ReceiptExcerpt], *, max_chars: int | None = None
+) -> str:
+    """Replace only the withheld name spans; titles, counts and other prose stay.
+
+    The token is longer than most names, so a field near its bound could grow past it. The
+    result is then cut, visibly and deterministically, to fit both ``max_chars`` (the field's
+    wire bound) and the per-item privacy bound. A cut never splits a withheld token, and only
+    text already past the withholding is dropped, so nothing withheld can reappear.
+    """
 
     spellings = {spelling for excerpt in excerpts for spelling in excerpt.spellings}
-    if not spellings:
+    replaced = _pattern(spellings).sub(lambda _match: WITHHELD, text) if spellings else text
+    limit = max(len(text), _MIN_FIELD_CHARS) if max_chars is None else max_chars
+    return _bounded(replaced, limit)
+
+
+# Every receipt prose field this projection rewrites admits at least this many characters
+# (section titles, the one smaller field, are never rewritten).
+_MIN_FIELD_CHARS: Final = 4_096
+HUMAN_TEXT_MAX_CHARS: Final = 32_768
+
+
+def _fits(text: str, max_chars: int) -> bool:
+    return len(text) <= max_chars and len(canonical_encode(text)) <= MAX_EGRESS_ITEM_BYTES
+
+
+def _bounded(text: str, max_chars: int) -> str:
+    if _fits(text, max_chars):
         return text
-    return _pattern(spellings).sub(lambda _match: WITHHELD, text)
+    low, high = 0, len(text)
+    best = ""
+    while low <= high:
+        middle = (low + high) // 2
+        cut = _token_safe_cut(text, middle)
+        candidate = text[:cut] + _truncation_marker(len(text) - cut)
+        if _fits(candidate, max_chars):
+            best = candidate
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best or _truncation_marker(len(text))
+
+
+def _token_safe_cut(text: str, position: int) -> int:
+    # A token that straddles ``position`` starts within the token length before it.
+    window_start = max(0, position - len(WITHHELD) + 1)
+    start = text.find(WITHHELD, window_start, position + len(WITHHELD) - 1)
+    if start != -1 and start < position < start + len(WITHHELD):
+        return start
+    return position
+
+
+def _truncation_marker(omitted: int) -> str:
+    return f" [receipt text truncated after withholding: {omitted} characters not shown]"
 
 
 def bounded_omitted_pointers(pointers: Sequence[str]) -> tuple[str, ...]:

@@ -1315,3 +1315,90 @@ async def test_a_repository_name_cannot_withhold_fixed_receipt_headings(
         heading = "## Summary" if fmt == "markdown" else "Summary"
         assert cast(str, projected["human_text"]).startswith(heading + "\n")
     assert "artifacts/Summary" not in canonical_encode(projected).decode()
+
+
+async def test_dot_slash_spellings_in_receipt_prose_are_withheld(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """r3 F2: the reviewer's ``./`` repro through the production projection."""
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=21000)
+    started, _checked = await _run(app, 21000)
+    status, _projected = await _projected_status(app, started, 21050)
+    case, receipt = await _receipt_case(app, started, status, 21060, "json", "default_local_export")
+    document = cast(dict[str, Any], receipt.document)
+    document["obligations"][0]["summary"] = "Loads ./artifacts/english_words.npz at start."
+    body = document["sections"][0]["body"]
+    document["sections"][0]["body"] = body + ' It also reads "./artifacts/english_ngrams.npz".'
+    projected = await project_case(app, case, 21061)
+    text = canonical_encode(cast(JsonValue, projected)).decode()
+    assert "english_ngrams" not in text and "english_words" not in text
+    token = "(receipt prose withheld: repository_excerpt)"
+    projected_document = cast(Mapping[str, Any], projected["document"])
+    assert projected_document["obligations"][0]["summary"] == f"Loads {token} at start."
+    assert projected_document["sections"][0]["body"] == body + f" It also reads {token}."
+    privacy = cast(Mapping[str, Any], projected["privacy_projection"])
+    assert "/document/obligations/0/summary" in privacy["omitted_pointers"]
+
+
+@pytest.mark.parametrize("fmt", ["json", "markdown", "text"])
+async def test_token_expansion_returns_a_bounded_valid_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: str
+) -> None:
+    """r3 F3: short repeated names expanded by the token stay inside every bound.
+
+    Before the fix the reviewer's 7,600-character ``human_text`` became 18,000 characters and
+    the projection failed with ``invalid_privacy_value``. Now the presentation is cut visibly,
+    every withheld token is whole, and the audit still holds one denial per name and field.
+    """
+
+    from dataclasses import replace as dc_replace
+
+    from yoetz.domain.privacy import MAX_EGRESS_ITEM_BYTES
+    from yoetz.protocol.models import ReceiptResultModel
+
+    repository, base = _workspace(tmp_path)
+    _bind_workspace(monkeypatch, repository, base)
+    app, _policy = await build_projection_application(seed=21100)
+    started, _checked = await _run(app, 21100)
+    status, _projected = await _projected_status(app, started, 21150)
+    case, receipt = await _receipt_case(app, started, status, 21160, fmt)
+    names = "english_ngrams.npz " * 400
+    if fmt == "json":
+        document = cast(dict[str, Any], receipt.document)
+        document["sections"][0]["body"] = names
+        document["sections"][1]["items"] = [names[:8000]]
+        source = receipt
+    else:
+        source = dc_replace(receipt, human_text=names)
+    projected = await project_case(
+        app, ProjectionCase("receipt", ControlMethod.RECEIPT, case.request_body, source), 21161
+    )
+    ReceiptResultModel.model_validate(projected)
+    token = "(receipt prose withheld: repository_excerpt)"
+    fields = (
+        [
+            cast(Mapping[str, Any], projected["document"])["sections"][0]["body"],
+            cast(Mapping[str, Any], projected["document"])["sections"][1]["items"][0],
+        ]
+        if fmt == "json"
+        else [cast(str, projected["human_text"])]
+    )
+    for shown in fields:
+        assert "english_ngrams" not in shown
+        assert len(canonical_encode(shown)) <= MAX_EGRESS_ITEM_BYTES
+        kept, marker = shown.rsplit(" [receipt text truncated after withholding: ", 1)
+        assert marker.endswith(" characters not shown]")
+        assert kept.replace(token, "").strip() == ""
+    subject = _projection_subject(app, projected)
+    denied = [
+        pointer for pointer, _category, allowed, _reason in subject.field_decisions if not allowed
+    ]
+    expected = (
+        {"/document/sections/0/body", "/document/sections/1/items/0"}
+        if fmt == "json"
+        else {"/human_text"}
+    )
+    assert {origin.split("/@repository_name/", 1)[0] for origin in denied} >= expected
