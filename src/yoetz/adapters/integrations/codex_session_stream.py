@@ -2320,6 +2320,16 @@ def _deliver_pending_rollout_item(
     """
 
     envelope = item.envelope
+    if not _stream_self_observation_deliverable(envelope):
+        # A held Yoetz self-read (an item an older build held, or one no hook post decided) is
+        # settled locally: releasing it would append Yoetz's own read to the ledger it read.
+        try:
+            store.settle_pending_rollout_item(
+                workspace_commitment, item.session_commitment, item.source_identity
+            )
+        except AttributeError, OSError, ProtocolValueError, TypeError, ValueError:
+            return False
+        return True
     frontier = store.get_stream_cursor(workspace_commitment, item.session_commitment)
     if frontier is not None and envelope.cursor.is_stale_relative_to(frontier):
         envelope = replace(envelope, cursor=frontier)
@@ -2812,6 +2822,30 @@ def _stream_phase(structural: Mapping[str, JsonValue]) -> str:
     return ""
 
 
+def _self_observation_phase(envelope: ObservationEnvelope) -> str:
+    """The hook phase the self-observation policy (#564) reads for one stream envelope.
+
+    A completed ``McpToolCall`` item (``event_msg``/``item_completed``) is the rollout's record of
+    a finished MCP call, the stream twin of that call's ``PostToolUse`` hook. Read as phase-less,
+    a successful Yoetz ``status`` read was delivered and materialized as action, result and
+    evidence, moving the very ledger the agent was polling (tb4 n5 S arm). The item keeps its
+    closed outcome facts, so an explicit failure is still delivered by the policy. Only the policy
+    reads this phase; the routine classifier keeps reading ``_stream_phase``.
+    """
+
+    if _hooked_tool_item(envelope) and envelope.structural_payload.get("action") == "McpToolCall":
+        return "PostToolUse"
+    return _stream_phase(envelope.structural_payload)
+
+
+def _stream_self_observation_deliverable(envelope: ObservationEnvelope) -> bool:
+    """Whether a stream envelope carries evidence beyond Yoetz serving its own call (#564)."""
+
+    return self_observation_deliverable(
+        _self_observation_phase(envelope), envelope.structural_payload
+    )
+
+
 def _pair_stream_tool_name(
     envelope: ObservationEnvelope,
     call_tools: dict[str, str],
@@ -3274,8 +3308,10 @@ def _reconcile_session_stream_path(
         item_decision = _hooked_tool_item_decision(
             store, workspace_commitment, session_commitment, envelope
         )
-        if item_decision == _ITEM_PENDING:
-            # Read before the hook post it pairs with: a later post decides it (#910).
+        if item_decision == _ITEM_PENDING and _stream_self_observation_deliverable(envelope):
+            # Read before the hook post it pairs with: a later post decides it (#910). A Yoetz
+            # self-read is never delivered whatever the decision, so it is not held for one: a
+            # held item would also count against a check's observation wait.
             note_pending = getattr(store, "note_pending_rollout_item", None)
             if callable(note_pending):
                 try:
@@ -3326,9 +3362,7 @@ def _reconcile_session_stream_path(
             cell_fact,
             tool_items_recorded=tool_items_recorded,
         ) or item_decision not in {None, _ITEM_CARRIER}
-        deliverable = not cell_wrapper and self_observation_deliverable(
-            _stream_phase(envelope.structural_payload), envelope.structural_payload
-        )
+        deliverable = not cell_wrapper and _stream_self_observation_deliverable(envelope)
         if deliverable:
             try:
                 plan = store.prepare_selected_admission(

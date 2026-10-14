@@ -21,7 +21,40 @@ reverse-chronological released versions.
   `yoetz privacy receipts get|list` now marks refused receipts whose category approvals were never
   sent (#1019).
 
+### Fixed
+
+- The Codex-subscription evaluator now works on Linux without a system bubblewrap, for example
+  in a container that must stay exactly as shipped. Codex 0.162.1's exact "could not find
+  bubblewrap on PATH" warning is admitted the same way as its user-namespace warning: the reviewer
+  runs no commands and writes no files, so the sandbox confines nothing there. The fact is
+  disclosed, not hidden. `status`, `setup` and `repair` report `codex_sandbox_unavailable: true`
+  with the new `codex_sandbox_unavailable_reason` (`bubblewrap_missing` or
+  `user_namespaces_unavailable`), and the terminal interface says the evaluator runs without
+  Codex's verified Linux sandbox. Only reviewed Codex releases are admitted; others are refused
+  as `codex_sandbox_unavailable_unreviewed_runtime`. Every other warning, including Codex's WSL1
+  one, still stops setup. Approved network-denied checks still need a usable `bwrap`.
+  Receipts do not carry this fact yet.
+
+- MCP input schemas now target 4,800 bytes per tool so Codex does not apply its size-triggered
+  schema rewrite. Required fields, enums and event envelopes stay inline; full payload examples
+  and variant rules are available through `read_guidance` in request templates. Claude Code and
+  Cursor use the same compact inputs. Full server-side validation and output schemas are unchanged.
+  Field descriptions are preserved when they fit; larger tools keep priority field rules first.
+  If a future schema exceeds the budget even without descriptions, the bridge logs a diagnostic
+  and serves the minimal form instead of failing startup. CI still rejects oversized schemas.
+
 ### Added
+
+- Codex stream parsing defers ledger mapping imports until needed, reducing cold hook startup
+  work while preserving public import names, parser profiles and wire bytes.
+
+- Provider packet supply markers now have a packaged row schema and golden vectors. A follow-up
+  round whose requested excerpts are entirely withheld reports them unavailable with empty
+  supply refs; room cuts still report pending. The dispatch remains counted.
+
+- Codex admission commands accept `--codex-path` and `--codex-home`. Multiple installed versions
+  can read an agreeing registration without manual selection; disagreement has an explicit
+  continuation and cannot grant admission; the refusal is `host_admission_codex_binary_inconsistent`.
 
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap
@@ -234,6 +267,17 @@ reverse-chronological released versions.
 
 ### Changed
 
+- Rereading `status` without writing now gets a direct answer. From the third first-page `status`
+  read in a row by the same agent on the same task with no `publish_work`, `check`, `respond`,
+  `receipt` or `start` in between, the result's text leads with one line: no status read is
+  needed, and the one next write the result's own closure state names (for example resolving the
+  first open obligation with `resolution_evidence_refs`, `respond`, `check`, or `receipt`). Paging
+  and polling a running check do not count. The structured result is unchanged, so no schema
+  changes; on Cursor the line is a separate block after the exact result copy. The start-of-session
+  text and the `status` tool description now say: after resume or compaction, read status once,
+  keep the returned obligations and findings, then do the work, and do not reread status between
+  ordinary steps (tb4 n5).
+
 - Agent guidance now routes reads to the one section an agent needs. The request templates,
   workflow, coverage and publication pages each open with a map from situation to section anchor,
   so a whole-page read (which returns only the first 4 KiB page of an 80 KiB document) leads
@@ -281,7 +325,13 @@ reverse-chronological released versions.
   `flexUnavailable` error) is handled, and unreviewed events still fail closed. Each check kills
   every process the checked Codex started, including ones it left running; if Yoetz cannot confirm
   they are gone, it stops with `codex_capability_probe_cleanup_unconfirmed` instead of trying
-  another release.
+  another release. On Linux hosts where Codex's sandbox cannot create user namespaces (gVisor,
+  Docker's default seccomp, some kernels), Codex's warning about it no longer blocks setup. The
+  reviewer runs no commands and writes no files, so the sandbox confines nothing there.
+  `status`, `setup` and `repair` report `codex_sandbox_unavailable`. This applies only to Codex
+  releases whose behaviour has been reviewed (today `0.162.1`). Another release sending that
+  warning is refused as `codex_sandbox_unavailable_unreviewed_runtime`, and an older reviewed
+  release is used instead if you have one. Every other warning still stops setup.
   Authenticated live evidence through a capability-admitted release is pending.
 
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,
@@ -433,6 +483,31 @@ reverse-chronological released versions.
   advice stays blocked. Privacy receipts now distinguish actual category denials from request or
   packet-assembly failures, while older receipts remain readable (#1019, ADR-009).
 
+- Hooks, the agent connection (MCP) and the service start as fast as an ordinary run again. They
+  run from a sealed copy of the installation that held no compiled bytecode, so every start
+  compiled the whole package (12 s against 6 s on WSL, 0.9 s against 0.5 s on macOS) and slow
+  machines missed the service handshake. The copy now ships bytecode, reusing the installation's
+  own checked-hash bytecode when its source hash matches and compiling the rest once (timestamp
+  bytecode is never reused); an older copy is rebuilt on the next start. The documented install,
+  `npx yoetz` and `yoetz upgrade --accept` add `--compile-bytecode`, and `npx yoetz` and the
+  upgrade set `SOURCE_DATE_EPOCH` for uv so that bytecode is checked-hash. A service that is
+  still starting when a command gives up is reported as `service_handshake_timeout` (retry)
+  instead of telling you to run it under a supervisor (ADR-007).
+
+- Yoetz runs for normal accounts on Ubuntu, Debian, Fedora and RHEL. Their default umask `0002`
+  makes every installed file writable by the account's own private group, and with the retained
+  release runtime the service, the agent connection (MCP) and every hook refused to start on
+  Codex, Claude Code and Cursor with only "The retained runtime could not be verified". The same rule refused such
+  users' repositories (`unsafe_root`), Codex launchers and host settings folders
+  (`target_unsafe`). Group write now counts as owner-only when the local account files prove the
+  group is the owner's own private group with no other member (machines whose accounts come
+  from a directory service such as LDAP or SSSD still need `umask 022`); world write, or group write through a group someone else
+  is in, is still refused, now as `release_runtime_group_writable` or
+  `release_runtime_world_writable` with the exact `chmod -R go-w …` repair on `yoetz service run`,
+  `yoetz mcp serve` and `yoetz upgrade`, on `yoetz service status` and other commands that find
+  no service, and in `yoetz setup`; hooks name the token without local paths and still make no
+  decision. `yoetz upgrade --accept` and `npx yoetz` install under umask `022` (ADR-007).
+
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `yoetz-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so
   that line could never answer it there. Cursor agents are told instead to confirm a met criterion
@@ -440,6 +515,16 @@ reverse-chronological released versions.
   Stop text, the `closure_prepare` notes and the MCP status and `closure_prepare` text. The CLI,
   the terminal interface and a connection that does not name its agent say which hosts read the
   line. Codex and Claude Code text is unchanged (#1050).
+
+- Yoetz no longer records an agent's own successful `status`, `receipt` or `read_guidance` call
+  that Codex wrote to its session log. Each such read was added to the task as an action, result
+  and evidence, so the task the agent was reading changed under every read and a closing loop could
+  keep growing it; on the tb4 n5 trial one hour of `status` polling grew the record by about twelve
+  events per read. A failed or denied Yoetz call, Yoetz's own writes and every other server's tools
+  are still recorded as before, and so is a held Codex log entry released later. On Cursor's
+  ordinary-work hooks, which name every MCP call `MCP:<tool>` without its server, a read is kept
+  out only when Yoetz's own server recorded serving that exact call; another server's tool named
+  `status` is still recorded (tb4 n5).
 
 - In a repository holding another Git repository inside it (an `api` directory with its own
   `.git`), Yoetz's local, names-only read of what changed no longer fails: it reads the nested

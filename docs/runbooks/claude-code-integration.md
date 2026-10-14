@@ -1,5 +1,15 @@
 # Claude Code native integration
 
+MCP input advertisements use the same compact schema as Codex and Cursor, targeting 4,800 bytes
+per tool. Required fields, enums and event envelopes remain inline; payload variants, conditional
+field rules and full examples are available through `read_guidance` at
+`yoetz://guidance/request-templates.md`. Read the matching template before authoring a payload.
+Deferred tool discovery uses this same advertisement. Full server validation, repair hints and
+output schemas remain unchanged; the smaller advertisement does not expand accepted requests.
+Descriptions remain when they fit, with priority field rules restored first for larger tools.
+If the description-free form exceeds the CI budget, the bridge emits
+`mcp_advertised_input_schema_over_budget` and still serves that minimal form; CI rejects the drift.
+
 Codex's external MCP removal reconciliation (issue #860) does not apply to Claude Code:
 Claude's plugin-managed MCP follows the plugin lifecycle below. No Claude mutation or outcome
 contract changes are required for that Codex-specific host command.
@@ -841,7 +851,9 @@ observing itself (issue #564). The shared self-observation policy applies: a `Po
 local store but not enqueued for delivery; a `PostToolUse` of `_start`, `_publish_work`, `_check`,
 or `_respond` enqueues one row; every `PostToolUseFailure` enqueues one row. Claude sends no
 `PreToolUse` on this profile, so its reviewed pairing contract is post-only and there is no
-pre-event to hold back. Its `tool_use_id`, when present, identifies the observed result; no
+pre-event to hold back. The tb4 n5 self-observation gap (a Codex rollout's completed MCP item, and
+Cursor's server-less `MCP:<tool>`) does not exist here: every Claude Code spelling of a Yoetz tool
+names its server and arrives in an explicit hook phase. Its `tool_use_id`, when present, identifies the observed result; no
 missing-pre gap is created for a legacy post-only hook. The `PostToolUse` advice
 guard recognizes Claude's plugin spelling together with the other host spellings, so a self-owned
 hook without an explicit failure does not lease pending recommendation context for the call being
@@ -1443,6 +1455,10 @@ them from memory, `CLAUDE.md`, or the live store.
   instead of creating another sibling.
 
 
+## Runtime another account can write
+
+A runtime another account can write (ADR-007, 2026-10-14) stops `yoetz mcp serve` with `release_runtime_group_writable` or `release_runtime_world_writable` and the exact `chmod -R go-w` repair on stderr (`/mcp` shows the server as failed; `claude --debug` shows its stderr). Its hooks exit 20 with no stdout, so they make no allow or block decision (exit 2 is the only blocking code); Claude Code shows a non-blocking hook error; their stderr names the token without local paths and points at `yoetz service run`, which prints the repair. Group write through the user's own private group (the Ubuntu/Fedora umask 0002 default) is accepted.
+
 ## Observation recovery diagnostics
 
 Claude Code uses the shared selected-admission and outbox store. New native input obeys current hard
@@ -1736,8 +1752,8 @@ inference channel does not allow that category never sends them, and the check r
 credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and similar, a name heuristic) are listed
 by name only, and a change larger than the packet reports `check_time_change_truncated`. The whole
 capture has 20 seconds. It is `check_time_change_unavailable` for a linked Git worktree or a
-submodule checkout opened as the repository (its `.git` is a file), a group- or world-writable
-repository root, a repository whose effective Git config defines a filter or an include (for example
+submodule checkout opened as the repository (its `.git` is a file), a repository root another
+account can write (group write through the owner's own private group is fine, ADR-007), a repository whose effective Git config defines a filter or an include (for example
 a repository-local Git LFS or git-crypt setup), a partial clone, a system Git older than 2.25, a repository
 whose object store is reached through a link or borrowed from another repository (`.git/commondir`
 or alternates), a repository whose Git settings point its working tree elsewhere (`core.worktree`),

@@ -152,6 +152,23 @@ _REVOKE_COMMAND: Final = (
 _MIB: Final = 1024 * 1024
 
 
+def codex_sandbox_lines(status: Mapping[str, object]) -> tuple[str, ...]:
+    """One plain line when Codex reported its Linux sandbox unavailable (ADR-006, 2026-10-14)."""
+
+    if status.get("codex_sandbox_unavailable") is not True:
+        return ()
+    if status.get("codex_sandbox_unavailable_reason") == "bubblewrap_missing":
+        return (
+            "Codex sandbox: no system bubblewrap here, so the evaluator runs without Codex's "
+            "verified Linux sandbox; it runs no commands and writes no files, so reviews are "
+            "unaffected",
+        )
+    return (
+        "Codex sandbox: unavailable here (no user namespaces); the evaluator runs no commands "
+        "and writes no files, so reviews are unaffected",
+    )
+
+
 def _mapping_or_empty(value: object) -> Mapping[str, object]:
     return cast(Mapping[str, object], value) if isinstance(value, Mapping) else {}
 
@@ -2008,6 +2025,7 @@ class YoetzTui(App[int]):
                 f"Plan: {status.get('plan_type') or 'not reported'}",
                 f"Model available: {status.get('model_available')}",
                 f"Process cleanup: {status.get('process_cleanup')}",
+                *codex_sandbox_lines(status),
             ),
         )
         try:
@@ -2053,6 +2071,7 @@ class YoetzTui(App[int]):
                 f"Model available: {status.get('model_available')}",
                 *(() if budgets is None else (f"Review budgets: {budgets}",)),
                 f"Process cleanup: {status.get('process_cleanup')}",
+                *codex_sandbox_lines(status),
             ),
         )
 
@@ -2167,6 +2186,7 @@ class YoetzTui(App[int]):
                 f"Bound runtime: {status.get('executable_path')}",
                 f"Model available: {status.get('model_available')}",
                 f"Process cleanup: {status.get('process_cleanup')}",
+                *codex_sandbox_lines(status),
             ),
         )
 

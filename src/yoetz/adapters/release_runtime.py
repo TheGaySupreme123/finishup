@@ -11,17 +11,24 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import hashlib
+import importlib.util
 import json
+import marshal
 import os
+import py_compile
 import re
 import shutil
 import stat
 import sys
 import tempfile
 import time
-from collections.abc import Generator
+import types
+import warnings
+from collections.abc import Generator, Mapping
 from pathlib import Path
 from typing import Final, Literal, cast
+
+from yoetz.config.foreign_write import foreign_write
 
 _MARKER: Final = "yoetz-release-runtime.json"
 _SCHEMA: Final = "yoetz.release-runtime/1"
@@ -29,6 +36,10 @@ _LEASE: Final = ".in-use"
 _STAGING: Final = ".creation.json"
 _KEY: Final = re.compile(r"[0-9a-f]{64}\Z")
 _PIN: Final = "yoetz-instance-pin.json"
+# Part of every generation key. A generation built by an earlier layout (no bytecode, or
+# bytecode reused from a timestamp pyc) never matches, so the next start builds a complete one
+# and prunes the old one once unused.
+_LAYOUT: Final = b"yoetz.release-runtime-layout/3:unchecked-hash-bytecode\x00"
 # Kept open for the lifetime of this process; intentionally not inherited by unrelated children.
 _process_lease: int | None = None
 _original_interpreter: str | None = None
@@ -36,6 +47,24 @@ _original_interpreter: str | None = None
 
 class ReleaseRuntimeError(ValueError):
     """A bounded refusal, never an installation path or package-manager output."""
+
+    def __init__(
+        self, token: str, *, area: Literal["environment", "interpreter"] | None = None
+    ) -> None:
+        super().__init__(token)
+        # Which tree another account can write: the installed environment, or the base
+        # interpreter its ``bin/python`` resolves to. A closed label, never a path.
+        self.area = area
+
+
+def _refuse_foreign_write(
+    facts: os.stat_result, *, area: Literal["environment", "interpreter"]
+) -> None:
+    """Refuse a runtime object another account can write; the owner's private group is fine."""
+
+    kind = foreign_write(facts)
+    if kind is not None:
+        raise ReleaseRuntimeError(f"release_runtime_{kind}_writable", area=area)
 
 
 class ReleaseRuntimeIOError(OSError):
@@ -45,7 +74,13 @@ class ReleaseRuntimeIOError(OSError):
         self,
         error: OSError,
         phase: Literal[
-            "snapshot", "snapshot_copy", "snapshot_seal", "snapshot_publish", "lease", "exec"
+            "snapshot",
+            "snapshot_copy",
+            "snapshot_compile",
+            "snapshot_seal",
+            "snapshot_publish",
+            "lease",
+            "exec",
         ],
     ) -> None:
         super().__init__(error.errno, "release_runtime_io")
@@ -101,8 +136,9 @@ def _read_regular(path: Path, *, limit: int) -> bytes:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > limit or info.st_mode & 0o022:
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
             raise ReleaseRuntimeError("release_runtime_unsafe")
+        _refuse_foreign_write(info, area="environment")
         with os.fdopen(fd, "rb", closefd=False) as stream:
             result = stream.read(limit + 1)
         if len(result) > limit:
@@ -118,7 +154,7 @@ def _release_key(prefix: Path) -> str:
     records = sorted(prefix.glob("lib/python*/site-packages/*.dist-info/RECORD"))
     if not records or not (prefix / "pyvenv.cfg").is_file():
         raise ReleaseRuntimeError("release_runtime_unsupported")
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(_LAYOUT)
     paths = [prefix / "pyvenv.cfg", *records]
     if (prefix / _PIN).exists():
         paths.append(prefix / _PIN)
@@ -130,10 +166,40 @@ def _release_key(prefix: Path) -> str:
     return digest.hexdigest()
 
 
+def _refuse_foreign_interpreter_chain(link: Path) -> None:
+    """Whoever can write the interpreter or its directories can swap it between runs."""
+
+    target = link.resolve(strict=True)
+    for item in (target, target.parent, target.parent.parent):
+        _refuse_foreign_write(item.stat(), area="interpreter")
+
+
+def _revalidate_interpreter_links(generation: Path) -> None:
+    """Re-check the external interpreter a retained generation links to, at every reuse.
+
+    A generation copies the environment but links its base interpreter, which stays outside the
+    sealed tree. Group membership or modes can change after the copy was made, so the same
+    foreign-write rule is applied again before any process enters the generation.
+    """
+
+    try:
+        entries = list((generation / "bin").iterdir())
+    except OSError as error:
+        raise ReleaseRuntimeIOError(error, "snapshot") from None
+    for entry in entries:
+        if entry.is_symlink():
+            try:
+                _refuse_foreign_interpreter_chain(entry)
+            except OSError as error:
+                raise ReleaseRuntimeIOError(error, "snapshot") from None
+
+
 def _members(prefix: Path) -> tuple[tuple[Path, tuple[int, int, int, int]], ...]:
     """Enumerate only the environment, refusing mutable external package links."""
 
     members: list[tuple[Path, tuple[int, int, int, int]]] = []
+    # Another account able to write the prefix itself could swap a whole subtree.
+    _refuse_foreign_write(prefix.lstat(), area="environment")
     roots = [prefix / "bin", prefix / "lib", prefix / "pyvenv.cfg"]
     roots.extend(prefix / name for name in ("include", "share") if (prefix / name).exists())
     if (prefix / _PIN).exists():
@@ -145,6 +211,7 @@ def _members(prefix: Path) -> tuple[tuple[Path, tuple[int, int, int, int]], ...]
         relative = path.relative_to(prefix)
         if path.name == "__pycache__" or path.suffix in {".pyc", ".pyo"}:
             continue
+        area: Literal["environment", "interpreter"] = "environment"
         if stat.S_ISLNK(info.st_mode):
             # Python executables are normally links to the package-manager/system interpreter.
             # Retain the resolved base-interpreter path; a copied ELF interpreter may have
@@ -152,8 +219,9 @@ def _members(prefix: Path) -> tuple[tuple[Path, tuple[int, int, int, int]], ...]
             if relative.parts[0] != "bin" or not re.fullmatch(r"python(?:3(?:\.\d+)?)?", path.name):
                 raise ReleaseRuntimeError("release_runtime_external_link")
             info = path.stat()
-        if info.st_mode & 0o022:
-            raise ReleaseRuntimeError("release_runtime_unsafe")
+            area = "interpreter"
+            _refuse_foreign_interpreter_chain(path)
+        _refuse_foreign_write(info, area=area)
         if stat.S_ISDIR(info.st_mode):
             pending.extend(path.iterdir())
         elif stat.S_ISREG(info.st_mode):
@@ -214,6 +282,7 @@ def _prepare_locked(prefix: Path, root: Path) -> Path:
         marker = _marker(target)
         if marker is None or marker["origin"] != str(prefix):
             raise ReleaseRuntimeError("release_runtime_invalid")
+        _revalidate_interpreter_links(target)
         return target
     before = _members(prefix)
     temporary = Path(tempfile.mkdtemp(prefix=".creating-", dir=root))
@@ -241,6 +310,10 @@ def _prepare_locked(prefix: Path, root: Path) -> Path:
             + "\n"
         )
         (temporary / _MARKER).chmod(0o600)
+        try:
+            _compile_bytecode(prefix, temporary, target)
+        except OSError as error:
+            raise ReleaseRuntimeIOError(error, "snapshot_compile") from None
         lease = _open_lock(temporary / _LEASE)
         os.close(lease)
         try:
@@ -270,6 +343,120 @@ def _prepare_locked(prefix: Path, root: Path) -> Path:
     finally:
         if temporary.exists():
             _remove_copy(temporary)
+
+
+def _compile_bytecode(prefix: Path, staging: Path, published: Path) -> None:
+    """Write unchecked-hash bytecode beside every copied module before the tree is sealed.
+
+    A sealed generation is read-only, so an interpreter could never cache what it compiles and
+    every serving start (service, bridge, each hook) would recompile the whole package: seconds
+    on a slow filesystem, enough to miss a host's hook or handshake deadline. Unchecked-hash
+    pycs never consult source mtimes, which the copy does not preserve; the generation is
+    immutable, so nothing can make them stale. ``__pycache__`` is fixed (never
+    ``sys.pycache_prefix``) and the optimization level is 0, as the ``-I`` bootstrap loads it.
+
+    Hash-based bytecode the installation already holds (checked or unchecked, PEP 552) is reused
+    when its embedded source hash matches the copied source and no other account can write it:
+    only the flags are rewritten, which costs a hash instead of a compile. Timestamp bytecode
+    (the default of ``uv tool install --compile-bytecode`` and of an ordinary run) cannot prove
+    the source bytes, so it is compiled fresh. Everything else is compiled with the published file name. A module this
+    interpreter cannot compile (a file meant for another Python) still compiles at import.
+    """
+
+    tag: object = getattr(sys.implementation, "cache_tag", None)
+    if type(tag) is not str:
+        return  # An implementation that disables bytecode caching.
+    # A dependency's SyntaxWarning must not reach a hook's stderr.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _compile_sources(prefix, staging, published, tag)
+
+
+# 1980-01-01: any non-empty SOURCE_DATE_EPOCH makes py_compile, and so uv's --compile-bytecode,
+# write checked-hash pycs, which a generation can verify and reuse; the value itself is only
+# read by build backends, and zip archives cannot hold earlier timestamps.
+HASH_BYTECODE_EPOCH: Final = "315532800"
+
+
+def hash_bytecode_environment(base: Mapping[str, str]) -> dict[str, str]:
+    """``base`` for one owned install child, so its compiled bytecode is checked-hash.
+
+    Set only in the child's environment, never in this process. An epoch the caller already
+    exports is kept; any non-empty value selects checked-hash bytecode.
+    """
+
+    environment = dict(base)
+    if not environment.get("SOURCE_DATE_EPOCH"):
+        environment["SOURCE_DATE_EPOCH"] = HASH_BYTECODE_EPOCH
+    return environment
+
+
+def _reusable_bytecode(installed: Path, source: bytes) -> bytes | None:
+    """The installed pyc as an unchecked-hash pyc of ``source``, or None when not provably it."""
+
+    try:
+        fd = os.open(installed, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        facts = os.fstat(fd)
+        if not stat.S_ISREG(facts.st_mode) or facts.st_size > 67_108_864:
+            return None
+        if foreign_write(facts) is not None or foreign_write(installed.parent.lstat()):
+            return None
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            data = stream.read()
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if len(data) < 16 or data[:4] != importlib.util.MAGIC_NUMBER:
+        return None
+    # Only a hash-based pyc (PEP 552: checked 0b11 or unchecked 0b01) names the source bytes it
+    # was compiled from. A timestamp pyc proves a whole-second mtime and a size, which an edit
+    # within the same second at equal length keeps, so it is never reused: it is compiled fresh.
+    flags = int.from_bytes(data[4:8], "little")
+    if flags not in {0b01, 0b11}:
+        return None
+    source_hash = importlib.util.source_hash(source)
+    if data[8:16] != source_hash:
+        return None
+    # The hash vouches for the header only; a truncated or corrupt payload is compiled instead.
+    try:
+        code: object = marshal.loads(data[16:])
+    except EOFError, ValueError, TypeError:
+        return None
+    if type(code) is not types.CodeType:
+        return None
+    return data[:4] + (0b1).to_bytes(4, "little") + source_hash + data[16:]
+
+
+def _compile_sources(prefix: Path, staging: Path, published: Path, tag: str) -> None:
+    for source in sorted(staging.joinpath("lib").rglob("*.py")):
+        if source.is_symlink() or not source.is_file():
+            continue
+        relative = source.relative_to(staging)
+        cache = source.parent / "__pycache__"
+        cache.mkdir(mode=0o700, exist_ok=True)
+        name = f"{source.stem}.{tag}.pyc"
+        origin = prefix / relative
+        reused = _reusable_bytecode(origin.parent / "__pycache__" / name, source.read_bytes())
+        if reused is not None:
+            fd = os.open(cache / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(reused)
+            continue
+        try:
+            py_compile.compile(
+                str(source),
+                cfile=str(cache / name),
+                dfile=str(published / relative),
+                doraise=True,
+                optimize=0,
+                invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+            )
+        except py_compile.PyCompileError:
+            continue
 
 
 def prepare_release_runtime(prefix: Path) -> Path:
@@ -396,6 +583,36 @@ def installation_prefix() -> Path:
     return prefix if marker is None else Path(marker["origin"])
 
 
+FOREIGN_WRITE_TOKENS: Final = frozenset(
+    {"release_runtime_group_writable", "release_runtime_world_writable"}
+)
+
+
+def installed_runtime_refusal() -> ReleaseRuntimeError | None:
+    """Read-only: the foreign-write refusal a serving process of this install would hit.
+
+    ``None`` for a source checkout, a runtime that verifies, or any other condition (those are
+    reported where the runtime is entered). Never takes the manager lock or creates a copy.
+    """
+
+    try:
+        prefix = Path(sys.prefix)
+        marker = _marker(prefix)
+        if marker is not None:
+            prefix = Path(marker["origin"])
+        elif sys.prefix == sys.base_prefix or not Path(__file__).resolve().is_relative_to(
+            prefix.resolve()
+        ):
+            return None
+        _release_key(prefix)
+        _members(prefix)
+    except ReleaseRuntimeError as error:
+        return error if str(error) in FOREIGN_WRITE_TOKENS else None
+    except OSError, ValueError:
+        return None
+    return None
+
+
 def enter_release_runtime(arguments: list[str]) -> None:
     """Re-exec installed serving processes before loading the CLI/bridge/service graph.
 
@@ -408,6 +625,9 @@ def enter_release_runtime(arguments: list[str]) -> None:
     prefix = Path(sys.prefix)
     marker = _marker(prefix)
     if marker is not None:
+        # A process started inside a generation (a service spawned by a retained bridge) hands
+        # off here; the linked interpreter is re-checked exactly as on reuse.
+        _revalidate_interpreter_links(prefix)
         if _process_lease is None:
             # The launching process already holds the shared lease across exec. Opening another
             # lease also protects services subsequently spawned from this generation.

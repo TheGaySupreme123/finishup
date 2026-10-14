@@ -1252,8 +1252,10 @@ def _active_context(mapping: LifecycleMapping, frontier: str | None) -> str:
         f"{mapping.yoetz_writer_id}. For a new host session, after guidance reads and tool/schema "
         "discovery, call start with mode=attach and "
         f"session_id {mapping.yoetz_session_id} before substantive material work. "
-        "Then call status with the returned session/writer ids. For compaction in an "
-        "already-started host session, use your held current ids for status. Do not call start with "
+        "Then read status with the returned session/writer ids; for compaction in an "
+        "already-started host session, use your held current ids. After resume or compaction, "
+        "read status once; keep the returned obligations and findings, then do the work; do not "
+        "reread status between ordinary steps. Do not call start with "
         "mode=create_or_attach and a new workspace_ref/external_ref pair, which creates a "
         "sibling task. " + _STARTUP_RECOVERY_CONTEXT
     )

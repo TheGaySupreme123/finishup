@@ -36,6 +36,19 @@ evidence is recorded in #767.
 
 ## Conditional agent guidance
 
+Every advertised MCP input schema has a CI-enforced 4,800-byte target, below Codex 0.162.1's 5,000-byte
+schema compaction threshold. Direct-tool mode receives inline request fields, required lists and
+enums without that size-triggered rewrite. Event payload variants and complete examples are in
+`read_guidance` at `yoetz://guidance/request-templates.md`; read the matching template before
+authoring a payload. Server validation and output schemas remain unchanged. This shared
+advertisement also serves code mode, Claude Code and Cursor; a capture of the model request
+proves schema delivery only, not a completed workflow or platform certification.
+
+Field descriptions are preserved within that budget, with priority rules restored first for
+larger tools. A future description-free schema exceeding the target logs
+`mcp_advertised_input_schema_over_budget` and serves the minimal form so the bridge remains
+available; CI rejects that regression, and Codex may apply its rewrite to the oversized fallback.
+
 The skill keeps its activation boundary, core workflow, and safety floor in the entrypoint.
 Before `start` read the core, `agent-instructions.md`: it is the operating card and is enough for
 ordinary work. Workflow, publication policy, and coverage and receipts are read only when a result,
@@ -127,10 +140,15 @@ cell, preflight must show no external/global `yoetz` registration, bind strict o
 preview, and install the full digest-bound artifact without invoking `codex mcp add`. Dual,
 foreign, or unobservable ownership stops the operation. `yoetz provider status --json` reports
 `owner_source`, `ownership_state`, and the observed route profile; only one exclusively observed
-policy owner can make `agent_route_semantic_ready` true. If more than one Codex executable is
-discovered, provide `--codex-path <exact-executable>` so the report can inspect one selected
-installation; the report keeps the route unread and supplies a bounded continuation retaining the
-selected home, launcher and isolation root when no selector is given.
+policy owner can make `agent_route_semantic_ready` true. When several Codex versions are installed, the report reads the registration through each
+against the selected home. Agreeing readings are usable without a selector. It reads the configured
+Codex runtime first when discoverable, otherwise the newest reported release; this preference does
+not prove which executable a host session launched. Disagreeing or failed readings require
+`--codex-path <exact-executable>` and retain the selected home, launcher and isolation root in the
+continuation. `integrate codex admission status|preview|grant|revoke` accepts both `--codex-path`
+and `--codex-home`; preview/grant refuse disagreement with `host_admission_codex_binary_inconsistent`,
+and revoke remains available. Admission
+output uses path-free placeholders for these selectors; repeat the exact values from your preview.
 
 ## 2. Prerequisites and exact supported scope
 
@@ -987,11 +1005,33 @@ neither path reintroduces the rows. The shared host-spelling advice guard suppre
 recommendation delivery on a Yoetz-owned hook without an explicit failure; no hook delivers a
 frontier-motion notice at all (issue #915). Explicit
 self-call failures stay retained, enqueued, and eligible for pending advice. Ordinary tools are
-unchanged. To confirm closure converged,
+unchanged. The rollout's completed `McpToolCall` item (`event_msg`/`item_completed`) is read in the
+`PostToolUse` phase for this policy (tb4 n5): before, it had no phase, so every successful `status`
+read reached the ledger as action, result and evidence (about twelve events per read on the S
+arm) and changed the very task the agent was polling. A Yoetz read item is also never held for its
+hook post, and one an earlier build held is settled locally when released, never delivered. A
+failed Yoetz item (`error`, `isError`, or a non-success `status`), Yoetz writes and other servers'
+items are delivered as before. To confirm closure converged,
 run `yoetz observe drain --workspace . --json` after the agent stops and require
 `terminal: drained` with `pending_after: 0`; `retry_pending` names the retryable head cause in
 `reasons` (a check barrier's `operation_pending` clears when the check completes), and
 `pass_limit` means a producer is still adding rows.
+
+### Cold parser startup (N5 robustness)
+
+The native stream parser imports its structural values and exact profiles without loading ledger
+publication models. `yoetz.adapters.importers.codex_jsonl` and `yoetz.ports.importer` retain their
+public names and lazily load mapping/publication implementations when those names are requested.
+The original class lookup paths remain usable for older serialized values. No profile, parser
+rule, stream-reconciliation cadence, capture scope, privacy decision or wire byte changes.
+
+The cold-hook process regression still enforces 1.5 seconds including startup and verifies that
+the realistic observation store changed. Its temporary home and workspace are mode 0700, so a
+shared-group umask does not turn the measurement into a workspace-safety refusal. A separate
+fresh-process regression parses a malformed rollout and checks that ledger events, ledger ports
+and public request models were not loaded. Parser and mapper suites still exercise both paths.
+The measured profiled pass fell from 1.39 seconds to 0.67 seconds on the development Mac; these
+are individual observations, not a latency guarantee for every host or installed package path.
 
 ### Legacy synchronous-hook latency
 
@@ -1518,6 +1558,7 @@ egress.
 | Symptom | Action |
 |---|---|
 | Target untrusted/unsafe | Correct the explicit root/permissions; there is no force option. |
+| MCP, service or hooks stop with `release_runtime_group_writable` / `release_runtime_world_writable` | A runtime another account can write (ADR-007, 2026-10-14) stops `yoetz mcp serve` with `release_runtime_group_writable` or `release_runtime_world_writable` and the exact `chmod -R go-w` repair on stderr (Codex shows it as the MCP server's startup error). Its hooks exit 20 with no stdout, so they make no allow or block decision (exit 2 is the only blocking code); Codex continues the turn; their stderr names the token without local paths and points at `yoetz service run`, which prints the repair. Group write through the user's own private group (the Ubuntu/Fedora umask 0002 default) is accepted. |
 | Resource invalid | Reinstall from a verified package artifact. |
 | Preview stale | Run `status`, then a fresh preview. |
 | Modified/partial content | Preserve and review manually; use `replace_modified` deliberately if desired. |
@@ -2418,8 +2459,8 @@ redacted first (`check_time_change_redacted`), every part still passes the never
 named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and similar, a name heuristic)
 are listed by name only, and a change larger than the packet reports `check_time_change_truncated`.
 The whole capture has 20 seconds. It is `check_time_change_unavailable` for a linked Git worktree or
-a submodule checkout opened as the repository (its `.git` is a file), a group- or world-writable
-repository root, a repository whose effective Git config defines a filter or an include (for example
+a submodule checkout opened as the repository (its `.git` is a file), a repository root another
+account can write (group write through the owner's own private group is fine, ADR-007), a repository whose effective Git config defines a filter or an include (for example
 a repository-local Git LFS or git-crypt setup), a partial clone, a system Git older than 2.25, a repository
 whose object store is reached through a link or borrowed from another repository (`.git/commondir`
 or alternates), a repository whose Git settings point its working tree elsewhere (`core.worktree`),

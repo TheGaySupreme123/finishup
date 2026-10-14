@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 from typer.testing import CliRunner
@@ -187,6 +189,13 @@ def test_package_execution_binds_invoking_uv_tool(
             return SimpleNamespace(returncode=0, stdout=b"99.0.0\n")
         assert argv == package_adapter.PACKAGE_UPGRADE_ARGV
         assert kwargs["stdout"] == subprocess.DEVNULL
+        # A umask 0002 shell must not leave the replacement writable by the group.
+        assert kwargs["umask"] == 0o022
+        # Checked-hash bytecode the sealed generation can reuse; set for the child only.
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        assert cast(dict[str, str], env).get("SOURCE_DATE_EPOCH")
+        assert "SOURCE_DATE_EPOCH" not in os.environ
         return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(package_adapter.subprocess, "run", run)
@@ -269,4 +278,21 @@ def test_upgrade_preserves_recorded_python_selection(tmp_path: Path) -> None:
     )
     command = package_adapter._upgrade_command(tmp_path)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert command is not None
-    assert command[4:6] == ("--python", "3.14.6")
+    assert command[4:7] == ("--compile-bytecode", "--python", "3.14.6")
+
+
+def test_documented_compile_bytecode_install_upgrades_and_keeps_bytecode(tmp_path: Path) -> None:
+    # `uv tool install --compile-bytecode` records the option in the receipt; it is the
+    # documented install, not a custom resolution to refuse.
+    (tmp_path / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{name="yoetz"}]\npython = "3.14.6"\n'
+        "[tool.options]\ncompile-bytecode = true\n"
+    )
+    command = package_adapter._upgrade_command(tmp_path)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert command is not None
+    assert "--compile-bytecode" in command
+    (tmp_path / "uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{name="yoetz"}]\n'
+        '[tool.options]\ncompile-bytecode = true\nindex-url = "https://example.invalid"\n'
+    )
+    assert package_adapter._upgrade_command(tmp_path) is None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]

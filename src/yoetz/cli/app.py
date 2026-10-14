@@ -2965,6 +2965,14 @@ def _host_admission_command(command_name: str) -> Callable[..., None]:
             str | None,
             typer.Option("--action", help="preview only: grant (default) or revoke."),
         ] = None,
+        codex_path: Annotated[
+            Path | None,
+            typer.Option("--codex-path", help="Exact Codex executable to inspect."),
+        ] = None,
+        codex_home: Annotated[
+            Path | None,
+            typer.Option("--codex-home", help="Exact Codex home to inspect."),
+        ] = None,
         checkpoint: Annotated[
             bool,
             typer.Option(
@@ -3025,6 +3033,8 @@ def _host_admission_command(command_name: str) -> Callable[..., None]:
                     harness=harness,
                     project_root=project_root,
                     action_name=requested_action,
+                    codex_path=codex_path,
+                    codex_home=codex_home,
                     accept=accept,
                     preview_digest=preview_digest,
                     checkpoint=checkpoint,

@@ -178,6 +178,114 @@ and downgrade prevention. It does not certify native Codex/Claude/Cursor session
 release's storage coexistence. Package, service, migration and host activation remain separate
 reported facts.
 
+## Amendment — "writable by another account", not a mode bit (2026-10-14, owner decision)
+
+The owner explicitly requested this fix after a Linux compatibility run (release/packaging design
+gate acknowledged). Since the 2026-09-24 amendment, every installed service, MCP bridge and hook
+refused a runtime with any group-write bit (`release_runtime_unsafe`, shown only as "could not be
+verified"). Ubuntu, Debian, Fedora and RHEL give normal accounts umask 0002 with a user-private
+group (`USERGROUPS_ENAB yes`), so `uv tool install` there makes every runtime file and uv's
+managed interpreter group-writable by a group of one, and Yoetz never started. The same mode-only
+rule refused such users' repositories (`unsafe_root`), workspace locators, Codex launchers and
+host configuration roots (`target_unsafe`).
+
+1. **One rule.** An object is unsafe when an account other than its owner can write it. World
+   write always qualifies. Group write qualifies unless the group is the owner's user-private
+   group: the owner's primary group, named like the owner, with no supplementary member other
+   than the owner and no other account using it as its primary group. Completeness must be
+   provable, so the answer is read from `/etc/passwd` and `/etc/group` themselves (and
+   `/etc/gshadow` when readable), and only when `/etc/nsswitch.conf` serves `passwd`, `group`
+   (and `initgroups` when named) exclusively from `files` and `systemd`, with no userdb service
+   beyond dynamic users and no userdb drop-in record. `nsswitch.conf` is read with glibc's
+   syntax (lines end at LF only, so vertical tab and form feed are whitespace; the name ends at
+   a colon or whitespace and the whole run of both is the separator; `[STATUS=ACTION]` clauses
+   must use glibc's words), and every entry for those databases must be local, because glibc
+   before 2.33 honours the first duplicate and later releases the last; a malformed entry for
+   them makes the answer unprovable. A directory service (SSSD, LDAP, NIS, winbind) may not enumerate accounts and may report a populated group as empty, so on such a
+   machine, on macOS (no `nsswitch.conf`) and with any NIS compat line, duplicate gid, name
+   mismatch or unreadable file, group write counts as shared: those users install with
+   `umask 022` or run the printed `chmod`. `/etc/gshadow` is unreadable to ordinary accounts; the
+   account tools keep its member list in step with `/etc/group`, and a group password set with
+   `gpasswd` is outside the rule. Answers are cached for five seconds so a long-lived service
+   notices membership changes. `yoetz.config.foreign_write`
+   owns the rule; every former `mode & 0o022` owner-write check uses it (release runtime, runtime
+   pin, workspace binding, structural and check-time Git capture, Codex launcher, and the Codex,
+   Claude Code, Cursor and portable plugin targets). Owner-only `0o077` checks on material Yoetz
+   creates itself are unchanged.
+2. **The runtime check covers what it follows.** The retained-runtime walk also checks the
+   environment prefix itself and, for a `bin/python` link, the resolved interpreter, its
+   directory and that directory's parent. Because a generation links that interpreter rather than
+   copying it, the interpreter check is repeated every time an existing generation is reused and
+   when a process inside a generation starts (a later group change or modification is refused
+   then, not only at creation). A refusal is `release_runtime_group_writable` or
+   `release_runtime_world_writable`, never the generic message. Terminal commands (`service
+   run`, `mcp serve`, `upgrade`) print the exact repair, `chmod -R go-w <environment>
+   <interpreter tree when owned by this account>`, and suggest `umask 022` before reinstalling.
+   Hooks keep the existing non-blocking exit 20 with no stdout decision and print the token
+   without local paths. A spawned `service run` records the token as its startup failure, so
+   the command that started it names it; every CLI `service_unavailable` and `setup` probe the
+   installed runtime read-only and print the same refusal instead of a supervisor hint. `setup run` refuses to connect any host to such a runtime (reason = the token, next step = the repair);
+   its status view and disconnect stay available.
+3. **Our own installs are owner-only.** `yoetz upgrade --accept` runs `uv tool install` under
+   umask 022, the npm launcher installs under umask 022, and the test-instance provisioner runs
+   uv under umask 022 and clears group/other write on the runtime it created (uv can hard-link
+   files from a cache written under a looser umask). A runtime already shared through a group is
+   refused rather than silently tightened: tightening cannot undo a write another account made.
+
+Verification: unit tests with synthetic account databases (private group accepted; supplementary
+member, foreign primary, differently named group, unknown or unenumerable databases refused) and
+per-site umask 0002 tests; a real Ubuntu 24.04 normal account with umask 0002 ran `uv tool
+install`, `service run`, `mcp serve`, Codex/Claude Code/Cursor hooks, `state capture` and the
+three host setup previews; adding a second account to the runtime's group produced
+`release_runtime_group_writable` on each surface until the printed `chmod` was run.
+
+## Amendment — retained generations carry their bytecode (2026-10-14, owner request)
+
+A Linux/WSL compatibility run found every sealed generation without bytecode (0 of 384 `yoetz`
+modules), so every serving start compiled the whole package and, the tree being read-only, could
+never cache it: importing `yoetz.cli.app` took 11.7-12.0 s on a nested WSL 2 guest against
+6.1-6.6 s from the ordinary environment (macOS 0.85-0.96 s against 0.50 s). Clients then missed
+the five-second handshake and services the restart budget.
+
+1. **Sealed with bytecode.** Before sealing, every copied module gets an unchecked-hash pyc in
+   `__pycache__` at optimization level 0 (what the `-I` bootstrap loads; never
+   `sys.pycache_prefix`). Unchecked hashes never consult the source mtimes the copy does not
+   keep, and an immutable generation cannot make them stale. Hash-based bytecode the
+   installation already holds (checked or unchecked) is reused when its embedded source hash
+   matches the copied source, its payload unmarshals to a code object (a truncated or corrupt
+   cache is compiled instead; the hash vouches for freshness, not for the payload) and no other
+   account can write it or its directory; only the flags are rewritten. Timestamp bytecode is never reused: its header proves only a whole-second mtime
+   and a size, which an edit within the same second at equal length keeps, so reusing it could
+   seal stale code. Anything else is compiled with the generation's own file names. A module
+   this interpreter cannot compile still compiles at import. Pycs are sealed `0400` in `0500` directories like every other member.
+2. **Older generations are not reused.** The generation key includes a layout version, so a
+   generation sealed before this change never satisfies a newer start; the next start builds a
+   complete one and the ordinary lease-aware pruning removes the old one once unused.
+3. **Installs compile checked-hash bytecode.** The documented install, `npx yoetz`,
+   `yoetz upgrade --accept` and the test-instance provisioner pass `--compile-bytecode`. uv
+   writes timestamp bytecode unless `SOURCE_DATE_EPOCH` is set, so the paths Yoetz runs itself
+   (`npx yoetz`, `yoetz upgrade --accept`, the provisioner) set it in the install child's
+   environment only (an exported value is kept), and uv writes checked-hash bytecode that item 1
+   reuses. The epoch never reaches the parent or later processes, but it does reach every
+   descendant of that install child: when uv builds a dependency from an sdist, its PEP 517
+   backend sees `SOURCE_DATE_EPOCH=315532800` and may stamp wheel timestamps or dynamic metadata
+   with it, unlike a plain source install. No supported dependency is known to change because of
+   it; the 2026-10-14 review probed a local sdist backend to confirm the scope. A plain user-run `uv tool install --compile-bytecode` still yields timestamp bytecode;
+   the first serving start then compiles the package once, and a client that gives up meanwhile
+   sees the retryable `service_handshake_timeout`, which names that one-time compile. Measured on
+   macOS (M-series, 2026-10-14, a full 0.3.0 runtime of about 3,500 modules, cold generation
+   creation on a machine at load average about 33, three runs each): 22.2-28.7 s (median 24.4 s)
+   from timestamp bytecode against 8.4-13.1 s (median 10.7 s) from checked-hash bytecode. uv
+   records that flag as the receipt option `compile-bytecode`; the upgrade accepts
+   exactly that option and still refuses any other recorded option.
+4. **A slow start is named.** When on-demand start ends its budget while the service it spawned
+   (or a live singleton holder) is still starting, the error carries phase `handshake_timeout`
+   and is rendered as `service_handshake_timeout` (retry; no lifecycle command) on the CLI and
+   in MCP (`safe_details.phase`). A CLI command that finds nothing accepting while a live process
+   has stamped the singleton says the same instead of the supervisor hint. Budgets are
+   unchanged: hook auto-attach keeps its one-second fail-open budget and on-demand start its 30
+   seconds; with bytecode, a generation starts as fast as the ordinary environment.
+
 ## Implementation-lock identities
 
 The 2026-07-17 implementation lock freezes the direct dependency declarations below. All are

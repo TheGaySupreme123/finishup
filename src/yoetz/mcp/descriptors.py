@@ -11,6 +11,7 @@ from functools import cache
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
+from yoetz.mcp.advertisement import ADVERTISED_INPUT_SCHEMA_MAX_BYTES, compact_input_schema
 from yoetz.mcp.resources import read_resource
 from yoetz.mcp.semantic_destination import (
     MAX_DISCLOSURE_ENCODED_BYTES,
@@ -156,25 +157,21 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 8,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 5_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
-        # obligation_published 1.1.0 (#1002) adds one draft branch, its payload definition and the
-        # payload's evidence/result oneOf: +3 branches, +1 definition, and about 1.7 KB for that
-        # payload (directory kind, item role, acknowledged_not_done status and its reason). The
-        # branch cannot be shared with 1.0.0, which must keep refusing those additions.
+        # Payload version discrimination remains in the full authoring/admission schemas.
         "publish-work-request": MappingProxyType(
             {
                 "max_oneof_nodes": 8,
                 "max_oneof_branches": 41,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 24,
-                "max_defs_nest_depth": 1,
-                # obligation_published 1.1.0 (#1002, #997) and blocker notices (#985).
-                "max_encoded_bytes": 55_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "check-request": MappingProxyType(
@@ -183,9 +180,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 12,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 8_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "respond-request": MappingProxyType(
@@ -194,9 +191,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 12,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 8_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "status-request": MappingProxyType(
@@ -205,9 +202,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 8,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 20,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 10_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "receipt-request": MappingProxyType(
@@ -216,9 +213,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 12,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 6_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "read-guidance-request": MappingProxyType(
@@ -227,9 +224,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 4,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 2_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "closure-prepare-request": MappingProxyType(
@@ -238,9 +235,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 4,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 6_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
     }
@@ -414,7 +411,8 @@ def advertised_surface_metrics(
     )
     description_bytes = sum(len(item.description.encode("utf-8")) for item in descriptors)
     schema_bytes = sum(
-        presentation_schema_metrics(item.input_schema)["encoded_bytes"] for item in descriptors
+        presentation_schema_metrics(item.advertised_input_schema)["encoded_bytes"]
+        for item in descriptors
     )
     copies = len(descriptors) * ADVERTISED_SURFACE_BUDGET["instructions_copies_per_tool"]
     return {
@@ -1634,6 +1632,13 @@ def _mcp_presentation_schema(name: str, version: str) -> Mapping[str, JsonValue]
     return MappingProxyType(bundled_dict)
 
 
+@cache
+def _advertised_input_schema(name: str, version: str) -> Mapping[str, JsonValue]:
+    return compact_input_schema(
+        name, _mcp_presentation_schema(f"{name.replace('_', '-')}-request", version)
+    )
+
+
 def presentation_schema_metrics(schema: Mapping[str, JsonValue]) -> dict[str, int]:
     """Return keyword-budget metrics for one advertised MCP JSON Schema object."""
 
@@ -1766,9 +1771,17 @@ class ToolDescriptor:
 
     @property
     def input_schema(self) -> Mapping[str, JsonValue]:
+        """Full authoring/repair schema; tools/list uses advertised_input_schema instead."""
+
         return _mcp_presentation_schema(
             f"{self.name.replace('_', '-')}-request", _tool_input_schema_version(self.name)
         )
+
+    @property
+    def advertised_input_schema(self) -> Mapping[str, JsonValue]:
+        """Bounded host-facing shape, independent of strict catalog admission."""
+
+        return _advertised_input_schema(self.name, _tool_input_schema_version(self.name))
 
     @property
     def output_schema(self) -> Mapping[str, JsonValue]:
@@ -2026,8 +2039,9 @@ _POLICY_TOOL_DESCRIPTORS: Final = (
         "response. Answer findings_unanswered; repair and recheck receipt_findings_unresolved once, "
         "then disclose if unchanged state still limits coverage. At state ready_with_limitations "
         "nothing is left to do: request the receipt; predicted_receipt names its conclusion. "
-        "Call after resume, compaction, or "
-        "delegate handoff and before a completion claim. Guidance: "
+        "After resume or compaction, read status once; keep the returned obligations and "
+        "findings, then do the work — do not reread status between ordinary steps. Read it "
+        "again after a delegate handoff and before a completion claim. Guidance: "
         "yoetz://guidance/workflow.md.",
         read_only=True,
         idempotent=True,
@@ -2140,7 +2154,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:e2918f20e8569f49d9ca6d8acf9464bfa130d3f9218150bbcdf269d2c8be2482",
                 "respond": "sha256:bbe5f1bd0a761df1df8eda28c71f727cc4531a52678bba0f8ac622bd88fbcc34",
-                "status": "sha256:fcc6116a60b0b0938bebc5b327663fafeee1f28c6dffcd4a6ccb628711531551",
+                "status": "sha256:6ec5871ee482a7fa7ebb1bd334cf276264ff80e7df77d3511ab2fcd0773dcf67",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:874876f601c5eb51d0b2059f71c4def9b59be842fbf4d59ac888146d6c8994b8",
                 "closure_prepare": "sha256:fa7fa2e1aa2c64eae1ace9069b905dbe5c82c89e92d696434d0058a343393007",
@@ -2152,7 +2166,7 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
                 "publish_work": "sha256:7c11f3c51242386f32f69dd85fc787da2223df1e23b5fa0314887a73172ac574",
                 "check": "sha256:5288325f21a2f4f13990fae882c18a4345239eecf09703a0b843c81a49d3dc40",
                 "respond": "sha256:bbe5f1bd0a761df1df8eda28c71f727cc4531a52678bba0f8ac622bd88fbcc34",
-                "status": "sha256:fcc6116a60b0b0938bebc5b327663fafeee1f28c6dffcd4a6ccb628711531551",
+                "status": "sha256:6ec5871ee482a7fa7ebb1bd334cf276264ff80e7df77d3511ab2fcd0773dcf67",
                 "receipt": "sha256:c7676e1ca9afd96d9d7e74503edd5b31a758a05d7e7e1cf0d62c763611ffcecb",
                 "read_guidance": "sha256:874876f601c5eb51d0b2059f71c4def9b59be842fbf4d59ac888146d6c8994b8",
                 "closure_prepare": "sha256:fa7fa2e1aa2c64eae1ace9069b905dbe5c82c89e92d696434d0058a343393007",
@@ -2162,8 +2176,8 @@ TOOL_DESCRIPTOR_DIGESTS: Final[Mapping[McpRouteProfile, Mapping[str, str]]] = Ma
 )
 TOOL_DESCRIPTOR_SET_DIGEST: Final[Mapping[McpRouteProfile, str]] = MappingProxyType(
     {
-        "policy": "sha256:5d022b27f7cae14950a3a1db88ad52d444ad3050815bbfc75550773954586085",
-        "strict": "sha256:67b173601306dc4540835d406d70c37794482797d7929e073e73c7bde7656fb3",
+        "policy": "sha256:de8807d066b6d48c3c296f3b1c736f20c48178fafa38be38a32bb630fe304bff",
+        "strict": "sha256:f1034b02fe0af7ee085287ae1fdadfc0e85341868f06fcfddc912c8dc61a6b81",
     }
 )
 

@@ -1,5 +1,15 @@
 # Cursor local integration runbook
 
+MCP input advertisements use the shared compact authoring schema, targeting 4,800 bytes per tool.
+Required fields, enums and event envelopes remain inline; read `read_guidance` at
+`yoetz://guidance/request-templates.md` for payload variants, conditional rules and complete
+examples before authoring a payload. Full server validation and repair hints remain unchanged.
+Cursor's `outputSchema` and `structuredContent` validation contract, including tuple compatibility,
+is unchanged by the input-size reduction. This does not certify an untested Cursor/OS cell.
+Descriptions remain when they fit, with priority field rules restored first for larger tools.
+If the description-free form exceeds the CI budget, the bridge emits
+`mcp_advertised_input_schema_over_budget` and still serves that minimal form; CI rejects the drift.
+
 Codex's external MCP removal reconciliation (issue #860) does not apply to Cursor IDE or CLI:
 Cursor project MCP cleanup uses its own digest-bound file mutation, not `codex mcp remove`.
 The Cursor lifecycle and outcome contracts remain unchanged.
@@ -1174,7 +1184,20 @@ is repaired by restarting a service that already reports ready.
 not enqueued for delivery, while `start`, `publish_work`, `check`, and `respond` enqueue one row
 each. Cursor's hook payload states no outcome fact for MCP executions, so a failed Yoetz call is
 indistinguishable from a successful one at this ingress; the service's own record of the call is
-the authority on its outcome. The shared advice guard recognizes both Cursor server spellings, so
+the authority on its outcome. On the ordinary-work profile Cursor's generic `preToolUse` and
+`postToolUse` spell every MCP call `MCP:<tool>` without a server, so the name alone cannot tell
+Yoetz's `status` from another server's `status`, whose result is real evidence (tb4 n5 round 2).
+Yoetz's MCP bridge on the Cursor profile therefore records a commitment to each read it served
+successfully (`status`, `receipt`, `read_guidance`, `closure_prepare`: tool, Yoetz session and
+writer, `request_id`; owner-only `observation/yoetz-served-reads.json`, newest 256) before it
+returns the result. A `postToolUse` whose own `tool_input` matches a recorded read is Yoetz's and
+stays local; the match claims the record, so it suppresses at most one post-event, and a record
+older than 120 s proves nothing (a later call reusing the same request scope, in any session, is
+delivered); every other `MCP:<tool>` event, including every `preToolUse` (the read is not served
+yet) and every write, is delivered as before. Gap: a Yoetz read's `preToolUse` still reaches the
+ledger on this profile (one row per read instead of two plus a result); owner: tb4 n5 follow-up.
+The
+shared advice guard recognizes both Cursor server spellings, so
 a self-owned hook without an explicit failure does not lease pending frontier or recommendation
 context for the call being observed; explicit failures remain eligible for pending advice.
 This does not change local retention or explicit failure delivery. Cursor reports
@@ -1267,6 +1290,8 @@ privacy grants, project/user MCP entries, or unrelated Cursor settings. After re
 discovery, activation, MCP sources, stale process/cache behavior, and regular-profile isolation.
 
 ## Troubleshooting
+
+**Runtime another account can write.** A runtime another account can write (ADR-007, 2026-10-14) stops `yoetz mcp serve` with `release_runtime_group_writable` or `release_runtime_world_writable` and the exact `chmod -R go-w` repair on stderr (Cursor lists the MCP server as failed and keeps its stderr in the MCP log). Its hooks exit 20 with no stdout, so they make no allow or block decision (exit 2 is the only blocking code); Cursor proceeds with the action; their stderr names the token without local paths and points at `yoetz service run`, which prints the repair. Group write through the user's own private group (the Ubuntu/Fedora umask 0002 default) is accepted.
 
 Cursor is not an allowlisted `yoetz consent authorize` attestation client in v0.1. It may show the
 agent-safe pending status and direct the user to a supported Codex attestation or local trusted
@@ -1875,8 +1900,8 @@ reports `semantic_review_context_withheld`. Credential-like spans are redacted f
 credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and similar, a name heuristic) are listed
 by name only, and a change larger than the packet reports `check_time_change_truncated`. The whole
 capture has 20 seconds. It is `check_time_change_unavailable` for a linked Git worktree or a
-submodule checkout opened as the repository (its `.git` is a file), a group- or world-writable
-repository root, a repository whose effective Git config defines a filter or an include (for example
+submodule checkout opened as the repository (its `.git` is a file), a repository root another
+account can write (group write through the owner's own private group is fine, ADR-007), a repository whose effective Git config defines a filter or an include (for example
 a repository-local Git LFS or git-crypt setup), a partial clone, a system Git older than 2.25, a repository
 whose object store is reached through a link or borrowed from another repository (`.git/commondir`
 or alternates), a repository whose Git settings point its working tree elsewhere (`core.worktree`),

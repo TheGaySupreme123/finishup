@@ -602,6 +602,108 @@ holds, and the review ends `unavailable`.
 - Authenticated evidence, with `gpt-6.1-sol` listed on 0.159.0 under a ChatGPT login, is
   pending. The runbook records the boundary.
 
+**Amendment (2026-10-14, owner-requested scoped fix; maintainer acknowledgement for the
+privacy/egress gate recorded here).** Codex 0.162.1 on Linux probes its bubblewrap sandbox at
+app-server start (`bwrap --unshare-user --unshare-net --ro-bind / / /bin/true`). When that fails
+with a user-namespace error (gVisor's `loopback: Failed RTM_NEWADDR`, Docker's default seccomp,
+kernels without unprivileged user namespaces), it writes one `configWarning` before any content:
+`{"summary": "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces.",
+"details": null}` (`codex-rs/sandboxing/src/bwrap.rs` `USER_NAMESPACE_WARNING`). The
+pre-disclosure gate refused every warning, so the capability check and each attempt failed as
+`codex_app_server_predisclosure_event_forbidden` on such hosts.
+
+1. **What the warning means for a review.** Bubblewrap confines only the tools Codex runs as
+   child processes. Under the evaluator's isolated config, Codex 0.162.1 offers the model none of
+   them:
+   - `features.shell_tool=false` makes `add_shell_tools` (`core/src/tools/spec_plan.rs`) register
+     no `exec_command` or `write_stdin` handler;
+   - `apply_patch` stays registered, but `sandbox_mode="read-only"` has no writable roots and
+     `approval_policy="never"` rejects sandbox approval. So `assess_patch_safety`
+     (`core/src/safety.rs`) returns `Reject` before any patch runs, whether or not a sandbox
+     exists;
+   - the code-mode host is spawned as a plain child, not under bubblewrap. Its nested calls reach
+     only the same tool registry;
+   - no MCP server, plugin, app, web search, image or agent tool is enabled.
+
+   Yoetz's turn gate still ends the turn on any command, file-change or tool item and on every
+   server request. A missing user-namespace sandbox therefore widens nothing a review can do.
+2. **Narrow admission.** Only that exact notification is admitted before disclosure:
+   - method `configWarning`;
+   - `params` exactly `{summary, details}`, with `details` null;
+   - the summary byte-identical to the reviewed constant (Codex carries no structured code);
+   - an optional integer `emittedAtMs`.
+
+   Every other `configWarning` still fails closed as `codex_app_server_predisclosure_event_forbidden`.
+   That includes the WSL1 warning, any detail, path or range, and the same text sent through
+   `warning`. (The missing-bubblewrap warning was refused here too until the owner decision recorded
+   below, which admits it under the same rules.) Admission applies to the capability check, the readiness and
+   login probes, and every attempt.
+
+   **Bound to reviewed releases.** Point 1 was verified against one release's source and cannot be
+   proven at runtime. No app-server method returns the effective tool registry without a model
+   call: `config/read` returns config values, not registered handlers, and
+   `codex debug prompt-input` renders input items only. Even a tool list would not prove that a
+   patch is rejected before it runs. The admission is therefore limited to the reviewed set
+   `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES = {0.162.1}`, matched against the release that
+   `initialize` proved. That is the newest stable npm release on 2026-10-14; 0.159.x sends this
+   warning only in the terminal UI, not through the app-server.
+
+   Any other release that sends the same warning fails closed before disclosure with
+   `codex_sandbox_unavailable_unreviewed_runtime`, recorded as the `predisclosure_event_forbidden`
+   stage. That token is a per-candidate refusal, so newest-first selection falls back to an older
+   reviewed release when one is installed. Its continuation names a reviewed release and enabling
+   user namespaces. Adding a release to the set requires re-reviewing every item of point 1 in its source.
+3. **Surfaced, not hidden.** A probe that saw the warning reports `sandbox_unavailable`.
+   `provider codex-subscription status`, `setup` and `repair` add
+   `codex_sandbox_unavailable: true|false`, which `yoetz setup` keeps. The terminal interface shows
+   a plain line saying reviews are unaffected.
+
+   The capability record is not changed: it stays a host-independent statement about the bytes.
+   Receipts' `runtime_evidence` does not carry the flag yet, because that needs a new
+   `runtime-attempt-evidence` schema version and its event/receipt cascade. That is a follow-up;
+   until then the receipt's claim is unchanged by this host fact (point 1).
+4. **Re-review trigger.** Each new Codex release is outside the reviewed set until its source is
+   re-checked: no command-running tool for this config, patch rejection under read-only and
+   `never`, and the code-mode host outside bubblewrap. A new text or shape fails closed regardless.
+
+**Amendment (2026-10-14 evening, owner decision: missing system bubblewrap).** Benchmark task
+containers must stay exactly as the official harness ships them, so the distribution `bubblewrap`
+package is not installed there. With no system `bwrap` on the evaluator's fixed `PATH`
+(`/usr/bin:/bin`), Codex 0.162.1 skips its user-namespace probe and writes one different
+`configWarning` before any content (`codex-rs/sandboxing/src/bwrap.rs` `MISSING_BWRAP_WARNING`,
+also byte-identical in the shipped linux-x64 binary, sha256 `628e3548…`):
+`{"summary": "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package
+manager. See the sandbox prerequisites:
+https://developers.openai.com/codex/concepts/sandboxing#prerequisites. Codex will use the bundled
+bubblewrap in the meantime.", "details": null}` with an integer `emittedAtMs`. A live probe on
+2026-10-14 (Codex 0.162.1 app-server, Yoetz's exact launch argv and environment, a
+`python:3.12-slim-bookworm` container on a Boat Docker host with no `bwrap`) received exactly that
+envelope after `initialize` and before the barrier reply. Codex writes at most one of the
+missing-bubblewrap, WSL1 and user-namespace warnings.
+
+1. **Same reasoning.** Point 1 above does not depend on which sandbox Codex has: no
+   command-running tool is registered, every patch is rejected before it runs, and the code-mode
+   host is not under bubblewrap. Without a system `bwrap`, Codex attempts its bundled copy when
+   that resource is present; Yoetz does not retain it (#874), and the warning itself proves
+   neither a usable sandbox nor user-namespace access, so its Linux sandbox is unverified. That
+   widens nothing a review can do.
+2. **Same narrow admission.** The warning is admitted only with the closed shape of point 2 and
+   that summary byte for byte. It is admitted only from `SANDBOX_UNAVAILABLE_REVIEWED_RELEASES`
+   (`{0.162.1}`); any other release sending it fails closed with
+   `codex_sandbox_unavailable_unreviewed_runtime`, as before. Look-alikes (a detail, a path or
+   range, a missing `details`, trailing bytes, the same text through `warning`) and the WSL1
+   warning stay refused as `codex_app_server_predisclosure_event_forbidden`.
+3. **Disclosed with its reason.** The probe result carries `sandbox_unavailable_reason`
+   (`user_namespaces_unavailable|bubblewrap_missing`). `provider codex-subscription status`,
+   `setup` and `repair` report `codex_sandbox_unavailable: true` with
+   `codex_sandbox_unavailable_reason`, which `yoetz setup` keeps. For `bubblewrap_missing` the
+   terminal interface says the evaluator runs without Codex's verified Linux sandbox and why
+   reviews are unaffected. Receipts' `runtime_evidence` still does not carry the fact (the same
+   schema follow-up as point 3 above); the diagnostic surfaces are the disclosure until then.
+4. **Not a general bubblewrap waiver.** This admits only the Codex evaluator's warning. Approved
+   external-command checks still need a usable system `bwrap` on Linux and keep failing closed
+   without it (`bwrap_missing`).
+
 ## Fallback endpoint amendment (2026-09-04, issue #582)
 
 AI-powered review may bind one primary endpoint plus exactly one fallback endpoint. The pairing is
@@ -1864,7 +1966,8 @@ packet only lacked room for.
 - **Record and surfaces.** The check records the last round's review. Its `review_input_manifest`
   carries the optional `follow_up_round` (1–3) and, in a follow-up packet, `missing_inputs` lists
   the reviewer's in-check request: `supplied` with the excerpt sources Yoetz added (only excerpts
-  that crossed the provider boundary count), else `pending`. The field is added in place to the
+  that crossed the provider boundary count), `unavailable` when all composed supply refs were
+  privacy-withheld, otherwise `pending`. The field is added in place to the
   unreleased check-recorded 1.3.0/1.4.0, check-result 1.3.0/1.4.0, status-result 1.4.0 and
   outbound-case 1.2.0 schemas. The shared manifest renderer shows the round and the added items in
   the CLI, the MCP check text, and the receipt's coverage note in JSON, markdown and text. The
@@ -1922,7 +2025,9 @@ in the check-time change, which follow-ups could not draw from.
   travels on the packet row (`follow_up_supplied: true`), and the provider-bound manifest says
   `supplied` only through a marked row admission kept, so an old part the first packet carried
   never stands in for new parts admission dropped. A part egress then withholds under a privacy
-  rule is disclosed as `pending` on the sent packet and its source is never asked for again. The
+  rule is disclosed as `unavailable` on the sent packet when all composed supply refs were
+  withheld; its supplied refs are empty and its source is never asked for again. Admission
+  dropping new rows for room remains `pending`, because privacy did not make them unavailable. The
   planner asks for a current section only while the requested edit's own paths have bytes no
   packet carried (`current_section_parts`), never because other bytes of the change remain. It
   also stops before rebuilding a case for a request whose targets name no action, result or
@@ -1932,6 +2037,19 @@ in the check-time change, which follow-ups could not draw from.
   are unchanged, so a request whose remaining parts do not fit stays unanswered and is returned to
   the agent with its availability class. Each round's `semantic_review_follow_up` diagnostic also
   counts `semantic_follow_up_parts_added`.
+
+### Follow-up row contract and withholding accounting (2026-10-14)
+
+Maintainer acknowledgement for the protocol and packaging gate: the owner explicitly requested
+“need not fragile but good and working, and also working with older versions when possible”.
+`schemas/privacy/review-packet-row-2.0.0.schema.json` governs the inner provider-bound `items[]`
+rows of `yoetz.review-packet-case/2`, including optional `follow_up_supplied: true`; absent marks
+remain readable and never claim new supply. The canonical row vectors cover absence, true,
+partial admission and privacy withholding. This adds no durable event field or privacy authority.
+A round already dispatched stays counted even if egress withholds every newly supplying row; its
+request is unavailable, not pending work, and receipts retain empty supply refs. Avoiding that one
+dispatch would require an egress preflight transaction; this change does not bypass egress or
+reuse a prior disclosure to save a round.
 
 ### Background advice and preview-required privacy (2026-10-14, #1019 round 2)
 

@@ -1584,8 +1584,9 @@ async def test_unknown_predisclosure_event_prevents_case_bytes_crossing_stdin(
 async def test_linux_missing_bubblewrap_config_warning_fails_before_disclosure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The exact notice Codex 0.157.1 emitted after initialize on Linux x86_64 without a system
-    # bubblewrap on PATH. It stays outside the pre-disclosure allowlist: no case byte crosses.
+    # A notice shaped like Codex 0.157.1's missing-bubblewrap warning but not byte-identical to
+    # the reviewed 0.162.1 text, from an unreviewed release. It stays outside the pre-disclosure
+    # allowlist: no case byte crosses.
     runtime = _Runtime(
         _profile(),
         predisclosure_event={
@@ -2993,3 +2994,298 @@ async def test_readiness_probe_stays_ready_with_only_reviewed_notices(
         "chatgpt",
         True,
     )
+
+
+# -- the two admitted configWarnings: Codex's Linux sandbox without user namespaces or bwrap ----
+
+# Verbatim ``USER_NAMESPACE_WARNING`` from codex-rs/sandboxing/src/bwrap.rs at rust-v0.162.1, in
+# the exact ``ConfigWarningNotification`` envelope app-server writes (``details`` serialises as
+# null; ``path`` and ``range`` are skipped when absent; the envelope carries ``emittedAtMs``).
+_USER_NAMESPACE_WARNING = (
+    "Codex's Linux sandbox uses bubblewrap and needs access to create user namespaces."
+)
+_SANDBOX_UNAVAILABLE_EVENT: dict[str, object] = {
+    "method": "configWarning",
+    "params": {"summary": _USER_NAMESPACE_WARNING, "details": None},
+    "emittedAtMs": 1791958274243,
+}
+# Verbatim ``MISSING_BWRAP_WARNING`` from the same file, also present byte for byte in the shipped
+# 0.162.1 linux-x64 ``codex`` binary (sha256 628e3548...). app-server writes it, in the same
+# envelope, when no system ``bwrap`` is on PATH (an official task container without the
+# distribution ``bubblewrap`` package).
+_MISSING_BWRAP_WARNING = (
+    "Codex could not find bubblewrap on PATH. Install bubblewrap with your OS package manager. "
+    "See the sandbox prerequisites: "
+    "https://developers.openai.com/codex/concepts/sandboxing#prerequisites. "
+    "Codex will use the bundled bubblewrap in the meantime."
+)
+_BWRAP_MISSING_EVENT: dict[str, object] = {
+    "method": "configWarning",
+    "params": {"summary": _MISSING_BWRAP_WARNING, "details": None},
+    "emittedAtMs": 1791958274243,
+}
+# Each admitted warning with the reason Yoetz discloses for it.
+_ADMITTED_SANDBOX_WARNINGS: list[tuple[dict[str, object], str]] = [
+    (_SANDBOX_UNAVAILABLE_EVENT, "user_namespaces_unavailable"),
+    (_BWRAP_MISSING_EVENT, "bubblewrap_missing"),
+]
+# Look-alikes that are different warnings and must stay refused before disclosure.
+_NOT_THE_SANDBOX_WARNING: list[dict[str, object]] = [
+    {
+        "method": "configWarning",
+        "params": {"summary": _MISSING_BWRAP_WARNING, "details": "private-canary"},
+    },
+    {
+        "method": "configWarning",
+        "params": {"summary": _MISSING_BWRAP_WARNING + " ", "details": None},
+    },
+    {
+        "method": "configWarning",
+        "params": {"summary": _MISSING_BWRAP_WARNING, "details": None, "range": None},
+    },
+    {"method": "configWarning", "params": {"summary": _MISSING_BWRAP_WARNING}},
+    {"method": "warning", "params": {"message": _MISSING_BWRAP_WARNING, "threadId": "t"}},
+    {
+        "method": "configWarning",
+        "params": {
+            "summary": (
+                "Codex's Linux sandbox uses bubblewrap, which is not supported on WSL1 because "
+                "WSL1 cannot create the required user namespaces. Use WSL2 for sandboxed shell "
+                "commands."
+            ),
+            "details": None,
+        },
+    },
+    {
+        "method": "configWarning",
+        "params": {"summary": _USER_NAMESPACE_WARNING, "details": "private-canary"},
+    },
+    {
+        "method": "configWarning",
+        "params": {"summary": _USER_NAMESPACE_WARNING, "details": None, "path": "/x"},
+    },
+    {"method": "configWarning", "params": {"summary": _USER_NAMESPACE_WARNING + " "}},
+    {
+        "method": "configWarning",
+        "params": {"summary": _USER_NAMESPACE_WARNING, "details": None},
+        "emittedAtMs": "now",
+    },
+    {"method": "warning", "params": {"message": _USER_NAMESPACE_WARNING, "threadId": "t"}},
+]
+
+
+def _reviewed_profile(version: str = "0.162.1") -> CodexAppServerProfile:
+    """A profile for a release whose source review covers the sandbox warning (or ``version``)."""
+
+    return profile_for(record_for(b"codex", b"host", version=version))
+
+
+async def _release_responses(
+    profile: CodexAppServerProfile, *steps: tuple[int, str] | dict[str, object]
+) -> list[dict[str, object]]:
+    """``_responses`` whose ``initialize`` reports the profile's own release, as Codex does."""
+
+    lines = await _responses(profile, *steps)
+    first = cast(dict[str, object], lines[0]["result"])
+    first["userAgent"] = (
+        f"yoetz_semantic_evaluator/{profile.runtime_version} (Linux 6.8; x86_64) unknown"
+    )
+    return lines
+
+
+def test_the_sandbox_warning_is_reviewed_only_for_source_verified_releases() -> None:
+    assert module.SANDBOX_UNAVAILABLE_REVIEWED_RELEASES == frozenset({"0.162.1"})
+
+
+@pytest.mark.parametrize(("event", "reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_capability_probe_admits_the_exact_sandbox_unavailable_warning(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], reason: str
+) -> None:
+    profile = _reviewed_profile()
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (30, "thread/start"),
+        (32, "account/read"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    await module.codex_capability_probe(profile)
+
+    assert runtime.sandbox_unavailable is True
+    assert runtime.sandbox_unavailable_reason == reason
+    assert all(message.get("method") != "turn/start" for message in stdin.messages)
+
+
+@pytest.mark.parametrize("event", _NOT_THE_SANDBOX_WARNING)
+async def test_capability_probe_still_refuses_every_other_config_warning(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object]
+) -> None:
+    profile = _reviewed_profile()
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (30, "thread/start"),
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_app_server_predisclosure_event_forbidden"):
+        await module.codex_capability_probe(profile)
+    assert runtime.sandbox_unavailable is False
+    assert runtime.sandbox_unavailable_reason is None
+
+
+@pytest.mark.parametrize(("event", "reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_readiness_reports_the_unavailable_sandbox_and_stays_ready(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], reason: str
+) -> None:
+    profile = _reviewed_profile()
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (10, "model/list"),
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    status = await module.codex_account_status(profile)
+
+    assert (status.runtime_ready, status.model_available, status.sandbox_unavailable) == (
+        True,
+        True,
+        True,
+    )
+    assert status.sandbox_unavailable_reason == reason
+
+
+async def test_readiness_without_the_warning_reports_no_unavailable_sandbox(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _reviewed_profile()
+    lines = await _release_responses(
+        profile, (0, "initialize"), (1, "account/read"), (10, "model/list"), (32, "account/read")
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    status = await module.codex_account_status(profile)
+    assert (status.sandbox_unavailable, status.sandbox_unavailable_reason) == (False, None)
+
+
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_an_attempt_discloses_the_case_despite_the_sandbox_unavailable_warning(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object], _reason: str
+) -> None:
+    profile = _reviewed_profile()
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (10, "model/list"),
+        (30, "thread/start"),
+        (32, "account/read"),
+        (31, "turn/start"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+    case = _case()
+    binding, authority = _attempt(case)
+    evaluator = CodexAppServerEvaluator(profile, binding, authority, _Clock())
+
+    result = await evaluator.evaluate(case, Deadline(_NOW + timedelta(seconds=30), 30.0))
+
+    # The stream ends after turn/start, so the attempt cannot complete; what matters is that
+    # the admitted warning did not stop disclosure before the turn.
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.case_disclosed is True
+    assert any(message.get("method") == "turn/start" for message in stdin.messages)
+
+
+# A release outside the reviewed set: an older admitted one, and a synthetic newer one that keeps
+# the same warning and protocol but whose tool semantics nobody has reviewed.
+_UNREVIEWED_RELEASES = ["0.159.0", "1.0.0"]
+
+
+@pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_capability_probe_refuses_the_sandbox_warning_from_an_unreviewed_release(
+    monkeypatch: pytest.MonkeyPatch, version: str, event: dict[str, object], _reason: str
+) -> None:
+    profile = _reviewed_profile(version)
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (30, "thread/start"),
+        (32, "account/read"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_sandbox_unavailable_unreviewed_runtime"):
+        await module.codex_capability_probe(profile)
+    assert all(message.get("method") != "turn/start" for message in stdin.messages)
+
+
+@pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_readiness_refuses_the_sandbox_warning_from_an_unreviewed_release(
+    monkeypatch: pytest.MonkeyPatch, version: str, event: dict[str, object], _reason: str
+) -> None:
+    profile = _reviewed_profile(version)
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (10, "model/list"),
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_sandbox_unavailable_unreviewed_runtime"):
+        await module.codex_account_status(profile)
+
+
+@pytest.mark.parametrize("version", _UNREVIEWED_RELEASES)
+@pytest.mark.parametrize(("event", "_reason"), _ADMITTED_SANDBOX_WARNINGS)
+async def test_an_attempt_on_an_unreviewed_release_never_discloses_after_the_warning(
+    monkeypatch: pytest.MonkeyPatch, version: str, event: dict[str, object], _reason: str
+) -> None:
+    profile = _reviewed_profile(version)
+    lines = await _release_responses(
+        profile,
+        (0, "initialize"),
+        event,
+        (1, "account/read"),
+        (10, "model/list"),
+        (30, "thread/start"),
+        (32, "account/read"),
+        (31, "turn/start"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+    case = _case()
+    binding, authority = _attempt(case)
+    evaluator = CodexAppServerEvaluator(profile, binding, authority, _Clock())
+
+    result = await evaluator.evaluate(case, Deadline(_NOW + timedelta(seconds=30), 30.0))
+
+    assert type(result) is SemanticResultUnavailable
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.case_disclosed is False
+    assert result.provenance.runtime_evidence.failure_stage == "predisclosure_event_forbidden"
+    assert all(message.get("method") != "turn/start" for message in stdin.messages)

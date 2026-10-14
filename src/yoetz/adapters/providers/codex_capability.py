@@ -940,7 +940,8 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> bool:
     confirmed = True
     try:
         os.killpg(group, signal.SIGKILL)
-    except ProcessLookupError:
+    except ProcessLookupError, PermissionError:
+        # Already gone, or (macOS) members still exiting; the bounded check below decides.
         pass
     except OSError:
         confirmed = False
@@ -954,7 +955,15 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> bool:
 
 
 def _group_gone(group: int) -> bool:
-    """Whether no live member of process group ``group`` remains, within a bounded grace."""
+    """Whether no live member of process group ``group`` remains, within a bounded grace.
+
+    ``ESRCH`` confirms the group is empty. macOS briefly answers ``EPERM`` for a group whose
+    killed members are still exiting, so ``EPERM`` is re-polled rather than taken as final; a
+    member that genuinely survives (or genuinely cannot be signalled) keeps the group visible
+    until the grace expires, which stays unconfirmed. The poll only observes: it never signals
+    the numeric group again, because once the leader is reaped that id could in principle be
+    reused by an unrelated group, and SIGKILL is not ignorable, so the one kill above suffices.
+    """
 
     deadline = time.monotonic() + _GROUP_CLEANUP_GRACE_SECONDS
     while True:
@@ -962,12 +971,14 @@ def _group_gone(group: int) -> bool:
             os.killpg(group, 0)
         except ProcessLookupError:
             return True
+        except PermissionError:
+            pass
         except OSError:
-            # A member exists that this process may not signal: not confirmed.
             return False
-        if _only_zombies(group):
-            # Killed members already exited; only their reaping (by init) is outstanding.
-            return True
+        else:
+            if _only_zombies(group):
+                # Killed members already exited; only their reaping (by init) is outstanding.
+                return True
         if time.monotonic() >= deadline:
             return False
         time.sleep(0.01)

@@ -539,6 +539,64 @@ def control_failure(
                 payload["holder"] = holder
             stdout_writer(payload)
         return exit_code_for(code)
+    if code is PublicErrorCode.SERVICE_UNAVAILABLE:
+        from yoetz.cli.runtime_refusal import installed_runtime_refusal_text
+
+        refusal = installed_runtime_refusal_text()
+        if refusal is not None:
+            # No service of this installation can start: name why and the repair, not a
+            # supervisor hint that would fail the same way.
+            token, text = refusal
+            stderr_writer(text.rstrip("\n"))
+            if json_output:
+                stdout_writer(
+                    {
+                        "ok": False,
+                        "public_code": code.value,
+                        "reason": token,
+                        "retryable": False,
+                    }
+                )
+            return exit_code_for(code)
+    from yoetz.service.client import start_timed_out
+
+    starting = start_timed_out(error)
+    if (
+        not starting
+        and code is PublicErrorCode.SERVICE_UNAVAILABLE
+        and not accepted_but_unresponsive(error)
+    ):
+        # Nothing accepted, yet a live process stamped the singleton: it is still starting
+        # (importing, unlocking) before it publishes the endpoint. The stamp is read without
+        # touching the lock, so this diagnosis can never delay that start.
+        starting = _singleton_holder_pid() is not None
+    if code is PublicErrorCode.SERVICE_UNAVAILABLE and starting:
+        # A live service of this installation holds the singleton but has not finished starting
+        # (a slow machine, or the first start after an install or update). "Run it under a
+        # supervisor" or a restart would only race the process already starting.
+        stderr_writer(
+            _with_holder_pid(
+                "service_unavailable: service_handshake_timeout: the local service is still "
+                "starting and did not answer in time. This is expected, not a failure: the "
+                "first start after an install or update prepares Yoetz's retained copy and "
+                "compiles it once when the installation has no reusable hash-verified bytecode "
+                "(as after a plain 'uv tool install'), and slow machines such as WSL under "
+                "nested virtualization take longer. Wait a few seconds and retry; "
+                "'yoetz service status' answers once it is ready. Do not run 'yoetz service run' or 'yoetz service restart' for this; "
+                "if it never becomes ready, run 'yoetz service diagnostics'"
+            )
+        )
+        if json_output:
+            stdout_writer(
+                {
+                    "ok": False,
+                    "public_code": code.value,
+                    "reason": "service_handshake_timeout",
+                    "phase": "handshake_timeout",
+                    "retryable": True,
+                }
+            )
+        return exit_code_for(code)
     if code is PublicErrorCode.SERVICE_UNAVAILABLE and accepted_but_unresponsive(error):
         stderr_writer(
             _with_holder_pid(

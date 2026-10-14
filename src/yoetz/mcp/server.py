@@ -31,7 +31,10 @@ from yoetz.adapters.integrations.cursor_project_mcp import (
     CursorProjectMcpRegistrationSnapshot,
     inspect_project_mcp_registration,
 )
-from yoetz.adapters.integrations.yoetz_call_rejections import record_rejected_yoetz_call
+from yoetz.adapters.integrations.yoetz_call_rejections import (
+    record_rejected_yoetz_call,
+    record_served_yoetz_read,
+)
 from yoetz.adapters.mcp_stdio import MAX_JSON_FRAME_BYTES, bounded_stdio_server
 from yoetz.adapters.workspace_binding import (
     MAX_WORKSPACE_LOCATOR_BYTES,
@@ -81,6 +84,11 @@ from yoetz.mcp.resources import (
 from yoetz.mcp.semantic_destination import (
     SemanticDestinationDisclosure,
     read_semantic_destination_disclosure,
+)
+from yoetz.mcp.status_streak import (
+    STATUS_STREAK_NUDGE_THRESHOLD,
+    StatusReadStreaks,
+    status_streak_nudge,
 )
 from yoetz.mcp.summaries import (
     render_check_reviewer_output,
@@ -153,6 +161,7 @@ from yoetz.service.client import (
     handshake_failure,
     holder_version_order,
     service_holder_identity,
+    start_timed_out,
 )
 
 __all__ = [
@@ -499,6 +508,10 @@ class BridgeRuntime:
     cursor_launcher: tuple[str, ...] | None = field(default=None, repr=False, compare=False)
     cursor_isolation_root: str | None = field(default=None, repr=False, compare=False)
     cursor_project_binding: Literal["mcp-roots", "registered-project"] = "mcp-roots"
+    # tb4 n5: consecutive status reads per (session, actor) since the session's last write call.
+    status_streaks: StatusReadStreaks = field(
+        default_factory=StatusReadStreaks, repr=False, compare=False
+    )
 
 
 def _valid_runtime_launcher(value: object) -> bool:
@@ -605,6 +618,7 @@ def build_bridge_runtime(
     descriptors = TOOL_DESCRIPTORS[route_profile]
     for descriptor in descriptors:
         descriptor.input_schema
+        descriptor.advertised_input_schema
         descriptor.output_schema
     build_last_resort_internal_error_result()
     if workspace_locator is not None and type(workspace_locator) is not WorkspaceLocator:
@@ -1886,6 +1900,29 @@ def _control_error_result(
                 host_profile=host_profile,
                 safe_details=details,
                 diagnostic_reason="service_handshake_failed",
+            )
+        if start_timed_out(error):
+            # This bridge's on-demand start found a live service of this installation still
+            # starting at the end of its budget: retry, never a lifecycle command.
+            return _control_public_error_result(
+                error,
+                request_id,
+                operation,
+                code=PublicErrorCode.SERVICE_UNAVAILABLE,
+                message=(
+                    "The local Yoetz service is still starting and did not answer in time "
+                    "(service_handshake_timeout). This is expected, not a failure: the first "
+                    "start after an install or update prepares Yoetz's retained copy and "
+                    "compiles it once when the installation has no reusable hash-verified "
+                    "bytecode (as after a plain 'uv tool install'), and slow machines such as "
+                    "WSL under nested virtualization take longer. "
+                    "Wait a few seconds, then retry this operation with the same request_id. "
+                    "Do not run service lifecycle commands for this."
+                ),
+                retryable=True,
+                host_profile=host_profile,
+                safe_details={"reason_code": "service_unavailable", "phase": "handshake_timeout"},
+                diagnostic_reason="service_unavailable",
             )
         if accepted_but_unresponsive(error):
             # A listener that accepted and then went silent is running. Prescribing
@@ -3550,7 +3587,7 @@ async def list_tools(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> list[types.Tool
             name=descriptor.name,
             title=descriptor.title,
             description=descriptor.description,
-            inputSchema=cast(dict[str, object], _mutable_json(descriptor.input_schema)),
+            inputSchema=cast(dict[str, object], _mutable_json(descriptor.advertised_input_schema)),
             outputSchema=cast(dict[str, object], _mutable_json(descriptor.output_schema)),
             annotations=types.ToolAnnotations(
                 title=descriptor.title,
@@ -3593,12 +3630,51 @@ async def call_tool(
             types.ErrorData(code=types.INVALID_PARAMS, message=sanitize_unknown_tool_name(name))
         )
     if name == "closure_prepare":
-        return await dispatch_closure_prepare(
+        result = await dispatch_closure_prepare(
             arguments,
             runtime,
             transport_request_id=transport_request_id,
         )
-    return await dispatcher(arguments, runtime)
+    else:
+        result = await dispatcher(arguments, runtime)
+    return _with_status_streak_nudge(name, arguments, result, runtime)
+
+
+def _with_status_streak_nudge(
+    name: str,
+    arguments: Mapping[str, object],
+    result: types.CallToolResult,
+    runtime: BridgeRuntime,
+) -> types.CallToolResult:
+    """Lead a repeated status read's text with one concrete next write (tb4 n5).
+
+    The structured result is unchanged; only the model-visible text gains one leading line. The
+    Cursor profile's text block is the exact canonical JSON of the result, which stays
+    ``content[0]``; there the line is a separate second block. A failure here never fails the
+    call: the result is returned as served.
+    """
+
+    try:
+        streak = runtime.status_streaks.note_call(name, arguments)
+        if streak < STATUS_STREAK_NUDGE_THRESHOLD or result.isError is True:
+            return result
+        wire = result.structuredContent
+        if not isinstance(wire, Mapping):
+            return result
+        nudge = status_streak_nudge(cast(Mapping[str, object], wire), streak)
+        if not nudge:
+            return result
+        content = list(result.content)
+        first = content[0] if content else None
+        if runtime.host_profile != "cursor" and isinstance(first, types.TextContent):
+            content[0] = first.model_copy(update={"text": f"{nudge}\n{first.text}"})
+        else:
+            # Cursor's first block is the exact canonical JSON a consumer may parse as the result;
+            # it stays first and the nudge follows it as its own block.
+            content.append(types.TextContent(type="text", text=nudge))
+        return result.model_copy(update={"content": content})
+    except Exception:  # noqa: BLE001 - the nudge is advisory text; the served result stands
+        return result
 
 
 async def _handle_call_tool_request(
@@ -3640,7 +3716,25 @@ async def _handle_call_tool_request(
     else:
         result = await call_tool(name, arguments, runtime)
     _record_rejected_call(name, arguments, result)
+    _record_served_read(runtime, name, arguments, result)
     return types.ServerResult(result)
+
+
+def _record_served_read(
+    runtime: BridgeRuntime,
+    name: str,
+    arguments: Mapping[str, object],
+    result: types.CallToolResult,
+) -> None:
+    """On Cursor, record a successful Yoetz read so its hook can prove it is Yoetz's (tb4 n5).
+
+    Cursor's ordinary hooks name this call ``MCP:<tool>`` with no server. The record is written
+    before the host receives this result, so the call's post-event always finds it. Other hosts
+    name the server in every hook, so nothing is written for them. Never raises.
+    """
+
+    if runtime.host_profile == "cursor" and result.isError is not True:
+        record_served_yoetz_read(name, arguments)
 
 
 def _record_rejected_call(

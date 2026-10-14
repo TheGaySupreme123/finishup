@@ -57,10 +57,27 @@ request is involved:
      (`codex_app_server_predisclosure_event_forbidden`,
      `codex_app_server_remote_control_not_disabled`, `codex_app_server_tool_request_forbidden`).
 
-   No `turn/start` is sent. The scratch directory is deleted afterwards. On Linux, Codex emits a
-   pre-disclosure `configWarning` when no system `bwrap` is on the fixed `PATH`
-   (`/usr/bin:/bin`), so the check fails closed there until bubblewrap is installed and
-   unprivileged user namespaces work.
+   No `turn/start` is sent. The scratch directory is deleted afterwards. On Linux, Codex 0.162.1
+   writes one of two sandbox warnings before any content, and both are admitted (ADR-006,
+   2026-10-14), because the evaluator has no command-running or file-writing tool for the
+   sandbox to confine:
+   - no system `bwrap` on the fixed `PATH` (`/usr/bin:/bin`), for example an official task
+     container without the `bubblewrap` package: "Codex could not find bubblewrap on PATH. …
+     Codex will use the bundled bubblewrap in the meantime." Reported as
+     `codex_sandbox_unavailable_reason: bubblewrap_missing`; the evaluator then runs without
+     Codex's verified Linux sandbox, and the terminal interface says so;
+   - a system `bwrap` that cannot create user namespaces: gVisor (Modal), Docker's default
+     seccomp, or kernels with unprivileged user namespaces disabled. Reported as
+     `user_namespaces_unavailable`.
+
+   The check passes. `status`, `setup` and `repair` report `codex_sandbox_unavailable: true` and
+   `codex_sandbox_unavailable_reason`, and the terminal interface notes it. Any other warning text,
+   including the WSL1 one, still fails closed.
+
+   The admission holds only for source-reviewed releases (today `0.162.1`). Another release
+   sending either warning is refused as `codex_sandbox_unavailable_unreviewed_runtime`, and setup
+   or repair falls back to an older reviewed release if one is installed. To proceed, install a
+   reviewed release, or install bubblewrap and enable unprivileged user namespaces.
 5. **Model.** The dedicated home's readiness probe (`account/read`, then `model/list`, then the
    same barrier and allowlist check) must list the configured model with every configured
    effort; a release that warns only under the signed-in home is passed over. A home Codex reports signed in whose model
@@ -242,8 +259,9 @@ Schema review, 0.150.1 to 0.157.1 v2, limited to what the evaluator reads:
   location, not the runtime version, and does not change.
 
 On Linux, Codex 0.157.1 emits a pre-disclosure `configWarning` when no system `bwrap` is on the
-evaluator's fixed `PATH` (`/usr/bin:/bin`). The guard still fails closed before disclosure, so
-install bubblewrap and run where unprivileged user namespaces work.
+evaluator's fixed `PATH` (`/usr/bin:/bin`). The guard still fails closed before disclosure for
+that release, which is outside the reviewed set; 0.162.1's exact missing-bubblewrap warning is
+admitted and disclosed (see the capability check above).
 
 #### Retained code-mode host (2026-09-27, issue #874)
 
@@ -286,8 +304,9 @@ is pending on both platforms.
 - It adds the helper to the existing store without rewriting `codex`.
 - It rebinds to v2 and keeps the sign-in and every choice.
 
-Follow-up on #874: Codex's bundled `codex-resources/bwrap` is still not retained. On Linux the
-evaluator relies on a usable system bubblewrap (see the `configWarning` note above).
+Follow-up on #874: Codex's bundled `codex-resources/bwrap` is still not retained. On Linux a
+reviewed release runs without a system bubblewrap and discloses it as
+`codex_sandbox_unavailable_reason: bubblewrap_missing` (see the `configWarning` note above).
 
 #### Historical 0.150.1 evidence
 

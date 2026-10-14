@@ -617,6 +617,28 @@ complete, schema-valid fallback request bodies for the six operations and all ei
 `publish_work` admits (`ORDINARY_MCP_PUBLISH_EVENT_FAMILIES`: the nine ordinary families, seven
 delegation and work lifecycle families and two coordination families). It does not weaken catalog
 admission or add an MCP resource template.
+
+MCP `tools/list` uses `ToolDescriptor.advertised_input_schema`, a compact authoring projection
+with a CI-enforced 4,800-byte target per tool (compact ASCII JSON), on both routes and every host
+profile. Field descriptions remain intact when the projected tool fits. Larger tools restore
+descriptions greedily, prioritizing `await_observations`, response disposition and finding-frontier
+rules, final-review/mode selection and write-frontier guidance. If even the description-free form
+exceeds the target, runtime serving emits the closed diagnostic
+`mcp_advertised_input_schema_over_budget` and returns that minimal form without refusing bridge
+startup; CI still rejects the size regression. Payload hints must admit the types and enums of
+every ordinary family/version in the full authoring graph.
+Codex 0.162.1 rewrites inputs above its 5,000-byte threshold; staying below it preserves the
+intended inline shapes and enums. The projection keeps request fields, required lists, event
+envelopes, ordinary family names and common plan/action/result payload field types and enums,
+while moving examples and event-payload discrimination to
+`read_guidance` at `yoetz://guidance/request-templates.md`. Canonical decimal strings retain their
+syntax and documented int64 bound without repeating the full range regex. It is deliberately
+permissive for payload variants and some conditional rules, never an admission schema.
+`ToolDescriptor.input_schema` retains the full authoring graph and examples for repair hints;
+`catalog_input_schema` and the request models retain strict server validation. Output schemas,
+including Cursor's tuple compatibility projection, are unchanged. CLI, hooks, TUI and receipt
+validation do not use the compact advertisement.
+
 Internal-only value error: `ProtocolValueError(reason_code: str)` — bounded reason codes, never
 free text from input. CLI exit classes (0/2/10/11/20/30/40/70/130) map from codes in
 `cli/exits.py` only.
@@ -5373,7 +5395,16 @@ of the one pending attempt that consumed it, 256 newest. A hook pre-event of a Y
 the same commitment on its pending attempt (`_OpenPre.request_commitment`); the Claude Code and
 Cursor adapters compute it from the host payload and pass it to the shared ingress as
 `_request_commitment`. `consume_rejected_yoetz_call` claims an entry installation-wide under the
-record's lock and is idempotent for its claimant.
+record's lock and is idempotent for its claimant. On the Cursor host profile only, the bridge also
+records each successful Yoetz read it served (`record_served_yoetz_read`,
+`observation/yoetz-served-reads.json`, schema `yoetz.served-reads/1`, its own lock): the same
+commitment and a millisecond time, 256 newest, written before the result returns. The Cursor
+adapter passes `_proven_yoetz_read` to the shared ingress only for a `postToolUse` of
+`MCP:<tool>` whose own `tool_input` claims an entry (`claim_served_yoetz_read`: the matching entry
+is removed under the record's lock, so one served read proves at most one post-event, and an
+entry older than `SERVED_READ_MAX_AGE_MS`, 120 s, proves nothing); the self-observation policy
+then reads it as `yoetz:<tool>`. The MCP request carries neither Cursor's conversation nor its
+tool-call id, so neither can join the commitment; single use and the expiry bound it instead. Nothing else treats `MCP:<tool>` as Yoetz-owned (tb4 n5).
 
 `LocalObservationStore.pending_selection_losses(workspace)` returns at most 64 retained,
 fully validated and routed lanes; `selection_loss_workspaces(task_id)` filters the returned
@@ -6396,8 +6427,8 @@ status` body carries `state` and `route_profile`.
 **Host admission port (`adapters/integrations/host_admission.py`, issue #467).** `HostAdmissionState`
 is `absent|present|partial|foreign|unknown`; `HostAdmissionAction` is `grant|revoke|noop`;
 `HostAdmissionReason` is `confirmation_required|preview_stale|foreign_entry_present|
-entry_unreadable|route_not_policy|route_unobserved|grant_not_permitting|grant_unverifiable|
-owner_required|target_unsafe|write_failed|host_invalid`. `observe_host_admission` reads only the
+entry_unreadable|route_not_policy|route_unobserved|codex_binary_inconsistent|grant_not_permitting|
+grant_unverifiable|owner_required|target_unsafe|write_failed|host_invalid`. `observe_host_admission` reads only the
 host's project-scoped surfaces and classifies by exact entry: Claude `mcp__yoetz__check` for an
 external registration or `mcp__plugin_yoetz_yoetz__check` for the plugin-owned route in
 `permissions.allow` (detail `allow`) or `ask` (detail `ask`);
@@ -6451,7 +6482,11 @@ input to `semantic_ready`, and a single-endpoint install omits the fallback fiel
 A Codex-subscription endpoint (primary or fallback) adds `review_budgets`. It is shaped
 `{"routine"|"final": {"reasoning_effort", "output_limit", "effort_source"}}`, where
 `effort_source` is `configured` or `legacy_single_effort`. `yoetz provider codex-subscription
-status` (`yoetz.codex-subscription-status/1`) carries the same object.
+status` (`yoetz.codex-subscription-status/1`) carries the same object, plus
+`codex_sandbox_unavailable` (`true` when Codex reported, through one of the two admitted
+`configWarning`s, that its Linux sandbox cannot create user namespaces or that no system
+bubblewrap is installed; ADR-006, 2026-10-14) and `codex_sandbox_unavailable_reason`
+(`user_namespaces_unavailable|bubblewrap_missing|null`).
 `repository_grant_state` and `repository_migration_state` expose the separate repository-authority
 inputs without inventing another readiness verdict. `agent_route_semantic_ready` is
 `semantic_ready` **and** one exclusive observed owner (`external|plugin`) with
@@ -6463,10 +6498,16 @@ legacy external-registration fields `registration_state`, `registered_profile`, 
 `external_registration|plugin_managed|dual|foreign|null`; `ownership_state` uses
 `McpOwnershipState`. `observed: false` means exclusive ownership was not read unambiguously, not
 that none is registered. `registered_profile: null` with `observed: true` means the observed state
-has no single Yoetz route (`absent|dual|foreign`). A host with multiple discovered Codex
-executables is left unobserved until the caller selects one with `--codex-path`; `provider status`
-reports the closed `codex_binary_selection` blocker and a quoted continuation retaining the
-invoking launcher, isolation root and inspected Codex home. An explicitly unresolved
+has no single Yoetz route (`absent|dual|foreign`). For multiple discovered Codex executables, `binary_selection: consistent` reports agreeing
+registration readings against one selected home. Read order prefers the configured Codex runtime
+when discoverable, otherwise the newest reported version; `selected_codex_version` names its
+version without a path. This does not attest the executable a host session launched. Disagreement
+or a failed reading reports `binary_selection: inconsistent`, blocks agent readiness and admission
+grants (refused as `host_admission_codex_binary_inconsistent`), and offers an explicit selector. If no executable can read the registration, selection is
+`multiple`. `provider status` reports the closed `codex_binary_selection` blocker and a quoted
+continuation retaining the invoking launcher, isolation root and inspected Codex home. Codex
+admission commands accept `--codex-path` and `--codex-home` too; their path-free next commands
+retain selector placeholders, and the caller must repeat the exact selected values. An explicitly unresolved
 `--codex-path` uses the `not_found` state of that blocker. No arbitrary executable is chosen for a
 readiness claim.
 A strict registered route adds a `mcp_route_profile` blocker
@@ -8604,7 +8645,7 @@ current `change-section-NNN` section of each path it changed, cut from the froze
 (`kernel.test_edit_visibility.check_change_sections`). Span keys use the source's own length, and a
 head-and-tail clip contributes two intervals. A follow-up case marks the excerpts that supply the
 request (`SemanticCase.follow_up_supplied_item_ids`, in its digest); the packet row carries
-`follow_up_supplied: true` and the provider-bound `missing_inputs` say `supplied` only through such
+`follow_up_supplied: true` (governed by `privacy/review-packet-row-2.0.0.schema.json`; absence is compatible) and the provider-bound `missing_inputs` say `supplied` only through such
 a row admission kept. The dispatch gate counts only rows the bounded envelope's catalog keeps
 (`bounded_catalog_item_ids`). The planner's `section_parts` (`current_section_parts`, carried as the
 evaluation's in-process `case_current_section_parts`) asks for a current section only while that
@@ -9473,7 +9514,7 @@ Before and after each call the root pathname and its `.git` must still `lstat` t
 inode recorded from the validated descriptor (`unsafe_root` otherwise).
 `_refuse_unsafe_object_store` requires `.git/objects`, `objects/info` and `objects/pack` to be real
 directories of the service user and each fan-out directory a real directory, and every
-pack-directory entry a regular file of the service user, not group- or world-writable (any link
+pack-directory entry a regular file of the service user that no other account can write (ADR-007, 2026-10-14: group write through the owner's private group is owner-only; any link
 count; a link or a foreign-owned or writable entry is `unsafe_root`, more than 4096 entries
 `unsupported_repository`); `objects/info/alternates` and `objects/info/http-alternates` are
 `unsafe_root`, as the ADR-011 open fence already makes static alternates, and `.git/commondir` is
@@ -9882,7 +9923,10 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   character, no leading `/`, no empty, `.` or `..` segment; the only path text the check records)
   with `undeclared_reference_count` when more were found than are named, and since tb4n5
   `undeclared_reference_ambiguous`, how many created files it names only ambiguously, never
-  which); absent when the check read no declared output file. Status
+  which; `undeclared_references_created_in_task` (`const true`) is read-compatibility only for
+  payloads intermediate tb4n5 builds wrote before that provenance was withdrawn: it decodes and
+  re-encodes byte-identically, no build produces it, and nothing consults it); absent when the
+  check read no declared output file. Status
   `closure_readiness.undeclared_references` (optional on the unreleased status-result 1.4.0, at
   most 16 rows `{obligation_id, item_index, paths, total}`,
   `closure_readiness.current_undeclared_references` over the applicable check) carries them; each
@@ -10053,3 +10097,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `_RESULT_OUTCOME_HINT` (closed outcome set, no `blocked`, the blocker line) to the MCP error text.
 - **Scope.** The requested-output read runs only in `check`; status candidate findings and semantic
   assessment matching call `work_integrity_findings(case)` without `absent_outputs`.
+
+A follow-up provider manifest changes a composed `supplied` request with no carried supplying
+refs to `unavailable` when all of its composed supply refs are privacy-withheld. Packet-room
+admission cuts remain `pending`. The dispatched `follow_up_round` is retained in either case,
+and no withheld content is credited as supplied. This shared manifest reaches CLI, MCP, TUI
+and all receipt renderings without a host-specific projection.

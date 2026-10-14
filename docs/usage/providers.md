@@ -120,9 +120,12 @@ explicitly pair with it (see
 provider menu, and `/provider` can log out the
 dedicated home first when you choose to switch ChatGPT accounts.
 
-On Linux, Codex's read-only sandbox needs bubblewrap (`bwrap`) and unprivileged user
-namespaces. A container or VM without them fails closed before any case is disclosed. Use an
-environment that provides both and keep the sandbox checks enabled. See the
+On Linux, Codex's read-only sandbox uses bubblewrap (`bwrap`) and unprivileged user
+namespaces. The evaluator runs no commands and writes no files, so with a reviewed Codex release
+(today 0.162.1) a container or VM without them still works. `yoetz provider codex-subscription
+status` then reports `codex_sandbox_unavailable: true` with the reason (`bubblewrap_missing` or
+`user_namespaces_unavailable`). Any other Codex warning, or the same warning from an unreviewed
+release, fails closed before any case is disclosed. See the
 [evaluator runbook](../runbooks/codex-subscription-evaluator.md#linux-authenticated-smoke-evidence-2026-09-13)
 for the current acceptance evidence and remaining release checks.
 
