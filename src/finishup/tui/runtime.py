@@ -1457,6 +1457,13 @@ class FinishUpRuntime:
             default_codex_subscription_reasoning_effort(),
         )
 
+    def codex_subscription_model_is_suggested(self) -> bool:
+        """True when no binding exists, so the offered model is setup's own suggestion."""
+
+        from finishup.cli.codex_subscription import codex_subscription_model_is_suggested
+
+        return codex_subscription_model_is_suggested()
+
     def codex_subscription_routine_default(self) -> str | None:
         """Routine effort setup applies by default; ``None`` keeps a legacy single effort."""
 

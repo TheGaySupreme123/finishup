@@ -1894,6 +1894,10 @@ class FinishUpTui(App[int]):
         executable_default, home_default, model_default, effort_default = (
             self.runtime.codex_subscription_defaults()
         )
+        # Only a new binding's suggested model can fall back; an existing binding keeps its model.
+        suggested = (
+            self.runtime.codex_subscription_model_is_suggested() and model_default == "gpt-6.1-sol"
+        )
         if not executable_default:
             self.say(
                 Level.OPTIONAL,
@@ -1926,7 +1930,7 @@ class FinishUpTui(App[int]):
                 label=(
                     "Model identifier (gpt-6.1-sol is suggested; setup uses gpt-6-luna and says "
                     "so if this Codex does not list it)"
-                    if model_default == "gpt-6.1-sol"
+                    if suggested
                     else "Model identifier"
                 ),
                 initial=model_default,
@@ -1990,7 +1994,7 @@ class FinishUpTui(App[int]):
             f"Model: {model}"
             + (
                 " (suggested; gpt-6-luna if this Codex does not list it)"
-                if model == model_default == "gpt-6.1-sol"
+                if suggested and model == model_default
                 else ""
             ),
             f"Reasoning: final {effort} / routine {routine_effort}",
@@ -2032,7 +2036,7 @@ class FinishUpTui(App[int]):
                     effort,
                     switch_account=switch_account,
                     routine_reasoning_effort=routine_effort,
-                    model_is_suggestion=model == model_default,
+                    model_is_suggestion=suggested and model == model_default,
                 )
             )
         except SuspendNotSupported:

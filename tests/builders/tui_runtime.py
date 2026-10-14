@@ -359,6 +359,10 @@ class FakeRuntime:
         return "/opt/codex/codex", "/var/lib/finishup/codex-home", "gpt-5.6-luna", "high"
 
     subscription_routine_default: str | None = "medium"
+    subscription_model_is_suggested: bool = True
+
+    def codex_subscription_model_is_suggested(self) -> bool:
+        return self.subscription_model_is_suggested
 
     def codex_subscription_routine_default(self) -> str | None:
         return self.subscription_routine_default
