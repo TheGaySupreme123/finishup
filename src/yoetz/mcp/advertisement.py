@@ -7,12 +7,72 @@ from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Final, cast
 
+from yoetz.observability.logging import record_bounded_event_without_raising
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.schemas import schema_document_for
 
 ADVERTISED_INPUT_SCHEMA_MAX_BYTES: Final = 4_800
 _TEMPLATES: Final = "yoetz://guidance/request-templates.md"
-_METADATA: Final = frozenset({"title", "description", "examples"})
+_METADATA: Final = frozenset({"title", "examples"})
+# These rules are easy to miss in general workflow guidance. Preserve them before repetitive
+# identity/format hints; ties retain the source traversal order for reproducible advertisements.
+_DESCRIPTION_PRIORITY: Final = (
+    "await_observations",
+    "disposition",
+    "finding_frontier",
+    "final_review",
+    "mode",
+    "expected_frontier",
+)
+
+
+def _encoded_size(schema: Mapping[str, JsonValue]) -> int:
+    return len(json.dumps(dict(schema), ensure_ascii=True, separators=(",", ":")).encode("ascii"))
+
+
+def _fit_descriptions(schema: dict[str, JsonValue]) -> Mapping[str, JsonValue]:
+    if _encoded_size(schema) <= ADVERTISED_INPUT_SCHEMA_MAX_BYTES:
+        return MappingProxyType(schema)
+
+    descriptions: list[tuple[int, dict[str, JsonValue], str]] = []
+
+    def strip(value: JsonValue, field: str = "") -> None:
+        if isinstance(value, dict):
+            node = value
+            text = node.pop("description", None)
+            if isinstance(text, str):
+                priority = (
+                    _DESCRIPTION_PRIORITY.index(field)
+                    if field in _DESCRIPTION_PRIORITY
+                    else len(_DESCRIPTION_PRIORITY)
+                )
+                descriptions.append((priority, node, text))
+            for key, child in node.items():
+                if key == "properties" and isinstance(child, dict):
+                    # Property names such as payload.description are not schema annotations.
+                    for name, body in child.items():
+                        strip(body, name)
+                else:
+                    strip(child, field)
+        elif isinstance(value, list):
+            for child in cast(list[JsonValue], value):
+                strip(child, field)
+
+    strip(schema)
+    if _encoded_size(schema) > ADVERTISED_INPUT_SCHEMA_MAX_BYTES:
+        # A future structural expansion must fail the CI budget check, not bridge startup.
+        # Emit only a closed diagnostic token; no tool names, schema bytes or caller content.
+        record_bounded_event_without_raising(
+            component="mcp.advertisement",
+            operation="compact_input_schema",
+            reason="mcp_advertised_input_schema_over_budget",
+        )
+        return MappingProxyType(schema)
+    for _, node, text in sorted(descriptions, key=lambda item: item[0]):
+        node["description"] = text
+        if _encoded_size(schema) > ADVERTISED_INPUT_SCHEMA_MAX_BYTES:
+            del node["description"]
+    return MappingProxyType(schema)
 
 
 def _common_payload_hints() -> dict[str, JsonValue]:
@@ -82,7 +142,9 @@ def compact_input_schema(name: str, schema: Mapping[str, JsonValue]) -> Mapping[
                 # Exact int64 range regexes cost ~500 bytes each. The full catalog still owns
                 # range admission; the advertised shape keeps canonical decimal syntax.
                 result["pattern"] = "^(0|[1-9][0-9]*)$"
-                result["description"] = "Canonical integer string, at most 9223372036854775807."
+                result.setdefault(
+                    "description", "Canonical integer string, at most 9223372036854775807."
+                )
             return result
         if isinstance(value, tuple | list):
             return [
@@ -118,7 +180,4 @@ def compact_input_schema(name: str, schema: Mapping[str, JsonValue]) -> Mapping[
             "properties": _common_payload_hints(),
             "description": "Read request-templates.md for the exact schema.name/version payload before publishing.",
         }
-    encoded = json.dumps(result, ensure_ascii=True, separators=(",", ":")).encode("ascii")
-    if len(encoded) > ADVERTISED_INPUT_SCHEMA_MAX_BYTES:
-        raise RuntimeError("mcp_advertised_input_schema_over_budget")
-    return MappingProxyType(result)
+    return _fit_descriptions(result)

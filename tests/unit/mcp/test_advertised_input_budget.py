@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any, cast
 
@@ -12,11 +13,135 @@ import pytest
 from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
-from yoetz.mcp.advertisement import ADVERTISED_INPUT_SCHEMA_MAX_BYTES
+from yoetz.mcp import advertisement, descriptors
+from yoetz.mcp.advertisement import ADVERTISED_INPUT_SCHEMA_MAX_BYTES, compact_input_schema
 from yoetz.mcp.descriptors import TOOL_DESCRIPTORS, McpRouteProfile, descriptor_for
 from yoetz.mcp.resources import read_resource
 from yoetz.mcp.server import build_bridge_runtime, call_tool, list_tools
+from yoetz.ports.control import McpHostProfile
 from yoetz.protocol.models import PublishWorkRequest
+from yoetz.protocol.schemas import load_schema_catalog
+
+
+@pytest.mark.parametrize(
+    "operation", ("start", "check", "receipt", "closure_prepare", "read_guidance")
+)
+def test_descriptions_survive_when_the_projected_tool_fits(operation: str) -> None:
+    descriptor = descriptor_for(operation)
+    full = cast(dict[str, Any], descriptor.input_schema["properties"])
+    advertised = cast(dict[str, Any], descriptor.advertised_input_schema["properties"])
+    for field, body in full.items():
+        if "description" in body:
+            assert advertised[field]["description"] == body["description"]
+
+
+def test_oversized_tool_keeps_priority_descriptions_greedily() -> None:
+    full = cast(dict[str, Any], deepcopy(dict(descriptor_for("check").input_schema)))
+    # This fits by itself but competes with the operational rules; traversal alone would
+    # consume their budget on actor context first.
+    full["properties"]["actor"]["description"] = "Low priority context. " * 70
+    projected = compact_input_schema("check", full)
+    fields = cast(dict[str, Any], projected["properties"])
+    for field in ("await_observations", "final_review", "mode", "expected_frontier"):
+        assert fields[field]["description"] == full["properties"][field]["description"]
+    assert "description" not in fields["actor"]
+    assert len(json.dumps(dict(projected), separators=(",", ":")).encode()) <= 4_800
+
+
+def test_respond_keeps_disposition_and_finding_frontier_rules() -> None:
+    descriptor = descriptor_for("respond")
+    full = cast(dict[str, Any], descriptor.input_schema["properties"])
+    fields = cast(dict[str, Any], descriptor.advertised_input_schema["properties"])
+    for field in ("disposition", "finding_frontier"):
+        assert fields[field]["description"] == full[field]["description"]
+
+
+@pytest.mark.parametrize("host", ("codex", "claude", "cursor"))
+def test_over_budget_bridge_starts_with_minimal_schema_and_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+    host: McpHostProfile,
+) -> None:
+    diagnostics: list[dict[str, Any]] = []
+
+    def record_diagnostic(**kwargs: Any) -> None:
+        diagnostics.append(kwargs)
+
+    monkeypatch.setattr(advertisement, "ADVERTISED_INPUT_SCHEMA_MAX_BYTES", 1)
+    monkeypatch.setattr(
+        advertisement,
+        "record_bounded_event_without_raising",
+        record_diagnostic,
+    )
+    clear_cache = getattr(descriptors, "_advertised_input_schema").cache_clear
+    clear_cache()
+    try:
+        tools = asyncio.run(list_tools(build_bridge_runtime(host_profile=host)))
+        assert len(tools) == len(TOOL_DESCRIPTORS["policy"])
+        assert len(diagnostics) == len(tools)
+        assert all(
+            item["reason"] == "mcp_advertised_input_schema_over_budget" for item in diagnostics
+        )
+        for tool in tools:
+            assert "description" not in tool.inputSchema
+            Draft202012Validator.check_schema(tool.inputSchema)
+            # The existing CI budget assertion must still reject this runtime fallback.
+            assert (
+                len(json.dumps(tool.inputSchema).encode())
+                > advertisement.ADVERTISED_INPUT_SCHEMA_MAX_BYTES
+            )
+    finally:
+        clear_cache()
+
+
+def _assert_hint_accepts_catalog_shape(
+    hint: dict[str, Any], source: Mapping[str, Any], definitions: Mapping[str, Any]
+) -> None:
+    assert set(hint) <= {"type", "enum", "items"}
+    while "$ref" in source:
+        source = definitions[source["$ref"].removeprefix("#/$defs/")]
+    if "type" in hint:
+        assert source.get("type") == hint["type"]
+    if "enum" in hint:
+        assert "enum" in source
+        assert set(source["enum"]) <= set(hint["enum"])
+    if "items" in hint:
+        _assert_hint_accepts_catalog_shape(hint["items"], source["items"], definitions)
+
+
+def test_payload_hints_accept_every_ordinary_family_and_version() -> None:
+    descriptor = descriptor_for("publish_work")
+    items = cast(dict[str, Any], descriptor.input_schema["properties"])["event_drafts"]["items"]
+    allowed = {
+        (
+            branch["properties"]["schema"]["properties"]["name"]["const"].replace("_", "-"),
+            branch["properties"]["schema"]["properties"]["version"]["const"],
+        )
+        for branch in items["oneOf"]
+    }
+    hints = cast(dict[str, Any], descriptor.advertised_input_schema["properties"])["event_drafts"][
+        "items"
+    ]["properties"]["payload"]["properties"]
+    checked: set[tuple[str, str]] = set()
+    for document in load_schema_catalog().documents:
+        key = (document.schema_name, document.schema_version)
+        if key not in allowed:
+            continue
+        checked.add(key)
+        for field, source in cast(dict[str, Any], document.json_schema["properties"]).items():
+            if field not in hints:
+                continue
+            _assert_hint_accepts_catalog_shape(
+                hints[field], source, cast(Mapping[str, Any], document.json_schema.get("$defs", {}))
+            )
+    assert checked == allowed
+
+
+@pytest.mark.parametrize("profile", ("policy", "strict"))
+def test_worked_examples_validate_full_repair_graph(profile: McpRouteProfile) -> None:
+    for descriptor in TOOL_DESCRIPTORS[profile]:
+        validator = cast(Any, Draft202012Validator(cast(Any, descriptor.input_schema)))
+        for example in cast(list[dict[str, Any]], descriptor.input_schema.get("examples", [])):
+            validator.validate(example)
 
 
 @pytest.mark.parametrize("profile", ("policy", "strict"))
@@ -73,6 +198,7 @@ def test_guidance_request_templates_fit_advertised_and_full_catalog_schemas() ->
         cast(Any, Draft202012Validator(cast(Any, descriptor.catalog_input_schema))).validate(
             request
         )
+        cast(Any, Draft202012Validator(cast(Any, descriptor.input_schema))).validate(request)
         operations.add(operation)
     assert operations == {item.name for item in TOOL_DESCRIPTORS["policy"]}
 

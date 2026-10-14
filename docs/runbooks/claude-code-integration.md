@@ -1,11 +1,14 @@
 # Claude Code native integration
 
-MCP input advertisements use the same compact schema as Codex and Cursor, capped at 4,800 bytes
+MCP input advertisements use the same compact schema as Codex and Cursor, targeting 4,800 bytes
 per tool. Required fields, enums and event envelopes remain inline; payload variants, conditional
 field rules and full examples are available through `read_guidance` at
 `yoetz://guidance/request-templates.md`. Read the matching template before authoring a payload.
 Deferred tool discovery uses this same advertisement. Full server validation, repair hints and
 output schemas remain unchanged; the smaller advertisement does not expand accepted requests.
+Descriptions remain when they fit, with priority field rules restored first for larger tools.
+If the description-free form exceeds the CI budget, the bridge emits
+`mcp_advertised_input_schema_over_budget` and still serves that minimal form; CI rejects the drift.
 
 Codex's external MCP removal reconciliation (issue #860) does not apply to Claude Code:
 Claude's plugin-managed MCP follows the plugin lifecycle below. No Claude mutation or outcome

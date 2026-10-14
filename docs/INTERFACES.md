@@ -619,7 +619,14 @@ delegation and work lifecycle families and two coordination families). It does n
 admission or add an MCP resource template.
 
 MCP `tools/list` uses `ToolDescriptor.advertised_input_schema`, a compact authoring projection
-bounded to 4,800 bytes per tool (compact ASCII JSON), on both routes and every host profile.
+with a CI-enforced 4,800-byte target per tool (compact ASCII JSON), on both routes and every host
+profile. Field descriptions remain intact when the projected tool fits. Larger tools restore
+descriptions greedily, prioritizing `await_observations`, response disposition and finding-frontier
+rules, final-review/mode selection and write-frontier guidance. If even the description-free form
+exceeds the target, runtime serving emits the closed diagnostic
+`mcp_advertised_input_schema_over_budget` and returns that minimal form without refusing bridge
+startup; CI still rejects the size regression. Payload hints must admit the types and enums of
+every ordinary family/version in the full authoring graph.
 Codex 0.162.1 rewrites inputs above its 5,000-byte threshold; staying below it preserves the
 intended inline shapes and enums. The projection keeps request fields, required lists, event
 envelopes, ordinary family names and common plan/action/result payload field types and enums,
