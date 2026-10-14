@@ -8,6 +8,7 @@ against one allowlist and keeps refusing secret-shaped and unknown names under e
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -183,20 +184,6 @@ def test_every_mcp_deadline_variable_is_known_to_the_strict_loader(tmp_path: Pat
             {"FINISHUP_MCP_DEADLINE_MS_STATUS": "45000", "YOETZ_MCP_DEADLINE_MS_STATUS": "45000"},
             45_000,
         ),
-        # Disagreeing spellings are skipped like an unparsable value; the default applies.
-        (
-            {"FINISHUP_MCP_DEADLINE_MS_STATUS": "45000", "YOETZ_MCP_DEADLINE_MS_STATUS": "2000"},
-            None,
-        ),
-        # A skipped per-tool conflict still falls through to the all-tools override.
-        (
-            {
-                "FINISHUP_MCP_DEADLINE_MS_STATUS": "45000",
-                "YOETZ_MCP_DEADLINE_MS_STATUS": "2000",
-                "YOETZ_MCP_DEADLINE_MS": "30000",
-            },
-            30_000,
-        ),
     ],
 )
 def test_mcp_deadlines_read_the_legacy_spelling(
@@ -205,3 +192,104 @@ def test_mcp_deadlines_read_the_legacy_spelling(
     default = mcp_server._DEFAULT_RPC_DEADLINES_MS["status"]  # pyright: ignore[reportPrivateUsage]
     deadline = mcp_server._rpc_deadline_ms("status", environ)  # pyright: ignore[reportPrivateUsage]
     assert deadline == (default if expected is None else expected)
+
+
+@pytest.mark.parametrize("global_override", [None, "30000"])
+def test_conflicting_deadline_spellings_never_fall_back(global_override: str | None) -> None:
+    environ = {
+        "FINISHUP_MCP_DEADLINE_MS_STATUS": "45000",
+        "YOETZ_MCP_DEADLINE_MS_STATUS": "2000",
+    }
+    if global_override is not None:
+        environ["YOETZ_MCP_DEADLINE_MS"] = global_override
+    with pytest.raises(ConfigError) as caught:
+        mcp_server._rpc_deadline_ms("status", environ)  # pyright: ignore[reportPrivateUsage]
+    assert caught.value.reason_code == "config_env_conflict"
+    assert caught.value.safe_name == "FINISHUP_MCP_DEADLINE_MS_STATUS"
+
+
+def test_a_per_tool_override_does_not_hide_a_global_deadline_conflict() -> None:
+    with pytest.raises(ConfigError):
+        mcp_server._rpc_deadline_ms(  # pyright: ignore[reportPrivateUsage]
+            "status",
+            {
+                "FINISHUP_MCP_DEADLINE_MS_STATUS": "45000",
+                "FINISHUP_MCP_DEADLINE_MS": "30000",
+                "YOETZ_MCP_DEADLINE_MS": "2000",
+            },
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("operation", "mode", "suffix"),
+    [
+        ("start", None, "MCP_DEADLINE_MS_START"),
+        ("start", None, "MCP_DEADLINE_MS"),
+        ("status", None, "MCP_DEADLINE_MS_STATUS"),
+        ("check", "inspect", "MCP_DEADLINE_MS_STATUS"),
+        ("check", "deterministic_only", "MCP_DEADLINE_MS_CHECK"),
+        ("closure_prepare", None, "MCP_DEADLINE_MS_STATUS"),
+        ("publish_work", None, "MCP_DEADLINE_MS_PUBLISH_WORK"),
+    ],
+)
+async def test_mcp_refuses_deadline_conflicts_before_reaching_a_service(
+    monkeypatch: pytest.MonkeyPatch, operation: str, mode: str | None, suffix: str
+) -> None:
+    monkeypatch.setenv("FINISHUP_" + suffix, "45000")
+    monkeypatch.setenv("YOETZ_" + suffix, "2000")
+    reached: list[str] = []
+
+    async def invoke(*_args: object, **_kwargs: object) -> object:
+        reached.append("service")
+        raise AssertionError("must not connect, spawn, or invoke under ambiguous configuration")
+
+    monkeypatch.setattr(mcp_server, "_invoke_with_reconnect", invoke)
+    monkeypatch.setattr(mcp_server, "_publish_recovery_from_envelope", invoke)
+    arguments: dict[str, object] = {
+        "protocol_version": "0.1",
+        "schema_version": "1.0.0",
+        "request_id": "req_00000000-0000-4000-8000-000000000048",
+        "actor": {"actor_id": "harness:mcp", "actor_type": "harness"},
+        "client": {
+            "kind": "cooperative_agent",
+            "version": "0.1.0",
+            "integration": "cooperative_mcp",
+        },
+        "mode": "create",
+        "task_title": "Environment conflict probe",
+        "requested_view": "compact",
+    }
+    if operation != "start":
+        for name in ("mode", "task_title", "requested_view"):
+            arguments.pop(name)
+        arguments.update(
+            session_id="ses_00000000-0000-4000-8000-000000000048",
+            writer_id="wri_00000000-0000-4000-8000-000000000048",
+        )
+    if operation == "status":
+        arguments.update(view="compact", limit="10")
+    elif operation == "check":
+        arguments.update(mode=mode, expected_frontier={"sequence": "0", "head_digest": "genesis"})
+    elif operation == "closure_prepare":
+        arguments = {
+            name: arguments[name] for name in ("session_id", "writer_id")
+        } | {"selection": {"phase": "inventory"}}
+    elif operation == "publish_work":
+        # This otherwise reaches the recovery oracle even though its events fail validation.
+        arguments.update(events="invalid", dry_run=False)
+    runtime = mcp_server.build_bridge_runtime(host_profile="codex")
+    try:
+        result = await mcp_server.call_tool(operation, arguments, runtime)
+    finally:
+        await mcp_server.close_bridge_runtime(runtime)
+    assert reached == []
+    assert result.isError is True
+    body = cast(dict[str, object], result.structuredContent)
+    error = cast(dict[str, object], body["error"])
+    assert error["code"] == "INVALID_REQUEST"
+    assert error["retryable"] is False
+    assert cast(dict[str, object], error["safe_details"])["continuation"] == (
+        "config_correction_required"
+    )
+    assert "45000" not in str(result) and "2000" not in str(result)

@@ -13,6 +13,8 @@ import os
 from pathlib import Path
 
 import pytest
+from platformdirs.macos import MacOS
+from platformdirs.unix import Unix
 
 from finishup.config import paths as paths_module
 from finishup.config.paths import (
@@ -221,3 +223,90 @@ def test_isolation_root_spellings_that_disagree_fail_closed(
         with pytest.raises(PathSafetyError) as caught:
             operation()
         assert caught.value.reason_code == "isolation_root_env_conflict"
+
+
+@pytest.mark.parametrize("platform", ["darwin", "linux", "wsl2"])
+@pytest.mark.parametrize(("root", "name"), _ANCHORS)
+def test_native_platform_directories_adopt_legacy_anchors_and_refuse_split_installations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str, root: str, name: str
+) -> None:
+    # Exercise actual platformdirs implementations without inspecting a real user's folders.
+    for variable in (
+        "XDG_DATA_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        ISOLATED_ROOT_ENV,
+        LEGACY_ISOLATED_ROOT_ENV,
+    ):
+        monkeypatch.delenv(variable, raising=False)
+    real_expanduser = os.path.expanduser
+
+    def private_home(path: str) -> str:
+        if path == "~" or path.startswith("~/"):
+            return str(tmp_path) + path[1:]
+        return real_expanduser(path)
+
+    monkeypatch.setattr(os.path, "expanduser", private_home)
+    directory_type = MacOS if platform == "darwin" else Unix
+
+    def native_dirs(app: str) -> MacOS | Unix:
+        return directory_type(appname=app, appauthor=False, roaming=False)
+
+    monkeypatch.setattr(paths_module, "_platform_dirs", native_dirs)
+    legacy = directory_type(appname="yoetz", appauthor=False, roaming=False)
+    roots = {
+        "data": Path(legacy.user_data_dir),
+        "config": Path(legacy.user_config_dir),
+        "state": Path(legacy.user_state_dir),
+    }
+    anchor = roots[root] / name
+    anchor.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if name == "vault":
+        anchor.mkdir(mode=0o700)
+    else:
+        anchor.write_bytes(b"")
+    probe = _probe(tmp_path)
+    assert installation_naming(_probe=probe) == "legacy_yoetz"
+    assert bundle_root(_probe=probe) == Path(legacy.user_data_dir)
+    assert config_file_path(_probe=probe) == Path(legacy.user_config_dir) / "config.toml"
+    assert state_dir(_probe=probe) == Path(legacy.user_state_dir)
+    assert cache_dir(_probe=probe) == Path(legacy.user_cache_dir)
+    assert log_dir(_probe=probe) == Path(legacy.user_log_dir)
+    assert runtime_dir(_probe=probe) == legacy.user_runtime_path
+
+    current = directory_type(appname="finishup", appauthor=False, roaming=False)
+    config = Path(current.user_config_dir) / "config.toml"
+    config.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    config.write_bytes(b"")
+    ambiguous = _probe(tmp_path)
+    for accessor in (bundle_root, config_file_path, cache_dir, state_dir, log_dir, runtime_dir):
+        with pytest.raises(PathSafetyError, match="installation_root_ambiguous"):
+            accessor(_probe=ambiguous)
+
+
+@pytest.mark.parametrize("kind", ["unreadable", "dangling_symlink"])
+def test_an_anchor_that_cannot_be_read_is_never_treated_as_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    base = _xdg(tmp_path, monkeypatch)
+    anchor = base / "data" / "yoetz" / "catalog.sqlite3"
+    anchor.parent.mkdir(mode=0o700)
+    if kind == "dangling_symlink":
+        anchor.symlink_to(tmp_path / "missing-catalog")
+    else:
+        real_lstat = Path.lstat
+
+        def unreadable(path: Path) -> os.stat_result:
+            if path == anchor:
+                raise PermissionError("synthetic inaccessible installation anchor")
+            return real_lstat(path)
+
+        monkeypatch.setattr(Path, "lstat", unreadable)
+    probe = _probe(tmp_path)
+    assert installation_naming(_probe=probe) == "legacy_yoetz"
+    assert bundle_root(_probe=probe) == base / "data" / "yoetz"
+    _anchor(base, "finishup", "config", "config.toml")
+    with pytest.raises(PathSafetyError, match="installation_root_ambiguous"):
+        installation_naming(_probe=_probe(tmp_path))

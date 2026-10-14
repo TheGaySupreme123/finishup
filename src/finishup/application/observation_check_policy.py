@@ -159,8 +159,12 @@ def _open_policy_file(root_fd: int, location: Path) -> int | None:
     except FileNotFoundError:
         return None
     try:
+        # A special file still counts as present, but must not block before the type check
+        # (for example a legacy FIFO beside the current policy during folder migration).
         return os.open(
-            name, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | nofollow, dir_fd=directory_fd
+            name,
+            os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0) | nofollow,
+            dir_fd=directory_fd,
         )
     except FileNotFoundError:
         return None

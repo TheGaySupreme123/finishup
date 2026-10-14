@@ -38,7 +38,7 @@ from finishup.adapters.workspace_binding import (
 )
 from finishup.config.env import EnvNameConflictError, read_env
 from finishup.config.load import load_config
-from finishup.config.models import LoggingConfig
+from finishup.config.models import ConfigError, LoggingConfig
 from finishup.config.paths import PathSafetyError, isolated_root_variable
 from finishup.domain.check_totals import render_check_totals
 from finishup.domain.closure import PREPARATION_REMEDIATIONS, prepare_closure
@@ -199,7 +199,7 @@ _DEFAULT_RPC_DEADLINES_MS: Final = MappingProxyType(
 # ``check``, whose semantic-review budget is only changed by its own variable. Values are integer
 # milliseconds, clamped to a sane range; anything unparsable keeps the default. The legacy
 # ``YOETZ_MCP_DEADLINE_MS[_<TOOL>]`` spellings are read when the FinishUP name is unset; the two
-# set to different values is ambiguous and is skipped like an unparsable value (ADR-048).
+# set to different values is ambiguous and refuses the operation before discovery (ADR-048).
 _RPC_DEADLINE_ENV_SUFFIX: Final = "MCP_DEADLINE_MS"
 _MIN_RPC_DEADLINE_MS: Final = 1_000
 _MAX_RPC_DEADLINE_MS: Final = 900_000
@@ -2276,11 +2276,13 @@ def _rpc_deadline_ms(tool: str, environ: Mapping[str, str] | None = None) -> int
     suffixes = [f"{_RPC_DEADLINE_ENV_SUFFIX}_{tool.upper()}"]
     if tool != "check":
         suffixes.append(_RPC_DEADLINE_ENV_SUFFIX)
+    values: list[str | None] = []
     for suffix in suffixes:
         try:
-            raw = read_env(suffix, source)
-        except EnvNameConflictError:
-            continue
+            values.append(read_env(suffix, source))
+        except EnvNameConflictError as exc:
+            raise ConfigError("config_env_conflict", safe_name=exc.name) from None
+    for raw in values:
         if raw is None:
             continue
         text = raw.strip()
@@ -2288,6 +2290,25 @@ def _rpc_deadline_ms(tool: str, environ: Mapping[str, str] | None = None) -> int
             continue
         return max(_MIN_RPC_DEADLINE_MS, min(_MAX_RPC_DEADLINE_MS, int(text)))
     return _DEFAULT_RPC_DEADLINES_MS[tool]
+
+
+def _deadline_config_conflict_result(
+    request_id: str | None, operation: str, host_profile: McpHostProfile
+) -> types.CallToolResult:
+    """Refuse an ambiguous deadline before service discovery or a workflow write (ADR-048)."""
+
+    return structured_error_result(
+        PublicErrorCode.INVALID_REQUEST,
+        "A FINISHUP_MCP_DEADLINE_MS environment variable and its legacy YOETZ_ spelling "
+        "have different values. Set both to the same value or unset the legacy spelling, "
+        "then retry. No service operation was requested.",
+        request_id=request_id,
+        retryable=False,
+        safe_details={"continuation": "config_correction_required"},
+        diagnostic_reason="config_env_conflict",
+        operation=operation,
+        host_profile=host_profile,
+    )
 
 
 class _TimeoutPollView(Enum):
@@ -2433,6 +2454,14 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
             operation=operation,
             check_mode=check_mode,
         )
+    # Deadline settings belong to this bridge, so a compatible already-running service cannot
+    # validate them for us. Refuse disagreements before on-demand discovery can spawn or replace
+    # a service; do not silently choose a default or an all-tools override (ADR-048).
+    deadline_tool = "status" if check_mode in READ_ONLY_CHECK_MODES else operation
+    try:
+        _rpc_deadline_ms(deadline_tool)
+    except ConfigError:
+        return _deadline_config_conflict_result(request_id, operation, runtime.host_profile)
     inherited = await _prepare_availability(runtime, request_id)
     if inherited is not None:
         return inherited
@@ -2448,6 +2477,9 @@ async def _dispatch[RequestT: BaseModel, ResultT: BaseModel](
         )
     except _CursorWorkspaceBindingError:
         return _cursor_workspace_error(runtime, request_id, operation)
+    except ConfigError:
+        # Retain the bounded refusal if the process environment changes after preflight.
+        return _deadline_config_conflict_result(request_id, operation, runtime.host_profile)
     except PublicOperationError as exc:
         # Defense in depth: the ordinary client normally returns ok:false bodies, but if a
         # PublicOperationError escapes the service boundary, keep the exact public code.
@@ -2857,6 +2889,12 @@ async def dispatch_publish_work(
 ) -> types.CallToolResult:
     request_id = safe_request_id_from(arguments)
     try:
+        _rpc_deadline_ms("publish_work")
+    except ConfigError:
+        # Invalid real submissions can otherwise reach the envelope recovery oracle before
+        # _dispatch, so check the bridge's environment before that read as well (ADR-048).
+        return _deadline_config_conflict_result(request_id, "publish_work", runtime.host_profile)
+    try:
         PublishWorkRequest.model_validate(arguments)
     except ValidationError as exc:
         # Envelope-first recovery still runs for real submissions so a request_id that already
@@ -3002,6 +3040,10 @@ async def dispatch_closure_prepare(
             operation="closure_prepare",
         )
 
+    try:
+        _rpc_deadline_ms("status")
+    except ConfigError:
+        return _deadline_config_conflict_result(request_id, "closure_prepare", runtime.host_profile)
     inherited = await _prepare_availability(runtime, request_id)
     if inherited is not None:
         return inherited
@@ -3034,6 +3076,8 @@ async def dispatch_closure_prepare(
         result = ClosurePrepareResult.model_validate({"ok": True, **prepared})
     except _CursorWorkspaceBindingError:
         return _cursor_workspace_error(runtime, request_id, "closure_prepare")
+    except ConfigError:
+        return _deadline_config_conflict_result(request_id, "closure_prepare", runtime.host_profile)
     except PublicOperationError as exc:
         try:
             bound = (

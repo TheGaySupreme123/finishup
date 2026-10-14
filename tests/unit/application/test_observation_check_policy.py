@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import stat
 from pathlib import Path
 
 import pytest
@@ -171,3 +173,35 @@ def test_a_symlinked_legacy_policy_directory_is_invalid(tmp_path: Path) -> None:
     with pytest.raises(ProtocolValueError) as caught:
         load_observation_check_policy(workspace)
     assert not isinstance(caught.value, ObservationCheckPolicyAbsent)
+
+
+@pytest.mark.parametrize("location", [CHECK_POLICY_PATH, LEGACY_CHECK_POLICY_PATH])
+@pytest.mark.parametrize("other_present", [False, True])
+def test_a_policy_fifo_never_blocks_the_reader(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, location: Path, other_present: bool
+) -> None:
+    (tmp_path / location.parent).mkdir()
+    os.mkfifo(tmp_path / location)
+    if other_present:
+        other = LEGACY_CHECK_POLICY_PATH if location == CHECK_POLICY_PATH else CHECK_POLICY_PATH
+        _write(tmp_path, other, _policy())
+    real_open = os.open
+
+    def bounded_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if dir_fd is not None:
+            facts = os.stat(path, dir_fd=dir_fd, follow_symlinks=False)
+            if stat.S_ISFIFO(facts.st_mode) and not flags & os.O_NONBLOCK:
+                # Fail before the unsafe open rather than leave a hung test process.
+                raise AssertionError("policy open would block on a named pipe")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", bounded_open)
+    expected = ObservationCheckPolicyAmbiguous if other_present else ProtocolValueError
+    with pytest.raises(expected):
+        load_observation_check_policy(tmp_path)
