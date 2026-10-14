@@ -1018,11 +1018,13 @@ payload (status and `loop_count` only) can never carry to the gate.
    stays resolved and is confirmed in the final answer, and that the re-read is not asked again for
    the set; that is the existing per-session, per-key memory, so the continued Stop passes and a
    later Stop with the same flagged set is not asked. The MCP bridge passes its host profile to
-   `closure_prepare`; the CLI and TUI, which do not know the agent's host, name Codex and Claude
+   `closure_prepare` and to the status and `closure_prepare` summary text (so Cursor's summary
+   fallback and a generic bridge follow it too); the CLI and TUI, which do not know the agent's host, name Codex and Claude
    Code as the hosts that read the line. Codex and Claude Code text is unchanged. No protocol,
    schema or ledger record changes: a ledger-recorded acceptance answer would need a new event or
    disposition and is not part of this amendment.
 
 Locked by `tests/unit/cli/test_closure_gate.py` (the Cursor Stop flow and the host-aware text),
-`tests/unit/kernel/test_tb4n5_acceptance_risk.py` (the note per host) and
-`tests/integration/application/test_closure_composer.py` (the `closure_prepare` host).
+`tests/unit/kernel/test_tb4n5_acceptance_risk.py` (the note per host),
+`tests/integration/application/test_closure_composer.py` (the `closure_prepare` host) and
+`tests/unit/mcp/test_tb4n3_closure_verdict_text.py` (the MCP summaries per host).
