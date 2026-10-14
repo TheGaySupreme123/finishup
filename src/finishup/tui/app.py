@@ -40,7 +40,7 @@ from finishup.domain.observation_capacity_policy import (
     canonical_safe_command,
     render_capacity_disclosure_lines,
 )
-from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME
+from finishup.legacy_names import LAUNCHER_NAME, LEGACY_LAUNCHER_NAME, RENAME_NOTE
 from finishup.tui.commands import SLASH_COMMANDS, command_named
 from finishup.tui.events import HistoryEvent, Transcript
 from finishup.tui.models import (
@@ -1209,6 +1209,7 @@ class FinishUpTui(App[int]):
         lines = ["What you can do here:", ""]
         width = max(len(item.token) for item in SLASH_COMMANDS)
         lines.extend(f"{item.token.ljust(width)}  {item.summary}" for item in SLASH_COMMANDS)
+        lines.extend(("", f"{RENAME_NOTE} Docs: https://finishup.dev"))
         self.say(Level.ACTIVE, "", lines)
 
     async def command_quit(self) -> None:

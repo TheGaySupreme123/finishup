@@ -5,7 +5,7 @@ build-backend = "uv_build"
 [project]
 name = "finishup"
 version = "0.3.0"
-description = "A local-first evidence ledger and review engine for agent work"
+description = "A local-first evidence ledger and review engine for agent work. FinishUP was previously called Yoetz."
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 license = "Apache-2.0"

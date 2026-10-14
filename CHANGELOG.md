@@ -1,7 +1,7 @@
 # Changelog
 
-All notable user-visible changes to FinishUP (named Yoetz through 0.2.5) are documented in this
-file. Format is a lightweight, project-native heading style that marks the pending version as
+FinishUP was previously called Yoetz. All notable user-visible changes to FinishUP (named Yoetz through 0.2.5) are documented
+in this file. Format is a lightweight, project-native heading style that marks the pending version as
 unreleased above reverse-chronological released versions.
 
 ## Unreleased

@@ -1,5 +1,7 @@
 # Contributing to FinishUP
 
+FinishUP was previously called Yoetz. Issues, pull requests and history from before the rename still apply.
+
 Thank you for considering a contribution. External work is welcome when it meets a high bar: this
 project is **open with rigor**, not invitation-only and not closed to contributions.
 

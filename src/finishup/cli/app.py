@@ -54,6 +54,7 @@ from finishup.cli.render import (
     render_local_recovery_lines,
 )
 from finishup.domain.values import JsonObject
+from finishup.legacy_names import RENAME_NOTE
 from finishup.ports.control import (
     ControlClientKind,
     ControlError,
@@ -128,7 +129,7 @@ class _MutableBinaryReader(Protocol):
 
 app = typer.Typer(
     name="finishup",
-    help="Local-first evidence ledger and review engine.",
+    help=f"Local-first evidence ledger and review engine. {RENAME_NOTE} https://finishup.dev",
     epilog=AGENT_START_HANDOFF,
     no_args_is_help=False,
     invoke_without_command=True,

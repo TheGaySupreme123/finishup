@@ -1,5 +1,7 @@
 # Upgrade FinishUP
 
+FinishUP was previously called Yoetz. To move an existing Yoetz installation, see [Upgrading from Yoetz](#upgrading-from-yoetz).
+
 Ask your agent: **“Update FinishUP to the newest version and keep my current settings.”**
 The agent can use the upgrade guide:
 
@@ -73,7 +75,7 @@ still separate actions with their own exact target and evidence.
 
 ## Upgrading from Yoetz
 
-FinishUP was named **Yoetz** through version 0.2.5. The rename changes the name you type, not your
+FinishUP was previously called Yoetz. It used that name through version 0.2.5. The rename changes the name you type, not your
 installation: your tasks, receipts, vault, settings, permissions and connected agents carry over,
 and nothing is moved or rewritten.
 
