@@ -179,6 +179,18 @@ _IGNORED_SOURCE_NAMES: Final = frozenset({".DS_Store", "__pycache__"})
 # is deliberately listed here; nothing is discovered by scanning the repository.
 _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
     (
+        "schemas/privacy/review-packet-row-2.0.0.schema.json",
+        "json_schema",
+        "application/schema+json",
+        True,
+    ),
+    (
+        "fixtures/canonical/review-packet-rows-2.0.0.case.json",
+        "canonical_vector",
+        "application/json",
+        True,
+    ),
+    (
         "fixtures/canonical/check-inspection-1.4.0.case.json",
         "canonical_vector",
         "application/json",
@@ -1888,7 +1900,9 @@ def uninventoried_sources(inventory: ResourceInventory, *, repo_root: Path) -> t
     found: list[str] = []
     for source_root in _ALLOWED_SOURCE_ROOTS:
         root = repo_root / source_root.rstrip("/")
-        if not root.is_dir() or root.is_symlink():
+        if root.is_symlink():
+            raise ResourceManifestError("symlink_forbidden", detail=source_root.rstrip("/"))
+        if not root.is_dir():
             continue
         pending = [root]
         while pending:
@@ -1899,6 +1913,8 @@ def uninventoried_sources(inventory: ResourceInventory, *, repo_root: Path) -> t
                         continue
                     path = Path(entry.path)
                     relative = path.relative_to(repo_root).as_posix()
+                    if entry.is_symlink():
+                        raise ResourceManifestError("symlink_forbidden", detail=relative)
                     if entry.is_dir(follow_symlinks=False):
                         pending.append(path)
                         continue

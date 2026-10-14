@@ -8,6 +8,10 @@ reverse-chronological released versions.
 
 ### Added
 
+- Provider packet supply markers now have a packaged row schema and golden vectors. A follow-up
+  round whose requested excerpts are entirely withheld reports them unavailable with empty
+  supply refs; room cuts still report pending. The dispatch remains counted.
+
 - Codex admission commands accept `--codex-path` and `--codex-home`. Multiple installed versions
   can read an agreeing registration without manual selection; disagreement has an explicit
   continuation and cannot grant admission.

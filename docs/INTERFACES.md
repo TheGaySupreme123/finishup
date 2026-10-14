@@ -8567,7 +8567,7 @@ current `change-section-NNN` section of each path it changed, cut from the froze
 (`kernel.test_edit_visibility.check_change_sections`). Span keys use the source's own length, and a
 head-and-tail clip contributes two intervals. A follow-up case marks the excerpts that supply the
 request (`SemanticCase.follow_up_supplied_item_ids`, in its digest); the packet row carries
-`follow_up_supplied: true` and the provider-bound `missing_inputs` say `supplied` only through such
+`follow_up_supplied: true` (governed by `privacy/review-packet-row-2.0.0.schema.json`; absence is compatible) and the provider-bound `missing_inputs` say `supplied` only through such
 a row admission kept. The dispatch gate counts only rows the bounded envelope's catalog keeps
 (`bounded_catalog_item_ids`). The planner's `section_parts` (`current_section_parts`, carried as the
 evaluation's in-process `case_current_section_parts`) asks for a current section only while that
@@ -10019,3 +10019,9 @@ is withheld whole), recorded as a bounded `semantic_composition/check_time_chang
   `_RESULT_OUTCOME_HINT` (closed outcome set, no `blocked`, the blocker line) to the MCP error text.
 - **Scope.** The requested-output read runs only in `check`; status candidate findings and semantic
   assessment matching call `work_integrity_findings(case)` without `absent_outputs`.
+
+A follow-up provider manifest changes a composed `supplied` request with no carried supplying
+refs to `unavailable` when all of its composed supply refs are privacy-withheld. Packet-room
+admission cuts remain `pending`. The dispatched `follow_up_round` is retained in either case,
+and no withheld content is credited as supplied. This shared manifest reaches CLI, MCP, TUI
+and all receipt renderings without a host-specific projection.

@@ -1864,7 +1864,8 @@ packet only lacked room for.
 - **Record and surfaces.** The check records the last round's review. Its `review_input_manifest`
   carries the optional `follow_up_round` (1–3) and, in a follow-up packet, `missing_inputs` lists
   the reviewer's in-check request: `supplied` with the excerpt sources Yoetz added (only excerpts
-  that crossed the provider boundary count), else `pending`. The field is added in place to the
+  that crossed the provider boundary count), `unavailable` when all composed supply refs were
+  privacy-withheld, otherwise `pending`. The field is added in place to the
   unreleased check-recorded 1.3.0/1.4.0, check-result 1.3.0/1.4.0, status-result 1.4.0 and
   outbound-case 1.2.0 schemas. The shared manifest renderer shows the round and the added items in
   the CLI, the MCP check text, and the receipt's coverage note in JSON, markdown and text. The
@@ -1922,7 +1923,9 @@ in the check-time change, which follow-ups could not draw from.
   travels on the packet row (`follow_up_supplied: true`), and the provider-bound manifest says
   `supplied` only through a marked row admission kept, so an old part the first packet carried
   never stands in for new parts admission dropped. A part egress then withholds under a privacy
-  rule is disclosed as `pending` on the sent packet and its source is never asked for again. The
+  rule is disclosed as `unavailable` on the sent packet when all composed supply refs were
+  withheld; its supplied refs are empty and its source is never asked for again. Admission
+  dropping new rows for room remains `pending`, because privacy did not make them unavailable. The
   planner asks for a current section only while the requested edit's own paths have bytes no
   packet carried (`current_section_parts`), never because other bytes of the change remain. It
   also stops before rebuilding a case for a request whose targets name no action, result or
@@ -1932,3 +1935,16 @@ in the check-time change, which follow-ups could not draw from.
   are unchanged, so a request whose remaining parts do not fit stays unanswered and is returned to
   the agent with its availability class. Each round's `semantic_review_follow_up` diagnostic also
   counts `semantic_follow_up_parts_added`.
+
+### Follow-up row contract and withholding accounting (2026-10-14)
+
+Maintainer acknowledgement for the protocol and packaging gate: the owner explicitly requested
+“need not fragile but good and working, and also working with older versions when possible”.
+`schemas/privacy/review-packet-row-2.0.0.schema.json` governs the inner provider-bound `items[]`
+rows of `yoetz.review-packet-case/2`, including optional `follow_up_supplied: true`; absent marks
+remain readable and never claim new supply. The canonical row vectors cover absence, true,
+partial admission and privacy withholding. This adds no durable event field or privacy authority.
+A round already dispatched stays counted even if egress withholds every newly supplying row; its
+request is unavailable, not pending work, and receipts retain empty supply refs. Avoiding that one
+dispatch would require an egress preflight transaction; this change does not bypass egress or
+reuse a prior disclosure to save a round.

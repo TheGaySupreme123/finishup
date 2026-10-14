@@ -6327,6 +6327,82 @@ def _publish_work_request_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     return document
 
 
+def _review_packet_row_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
+    """The inner items[] rows of yoetz.review-packet-case/2, not the outer egress case."""
+
+    source = _load_versioned_template(entry, "privacy/outbound-case-1.2.0.schema.json")
+    definitions = cast(dict[str, JsonValue], source["$defs"])
+    item = cast(dict[str, JsonValue], definitions["content_item"])
+    from yoetz.domain.privacy import DataCategory
+
+    definitions["data_category"] = {
+        "type": "string",
+        "enum": [category.value for category in DataCategory],
+    }
+    properties = dict(cast(dict[str, JsonValue], item["properties"]))
+    properties.update(
+        content_bytes={"type": "integer", "minimum": 0, "maximum": 131072},
+        occurred_order={"type": "integer", "minimum": 0},
+        latest_for={"$ref": "#/$defs/opaque_ref"},
+        superseded_by={"$ref": "#/$defs/subject_refs"},
+        follow_up_supplied={"type": "boolean", "const": True},
+        transformations={
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 16,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "before_bytes": {"type": "integer", "minimum": 0},
+                    "after_bytes": {"type": "integer", "minimum": 0},
+                    "kind": {"const": "redacted"},
+                    "reason": {"const": "sensitive_redacted"},
+                },
+                "required": ["before_bytes", "after_bytes", "kind", "reason"],
+            },
+        },
+    )
+    return _normalize(
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "description": "Provider-bound items[] row for yoetz.review-packet-case/2. The builder emits follow_up_supplied only as true; absence remains compatible with older rows.",
+            "$defs": {
+                key: definitions[key]
+                for key in (
+                    "data_category",
+                    "digest",
+                    "item_id",
+                    "opaque_ref",
+                    "subject_refs",
+                    "subject_ref",
+                )
+            },
+            "properties": properties,
+            "required": [
+                "category",
+                "content",
+                "content_bytes",
+                "content_digest",
+                "item_id",
+                "linked_subject_refs",
+                "occurred_order",
+                "section",
+                "source_kind",
+                "source_ref",
+            ],
+            "allOf": [
+                {
+                    "if": {"required": ["follow_up_supplied"]},
+                    "then": {"properties": {"section": {"const": "excerpt"}}},
+                }
+            ],
+        },
+        entry,
+    )
+
+
 def _outbound_case_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
     """Add observation provenance to outbound-case v1.1 without rewriting v1.0."""
 
@@ -9088,6 +9164,14 @@ def _status_request_schema(entry: _RegistryEntry) -> dict[str, JsonValue]:
 
 _REGISTRY: Final[tuple[_RegistryEntry, ...]] = (
     _RegistryEntry(
+        "privacy/review-packet-row-2.0.0.schema.json",
+        "review-packet-row",
+        "2.0.0",
+        "request_result",
+        "outbound-case",
+        lambda: dict,
+    ),
+    _RegistryEntry(
         "common/actor-assertion-1.0.0.schema.json",
         "actor-assertion",
         "1.0.0",
@@ -11807,6 +11891,8 @@ def build_schema_documents(
             normalized = _with_required_task_statement(
                 entry, "events/plan-revised-1.0.0.schema.json", title="Yoetz plan revised"
             )
+        elif entry.relative_path == "privacy/review-packet-row-2.0.0.schema.json":
+            normalized = _review_packet_row_schema(entry)
         elif entry.relative_path == "privacy/outbound-case-1.1.0.schema.json":
             normalized = _outbound_case_schema(entry)
         elif entry.relative_path == "privacy/outbound-case-1.2.0.schema.json":

@@ -488,7 +488,7 @@ def test_the_provider_bound_manifest_keeps_the_round_and_only_what_was_sent() ->
     assert held_manifest["follow_up_round"] == 1
     rows = held_manifest["missing_inputs"]
     assert isinstance(rows, list)
-    assert [row["status"] for row in rows if isinstance(row, dict)] == ["pending"]
+    assert [row["status"] for row in rows if isinstance(row, dict)] == ["unavailable"]
 
 
 def _provider_manifest(prepared: bytes) -> dict[str, JsonValue]:
