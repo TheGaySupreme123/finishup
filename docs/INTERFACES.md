@@ -2903,8 +2903,9 @@ output_is_controlling_tty)` produced by the authenticated local client from its 
 path. Omission defaults to machine-readable/non-TTY. The daemon retains these facts on the
 `ControlSession` and constructs the service-internal `ClientProjectionContext` for every connected
 call; request bodies cannot replace them. An interactive CLI privacy flow sends human-readable plus
-its foreground controlling-TTY fact. JSON rendering, pipe/redirection, MCP, or missing/contradictory
-facts remain `agent_context`.
+its foreground controlling-TTY fact. These are presentation facts only: since ADR-009 round 3 none
+of them selects `local_human_view`, and every connected call is `agent_context` unless the daemon
+consumed an `owner_receipt_view` grant for that exact receipt call.
 
 The `privacy_get_setup` version 2 result carries `PrivacySetupSnapshot`: exactly the composed policy,
 bound repository-backed workspace scope, `authority_digest`, `grant_state`, and `migration_state`
@@ -3476,7 +3477,10 @@ monotonic sample with the same floor rule.
 
 `HumanCeremonyKind` is exactly `vault_initialize`, `vault_passphrase_rotate`, `vault_unlock`, `keyring_retry`,
 `portable_recovery`, `installation_recovery`, `provider_credential_set`, `provider_credential_rotate`,
-`privacy_policy_decision`, `privacy_disclosure_decision`, and `idle_relock_policy_change`.
+`privacy_policy_decision`, `privacy_disclosure_decision`, `idle_relock_policy_change`, and
+`owner_receipt_view`. `owner_receipt_view` opens directly at `AuthorizationRequiredPhase`
+(`privacy_reauthentication` purpose); on success its effect consumes the proof for the target
+digest and returns `OwnerReceiptViewResult(status="authorized", target_digest, grant_seconds=60)`.
 `CEREMONY_EXPIRY_SECONDS = 300` is the one YZH1/YZS1 challenge/binding expiry. It bounds a whole
 human ceremony, including the trip to a provider console to mint an API key, so it is a five-minute
 span rather than a keystroke timeout. While a `SecretRequiredPhase` is live, the human-control
@@ -3671,14 +3675,12 @@ The closed privacy enums are:
   `update_checks`, `capability_testing`;
 - `LocalDisclosureSink`: `local_model`, `agent_context`, `local_human_view`,
   `trusted_human_control`. `agent_context` is an agent-capable host's model context, which the host
-  may forward to its own provider. `local_human_view` is ordinary human-readable CLI/UI output
-  rendered to an attached controlling terminal for the local user who already unlocked this vault;
-  it is not a disclosure to a third party and is not gated by the agent ceiling. Selection is
-  server-side and fail-safe: a client resolves to `local_human_view` only for human-readable
-  rendering with an attached controlling terminal, and `--json`, a piped or redirected stream, a
-  non-TTY invocation, and every `mcp_bridge` client all resolve to `agent_context`. Terminal
-  emulation by a same-UID process is the same stated threat-model limit that already bounds the
-  unlock TTY contract, not a claimed cryptographic exclusion;
+  may forward to its own provider. `local_human_view` is the owner's own view of a vault they
+  already unlocked; it is not a disclosure to a third party and is not gated by the agent ceiling.
+  Selection is server-side and fail-safe: every ordinary client result resolves to `agent_context`,
+  whatever its rendering, terminal or client kind (a pseudo-terminal passes every terminal test),
+  and only a `cli`/`ui` receipt call for which the daemon consumed a reauthenticated one-use
+  `owner_receipt_view` grant resolves to `local_human_view` (ADR-009 round 3);
 - `DataClass`: `public_structural`, `ordinary_user_content`, `sensitive_confidential`,
   `secret_or_cryptographic`;
 - `DataCategory` (owned by `protocol/models.py`, imported and re-exported by
@@ -7083,11 +7085,12 @@ derived default check mode is respectively
 `deterministic_only|semantic_if_configured|semantic_required`.
 
 The same module owns `ProjectionRenderMode(human_readable|machine_readable)`, frozen
-`ClientProjectionContext(client_kind, render_mode, output_is_controlling_tty)`,
+`ClientProjectionContext(client_kind, render_mode, output_is_controlling_tty, owner_view=False)`,
 `resolve_client_disclosure_sink`, and `ProjectedControlBody`. The projected-body type is exactly
 the six operation result types plus `JsonObject` support results. The sink resolver returns
-`local_human_view` only for authenticated `cli` plus human-readable rendering plus an output
-attached to its controlling TTY; all other or contradictory contexts return `agent_context`.
+`local_human_view` only for an authenticated `cli` or `ui` context whose `owner_view` the daemon set
+after consuming an `owner_receipt_view` grant; every other context, including human-readable
+rendering to a controlling TTY, returns `agent_context`.
 The context is service-internal, carries no caller-named sink, must match the authenticated session
 kind, and defaults fail-safe to machine-readable/non-TTY when trusted presentation facts are
 absent. The daemon first obtains catalog-backed `Application.projection_binding_facts(...)`, then
@@ -10019,12 +10022,20 @@ thing it can carry that the excerpt ceiling covers is a repository file name the
 participant published (an undeclared-reference name, ADR-035), which a `full_local` receipt spells.
 Each such name span is offered as its own `repository_excerpt` candidate. Unless the policy grants
 repository excerpts, or the requesting writer published that exact name in this session through an
-accepted, unredacted cooperative publication, only the span becomes
+accepted, unredacted cooperative publication, the whole path token becomes
 `(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the quoted
-path the receipt prints, the bare path when it has a directory, or a basename with an extension; a
-plain word such as `Summary` never matches. The rule applies to JSON, markdown and text and to every
-profile, `full_local` included: a format or profile is not a disclosure grant.
+path the receipt prints, the bare path when it has a directory, or a basename with an extension,
+with any leading `./` (quoted or not) or an absolute directory prefix counted as the same file. A
+different relative directory, a longer name, a plain word such as `Summary`, and a different letter
+case stay readable: spellings are compared exactly, because folding case or Unicode would conflate
+distinct files on a case-sensitive filesystem. The rule applies to JSON, markdown and text and to
+every profile, `full_local` included: a format or profile is not a disclosure grant.
 
+The token can be longer than the name it replaces. A field that would then pass its wire bound
+(32,768 characters for `human_text`, at least its original length for a document field) or the
+16 KiB per-item privacy bound is cut deterministically at a whole token and ends with a visible
+`[receipt text truncated after withholding: N characters not shown]` marker; only text already
+past the withholding is dropped, and the audit still records every per-name decision.
 `privacy_projection.omitted_pointers` names each affected result field. Past the 512-pointer wire
 bound the list coalesces deterministically to containing fields, so a large receipt still renders;
 the local disclosure audit keeps one decision per name and field
@@ -10034,17 +10045,32 @@ provenance read at the current ledger head, so redacting the publication that sp
 withdraws it. A denied ordinary prose category keeps its existing omission behavior; JSON still
 fails closed when that denial would need an object marker inside the receipt document.
 
-The owner's own views are `local_human_view` and show the full receipt for the requested profile:
-human-rendered `yoetz receipt` whose output is the foreground controlling terminal, and the
-interactive terminal interface. `yoetz receipt --json`, redirected or non-terminal output, MCP
-tools and hooks stay `agent_context`. The terminal test is the existing local-terminal presentation
-fact, not proof that a human is reading.
+Every client result is agent-facing (`agent_context`): the CLI, the terminal interface, MCP tools
+and hooks alike. A terminal, a human-readable rendering, a client kind or the user ID is a
+presentation fact an agent can reproduce (a pseudo-terminal passes every terminal test), so none of
+them selects the owner's view, and the service ignores them as authority. The owner's full receipt
+(`local_human_view`) needs an explicit request, `yoetz receipt --owner-view` or *Your full receipt*
+in the terminal interface, and a human-control `owner_receipt_view` ceremony: the owner
+reauthenticates with operating-system presence or the vault passphrase for that exact receipt
+request on that command's own control connection, and the service mints a one-use grant that
+expires after 60 seconds and is consumed by the matching receipt call. There is no standing grant,
+and the agent-attested consent lane cannot stand in for it. The packaged service has no
+operating-system presence adapter yet, so today only a passphrase vault can complete the ceremony;
+anywhere else (an OS-keyring vault, a headless Linux or WSL 2 session) the request fails closed
+with `owner_view_unavailable`, shows nothing, and points to `git status --short` for what the change
+created. A process running as the owner's account that can already read the vault passphrase (for
+example from an auto-unlock keyring entry) is outside this boundary, as for every passphrase
+reauthentication (ADR-008).
 
 The shared `Application.project_result_for_client` builds the name spans in
 `application/receipt_projection.py`: names come from every check recorded through the receipt's
 subject frontier, and authorship from `published_name_authorship` keyed once per distinct name at
 `/receipt_repository_names/<index>` (at most 128). The ordinary-category candidate for a field
-carries its prose with every name span already withheld, so a denied name never enters the
-authorized sink payload under another category. Other result methods keep their classifications.
-Codex, Claude Code and Cursor share this service boundary; MCP summaries and the Stop gate use
-projected fields and structural counts.
+carries its prose with every name span already withheld and bounded, so a denied name never enters
+the authorized sink payload under another category. `resolve_client_disclosure_sink` returns
+`local_human_view` only for a `ClientProjectionContext(owner_view=True)` on a `cli` or `ui` call;
+only the daemon sets that flag, after `service/owner_view.py` consumed a grant whose target digest
+binds the receipt request's task, session, request ID, format, include and profile to a digest of
+the control connection nonce. Other result methods keep their classifications. Codex, Claude Code
+and Cursor share this service boundary; MCP summaries and the Stop gate use projected fields and
+structural counts.

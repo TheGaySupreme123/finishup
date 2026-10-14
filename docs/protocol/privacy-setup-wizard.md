@@ -116,9 +116,10 @@ published prose and the local findings computed solely from it — withholding a
 words protects nothing and would break the `check → respond → recheck` loop. What the default
 withholds is exactly what the agent did not author: another writer's or subagent's material,
 imported events, and AI-powered reviewer prose, plus every `sensitive_confidential` item and the
-entire never-send set, which no provenance ever unlocks. Ordinary human-readable rendering to an
-attached controlling terminal is the separate `local_human_view` sink and is not gated by question 6
-at all — reading your own unlocked terminal is not a third-party disclosure.
+entire never-send set, which no provenance ever unlocks. The owner's own view is the separate
+`local_human_view` sink and is not gated by question 6 at all. Since ADR-009 round 3 a terminal no
+longer selects it (an agent's pseudo-terminal passes every terminal test); only the reauthenticated
+`owner_receipt_view` grant does.
 
 ### The recommended `assisted_review` recipe
 

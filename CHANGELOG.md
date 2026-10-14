@@ -414,11 +414,19 @@ reverse-chronological released versions.
 
 - A receipt your agent reads no longer shows the names of repository files your privacy policy
   keeps from agents, even when the agent asks for a full local profile, in JSON, markdown and text.
-  Only the name is replaced with `(receipt prose withheld: repository_excerpt)`; the rest of the
-  receipt stays readable, and a name the agent published itself returns to it. `yoetz receipt` in
-  your terminal and the terminal interface still show you the full receipt. A receipt with many
-  withheld names still renders: past its bound the omitted-field list names the containing
-  sections. Older receipts follow the same rule when read again.
+  Only the name is replaced with `(receipt prose withheld: repository_excerpt)`, including when it
+  is written as `./path` or as an absolute path; the rest of the receipt stays readable, and a name
+  the agent published itself returns to it. A receipt with many withheld names still renders: past
+  its bound the omitted-field list names the containing sections, and an over-long field ends with
+  a visible truncation note. Older receipts follow the same rule when read again.
+
+- Every result the CLI and the terminal interface show (receipts, status and the rest) now follows
+  the agent's privacy view, as it already did over MCP: a terminal is not proof that you are the
+  one reading, since an agent can run Yoetz in a pseudo-terminal of its own. To see your full receipt, run `yoetz receipt --owner-view` or
+  choose *Your full receipt* in the terminal interface, and confirm it is you; the view is for that
+  one receipt, once. Yoetz can confirm it is you only with a vault passphrase for now. On a
+  system-keychain installation, or where no one can answer the prompt, it reports that the full
+  receipt is unavailable and shows nothing.
 
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `yoetz-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so

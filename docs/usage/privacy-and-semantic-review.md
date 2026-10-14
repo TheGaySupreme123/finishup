@@ -566,11 +566,18 @@ Your agent reads its receipts in JSON, markdown and text under your privacy poli
 prose, section titles, counts and coverage codes stay readable. When a receipt names a repository
 file that your policy keeps from agents (for example a file the check found but no participant
 published), only that name becomes `(receipt prose withheld: repository_excerpt)`; the rest of the
-sentence stays. A name your agent published itself in the same session returns to it. The list of
-omitted fields tells your agent where something was withheld; for a very large receipt it names the
-containing sections. Asking for a full local profile or another format does not give your agent
-more access. Older receipts follow the same rule when read again.
+sentence stays. The same file written as `./artifacts/model.npz` or as an absolute path is withheld
+too. A name your agent published itself in the same session returns to it. The list of omitted
+fields tells your agent where something was withheld; for a very large receipt it names the
+containing sections, and a field that would grow too long ends with a visible
+`[receipt text truncated after withholding: ...]` note. Asking for a full local profile or another
+format does not give your agent more access. Older receipts follow the same rule when read again.
 
-Your own views show the full receipt for the profile you choose: run `yoetz receipt` in your
-terminal, or open the receipt in the terminal interface. Output that is redirected, piped or
-requested with `--json` is treated like your agent's view, because another program may read it.
+Every receipt is the agent's view unless you ask for yours, because a program can make any terminal
+look like yours. To see your full receipt, run `yoetz receipt --owner-view` yourself, or choose
+*Your full receipt* in the terminal interface. Yoetz then asks you to confirm it is you, for that
+one receipt only, and shows it once; your privacy policy and your agents' access do not change.
+Today Yoetz can confirm it is you only with a vault passphrase. If your installation keeps its key
+in the system keychain instead, or runs where no one can answer that prompt, Yoetz says the full
+receipt is unavailable and shows nothing; `git status --short` in your repository lists what your
+change created.

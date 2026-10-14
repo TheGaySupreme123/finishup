@@ -2635,10 +2635,13 @@ WSL 2 is not recorded for this change.
 
 ### Receipt privacy ceiling (N5)
 
-Shared service projection, no host-specific path. Agent receipts (the MCP `receipt` tool,
-`yoetz receipt --json` or redirected output) keep normal prose, titles, codes and counts; only undeclared
-repository names the policy withholds become `(receipt prose withheld: repository_excerpt)`, and an
-exact name the requesting writer published itself returns. Large omission lists coalesce to
-containing fields instead of failing. Human-rendered `yoetz receipt` on the foreground terminal and
-the terminal interface are the owner's full view. Verified by in-process tests on macOS; Linux and
-Windows through WSL 2 run the same service code but were not exercised for this change.
+Shared service projection, no host-specific path. Every receipt an agent can request (the MCP
+`receipt` tool, or `yoetz receipt` run by the agent, under a pseudo-terminal or not) is the agent
+projection: normal prose, titles, codes and counts stay; undeclared repository names the policy
+withholds become `(receipt prose withheld: repository_excerpt)`, including `./` and absolute
+spellings, and an exact name the requesting writer published itself returns. Large receipts stay
+valid: omission lists coalesce and an over-long field is cut visibly. The owner's full receipt is
+`yoetz receipt --owner-view` (or *Your full receipt* in the terminal interface), which needs the
+`owner_receipt_view` reauthentication; the packaged service supports it only on a passphrase vault
+and fails closed elsewhere. Verified by in-process tests on macOS, including a real pseudo-terminal;
+Linux and Windows through WSL 2 run the same service code but were not exercised for this change.

@@ -98,13 +98,14 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    `check → respond → recheck` loop the product exists for. Two changes correct it without weakening
    the fence:
 
-   `local_human_view` is now a separate sink for ordinary human-readable rendering to an attached
-   controlling terminal. A local human reading a vault they unlocked is not a third-party
-   disclosure. It admits every non-never-send category at
-   `public_structural|ordinary_user_content`. `--json`, non-TTY or redirected streams, and every
-   `mcp_bridge` client remain `agent_context`; the client never selects its own sink. Terminal
-   emulation by a same-UID process is the stated threat-model limit that already bounds the unlock
-   TTY contract, not a claimed cryptographic exclusion.
+   `local_human_view` is now a separate sink for the owner reading their own unlocked vault, which
+   is not a third-party disclosure. It admits every non-never-send category at
+   `public_structural|ordinary_user_content`. *Superseded 2026-10-14 (round 3):* this sink was first
+   selected by human-readable rendering to an attached controlling terminal. A pseudo-terminal an
+   agent controls passes that test, so no presentation fact selects it any more; every ordinary
+   client result is `agent_context`, and `local_human_view` is reached only through the
+   reauthenticated one-use `owner_receipt_view` grant described under decision 3's receipt
+   amendment. The client never selects its own sink.
 
    `agent_context` is now conditioned on a computed closed `DisclosureProvenance`
    (`self_authored`, `engine_derived_from_self_authored`, `other_writer`, `imported`). Material the
@@ -187,9 +188,11 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    requested this scoped repair, acknowledging the privacy/egress design gate. A `full_local`
    profile is a local storage/rendering choice, never agent disclosure authority.
 
-   Amended again 2026-10-14 (round 2, maintainer request): withholding narrows to the
-   repository names the ceiling covers, the owner CLI and terminal interface views are
-   `local_human_view`, and large omission lists coalesce.
+   Amended again 2026-10-14 (round 2, maintainer request): withholding narrows to the repository
+   names the ceiling covers and large omission lists coalesce. Amended 2026-10-14 (round 3,
+   maintainer request): no presentation fact selects `local_human_view` any more; the owner's full
+   receipt is a reauthenticated, one-use `owner_receipt_view` grant (ADR-016 decision 4), `./` and
+   absolute spellings are the same name, and an expanded field is bounded visibly.
 
    Receipt prose is Yoetz-authored and keeps its ordinary category policy in an `agent_context`
    projection: section titles, sentences, codes, counts, IDs and coverage remain readable. The one
@@ -197,12 +200,20 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    participant published (an undeclared-reference name, ADR-035), which a `full_local` receipt spells.
    Each such name span is offered as its own `repository_excerpt` candidate. Unless the policy grants
    repository excerpts, or the requesting writer published that exact name in this session through an
-   accepted, unredacted cooperative publication, only the span becomes
+   accepted, unredacted cooperative publication, the whole path token becomes
    `(receipt prose withheld: repository_excerpt)`; the rest of the sentence stays. A span is the quoted
-   path the receipt prints, the bare path when it has a directory, or a basename with an extension; a
-   plain word such as `Summary` never matches. The rule applies to JSON, markdown and text and to every
-   profile, `full_local` included: a format or profile is not a disclosure grant.
+   path the receipt prints, the bare path when it has a directory, or a basename with an extension,
+   with any leading `./` (quoted or not) or an absolute directory prefix counted as the same file. A
+   different relative directory, a longer name, a plain word such as `Summary`, and a different letter
+   case stay readable: spellings are compared exactly, because folding case or Unicode would conflate
+   distinct files on a case-sensitive filesystem. The rule applies to JSON, markdown and text and to
+   every profile, `full_local` included: a format or profile is not a disclosure grant.
 
+   The token can be longer than the name it replaces. A field that would then pass its wire bound
+   (32,768 characters for `human_text`, at least its original length for a document field) or the
+   16 KiB per-item privacy bound is cut deterministically at a whole token and ends with a visible
+   `[receipt text truncated after withholding: N characters not shown]` marker; only text already
+   past the withholding is dropped, and the audit still records every per-name decision.
    `privacy_projection.omitted_pointers` names each affected result field. Past the 512-pointer wire
    bound the list coalesces deterministically to containing fields, so a large receipt still renders;
    the local disclosure audit keeps one decision per name and field
@@ -212,11 +223,22 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    withdraws it. A denied ordinary prose category keeps its existing omission behavior; JSON still
    fails closed when that denial would need an object marker inside the receipt document.
 
-   The owner's own views are `local_human_view` and show the full receipt for the requested profile:
-   human-rendered `yoetz receipt` whose output is the foreground controlling terminal, and the
-   interactive terminal interface. `yoetz receipt --json`, redirected or non-terminal output, MCP
-   tools and hooks stay `agent_context`. The terminal test is the existing local-terminal presentation
-   fact, not proof that a human is reading.
+   Every client result is agent-facing (`agent_context`): the CLI, the terminal interface, MCP tools
+   and hooks alike. A terminal, a human-readable rendering, a client kind or the user ID is a
+   presentation fact an agent can reproduce (a pseudo-terminal passes every terminal test), so none of
+   them selects the owner's view, and the service ignores them as authority. The owner's full receipt
+   (`local_human_view`) needs an explicit request, `yoetz receipt --owner-view` or *Your full receipt*
+   in the terminal interface, and a human-control `owner_receipt_view` ceremony: the owner
+   reauthenticates with operating-system presence or the vault passphrase for that exact receipt
+   request on that command's own control connection, and the service mints a one-use grant that
+   expires after 60 seconds and is consumed by the matching receipt call. There is no standing grant,
+   and the agent-attested consent lane cannot stand in for it. The packaged service has no
+   operating-system presence adapter yet, so today only a passphrase vault can complete the ceremony;
+   anywhere else (an OS-keyring vault, a headless Linux or WSL 2 session) the request fails closed
+   with `owner_view_unavailable`, shows nothing, and points to `git status --short` for what the change
+   created. A process running as the owner's account that can already read the vault passphrase (for
+   example from an auto-unlock keyring entry) is outside this boundary, as for every passphrase
+   reauthentication (ADR-008).
 
 4. **Data classes:** structural public data, ordinary task/user content, sensitive/confidential
    content, and secrets/cryptographic material are distinct. Classification combines source-owned
@@ -512,8 +534,8 @@ invalid effective policy, unavailable reconciliation, and reconciliation failure
 no-dispatch policy outcomes and advertise no approval surface. Repository privacy setup/effective/
 propose result projection derives its workspace disclosure policy and receipt scope only from the
 authenticated control session's repository context. The same session carries closed render-mode
-and controlling-TTY facts: only interactive human-readable CLI output selects
-`local_human_view`; JSON, pipe/redirection, MCP, or absent facts remain fail-safe agent context.
+and controlling-TTY facts for presentation only; since round 3 (2026-10-14) none of them selects
+`local_human_view`, and every ordinary result is agent context.
 
 | Event | Human required? | Rule |
 |---|---:|---|
