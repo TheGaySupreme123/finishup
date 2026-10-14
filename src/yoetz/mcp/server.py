@@ -605,6 +605,7 @@ def build_bridge_runtime(
     descriptors = TOOL_DESCRIPTORS[route_profile]
     for descriptor in descriptors:
         descriptor.input_schema
+        descriptor.advertised_input_schema
         descriptor.output_schema
     build_last_resort_internal_error_result()
     if workspace_locator is not None and type(workspace_locator) is not WorkspaceLocator:
@@ -3550,7 +3551,7 @@ async def list_tools(runtime: BridgeRuntime = BRIDGE_RUNTIME) -> list[types.Tool
             name=descriptor.name,
             title=descriptor.title,
             description=descriptor.description,
-            inputSchema=cast(dict[str, object], _mutable_json(descriptor.input_schema)),
+            inputSchema=cast(dict[str, object], _mutable_json(descriptor.advertised_input_schema)),
             outputSchema=cast(dict[str, object], _mutable_json(descriptor.output_schema)),
             annotations=types.ToolAnnotations(
                 title=descriptor.title,

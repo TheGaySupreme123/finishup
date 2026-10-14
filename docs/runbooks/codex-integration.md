@@ -36,6 +36,19 @@ evidence is recorded in #767.
 
 ## Conditional agent guidance
 
+Every advertised MCP input schema has a CI-enforced 4,800-byte target, below Codex 0.162.1's 5,000-byte
+schema compaction threshold. Direct-tool mode receives inline request fields, required lists and
+enums without that size-triggered rewrite. Event payload variants and complete examples are in
+`read_guidance` at `yoetz://guidance/request-templates.md`; read the matching template before
+authoring a payload. Server validation and output schemas remain unchanged. This shared
+advertisement also serves code mode, Claude Code and Cursor; a capture of the model request
+proves schema delivery only, not a completed workflow or platform certification.
+
+Field descriptions are preserved within that budget, with priority rules restored first for
+larger tools. A future description-free schema exceeding the target logs
+`mcp_advertised_input_schema_over_budget` and serves the minimal form so the bridge remains
+available; CI rejects that regression, and Codex may apply its rewrite to the oversized fallback.
+
 The skill keeps its activation boundary, core workflow, and safety floor in the entrypoint.
 Before `start` read the core, `agent-instructions.md`: it is the operating card and is enough for
 ordinary work. Workflow, publication policy, and coverage and receipts are read only when a result,

@@ -1,5 +1,15 @@
 # Cursor local integration runbook
 
+MCP input advertisements use the shared compact authoring schema, targeting 4,800 bytes per tool.
+Required fields, enums and event envelopes remain inline; read `read_guidance` at
+`yoetz://guidance/request-templates.md` for payload variants, conditional rules and complete
+examples before authoring a payload. Full server validation and repair hints remain unchanged.
+Cursor's `outputSchema` and `structuredContent` validation contract, including tuple compatibility,
+is unchanged by the input-size reduction. This does not certify an untested Cursor/OS cell.
+Descriptions remain when they fit, with priority field rules restored first for larger tools.
+If the description-free form exceeds the CI budget, the bridge emits
+`mcp_advertised_input_schema_over_budget` and still serves that minimal form; CI rejects the drift.
+
 Codex's external MCP removal reconciliation (issue #860) does not apply to Cursor IDE or CLI:
 Cursor project MCP cleanup uses its own digest-bound file mutation, not `codex mcp remove`.
 The Cursor lifecycle and outcome contracts remain unchanged.

@@ -11,6 +11,7 @@ from functools import cache
 from types import MappingProxyType
 from typing import Final, Literal, cast
 
+from yoetz.mcp.advertisement import ADVERTISED_INPUT_SCHEMA_MAX_BYTES, compact_input_schema
 from yoetz.mcp.resources import read_resource
 from yoetz.mcp.semantic_destination import (
     MAX_DISCLOSURE_ENCODED_BYTES,
@@ -156,25 +157,21 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 8,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 5_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
-        # obligation_published 1.1.0 (#1002) adds one draft branch, its payload definition and the
-        # payload's evidence/result oneOf: +3 branches, +1 definition, and about 1.7 KB for that
-        # payload (directory kind, item role, acknowledged_not_done status and its reason). The
-        # branch cannot be shared with 1.0.0, which must keep refusing those additions.
+        # Payload version discrimination remains in the full authoring/admission schemas.
         "publish-work-request": MappingProxyType(
             {
                 "max_oneof_nodes": 8,
                 "max_oneof_branches": 41,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 24,
-                "max_defs_nest_depth": 1,
-                # obligation_published 1.1.0 (#1002, #997) and blocker notices (#985).
-                "max_encoded_bytes": 55_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "check-request": MappingProxyType(
@@ -183,9 +180,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 12,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 8_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "respond-request": MappingProxyType(
@@ -194,9 +191,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 12,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 8_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "status-request": MappingProxyType(
@@ -205,9 +202,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 8,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 20,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 10_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "receipt-request": MappingProxyType(
@@ -216,9 +213,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 12,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 6_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "read-guidance-request": MappingProxyType(
@@ -227,9 +224,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 4,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 2_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
         "closure-prepare-request": MappingProxyType(
@@ -238,9 +235,9 @@ PRESENTATION_INPUT_SCHEMA_BUDGETS: Final[Mapping[str, Mapping[str, int]]] = Mapp
                 "max_oneof_branches": 0,
                 "max_ref_nodes": 0,
                 "max_conditional_nodes": 0,
-                "max_defs_count": 4,
-                "max_defs_nest_depth": 1,
-                "max_encoded_bytes": 6_000,
+                "max_defs_count": 0,
+                "max_defs_nest_depth": 0,
+                "max_encoded_bytes": ADVERTISED_INPUT_SCHEMA_MAX_BYTES,
             }
         ),
     }
@@ -414,7 +411,8 @@ def advertised_surface_metrics(
     )
     description_bytes = sum(len(item.description.encode("utf-8")) for item in descriptors)
     schema_bytes = sum(
-        presentation_schema_metrics(item.input_schema)["encoded_bytes"] for item in descriptors
+        presentation_schema_metrics(item.advertised_input_schema)["encoded_bytes"]
+        for item in descriptors
     )
     copies = len(descriptors) * ADVERTISED_SURFACE_BUDGET["instructions_copies_per_tool"]
     return {
@@ -1634,6 +1632,13 @@ def _mcp_presentation_schema(name: str, version: str) -> Mapping[str, JsonValue]
     return MappingProxyType(bundled_dict)
 
 
+@cache
+def _advertised_input_schema(name: str, version: str) -> Mapping[str, JsonValue]:
+    return compact_input_schema(
+        name, _mcp_presentation_schema(f"{name.replace('_', '-')}-request", version)
+    )
+
+
 def presentation_schema_metrics(schema: Mapping[str, JsonValue]) -> dict[str, int]:
     """Return keyword-budget metrics for one advertised MCP JSON Schema object."""
 
@@ -1766,9 +1771,17 @@ class ToolDescriptor:
 
     @property
     def input_schema(self) -> Mapping[str, JsonValue]:
+        """Full authoring/repair schema; tools/list uses advertised_input_schema instead."""
+
         return _mcp_presentation_schema(
             f"{self.name.replace('_', '-')}-request", _tool_input_schema_version(self.name)
         )
+
+    @property
+    def advertised_input_schema(self) -> Mapping[str, JsonValue]:
+        """Bounded host-facing shape, independent of strict catalog admission."""
+
+        return _advertised_input_schema(self.name, _tool_input_schema_version(self.name))
 
     @property
     def output_schema(self) -> Mapping[str, JsonValue]:

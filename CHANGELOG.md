@@ -6,6 +6,16 @@ reverse-chronological released versions.
 
 ## Unreleased
 
+### Fixed
+
+- MCP input schemas now target 4,800 bytes per tool so Codex does not apply its size-triggered
+  schema rewrite. Required fields, enums and event envelopes stay inline; full payload examples
+  and variant rules are available through `read_guidance` in request templates. Claude Code and
+  Cursor use the same compact inputs. Full server-side validation and output schemas are unchanged.
+  Field descriptions are preserved when they fit; larger tools keep priority field rules first.
+  If a future schema exceeds the budget even without descriptions, the bridge logs a diagnostic
+  and serves the minimal form instead of failing startup. CI still rejects oversized schemas.
+
 ### Added
 
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
