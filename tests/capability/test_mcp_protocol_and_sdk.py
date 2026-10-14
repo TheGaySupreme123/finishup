@@ -1,7 +1,7 @@
 """Pinned MCP SDK/protocol capability evidence.
 
 Proves the installed candidate against ``mcp==1.28.1`` and negotiated protocol
-``2025-11-25`` via raw JSON-RPC frames and SDK identity probes. Yoetz-owned
+``2025-11-25`` via raw JSON-RPC frames and SDK identity probes. FinishUP-owned
 validation/framing is exercised; SDK import alone is never treated as proof.
 """
 
@@ -28,10 +28,10 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.adapters.mcp_stdio import MAX_JSON_FRAME_BYTES
-from yoetz.mcp.descriptors import TOOL_DESCRIPTORS, server_instructions
-from yoetz.mcp.semantic_destination import disclose_semantic_destination
-from yoetz.protocol.canonical import canonical_digest
+from finishup.adapters.mcp_stdio import MAX_JSON_FRAME_BYTES
+from finishup.mcp.descriptors import TOOL_DESCRIPTORS, server_instructions
+from finishup.mcp.semantic_destination import disclose_semantic_destination
+from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _PINNED_MCP = "1.28.1"
@@ -47,7 +47,7 @@ _CASE_NEGOTIATE = CapabilityCase(
             "sdk_version_matched",
             "protocol_negotiated",
             "tool_inventory_exact",
-            "yoetz_validation_authority",
+            "finishup_validation_authority",
         }
     ),
     allowed_observation_codes=frozenset(
@@ -55,7 +55,7 @@ _CASE_NEGOTIATE = CapabilityCase(
             "sdk_version_matched",
             "protocol_negotiated",
             "tool_inventory_exact",
-            "yoetz_validation_authority",
+            "finishup_validation_authority",
             "stdout_cap_bound",
             "null_id_parse_error",
             "unsupported_protocol_falls_back",
@@ -77,7 +77,7 @@ _CASE_DENIED_V2 = CapabilityCase(
 def _run_raw(
     tmp_path: Path, *frames: Mapping[str, object]
 ) -> tuple[list[dict[str, object]], bytes]:
-    child = "from yoetz.mcp.server import main; main()"
+    child = "from finishup.mcp.server import main; main()"
     process = subprocess.Popen(
         [sys.executable, "-I", "-c", child],
         stdin=subprocess.PIPE,
@@ -121,7 +121,7 @@ def _stdio_malformed_null_id(tmp_path: Path) -> list[dict[str, object]]:
     child = r"""
 import anyio
 import sys
-from yoetz.adapters.mcp_stdio import bounded_stdio_server
+from finishup.adapters.mcp_stdio import bounded_stdio_server
 
 async def main():
     async with bounded_stdio_server(512) as (read_stream, write_stream):
@@ -215,7 +215,7 @@ def test_pinned_sdk_protocol_negotiation_and_validation_authority(tmp_path: Path
             Observation("tool_inventory_exact", integer_value=7),
             Observation("transcript_digest", digest_value=transcript_digest),
             Observation("unsupported_protocol_falls_back", boolean_value=True),
-            Observation("yoetz_validation_authority", boolean_value=True),
+            Observation("finishup_validation_authority", boolean_value=True),
         ),
         EvidenceOutcome.PASS,
         output_root=evidence_root,
@@ -256,9 +256,9 @@ def test_prerelease_mcp_v2_is_denied_not_inferred(tmp_path: Path) -> None:
 
 @pytest.mark.anyio
 async def test_sdk_tool_annotations_match_frozen_descriptors() -> None:
-    """SDK-visible Tool objects must match Yoetz-owned frozen descriptors."""
+    """SDK-visible Tool objects must match FinishUP-owned frozen descriptors."""
 
-    from yoetz.mcp.server import list_tools
+    from finishup.mcp.server import list_tools
 
     tools = await list_tools()
     assert len(tools) == 8

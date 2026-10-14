@@ -6,9 +6,9 @@ import asyncio
 
 import pytest
 
-from yoetz.ports.control import ControlError
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.service.check_waits import EXPLICIT_CONTROL_CANCEL, CheckWaits
+from finishup.ports.control import ControlError
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.service.check_waits import EXPLICIT_CONTROL_CANCEL, CheckWaits
 
 
 @pytest.fixture
@@ -148,7 +148,7 @@ async def test_retained_waiters_have_a_fixed_capacity() -> None:
 async def test_read_window_admits_only_while_open_and_close_drains_readers() -> None:
     """Issue #571 A2: the gate owner cannot release its gates under an admitted reader."""
 
-    from yoetz.service.check_waits import CheckReadWindow
+    from finishup.service.check_waits import CheckReadWindow
 
     window = CheckReadWindow()
     assert not window.admits_readers

@@ -5,14 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
-from yoetz.adapters.privacy.catalog import decode_privacy_policy_canonical
-from yoetz.application.privacy_policy import is_privacy_tightening
-from yoetz.config.privacy_desired import (
+from finishup.adapters.privacy.catalog import decode_privacy_policy_canonical
+from finishup.application.privacy_policy import is_privacy_tightening
+from finishup.config.privacy_desired import (
     load_privacy_desired_canonical,
     render_privacy_desired_toml,
     write_privacy_desired_toml,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
@@ -23,7 +23,7 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.protocol.models import DataCategory
+from finishup.protocol.models import DataCategory
 
 _DIGEST = "sha256:" + "1" * 64
 _POLICY_ID = "pvy_88888888-8888-4888-8888-888888888888"

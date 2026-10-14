@@ -4,10 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.host_discovery import HostInstallation
-from yoetz.application.host_connection import ConnectionError, apply_connection, prepare_connection
-from yoetz.domain.values import request_id
-from yoetz.ports.plugin_artifacts import ArtifactAuthority
+from finishup.adapters.integrations.host_discovery import HostInstallation
+from finishup.application.host_connection import (
+    ConnectionError,
+    apply_connection,
+    prepare_connection,
+)
+from finishup.domain.values import request_id
+from finishup.ports.plugin_artifacts import ArtifactAuthority
 
 REQUEST = request_id("req_65c9c29d-7e67-4a52-88a9-a68c3c570ebb")
 
@@ -31,20 +35,20 @@ def test_cursor_connect_disconnect_reconnect(
 ) -> None:
     from typing import cast
 
-    from yoetz.adapters.integrations.host_discovery import SetupHost
+    from finishup.adapters.integrations.host_discovery import SetupHost
 
     project = tmp_path / "project"
     config = tmp_path / "cursor"
     project.mkdir(mode=0o700)
     if config_exists:
         config.mkdir(mode=0o700)
-    launcher = tmp_path / "yoetz"
+    launcher = tmp_path / "finishup"
     launcher.write_text("#!/bin/sh\nexit 0\n")
     launcher.chmod(0o700)
     installation = HostInstallation(cast(SetupHost, host), launcher, "2026.09.19", config, "Cursor")
     review = Review()
     for step, action in enumerate(("connect", "disconnect", "connect"), 1):
-        from yoetz.application.host_connection import ConnectionAction
+        from finishup.application.host_connection import ConnectionAction
 
         def prepare():
             return prepare_connection(
@@ -160,7 +164,7 @@ def test_denied_connection_does_not_create_the_missing_config_root(tmp_path: Pat
 def test_partial_cursor_connection_resumes_only_remaining_mcp_stage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.adapters.integrations import cursor_project_mcp as mcp
+    from finishup.adapters.integrations import cursor_project_mcp as mcp
 
     project, config = tmp_path / "project", tmp_path / "cursor"
     project.mkdir(mode=0o700)
@@ -192,7 +196,7 @@ def test_partial_cursor_connection_resumes_only_remaining_mcp_stage(
             authority=ArtifactAuthority("review_only", plan.digest, "test"),
             review=Review(),
         )
-    assert (config / "plugins/local/yoetz").is_dir()
+    assert (config / "plugins/local/finishup").is_dir()
     monkeypatch.setattr(mcp, "apply_cursor_project_mcp", original)
     remaining = prepare()
     assert remaining.body["changes"] == ["register_project_mcp"]

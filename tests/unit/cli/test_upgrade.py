@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.adapters import package_upgrade as package_adapter
-from yoetz.application import upgrade
-from yoetz.cli.app import app
+from finishup.adapters import package_upgrade as package_adapter
+from finishup.application import upgrade
+from finishup.cli.app import app
 
 _RUNNER = CliRunner()
 
@@ -18,7 +18,7 @@ def test_plan_does_not_execute_package_or_infer_host_roots(monkeypatch: pytest.M
     def unexpected() -> str:
         raise AssertionError("package execution without acceptance")
 
-    monkeypatch.setattr("yoetz.cli.upgrade.execute_package_upgrade", unexpected)
+    monkeypatch.setattr("finishup.cli.upgrade.execute_package_upgrade", unexpected)
     result = _RUNNER.invoke(app, ["upgrade"])
     assert result.exit_code == 0, result.output
     assert "Plan only" in result.output
@@ -39,7 +39,7 @@ def test_acceptance_runs_while_sessions_keep_working(
         calls.append(True)
         return "package_command_succeeded"
 
-    monkeypatch.setattr("yoetz.cli.upgrade.execute_package_upgrade", execute)
+    monkeypatch.setattr("finishup.cli.upgrade.execute_package_upgrade", execute)
     argv = ["upgrade", "--accept"] + (["--writers-stopped"] if legacy_flag else [])
     result = _RUNNER.invoke(app, argv)
     assert result.exit_code == 0, result.output
@@ -56,8 +56,8 @@ def test_plan_never_asks_to_stop_hosts_or_service() -> None:
     assert "--writers-stopped" not in text
     assert "stop the service" not in text
     replace = next(step for step in steps if step.title == "Replace the package")
-    assert replace.commands == (("yoetz", "upgrade", "--accept"),)
-    assert "yoetz upgrade --accept only" in replace.detail
+    assert replace.commands == (("finishup", "upgrade", "--accept"),)
+    assert "finishup upgrade --accept only" in replace.detail
     help_result = _RUNNER.invoke(app, ["upgrade", "--help"])
     assert help_result.exit_code == 0
     assert "--writers-stopped" not in help_result.output
@@ -76,7 +76,7 @@ def test_package_result_never_claims_host_or_data_upgrade(
         calls.append(True)
         return outcome
 
-    monkeypatch.setattr("yoetz.cli.upgrade.execute_package_upgrade", execute)
+    monkeypatch.setattr("finishup.cli.upgrade.execute_package_upgrade", execute)
     result = _RUNNER.invoke(app, ["upgrade", "--accept"])
     assert result.exit_code == code
     assert calls == [True]
@@ -136,7 +136,7 @@ def test_codex_plan_has_no_invented_plugin_update_or_general_setup() -> None:
 def test_existing_task_upgrade_uses_normal_startup_and_status() -> None:
     steps = upgrade.build_upgrade_plan(["codex"], {})
     data_step = next(step for step in steps if step.title == "Data and service")
-    assert data_step.commands == (("yoetz", "service", "status", "--json"),)
+    assert data_step.commands == (("finishup", "service", "status", "--json"),)
     assert "upgrade automatically" in data_step.detail
     assert "Existing tasks, settings and permissions are retained" in data_step.detail
     assert "resumes the recorded upgrade" in data_step.detail
@@ -152,7 +152,7 @@ def test_invalid_targets_fail_before_execution() -> None:
 def test_isolated_runtime_cannot_upgrade_ambient_tool(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr("yoetz.config.paths.isolated_root", lambda: tmp_path)
+    monkeypatch.setattr("finishup.config.paths.isolated_root", lambda: tmp_path)
 
     def unexpected(*args: object, **kwargs: object) -> object:
         raise AssertionError("uv must not run from isolated runtime")
@@ -166,15 +166,15 @@ def test_package_execution_binds_invoking_uv_tool(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, matched: bool
 ) -> None:
     root = tmp_path / "tools"
-    (root / "yoetz").mkdir(parents=True)
-    (root / "yoetz/uv-receipt.toml").write_text(
-        '[tool]\nrequirements = [{name="yoetz",specifier="==0.2.1"}]\n'
+    (root / "finishup").mkdir(parents=True)
+    (root / "finishup/uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{name="finishup",specifier="==0.2.1"}]\n'
     )
-    monkeypatch.setattr("yoetz.config.paths.isolated_root", lambda: None)
+    monkeypatch.setattr("finishup.config.paths.isolated_root", lambda: None)
     monkeypatch.setattr(
         package_adapter,
         "installation_prefix",
-        lambda: root / "yoetz" if matched else tmp_path / "source",
+        lambda: root / "finishup" if matched else tmp_path / "source",
     )
     calls: list[tuple[str, ...]] = []
 
@@ -183,7 +183,7 @@ def test_package_execution_binds_invoking_uv_tool(
         assert kwargs["stdin"] == subprocess.DEVNULL
         if argv == ("uv", "tool", "dir"):
             return SimpleNamespace(returncode=0, stdout=str(root).encode())
-        if argv == (str(root / "yoetz/bin/yoetz"), "--version"):
+        if argv == (str(root / "finishup/bin/finishup"), "--version"):
             return SimpleNamespace(returncode=0, stdout=b"99.0.0\n")
         assert argv == package_adapter.PACKAGE_UPGRADE_ARGV
         assert kwargs["stdout"] == subprocess.DEVNULL
@@ -199,10 +199,12 @@ def test_package_execution_binds_invoking_uv_tool(
 def test_package_timeout_reports_unknown_without_retry(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr("yoetz.config.paths.isolated_root", lambda: None)
-    monkeypatch.setattr(package_adapter, "installation_prefix", lambda: tmp_path / "yoetz")
-    (tmp_path / "yoetz").mkdir()
-    (tmp_path / "yoetz/uv-receipt.toml").write_text('[tool]\nrequirements = [{name="yoetz"}]\n')
+    monkeypatch.setattr("finishup.config.paths.isolated_root", lambda: None)
+    monkeypatch.setattr(package_adapter, "installation_prefix", lambda: tmp_path / "finishup")
+    (tmp_path / "finishup").mkdir()
+    (tmp_path / "finishup/uv-receipt.toml").write_text(
+        '[tool]\nrequirements = [{name="finishup"}]\n'
+    )
     calls: list[tuple[str, ...]] = []
 
     def run(argv: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
@@ -218,18 +220,18 @@ def test_package_timeout_reports_unknown_without_retry(
 
 def test_upgrade_replaces_exact_pin_and_preserves_supported_extras(tmp_path: Path) -> None:
     (tmp_path / "uv-receipt.toml").write_text(
-        '[tool]\nrequirements = [{name="yoetz",specifier="==0.2.1",extras=["semantic-openai"]}]\n'
+        '[tool]\nrequirements = [{name="finishup",specifier="==0.2.1",extras=["semantic-openai"]}]\n'
     )
     command = package_adapter._upgrade_command(tmp_path)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert command is not None
     assert command[:4] == ("uv", "tool", "install", "--upgrade")
-    assert command[-1].startswith("yoetz[semantic-openai]>=")
+    assert command[-1].startswith("finishup[semantic-openai]>=")
     assert "0.2.1" not in command[-1]
 
 
 def test_custom_resolution_is_not_silently_replaced(tmp_path: Path) -> None:
     (tmp_path / "uv-receipt.toml").write_text(
-        '[tool]\nrequirements = [{name="yoetz"}]\n[tool.options]\nno-index = true\n'
+        '[tool]\nrequirements = [{name="finishup"}]\n[tool.options]\nno-index = true\n'
     )
     assert package_adapter._upgrade_command(tmp_path) is None  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
 
@@ -238,7 +240,7 @@ def test_same_version_is_not_reported_as_an_installed_update(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "yoetz.cli.upgrade.execute_package_upgrade", lambda: "package_already_current"
+        "finishup.cli.upgrade.execute_package_upgrade", lambda: "package_already_current"
     )
     result = _RUNNER.invoke(app, ["upgrade", "--accept"])
     assert result.exit_code == 0
@@ -250,12 +252,12 @@ def test_cleanup_never_executes_a_package_upgrade(monkeypatch: pytest.MonkeyPatc
     def prune(_prefix: Path) -> tuple[int, int]:
         return (2, 1)
 
-    monkeypatch.setattr("yoetz.cli.upgrade.prune_release_runtimes", prune)
+    monkeypatch.setattr("finishup.cli.upgrade.prune_release_runtimes", prune)
 
     def unexpected() -> str:
         raise AssertionError("cleanup is not an installation")
 
-    monkeypatch.setattr("yoetz.cli.upgrade.execute_package_upgrade", unexpected)
+    monkeypatch.setattr("finishup.cli.upgrade.execute_package_upgrade", unexpected)
     result = _RUNNER.invoke(app, ["upgrade", "--prune-runtimes"])
     assert result.exit_code == 0
     assert "Removed 2 unused runtime copies; kept 1 in use" in result.output
@@ -265,7 +267,7 @@ def test_cleanup_never_executes_a_package_upgrade(monkeypatch: pytest.MonkeyPatc
 
 def test_upgrade_preserves_recorded_python_selection(tmp_path: Path) -> None:
     (tmp_path / "uv-receipt.toml").write_text(
-        '[tool]\nrequirements = [{name="yoetz"}]\npython = "3.14.6"\n'
+        '[tool]\nrequirements = [{name="finishup"}]\npython = "3.14.6"\n'
     )
     command = package_adapter._upgrade_command(tmp_path)  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
     assert command is not None

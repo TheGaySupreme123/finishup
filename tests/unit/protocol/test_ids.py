@@ -9,10 +9,9 @@ from typing import cast
 
 import pytest
 
-import yoetz.protocol.ids as ids_module
-from fixture_loader import JsonValue, load_fixture_json
-from yoetz.protocol.errors import PROTOCOL_REASON_CODES, ProtocolValueError
-from yoetz.protocol.ids import (
+import finishup.protocol.ids as ids_module
+from finishup.protocol.errors import PROTOCOL_REASON_CODES, ProtocolValueError
+from finishup.protocol.ids import (
     ACTOR_ID_PATTERN,
     ID_TOTAL_LENGTH,
     PREFIX_BY_KIND,
@@ -23,6 +22,7 @@ from yoetz.protocol.ids import (
     validate_actor_id,
     validate_id,
 )
+from fixture_loader import JsonValue, load_fixture_json
 
 _VALID_REQUEST_ID = "req_00000000-0000-4000-8000-000000000001"
 
@@ -374,9 +374,9 @@ def test_id_reasons_are_exact_central_registry_subset() -> None:
     assert _OWNED_REASONS <= before
     assert "id_kind_wrong_type" not in before
     for sibling in (
-        "yoetz.protocol.canonical",
-        "yoetz.protocol.coverage",
-        "yoetz.protocol.schemas",
+        "finishup.protocol.canonical",
+        "finishup.protocol.coverage",
+        "finishup.protocol.schemas",
     ):
         if importlib.util.find_spec(sibling) is None:
             continue

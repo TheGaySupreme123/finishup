@@ -20,7 +20,7 @@ import pytest
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 _GUIDANCE: Final = _REPO_ROOT / "guidance"
 _SKILLS: Final = tuple(
-    _REPO_ROOT / "skills" / host / "yoetz" / "SKILL.md"
+    _REPO_ROOT / "skills" / host / "finishup" / "SKILL.md"
     for host in ("claude-code", "codex", "cursor", "portable")
 )
 

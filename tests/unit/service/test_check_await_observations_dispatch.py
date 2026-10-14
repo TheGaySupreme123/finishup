@@ -8,11 +8,11 @@ from typing import Any
 
 import pytest
 
-from yoetz.ports.control import ControlCallRequest, ControlMethod
-from yoetz.ports.ledger import CheckObservationsAwaited
-from yoetz.protocol.models import CheckRequest
-from yoetz.service.check_waits import CheckWaits
-from yoetz.service.daemon import ServiceDaemon
+from finishup.ports.control import ControlCallRequest, ControlMethod
+from finishup.ports.ledger import CheckObservationsAwaited
+from finishup.protocol.models import CheckRequest
+from finishup.service.check_waits import CheckWaits
+from finishup.service.daemon import ServiceDaemon
 
 _SESSION = "ses_00000000-0000-4000-8000-0000000000c4"
 

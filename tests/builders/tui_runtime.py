@@ -1,6 +1,6 @@
 """A runtime double for driving the terminal UI without touching real services.
 
-Every method mirrors :class:`yoetz.tui.runtime.YoetzRuntime` and records what the
+Every method mirrors :class:`finishup.tui.runtime.FinishUpRuntime` and records what the
 interface asked for, so interaction tests can assert on the *decisions* the UI
 made — which plan it applied, whether it asked for a credential at all — without
 a Codex installation, a running service, or a vault.
@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
-from yoetz.tui.models import (
+from finishup.tui.models import (
     CheckMode,
     Detection,
     DoctorReport,
@@ -32,7 +32,7 @@ from yoetz.tui.models import (
     WorkDetail,
     WorkItem,
 )
-from yoetz.tui.runtime import RuntimeError_
+from finishup.tui.runtime import RuntimeError_
 
 DESKTOP = HarnessOption(
     executable_path="/Applications/Codex.app/Contents/MacOS/codex",
@@ -56,14 +56,14 @@ PLAN = IntegrationPlan(
     reported_version="0.44",
     project_root="/tmp/project",
     route_profile="policy",
-    mcp_command="yoetz mcp serve",
-    mcp_server_name="yoetz",
+    mcp_command="finishup mcp serve",
+    mcp_server_name="finishup",
     policy_digest="7f8a92bd",
     planned_check_ids=("lint",),
     planned_file_count=6,
     managed_paths=(
-        "/tmp/project/.agents/skills/yoetz",
-        "/tmp/project/.agents/plugins/yoetz",
+        "/tmp/project/.agents/skills/finishup",
+        "/tmp/project/.agents/plugins/finishup",
     ),
     state_before="absent",
     already_registered=False,
@@ -73,17 +73,17 @@ PLAN = IntegrationPlan(
     activation_preview_digest="sha256:activation",
     activation_marketplace_path="/tmp/project/.agents/plugins/marketplace.json",
     activation_config_path="/tmp/codex/config.toml",
-    activation_marketplace_text='{"name":"yoetz"}\n',
-    activation_config_block='[plugins."yoetz@yoetz"]\nenabled = true\n',
+    activation_marketplace_text='{"name":"finishup"}\n',
+    activation_config_block='[plugins."finishup@finishup"]\nenabled = true\n',
     activation_plugin_source_digest="sha256:plugin-tree",
     activation_inventory_verified=False,
-    activation_plugin_install_path="/tmp/codex/plugins/cache/yoetz/yoetz/0.1.0",
+    activation_plugin_install_path="/tmp/codex/plugins/cache/finishup/finishup/0.1.0",
     activation_plugin_install_digest="sha256:installed-plugin-tree",
     activation_executable_digest="sha256:codex-executable",
     activation_codex_version="0.148.0-alpha.6",
     activation_probe_command=("--version",),
-    activation_inventory_command=("plugin", "list", "--marketplace", "yoetz", "--json"),
-    activation_install_command=("plugin", "add", "yoetz@yoetz", "--json"),
+    activation_inventory_command=("plugin", "list", "--marketplace", "finishup", "--json"),
+    activation_install_command=("plugin", "add", "finishup@finishup", "--json"),
     activation_probe_environment="temporary_owner_private_home",
     activation_environment=(("CODEX_HOME", "/tmp/codex"), ("CODEX_TESTING_HOME", "/tmp/codex")),
     activation_marketplace_preimage_digest="sha256:marketplace-before",
@@ -93,14 +93,14 @@ PLAN = IntegrationPlan(
 
 LOCAL_ONLY = PrivacyPosture(profile="local_only", llm_inference_enabled=False, readable=True)
 # No external provider is bound by default, so the recommendation is Private — the same rule
-# `yoetz.cli.privacy_setup.recommended_privacy_recipe` applies.
+# `finishup.cli.privacy_setup.recommended_privacy_recipe` applies.
 RECOMMEND_PRIVATE = PrivacyRecommendation(
     "private",
     "No current eligible exact provider route is configured, so this keeps network egress off "
     "entirely.",
     "In exchange, there is no external AI-powered review at all.",
 )
-# Verbatim from `YoetzRuntime.privacy_recommendation`. A fake that paraphrases lets a test
+# Verbatim from `FinishUpRuntime.privacy_recommendation`. A fake that paraphrases lets a test
 # assert wording the product does not actually say.
 RECOMMEND_METADATA_ONLY = PrivacyRecommendation(
     "metadata_only",
@@ -183,7 +183,9 @@ class FakeRuntime:
             harnesses=self.harnesses,
             secure_storage_available=self.secure_storage,
             secure_storage_reason=(
-                "" if self.secure_storage else "no credential store is loaded; Yoetz needs a test"
+                ""
+                if self.secure_storage
+                else "no credential store is loaded; FinishUP needs a test"
             ),
             already_connected=self.mcp == "yoetz_owned",
             cwd="/tmp/project",
@@ -195,7 +197,7 @@ class FakeRuntime:
     async def run_privacy_setup(
         self, recipe_hint: str | None, *, offer_recommended: bool = False
     ) -> object:
-        from yoetz.cli.privacy_setup import PrivacySetupReport
+        from finishup.cli.privacy_setup import PrivacySetupReport
 
         # ``None`` means the CLI opens on its recommendation; the fake resolves it the same way
         # the real one does so the interface cannot be tested against a rule of its own.
@@ -249,7 +251,9 @@ class FakeRuntime:
             executable_path=option.executable_path,
             codex_home=str(codex_home),
             activation_config_path=str(codex_home / "config.toml"),
-            activation_plugin_install_path=str(codex_home / "plugins/cache/yoetz/yoetz/0.1.0"),
+            activation_plugin_install_path=str(
+                codex_home / "plugins/cache/finishup/finishup/0.1.0"
+            ),
             activation_environment=(
                 ("CODEX_HOME", str(codex_home)),
                 ("CODEX_TESTING_HOME", str(codex_home)),
@@ -257,7 +261,7 @@ class FakeRuntime:
             reported_version=option.reported_version,
             route_profile=route,
             mcp_command=(
-                "yoetz mcp serve --semantic off" if route == "strict" else "yoetz mcp serve"
+                "finishup mcp serve --semantic off" if route == "strict" else "finishup mcp serve"
             ),
         )
 
@@ -280,7 +284,7 @@ class FakeRuntime:
         )
 
     async def foreign_entry_detail(self, option: HarnessOption) -> tuple[str, ...]:
-        return ('An MCP entry named "yoetz" already exists.',)
+        return ('An MCP entry named "finishup" already exists.',)
 
     async def vault_posture(self) -> VaultPosture:
         return self.vault
@@ -343,7 +347,7 @@ class FakeRuntime:
         return self.credential_result
 
     def codex_subscription_defaults(self) -> tuple[str, str, str, str]:
-        return "/opt/codex/codex", "/var/lib/yoetz/codex-home", "gpt-5.6-luna", "high"
+        return "/opt/codex/codex", "/var/lib/finishup/codex-home", "gpt-5.6-luna", "high"
 
     subscription_routine_default: str | None = "medium"
 

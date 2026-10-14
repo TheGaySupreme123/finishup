@@ -14,11 +14,11 @@ from typing import Any, cast
 import pytest
 from mcp import types
 
-from yoetz.domain.events import ClaimRevisionMismatch, public_error_for_claim_revision_mismatch
-from yoetz.mcp.server import result_from_public_model
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import PublishWorkResultModel
+from finishup.domain.events import ClaimRevisionMismatch, public_error_for_claim_revision_mismatch
+from finishup.mcp.server import result_from_public_model
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import PublishWorkResultModel
 
 _CORRELATION = "err_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 _FIELD = "/event_drafts/4/payload/obligation_refs"
@@ -264,7 +264,7 @@ def test_generic_content_matches_the_summary_projector() -> None:
 def test_limitation_refs_complete_names_missing_results_within_bounds() -> None:
     """A completion claim missing live limitations is told exactly which result ids to add."""
 
-    from yoetz.domain.values import result_id
+    from finishup.domain.values import result_id
 
     missing = tuple(
         result_id(f"res_00000000-0000-4000-8000-{index:012d}") for index in range(40, 0, -1)
@@ -286,8 +286,8 @@ def test_limitation_refs_complete_names_missing_results_within_bounds() -> None:
 
 
 def test_missing_refs_are_admitted_only_for_limitation_refs_complete() -> None:
-    from yoetz.domain.values import result_id
-    from yoetz.protocol.errors import ProtocolValueError
+    from finishup.domain.values import result_id
+    from finishup.protocol.errors import ProtocolValueError
 
     with pytest.raises(ProtocolValueError):
         ClaimRevisionMismatch(

@@ -10,8 +10,8 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import (
     CAPTURE_HANDOFF_RECONCILE_AGE_MS,
     CaptureHandoffRetirementReason,
     CaptureHandoffRetirementStage,
@@ -21,10 +21,10 @@ from yoetz.domain.observation import (
     ObservationGapCode,
     ObservationSource,
 )
-from yoetz.domain.observation_budget import LARGEST_CAPACITY
-from yoetz.domain.observation_settings import ObservationDetailProfile, ObservationSelection
-from yoetz.domain.values import JsonObject, Timestamp, timestamp_from_datetime
-from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+from finishup.domain.observation_budget import LARGEST_CAPACITY
+from finishup.domain.observation_settings import ObservationDetailProfile, ObservationSelection
+from finishup.domain.values import JsonObject, Timestamp, timestamp_from_datetime
+from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 
 # The oldest capture receipt in the issue's native run.
 _START = datetime(2026, 9, 25, 7, 47, 6, 537_000, tzinfo=UTC)

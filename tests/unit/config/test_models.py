@@ -9,10 +9,11 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from yoetz.config.models import (
+from finishup.config.models import (
     PROFILE_CAPABILITIES,
     ConfigError,
     ExternalRuntimeProfileConfig,
+    FinishUpConfig,
     LineageSettings,
     LocalModelProfileConfig,
     LoggingConfig,
@@ -22,14 +23,13 @@ from yoetz.config.models import (
     SemanticPolicy,
     StorageConfig,
     VerificationConfig,
-    YoetzConfig,
 )
-from yoetz.config.privacy import (
+from finishup.config.privacy import (
     PrivacyBootstrapConfig,
     safe_privacy_bootstrap,
     seed_policy_if_absent,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
@@ -40,8 +40,8 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.ports.privacy import PrivacyPolicyStorePort
-from yoetz.protocol.models import DataCategory
+from finishup.ports.privacy import PrivacyPolicyStorePort
+from finishup.protocol.models import DataCategory
 
 _DIGEST = "sha256:" + "1" * 64
 _POLICY_ID = "pvy_88888888-8888-4888-8888-888888888888"
@@ -87,7 +87,7 @@ def _external_runtime() -> ExternalRuntimeProfileConfig:
         isolated_config_sha256=_DIGEST,
         capability_profile="codex-evaluator/0.150.1/v1",
         capability_evidence_expires_at="2026-11-30T00:00:00Z",
-        codex_home="/opt/Yoetz Tools/codex-home",
+        codex_home="/opt/FinishUP Tools/codex-home",
         model="gpt-5.6-sol",
         reasoning_effort="high",
     )
@@ -155,7 +155,7 @@ class _AtomicSeedStore:
 
 
 def test_defaults_are_frozen_and_all_disclosure_is_denied() -> None:
-    config = YoetzConfig()
+    config = FinishUpConfig()
     assert config.schema_version == "1"
     assert config.profile == "strict-local"
     assert config.storage == StorageConfig(data_dir=None, durability="full")
@@ -189,7 +189,7 @@ def test_profile_capability_matrix_is_closed() -> None:
     ("factory", "reason"),
     [
         (
-            lambda: YoetzConfig(schema_version="2"),  # type: ignore[arg-type]
+            lambda: FinishUpConfig(schema_version="2"),  # type: ignore[arg-type]
             "config_schema_unsupported",
         ),
         (
@@ -210,31 +210,31 @@ def test_profile_capability_matrix_is_closed() -> None:
         ),
         (lambda: LoggingConfig(payloads=True), "payload_logging_forbidden"),
         (
-            lambda: YoetzConfig(profile="strict-local", provider=_provider()),
+            lambda: FinishUpConfig(profile="strict-local", provider=_provider()),
             "strict_local_forbids_provider",
         ),
         (
-            lambda: YoetzConfig(profile="local-openai", local_model=_local_model()),
+            lambda: FinishUpConfig(profile="local-openai", local_model=_local_model()),
             "external_profile_forbids_local_model",
         ),
         (
-            lambda: YoetzConfig(profile="test-fake", provider=_provider()),
+            lambda: FinishUpConfig(profile="test-fake", provider=_provider()),
             "test_fake_forbids_provider",
         ),
         (
-            lambda: YoetzConfig(profile="test-fake", local_model=_local_model()),
+            lambda: FinishUpConfig(profile="test-fake", local_model=_local_model()),
             "test_fake_forbids_local_model",
         ),
         (
-            lambda: YoetzConfig(profile="local-openai"),
+            lambda: FinishUpConfig(profile="local-openai"),
             "provider_required_for_semantic",
         ),
         (
-            lambda: YoetzConfig(profile="codex-subscription"),
+            lambda: FinishUpConfig(profile="codex-subscription"),
             "external_runtime_required_for_semantic",
         ),
         (
-            lambda: YoetzConfig(
+            lambda: FinishUpConfig(
                 profile="codex-subscription",
                 provider=_provider(),
                 external_runtime=_external_runtime(),
@@ -252,15 +252,17 @@ def test_reason_coded_validation(factory: object, reason: str) -> None:
 
 
 def test_profiles_accept_only_their_exact_structural_sink() -> None:
-    assert YoetzConfig(profile="strict-local", local_model=_local_model()).local_model is not None
-    assert YoetzConfig(profile="local-openai", provider=_provider()).provider is not None
-    runtime = YoetzConfig(
+    assert (
+        FinishUpConfig(profile="strict-local", local_model=_local_model()).local_model is not None
+    )
+    assert FinishUpConfig(profile="local-openai", provider=_provider()).provider is not None
+    runtime = FinishUpConfig(
         profile="codex-subscription", external_runtime=_external_runtime()
     ).external_runtime
     assert runtime is not None
     assert runtime.credential_authority == "external_runtime_oauth"
     assert (
-        YoetzConfig(
+        FinishUpConfig(
             profile="local-openai",
             verification=VerificationConfig(semantic="disabled"),
         ).provider
@@ -270,7 +272,7 @@ def test_profiles_accept_only_their_exact_structural_sink() -> None:
 
 def test_unknown_secret_and_local_locator_keys_fail_before_values_escape() -> None:
     with pytest.raises(ConfigError) as unknown:
-        YoetzConfig.model_validate({"unreviewed": "content"}, strict=True)
+        FinishUpConfig.model_validate({"unreviewed": "content"}, strict=True)
     assert unknown.value.reason_code == "unknown_config_key"
     assert str(unknown.value) == "unknown_config_key"
 
@@ -415,10 +417,10 @@ def test_codex_phase_budgets_are_independent_and_bounded() -> None:
 def test_rendered_codex_binding_emits_phase_budget_keys_only_when_explicit() -> None:
     import tomllib
 
-    from yoetz.config.load import validate_config_mapping
-    from yoetz.config.write import render_config_toml
+    from finishup.config.load import validate_config_mapping
+    from finishup.config.write import render_config_toml
 
-    legacy = YoetzConfig(profile="codex-subscription", external_runtime=_external_runtime())
+    legacy = FinishUpConfig(profile="codex-subscription", external_runtime=_external_runtime())
     legacy_text = render_config_toml(legacy)
     for key in ("routine_reasoning_effort", "routine_output_limit", "final_output_limit"):
         assert key not in legacy_text
@@ -431,7 +433,7 @@ def test_rendered_codex_binding_emits_phase_budget_keys_only_when_explicit() -> 
             "final_output_limit": 6000,
         }
     )
-    explicit = YoetzConfig(profile="codex-subscription", external_runtime=explicit_runtime)
+    explicit = FinishUpConfig(profile="codex-subscription", external_runtime=explicit_runtime)
     text = render_config_toml(explicit)
     assert 'routine_reasoning_effort = "medium"' in text
     assert "routine_output_limit = 2048" in text

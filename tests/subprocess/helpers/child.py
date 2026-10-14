@@ -31,7 +31,7 @@ __all__ = [
 ]
 
 _READ_CHUNK: Final = 65_536
-_OWNER_MARKER: Final = ".yoetz-child-owner.json"
+_OWNER_MARKER: Final = ".finishup-child-owner.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +161,7 @@ def _minimal_environment(temp_root: Path, artifact_env: Mapping[str, str]) -> di
         "XDG_CONFIG_HOME": str(temp_root / "config"),
         "XDG_DATA_HOME": str(temp_root / "data"),
         "XDG_RUNTIME_DIR": str(temp_root / "runtime"),
-        "YOETZ_TEST_MARKER": temp_root.name,
+        "FINISHUP_TEST_MARKER": temp_root.name,
     }
     for key in ("VIRTUAL_ENV", "SYSTEMROOT"):
         value = artifact_env.get(key)
@@ -185,14 +185,14 @@ def spawn_installed(
     if len(set(_inherited_fds)) != len(_inherited_fds):
         raise ValueError("child_inherited_descriptor_invalid")
 
-    temp_root = Path(tempfile.mkdtemp(prefix="yoetz-subprocess-"))
+    temp_root = Path(tempfile.mkdtemp(prefix="finishup-subprocess-"))
     temp_root.chmod(0o700)
     for name in ("home", "tmp", "cache", "config", "data", "runtime"):
         directory = temp_root / name
         directory.mkdir(mode=0o700)
     environment = _minimal_environment(temp_root, artifact_env)
     environment.update(spec.env_overlay)
-    checkout_root = artifact_env.get("YOETZ_CHECKOUT_ROOT")
+    checkout_root = artifact_env.get("FINISHUP_CHECKOUT_ROOT")
     if checkout_root is not None and spec.executable.is_relative_to(Path(checkout_root).resolve()):
         raise ValueError("child_executable_from_checkout")
     process = subprocess.Popen(

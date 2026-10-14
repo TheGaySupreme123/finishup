@@ -26,35 +26,35 @@ from typing import Any, Final, cast
 
 import apsw
 
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     load_mapping,
     mapping_from_start_ids,
     store_mapping,
 )
-from yoetz.adapters.integrations.codex_plugin import render_plugin_tree
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite import connection as connection_module
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_advice import (
+from finishup.adapters.integrations.codex_plugin import render_plugin_tree
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite import connection as connection_module
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application.observation_advice import (
     ObservationAdviceBuildInput,
     build_observation_advice_snapshot,
 )
-from yoetz.cli.observe_hooks import handle_observe, map_hook_payload_to_envelope
-from yoetz.domain.observation import (
+from finishup.cli.observe_hooks import handle_observe, map_hook_payload_to_envelope
+from finishup.domain.observation import (
     AdviceSnapshot,
     ObservationEnvelope,
     ObservationGapCode,
     ObservationIngestDisposition,
     ObservationLifecycle,
 )
-from yoetz.domain.values import Timestamp
-from yoetz.kernel.policies.observation_advice import (
+from finishup.domain.values import Timestamp
+from finishup.kernel.policies.observation_advice import (
     ObservationAdviceContext,
     observation_advice_findings,
 )
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.protocol.ids import IdKind, new_id
 
 _TIME: Final = Timestamp("2026-07-23T09:00:00.000Z")
 _SECRET: Final = "AWS_SECRET=should-never-appear"
@@ -88,37 +88,37 @@ class ProductionSurface:
 
 def resolve_production_surface() -> ProductionSurface:
     gaps: list[str] = []
-    coordinator = try_import("yoetz.service.observation_coordinator", "ObservationCoordinator")
+    coordinator = try_import("finishup.service.observation_coordinator", "ObservationCoordinator")
     if coordinator is None:
         coordinator = try_import(
-            "yoetz.application.observation_coordinator", "ObservationCoordinator"
+            "finishup.application.observation_coordinator", "ObservationCoordinator"
         )
     if coordinator is None:
         gaps.append(
             "Agent A: ObservationCoordinator missing "
-            "(expected yoetz.service.observation_coordinator or "
-            "yoetz.application.observation_coordinator)"
+            "(expected finishup.service.observation_coordinator or "
+            "finishup.application.observation_coordinator)"
         )
     locator = try_import(
-        "yoetz.adapters.integrations.codex_session_stream", "CodexSessionStreamLocator"
+        "finishup.adapters.integrations.codex_session_stream", "CodexSessionStreamLocator"
     )
     if locator is None:
         locator = try_import(
-            "yoetz.adapters.integrations.codex_session_locator", "CodexSessionStreamLocator"
+            "finishup.adapters.integrations.codex_session_locator", "CodexSessionStreamLocator"
         )
     if locator is None:
         gaps.append(
             "Agent B: CodexSessionStreamLocator missing "
             "(expected codex_session_stream or codex_session_locator)"
         )
-    advice_item = try_import("yoetz.domain.observation", "AdviceItem")
+    advice_item = try_import("finishup.domain.observation", "AdviceItem")
     if advice_item is None:
-        advice_item = try_import("yoetz.application.observation_advice", "AdviceItem")
+        advice_item = try_import("finishup.application.observation_advice", "AdviceItem")
     if advice_item is None:
         gaps.append("Agent C: AdviceItem missing from domain.observation or observation_advice")
-    sandbox = try_import("yoetz.ports.check_sandbox", "CheckSandboxPort")
+    sandbox = try_import("finishup.ports.check_sandbox", "CheckSandboxPort")
     if sandbox is None:
-        sandbox = try_import("yoetz.adapters.check_sandbox", "MacOSCheckSandbox")
+        sandbox = try_import("finishup.adapters.check_sandbox", "MacOSCheckSandbox")
     if sandbox is None:
         gaps.append("Agent C: CheckSandboxPort missing (ports.check_sandbox)")
     return ProductionSurface(
@@ -133,7 +133,7 @@ def resolve_production_surface() -> ProductionSurface:
 def ready_composition_uses_memory_observation_store() -> bool:
     """True when production ready composition still constructs MemoryObservationStore."""
 
-    module = importlib.import_module("yoetz.service.ready_composition")
+    module = importlib.import_module("finishup.service.ready_composition")
     source = inspect.getsource(module)
     return "MemoryObservationStore()" in source
 
@@ -141,9 +141,9 @@ def ready_composition_uses_memory_observation_store() -> bool:
 def setup_returns_early_when_mcp_registered() -> bool:
     """True when setup still short-circuits on already_registered without plugin install."""
 
-    module = importlib.import_module("yoetz.cli.setup")
+    module = importlib.import_module("finishup.cli.setup")
     source = inspect.getsource(module)
-    # Complete path must install/verify plugin even when MCP is already yoetz-owned.
+    # Complete path must install/verify plugin even when MCP is already finishup-owned.
     installs_plugin = (
         "install_plugin" in source
         or "plugin_service.install" in source
@@ -191,7 +191,7 @@ class FakeCodexInstall:
         binary.parent.mkdir(parents=True, mode=0o700)
         binary.write_text("#!/bin/sh\necho 0.144.5\n", encoding="utf-8")
         binary.chmod(0o700)
-        state = root / "yoetz-state"
+        state = root / "finishup-state"
         state.mkdir(mode=0o700)
         return cls(project=project, codex_home=codex_home, state=state, binary=binary)
 
@@ -209,7 +209,7 @@ def _write_plugin_hooks(project: Path) -> bool:
     """Materialize rendered plugin tree under the trusted project (interim setup stand-in)."""
 
     tree = render_plugin_tree()
-    root = project / ".agents" / "plugins" / "yoetz"
+    root = project / ".agents" / "plugins" / "finishup"
     root.mkdir(parents=True, mode=0o700)
     for relative, payload in tree.items():
         path = root / relative
@@ -233,7 +233,7 @@ def run_unified_setup(
     succeed. Production setup must replace this interim path.
     """
 
-    production_setup = try_import("yoetz.cli.setup", "run_complete_codex_integration")
+    production_setup = try_import("finishup.cli.setup", "run_complete_codex_integration")
     if callable(production_setup) and not fail_plugin:
         result = production_setup(
             project=install.project,

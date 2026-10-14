@@ -16,19 +16,19 @@ from typing import cast
 import pytest
 
 from builders.multi_agent import MultiAgentService, multi_agent_service
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.coordination import CoordinationRuntime
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.start import StartInternalResult
-from yoetz.application.status import StatusInternalResult
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.observation import ObservationRevokeCommand
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.runtime import RouteAccess, RouteCommand
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.coordination import CoordinationRuntime
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.domain.findings import FindingKind
+from finishup.domain.observation import ObservationRevokeCommand
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.runtime import RouteAccess, RouteCommand
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,

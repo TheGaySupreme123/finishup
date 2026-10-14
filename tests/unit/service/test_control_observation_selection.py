@@ -9,10 +9,10 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.domain.observation import observation_envelope_from_json
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
-from yoetz.service.control_protocol import (
+from finishup.domain.observation import observation_envelope_from_json
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.service.control_protocol import (
     ControlProtocolError,
     decode_control_frame,
     encode_control_frame,

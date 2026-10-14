@@ -11,13 +11,13 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-from yoetz.adapters.providers import openai_chat_completions, openai_responses
-from yoetz.adapters.providers.openai_chat_completions import (
+from finishup.adapters.providers import openai_chat_completions, openai_responses
+from finishup.adapters.providers.openai_chat_completions import (
     CHAT_COMPLETIONS_INSTRUCTION,
     CHAT_COMPLETIONS_JSON_SHAPE_SUFFIX,
     ChatCompletionsProfile,
 )
-from yoetz.adapters.providers.openai_responses import (
+from finishup.adapters.providers.openai_responses import (
     ACCOUNT_GAP_GLOSSARY,
     CHALLENGE_FIELD_GLOSSARY,
     FINDING_KIND_GLOSSARY,
@@ -25,15 +25,15 @@ from yoetz.adapters.providers.openai_responses import (
     SEMANTIC_REVIEW_INSTRUCTION,
     owner_declared_data_use_profile,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     ACKNOWLEDGED_REVIEW_INSTRUCTION,
     OVER_CASE_ITEM_LIMIT_REASON,
     REVIEW_PHASE_QUESTIONS,
 )
-from yoetz.domain.findings import EXTERNAL_SEMANTIC_FINDING_KINDS, FindingKind
-from yoetz.domain.observation import ObservationGapCode
-from yoetz.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
-from yoetz.domain.receipts import (
+from finishup.domain.findings import EXTERNAL_SEMANTIC_FINDING_KINDS, FindingKind
+from finishup.domain.observation import ObservationGapCode
+from finishup.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
+from finishup.domain.receipts import (
     COMPLETION_CLAIM_OUTSIDE_PLAN_GAP,
     COMPLETION_PLAN_NOT_CLAIMED_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
@@ -41,9 +41,9 @@ from yoetz.domain.receipts import (
     SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
     SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
 )
-from yoetz.kernel.finding_resolution import SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.models import MAX_REVIEW_CHALLENGES
+from finishup.kernel.finding_resolution import SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.models import MAX_REVIEW_CHALLENGES
 
 _NOW = datetime(2026, 9, 30, tzinfo=UTC)
 _DIGEST = "sha256:" + "c" * 64
@@ -146,14 +146,14 @@ def test_reviewer_is_told_it_is_the_requested_review_and_never_flags_process_sta
     assert "this running review is that review" in _TEXT
     assert (
         "Never raise as a problem a step or obligation whose only content is obtaining this "
-        "review, running a Yoetz check, or recording a review's outcome;" in _TEXT
+        "review, running a FinishUP check, or recording a review's outcome;" in _TEXT
     )
     # "Check" alone would also cover a test, lint, or type check: those stay work.
     assert "building, testing, linting, or type-checking the work is work, not process." in _TEXT
     assert "running a check," not in _TEXT
-    assert "Never raise Yoetz's own process state either:" in _TEXT
+    assert "Never raise FinishUP's own process state either:" in _TEXT
     for state in (
-        "that a Yoetz check, review, or receipt is pending, running, or recorded",
+        "that a FinishUP check, review, or receipt is pending, running, or recorded",
         "that a finding is open, unanswered, or unresolved",
         "coverage levels",
         "a packet limit code",
@@ -174,7 +174,7 @@ def test_open_work_obligations_are_still_raised() -> None:
     assert FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS in EXTERNAL_SEMANTIC_FINDING_KINDS
     gloss = FINDING_KIND_GLOSSARY["completion_with_open_obligations"]
     assert gloss.startswith("work is presented as finished while work obligations")
-    assert "an obligation only to obtain this review or run a Yoetz check is not one" in gloss
+    assert "an obligation only to obtain this review or run a FinishUP check is not one" in gloss
     assert "but one to build, test, lint, or type-check the work is" in gloss
     # The substance of an agent's answer remains reviewable, so these kinds keep their meaning.
     assert "the substance of an agent's answer to a finding stays reviewable" in _TEXT
@@ -258,7 +258,7 @@ def test_a_routine_review_judges_incomplete_work_and_returns_correctness_as_advi
         "that something was done or ran that the packet does not show, and work stopped early.",
         "Work not yet started is not a defect while work is in progress.",
         "A correctness concern (the code or a result is wrong) is not incomplete work: return it "
-        "as finding_kind code_defect, which Yoetz records as an advisory, non-blocking note, not "
+        "as finding_kind code_defect, which FinishUP records as an advisory, non-blocking note, not "
         "a finding.",
         "Review phase: final is the closing review, with or without a completion claim: judge "
         "completeness against the task statement",
@@ -377,7 +377,7 @@ def test_account_codes_are_not_dismissed_as_packet_limits() -> None:
     assert set(ACCOUNT_GAP_GLOSSARY) == account
     assert not account & set(PACKET_GAP_GLOSSARY)
     assert (
-        "Account codes come from Yoetz's deterministic checks of the agent's own record, are not "
+        "Account codes come from FinishUP's deterministic checks of the agent's own record, are not "
         "packet limits, and may point at a real discrepancy." in _TEXT
     )
     packet_start = _TEXT.index("Packet limit codes and omission reasons")
@@ -430,9 +430,9 @@ def test_a_re_raise_names_the_finding_it_restates() -> None:
 def test_the_reviewer_reads_the_binary_notice_and_rendering_labels() -> None:
     """Issues #983 and #1004: the packet's labels for image and binary files are explained."""
 
-    assert "[Yoetz: the agent referenced an image or binary file at <path>" in _TEXT
+    assert "[FinishUP: the agent referenced an image or binary file at <path>" in _TEXT
     assert "its existence is the agent's unverified claim" in _TEXT
-    assert "[Yoetz: an image was observed marks an image a host hook observed" in _TEXT
+    assert "[FinishUP: an image was observed marks an image a host hook observed" in _TEXT
     assert "agent-rendered text of <path> is the agent's own text rendering" in _TEXT
     # Issue #983: agent text can imitate a label; only the excerpt's own evidence id binds it.
     assert "only when the evidence id it names equals that excerpt's own source ref" in _TEXT
@@ -477,7 +477,7 @@ def test_a_hidden_evaluator_requirement_is_a_not_assessable_row_once_disclosed()
         "establish (a hidden test or grader, a withheld reference, a user-only answer) is a "
         "verified row with verdict not_assessable, not a challenge, once the packet shows the "
         "agent disclosed it: an obligation acknowledged as not done, a "
-        "yoetz-verification-limit decision, or a limitation request it acknowledged.",
+        "finishup-verification-limit decision, or a limitation request it acknowledged.",
     ):
         assert rule in _TEXT, rule
     final = _collapsed(REVIEW_PHASE_QUESTIONS["final"])
@@ -529,7 +529,7 @@ def test_the_acknowledged_instruction_keeps_the_blocker_carve_outs() -> None:
         "hidden evaluator or reference it cannot obtain, an answer only the user has)",
         "stands as a disclosed limitation: do not challenge it, and where you want the limit "
         "stated ask for state_unresolved_limitation.",
-        "What Yoetz or this review could not show or prove is never a reason to challenge.",
+        "What FinishUP or this review could not show or prove is never a reason to challenge.",
         "Never recommend emptying, deleting or withdrawing a deliverable that passes its "
         "recorded tests",
     ):

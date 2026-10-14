@@ -48,7 +48,7 @@ def test_healthy_zero_findings_honesty_only_not_demonstrated_influence() -> None
     # Claiming improvement without demonstration violates the forbidden-summary rule.
     bad: InfluenceTimeline = {
         **timeline,
-        "final_prose": "Yoetz improved the agent despite zero findings.",
+        "final_prose": "FinishUP improved the agent despite zero findings.",
     }
     bad_report = classify_influence_report(bad)
     assert bad_report["work_product_influence"] == "not_demonstrated"
@@ -62,7 +62,7 @@ def test_registration_only_is_not_activation_or_influence() -> None:
         "ops_completed_honestly": False,
         "attributions": [
             {
-                "yoetz_output_ref": "finding-should-not-count",
+                "finishup_output_ref": "finding-should-not-count",
                 "bounded_action_after": "source_revision",
                 "recheck_result": "passed",
                 "counterfactual": "uncertain",
@@ -75,7 +75,7 @@ def test_registration_only_is_not_activation_or_influence() -> None:
     assert report["activation"] == "registered_only"
     assert report["work_product_influence"] == "not_demonstrated"
     assert report["stream_d"] == "not_demonstrated"
-    assert report["material_revisions_attributable_to_yoetz"] == 0
+    assert report["material_revisions_attributable_to_finishup"] == 0
 
 
 def test_tools_list_only_is_not_activation() -> None:
@@ -163,7 +163,7 @@ def test_terminal_review_only_not_applicable_gate_fails_on_identical_retry_thras
 
 def test_finding_revision_recheck_demonstrates_influence() -> None:
     attribution: AttributionRecord = {
-        "yoetz_output_ref": "finding_det_1",
+        "finishup_output_ref": "finding_det_1",
         "agent_decision_before": "no_revision_planned",
         "bounded_action_after": "source_revision",
         "new_evidence_ref": "sha256:" + ("a" * 64),
@@ -195,7 +195,7 @@ def test_finding_revision_recheck_demonstrates_influence() -> None:
     )
     assert report["work_product_influence"] == "demonstrated"
     assert report["stream_d"] == "pass"
-    assert report["material_revisions_attributable_to_yoetz"] == 1
+    assert report["material_revisions_attributable_to_finishup"] == 1
     assert report["material_revisions_rechecked"] == 1
     assert report["seeded_defect_outcome"] == "remediated"
     assert report["seeded_defect_miss_class"] is None
@@ -276,7 +276,7 @@ def test_receipt_wording_change_only_is_honesty_influence_not_stream_d() -> None
             "receipt_wording_changed_for_honesty": True,
             "attributions": [
                 {
-                    "yoetz_output_ref": "receipt_1",
+                    "finishup_output_ref": "receipt_1",
                     "agent_decision_before": "overclaimed_coverage",
                     "bounded_action_after": "receipt_wording_only",
                     "recheck_result": "not_applicable",
@@ -289,7 +289,7 @@ def test_receipt_wording_change_only_is_honesty_influence_not_stream_d() -> None
     assert report["honesty_influence"] == "yes"
     assert report["work_product_influence"] == "not_demonstrated"
     assert report["stream_d"] == "not_demonstrated"
-    assert report["material_revisions_attributable_to_yoetz"] == 0
+    assert report["material_revisions_attributable_to_finishup"] == 0
     assert report["forbidden_summary_violation"] is False
 
 

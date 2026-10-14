@@ -14,20 +14,20 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
 
-from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
-from yoetz.adapters.integrations.codex_skill import (
+from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
+from finishup.adapters.integrations.codex_skill import (
     build_managed_marker,
     expected_skill_member_paths,
     load_packaged_skill_members,
     load_packaged_skill_source,
 )
-from yoetz.ports.integrations import IntegrationScope
-from yoetz.protocol.canonical import JsonValue, canonical_digest
+from finishup.ports.integrations import IntegrationScope
+from finishup.protocol.canonical import JsonValue, canonical_digest
 
 _ROOT = Path(__file__).resolve().parent.parent
 _TREES = {
-    ".agents/plugins/yoetz": ".yoetz-plugin-install.json",
-    ".agents/skills/yoetz": ".yoetz-install.json",
+    ".agents/plugins/finishup": ".yoetz-plugin-install.json",
+    ".agents/skills/finishup": ".yoetz-install.json",
 }
 _REMEDIATION = "uv run python scripts/sync_resource_ripple.py --write"
 
@@ -89,8 +89,8 @@ def _expected_trees() -> dict[str, dict[str, bytes]]:
         load_packaged_skill_source(), IntegrationScope.TRUSTED_PROJECT
     )
     return {
-        ".agents/plugins/yoetz": render_plugin_install_tree(),
-        ".agents/skills/yoetz": skill,
+        ".agents/plugins/finishup": render_plugin_install_tree(),
+        ".agents/skills/finishup": skill,
     }
 
 
@@ -105,17 +105,17 @@ def _expected_tree_paths() -> dict[str, set[str]]:
     """
 
     skill_member_paths = expected_skill_member_paths()
-    skill_paths = set(skill_member_paths) | {_TREES[".agents/skills/yoetz"]}
+    skill_paths = set(skill_member_paths) | {_TREES[".agents/skills/finishup"]}
     plugin_paths = {
         ".codex-plugin/plugin.json",
         "hooks/hooks.json",
         ".mcp.json",
-        _TREES[".agents/plugins/yoetz"],
+        _TREES[".agents/plugins/finishup"],
     }
-    plugin_paths.update(f"skills/yoetz/{path}" for path in skill_member_paths)
+    plugin_paths.update(f"skills/finishup/{path}" for path in skill_member_paths)
     return {
-        ".agents/plugins/yoetz": plugin_paths,
-        ".agents/skills/yoetz": skill_paths,
+        ".agents/plugins/finishup": plugin_paths,
+        ".agents/skills/finishup": skill_paths,
     }
 
 
@@ -158,7 +158,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             for name in drifted:
                 print(
                     f"sync_committed_agent_trees: FAIL (agent_tree_drift) {name}\n"
-                    "  canonical owners: guidance/, skills/codex/yoetz/, packaged resources, "
+                    "  canonical owners: guidance/, skills/codex/finishup/, packaged resources, "
                     "Codex integration renderers\n"
                     f"  regenerate: {_REMEDIATION}",
                     file=sys.stderr,

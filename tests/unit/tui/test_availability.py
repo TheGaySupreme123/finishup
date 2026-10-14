@@ -10,7 +10,7 @@ from collections.abc import Mapping
 
 import pytest
 
-from yoetz.tui import tui_available, tui_supported
+from finishup.tui import tui_available, tui_supported
 
 
 class _Stream:
@@ -88,9 +88,9 @@ def test_a_dumb_or_absent_term_is_treated_as_automation(
 
 def test_the_environment_opt_out_is_honoured(monkeypatch: pytest.MonkeyPatch) -> None:
     terminal(monkeypatch)
-    assert tui_available({**TTY, "YOETZ_TUI": "0"}) is False
+    assert tui_available({**TTY, "FINISHUP_TUI": "0"}) is False
     # Any other value is not an opt-out.
-    assert tui_available({**TTY, "YOETZ_TUI": "1"}) is True
+    assert tui_available({**TTY, "FINISHUP_TUI": "1"}) is True
 
 
 def test_an_unreadable_stream_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:

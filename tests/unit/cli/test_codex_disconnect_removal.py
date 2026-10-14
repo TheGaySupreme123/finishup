@@ -5,14 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from yoetz.adapters.integrations.codex_marketplace import RemovalOutcome
-from yoetz.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
-from yoetz.adapters.integrations.host_discovery import HostInstallation
-from yoetz.application.host_connection import ConnectionError
-from yoetz.cli import codex_connection
-from yoetz.cli.host_connection import connection_summary
-from yoetz.ports.integrations import IntegrationState
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.adapters.integrations.codex_marketplace import RemovalOutcome
+from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
+from finishup.adapters.integrations.host_discovery import HostInstallation
+from finishup.application.host_connection import ConnectionError
+from finishup.cli import codex_connection
+from finishup.cli.host_connection import connection_summary
+from finishup.ports.integrations import IntegrationState
+from finishup.protocol.schemas import validate_schema_instance
 
 
 @pytest.mark.parametrize("verified_absent", [True, False])
@@ -36,7 +36,7 @@ def test_disconnect_keeps_removal_outcome(
                 if argv[1:3] == ("mcp", "list") and verified_absent
                 else CommandOutput(1, b"")
             )
-        return CommandOutput(0, b'{"command":"yoetz","args":["mcp","serve","--host","codex"]}')
+        return CommandOutput(0, b'{"command":"finishup","args":["mcp","serve","--host","codex"]}')
 
     def adapter(**_kwargs: object) -> CodexMcpAdapter:
         return CodexMcpAdapter(runner)
@@ -53,8 +53,8 @@ def test_disconnect_keeps_removal_outcome(
         async def remove_skill(self, *_args: object) -> None:
             cleanup.append("skill")
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_mcp.isolated_root", lambda: None)
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.installed_launcher", lambda: None)
     monkeypatch.setattr(codex_connection, "CodexMcpAdapter", adapter)
     monkeypatch.setattr(codex_connection, "CodexSkillIntegration", Skill)
     monkeypatch.setattr(codex_connection, "preview_removal", plugin_preview)

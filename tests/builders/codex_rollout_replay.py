@@ -24,15 +24,15 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from builders.codex_replay import HOST, Recorder, Replay, build_coordinator
-from yoetz.application.observation_drain import ObservationOutboxSweeper
-from yoetz.domain.events import (
+from finishup.application.observation_drain import ObservationOutboxSweeper
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.kernel.observed_failures import observed_action_tool
-from yoetz.kernel.task_facts import task_fact_signals
+from finishup.kernel.observed_failures import observed_action_tool
+from finishup.kernel.task_facts import task_fact_signals
 
 __all__ = ["RolloutRun", "command_items", "drive_rollout", "summarize"]
 

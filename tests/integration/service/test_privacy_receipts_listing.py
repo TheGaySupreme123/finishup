@@ -1,6 +1,6 @@
 """``privacy receipts list`` over the real local control socket (issue #921).
 
-The DeepSWE v2 export ran ``yoetz privacy receipts list --page-size 100 --json`` after each
+The DeepSWE v2 export ran ``finishup privacy receipts list --page-size 100 --json`` after each
 session and got ``invalid_request: the local request could not be completed`` in 39 of 58
 isolated installs -- every install whose audit held about 45 receipts or more, which is every
 install where AI-powered review sent data off the machine. The page itself was valid. The frame
@@ -14,7 +14,7 @@ control listener and the real client, so a page crosses exactly the boundary tha
 come from the production writers: projected control reads, the coordinator's own pre-dispatch
 path, and the catalog's disclosure, egress and projection writers with receipts shaped the way
 the application writes them. Nothing here touches a user installation: the service root is a
-private owner-only directory and ``YOETZ_ISOLATED_ROOT`` points there.
+private owner-only directory and ``FINISHUP_ISOLATED_ROOT`` points there.
 """
 
 from __future__ import annotations
@@ -31,26 +31,17 @@ from typing import Any, cast
 
 import pytest
 
-import yoetz.cli.app as cli_app
+import finishup.cli.app as cli_app
 from builders.multi_agent import private_service_root
-from integration.service.test_consent_vault_initialize_composition import (
-    runtime_directory,  # noqa: F401  # pyright: ignore[reportUnusedImport]
-)
-from integration.service.test_ready_composition import (
-    _Diagnostics,  # pyright: ignore[reportPrivateUsage]
-    _GenerationStore,  # pyright: ignore[reportPrivateUsage]
-    _Paths,  # pyright: ignore[reportPrivateUsage]
-    _sqlite_policy,  # noqa: F401  # pyright: ignore[reportUnusedImport, reportPrivateUsage]
-)
-from yoetz.adapters.control.unix_socket import bind_control_listener
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.adapters.privacy.catalog import CatalogPrivacyAudit
-from yoetz.application.egress import SemanticEgressBlocked
-from yoetz.application.privacy_control import encode_privacy_receipt_page
-from yoetz.application.service import Application
-from yoetz.config.models import YoetzConfig
-from yoetz.domain.privacy import (
+from finishup.adapters.control.unix_socket import bind_control_listener
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.adapters.privacy.catalog import CatalogPrivacyAudit
+from finishup.application.egress import SemanticEgressBlocked
+from finishup.application.privacy_control import encode_privacy_receipt_page
+from finishup.application.service import Application
+from finishup.config.models import FinishUpConfig
+from finishup.domain.privacy import (
     MAX_RECEIPT_FINAL_BYTES,
     AuthorizationScope,
     AuthorizationScopeKind,
@@ -71,8 +62,8 @@ from yoetz.domain.privacy import (
     ReceiptTransformations,
     RequestCommitment,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import (
+from finishup.domain.values import JsonObject
+from finishup.ports.control import (
     ControlCallRequest,
     ControlClientKind,
     ControlError,
@@ -80,29 +71,38 @@ from yoetz.ports.control import (
     RepositoryPrivacyContext,
     ServiceState,
 )
-from yoetz.ports.privacy import (
+from finishup.ports.privacy import (
     AgentProjectionRequest,
     DisclosureProposalRequest,
     MinimizedDisclosure,
     PrivacyReceiptPage,
 )
-from yoetz.ports.secret_memory import SecretPurpose
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import DataCategory, StartRequest
-from yoetz.service.client import (
+from finishup.ports.secret_memory import SecretPurpose
+from finishup.ports.semantic import Deadline
+from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import DataCategory, StartRequest
+from finishup.service.client import (
     GetPrivacyReceiptRequest,
     ListPrivacyReceiptsRequest,
     PrivacyReceiptFilters,
     ServiceClient,
     connect_service,
 )
-from yoetz.service.control_protocol import MAX_CONTROL_RECEIVE_CHUNK_BYTES
-from yoetz.service.daemon import ServiceComposition, ServiceDaemon
-from yoetz.service.lifecycle import ServiceLifecycle
-from yoetz.service.ready_composition import build_ready_application_factory
-from yoetz.service.vault import VaultMode, VaultService
+from finishup.service.control_protocol import MAX_CONTROL_RECEIVE_CHUNK_BYTES
+from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.lifecycle import ServiceLifecycle
+from finishup.service.ready_composition import build_ready_application_factory
+from finishup.service.vault import VaultMode, VaultService
+from integration.service.test_consent_vault_initialize_composition import (
+    runtime_directory,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
+from integration.service.test_ready_composition import (
+    _Diagnostics,  # pyright: ignore[reportPrivateUsage]
+    _GenerationStore,  # pyright: ignore[reportPrivateUsage]
+    _Paths,  # pyright: ignore[reportPrivateUsage]
+    _sqlite_policy,  # noqa: F401  # pyright: ignore[reportUnusedImport, reportPrivateUsage]
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -188,7 +188,7 @@ async def service(
 ) -> AsyncIterator[_Service]:
     del runtime_directory  # binds the control socket in a short private directory
     with private_service_root() as root:
-        monkeypatch.setenv("YOETZ_ISOLATED_ROOT", str(root))
+        monkeypatch.setenv("FINISHUP_ISOLATED_ROOT", str(root))
         clock = _Clock()
         memory = LocalSecretMemory()
         lifecycle = ServiceLifecycle(
@@ -214,7 +214,7 @@ async def service(
         factory = build_ready_application_factory(
             lifecycle=lifecycle,
             vault=vault,
-            config=YoetzConfig(),
+            config=FinishUpConfig(),
             paths=_Paths(root),
             clock=clock,
             secret_memory=memory,
@@ -768,7 +768,7 @@ async def test_an_unreadable_row_is_skipped_counted_named_and_recorded(
         for receipt in sorted(stored, key=lambda item: (item.finished_at, item.receipt_id))[::-1]
         if receipt.receipt_id not in {garbled.receipt_id, oversized.receipt_id}
     ]
-    from yoetz.observability.diagnostics import lookup_diagnostic_records
+    from finishup.observability.diagnostics import lookup_diagnostic_records
 
     records = lookup_diagnostic_records(request_id=garbled.request_id)
     assert [(record["operation"], record["reason"]) for record in records] == [

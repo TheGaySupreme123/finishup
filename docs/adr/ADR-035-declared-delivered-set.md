@@ -1,17 +1,17 @@
 # ADR-035 — The declared delivered set and a fact for a removed deliverable
 
-**Status:** Accepted for [issue #1005](https://github.com/TheGaySupreme123/yoetz/issues/1005)
+**Status:** Accepted for [issue #1005](https://github.com/TheGaySupreme123/finishup/issues/1005)
 (proposal PL5-4). Maintainer acknowledgement (TheGaySupreme123, 2026-10-07): "declared delivered
 file set, with a deterministic fact for content moved out of it or a declared file deleted or
 renamed". It changes no wire schema, no egress and no storage. It grants no runtime, credential,
 disclosure or destructive-action authority.
-**Implemented by:** `src/yoetz/kernel/delivered_set.py`, `src/yoetz/kernel/task_facts.py`
+**Implemented by:** `src/finishup/kernel/delivered_set.py`, `src/finishup/kernel/task_facts.py`
 (`DECLARED_OUTPUT_REMOVED_GAP`, `DECLARED_OUTPUT_CONTENT_MOVED_GAP`,
 `AGENT_ACTIONABLE_TASK_FACT_GAPS`, `STANDING_TASK_FACT_GAPS`, `STOP_GATE_TOKENS`),
-`src/yoetz/application/check.py` (`_requested_output_inputs`),
-`src/yoetz/application/check_change.py` (`requested_output_states`),
-`src/yoetz/adapters/git_change_capture.py` (`count_change_lines`), `src/yoetz/domain/receipts.py`
-(`TASK_FACT_GAP_SENTENCES`), `src/yoetz/cli/closure_gate.py`, `guidance/workflow.md`.
+`src/finishup/application/check.py` (`_requested_output_inputs`),
+`src/finishup/application/check_change.py` (`requested_output_states`),
+`src/finishup/adapters/git_change_capture.py` (`count_change_lines`), `src/finishup/domain/receipts.py`
+(`TASK_FACT_GAP_SENTENCES`), `src/finishup/cli/closure_gate.py`, `guidance/workflow.md`.
 **Relates to:** ADR-031 (check-time change capture), ADR-033 (task facts and the Stop-time closure
 gate), issues #983, #1002, #1003.
 
@@ -21,7 +21,7 @@ In TB4 run tb4n1, agents reshaped their deliverables to fit an AI-powered review
 interleaved-vigenere, the agent moved the statistics table out of the delivered `/app/cracker.py`
 into an undelivered `/app/english_model.bin` so the reviewer could see the code. The cracker then
 produced empty output, and 3 of 6 tests failed. In music-harmony, the agent moved the delivered
-`harmony.musicxml` to `/tmp` "to reduce the review input". Guidance now forbids this. Yoetz still
+`harmony.musicxml` to `/tmp` "to reduce the review input". Guidance now forbids this. FinishUP still
 needs a deterministic fact that tells the agent when its change removed a deliverable it declared.
 
 ## Decision
@@ -40,18 +40,18 @@ needs a deterministic fact that tells the agent when its change removed a delive
    original; the Git capture folds exact renames). The check adds the closed gap code beside the
    requested-output gaps. A declared file that was never in the task base is removed when it is
    now missing and an `edit` action of the session named it in `attempted_items` (written, then
-   moved away: music-harmony's new `harmony.musicxml`). A read Yoetz could not make
+   moved away: music-harmony's new `harmony.musicxml`). A read FinishUP could not make
    (`unverified`, `outside`, unknown existence) never raises it.
 3. **Classification.** The code is agent-actionable (`AGENT_ACTIONABLE_TASK_FACT_GAPS`, so `_A` in
    `GAP_CLASSIFICATION`). It makes a check `coverage_incomplete`, and it is a `STOP_GATE_TOKENS`
    entry. Like every task fact, a local absence proof tolerates it. Its receipt sentence and
    Stop-gate text give the repair: "Restore the delivered file, or correct the requested item if
-   the task asked for the deletion: Yoetz review limits never justify moving, splitting or
+   the task asked for the deletion: FinishUP review limits never justify moving, splitting or
    deleting deliverables."
 4. **Ways out.** The fact clears when the delivered file is back at its declared path. If the
    task really asked for the deletion, the agent corrects the requested item instead: it
    supersedes the obligation without that item, or, from 1.1.0, marks the item `role: input`.
-   Recording a `yoetz-blocker:<kind>` for the obligation also suppresses the fact, as it does for
+   Recording a `finishup-blocker:<kind>` for the obligation also suppresses the fact, as it does for
    every requested-output fact.
 
 5. **`declared_output_content_moved` (owner decision, 2026-10-07).** Content moved out of a
@@ -100,7 +100,7 @@ needs a deterministic fact that tells the agent when its change removed a delive
 
 tb4n2 interleaved-vigenere: the declared deliverable `cracker.py` loaded `english_model.npz` and
 `english_words.json.gz`, files the agent created in the workspace and never declared. The grader
-received only the declared files, so the deliverable failed. Yoetz now discloses that shape.
+received only the declared files, so the deliverable failed. FinishUP now discloses that shape.
 
 - **Deliverables read.** Every effective obligation's requested item with role `output` and kind
   `file` whose check-time state is `inside` and existing (not deleted), skipping blocked and
@@ -127,7 +127,7 @@ received only the declared files, so the deliverable failed. Yoetz now discloses
 ## Amendment (tb4n2 R2, issue #1022): declared_output_emptied
 
 tb4n2 formal-crypto S emptied its delivered `/app/solve.sage` (0 bytes) after an open finding,
-while six obligations stayed recorded `resolved`; Yoetz showed only the standing
+while six obligations stayed recorded `resolved`; FinishUP showed only the standing
 `obligation_evidence_stale_after_scope_edit`, so the Stop gate said nothing. A recorded status is
 now re-derived from the current deliverable (ADR-041):
 
@@ -160,7 +160,7 @@ that read it with content). A file created empty never fires; a new file cut to 
 truncated capture is unknown, not changed. The fact is keyed on the path: it fires while an
 obligation declaring the path is delivered, or the path was recorded with content while delivered
 or verified, whatever the obligation's status is now, so an `acknowledged_not_done` republish or a
-new "empty fallback" obligation cannot clear it. The single exit is a `yoetz-assumption` decision of
+new "empty fallback" obligation cannot clear it. The single exit is a `finishup-assumption` decision of
 an obligation declaring the path that names the path. The lines "clears ... once the obligation is
 republished open or acknowledged_not_done" and "An untracked file truncated ... is not seen" above
 no longer hold. The content-moved disclosure is unchanged and now also covers untracked
@@ -187,7 +187,7 @@ tb4n4 remediation PR), which is the acknowledgement for the storage change below
   or declare the file as a requested item (a delivered output; a file the task itself provides is a
   `role: input` item). The read is unchanged on this point: every declared `file` or `directory` of
   any role excludes a candidate, and a deliverable that no longer names the file does not raise it.
-  A `yoetz-assumption` or `yoetz-verification-limit` decision, a final-answer disclosure or a
+  A `finishup-assumption` or `finishup-verification-limit` decision, a final-answer disclosure or a
   self-verification never clears it; the receipt sentence, the Stop-gate item and the guidance no
   longer offer "disclose the dependency". As before, a confirmed blocker or an
   `acknowledged_not_done` obligation is not read (it is already below clean).

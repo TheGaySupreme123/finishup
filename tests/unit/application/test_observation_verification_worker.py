@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import apsw
 
-from yoetz.adapters.approved_checks import (
+from finishup.adapters.approved_checks import (
     ApprovedCheckOutcome,
     ApprovedCheckResult,
     ApprovedCheckStatus,
 )
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation_verification import (
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation_verification import (
     SqliteObservationVerificationRepository,
 )
 

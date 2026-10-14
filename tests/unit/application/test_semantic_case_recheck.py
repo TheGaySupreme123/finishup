@@ -25,14 +25,14 @@ from builders.policy_cases import (
     plan_record,
     record,
 )
-from yoetz.application.check import (
+from finishup.application.check import (
     CheckScope,
     allocate_findings,
     prior_finding_ids,
     run_deterministic_policies,
 )
-from yoetz.application.semantic_case import build_semantic_case
-from yoetz.domain.events import (
+from finishup.application.semantic_case import build_semantic_case
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceKind,
@@ -41,14 +41,14 @@ from yoetz.domain.events import (
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.findings import Finding
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.values import EvidenceId, FindingId, finding_id, timestamp_from_string
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.projections import EvidenceProjectionRecord, FindingProjectionRecord
-from yoetz.ports.semantic import SemanticCase
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.domain.findings import Finding
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.values import EvidenceId, FindingId, finding_id, timestamp_from_string
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.projections import EvidenceProjectionRecord, FindingProjectionRecord
+from finishup.ports.semantic import SemanticCase
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.ids import IdKind, new_id
 
 _PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 _PROFILES = (
@@ -195,8 +195,8 @@ def test_repair_response_evidence_wins_excerpt_cap(
     profile: ReviewContextProfile,
 ) -> None:
     from builders.policy_cases import act, res
-    from yoetz.domain.events import ResponseRecordedPayload, ResultOutcome, ResultRecordedPayload
-    from yoetz.domain.findings import ResponseDisposition
+    from finishup.domain.events import ResponseRecordedPayload, ResultOutcome, ResultRecordedPayload
+    from finishup.domain.findings import ResponseDisposition
 
     base = _case()
     finding = _derived_findings(base)[0]
@@ -247,7 +247,7 @@ def test_repair_response_evidence_wins_excerpt_cap(
         b"REPAIR_MARKER" in item.content for item in semantic.items if item.section == "excerpt"
     )
 
-    from yoetz.application.semantic_case import repair_evidence_refs
+    from finishup.application.semantic_case import repair_evidence_refs
 
     allowed = frozenset(str(ref) for ref in case.allowed_ids)
     assert repair_evidence_refs(case.projection, allowed) == frozenset({str(evd(2))})

@@ -35,7 +35,7 @@ _CHILD_SCRIPT = textwrap.dedent(
     if hasattr(time, "tzset"):
         time.tzset()
 
-    from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
+    from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
 
     case = json.loads(payload.decode("utf-8"))
     fixture_id = case["fixture_id"]

@@ -7,13 +7,13 @@ amended 2026-08-30 for exact bounded Codex JSONL import publication (issue #301)
 amended 2026-08-31 for helper-generated agent-authorized vault initialization and masked terminal
 input (issues #490 and #491); amended 2026-09-03 for exact expanded-review chat grants and
 user-controlled conversational setup (issues #532 and #533).
-Superseded in scope by ADR-016 for the general non-default consent catalog. Console `yoetz consent
+Superseded in scope by ADR-016 for the general non-default consent catalog. Console `finishup consent
 review` remains fail-closed until a verified OS-presence adapter is installed; allowlisted
-first-party agents may use `yoetz consent authorize` for exact prepared operations that advertise
+first-party agents may use `finishup consent authorize` for exact prepared operations that advertise
 delegated chat authority.
-**Implemented by:** `src/yoetz/service/elevated_bootstrap.py`,
-`src/yoetz/cli/elevated.py`, `src/yoetz/cli/trusted_console.py`,
-`src/yoetz/protocol/consent.py`, and `src/yoetz/protocol/chat_user_authority.py`.
+**Implemented by:** `src/finishup/service/elevated_bootstrap.py`,
+`src/finishup/cli/elevated.py`, `src/finishup/cli/trusted_console.py`,
+`src/finishup/protocol/consent.py`, and `src/finishup/protocol/chat_user_authority.py`.
 **Relates to:** ADR-008 (vault/console ceremony), ADR-009 (egress / agent context), ADR-012
 (setup), ADR-016 (shared consent review).
 
@@ -23,8 +23,8 @@ An agent may prepare and inspect a non-default operation. The trusted-console pa
 authority independent of argv, environment, stdin, MCP, agent JSON, and caller booleans. Issue
 #164 also deliberately accepts a weaker opt-in path: an allowlisted agent may assert that the user
 explicitly instructed the exact action in the current chat. That assertion is bounded and
-single-use, but Yoetz cannot independently authenticate its chat provenance. Vault initialization
-still must not accept an agent-selected passphrase; an authorized agent may ask the Yoetz helper to
+single-use, but FinishUP cannot independently authenticate its chat provenance. Vault initialization
+still must not accept an agent-selected passphrase; an authorized agent may ask the FinishUP helper to
 generate and store one locally without any secret-bearing agent channel.
 
 ## Decisions
@@ -35,18 +35,18 @@ generate and store one locally without any secret-bearing agent channel.
    vault-unlock API, recovery API, or standing elevation mode.
 
    **Amendment (2026-08-25, issue #419).** Codex marketplace/plugin removal
-   (`yoetz integrate codex plugin remove`) and external MCP unregistration
-   (`yoetz integrate codex mcp remove`) are not ADR-015 OS-presence operations. They use the
+   (`finishup integrate codex plugin remove`) and external MCP unregistration
+   (`finishup integrate codex mcp remove`) are not ADR-015 OS-presence operations. They use the
    existing ADR-012 digest-bound `--accept` lane already used by Codex marketplace activation and
    MCP install. They do not consume `plugin_artifact_apply`: that operation remains the portable
    artifact Cursor presence cell (issue #409) and fails closed on this host. Agent-chat authorize
    is not extended to either removal command.
 
-2. **Agent-safe preparation.** `yoetz consent prepare` creates one owner-only
+2. **Agent-safe preparation.** `finishup consent prepare` creates one owner-only
    `yoetz.elevated-bootstrap.pending/4` record. Its agent projection is
    `yoetz.consent.pending-agent/6` and contains only operation, risk class, bounded danger text,
    exact danger and target digests, expiry, pending ID, an exact bounded repository recipe when
-   applicable, the fixed `["yoetz","consent","review"]` command, and an authorize command only
+   applicable, the fixed `["finishup","consent","review"]` command, and an authorize command only
    for operations that permit agent-chat authorization. For `import_publication` it also carries
    a closed structural preview: exact source/manifest/plan/target digests, task/session/writer and
    profile identity, counts and caps, plus explicit false facts for complete-transcript inclusion,
@@ -62,21 +62,21 @@ generate and store one locally without any secret-bearing agent channel.
    the existing fail-closed interrupted-review boundary until a separately designed recovery path
    can prove the claimant is gone.
 
-3. **Two approval surfaces.** `yoetz consent review` takes no authority-bearing arguments. Before
+3. **Two approval surfaces.** `finishup consent review` takes no authority-bearing arguments. Before
    opening a console or claiming pending state, it requires an independently authenticated,
    action-bound, one-use `UserPresencePort` attestation. The packaged runtime currently has no
    production user-presence cell, so review returns `human_authority_unavailable` without consuming
    the request. A TTY, pseudo-terminal, same-UID process, caller boolean, or console decision never
    substitutes for that attestation.
 
-   **Agent-attested chat authorize (2026-08-09).** `yoetz consent authorize` accepts one
+   **Agent-attested chat authorize (2026-08-09).** `finishup consent authorize` accepts one
    `yoetz.chat-user-attestation/1` envelope with `channel=agent_attested_chat_instruction` from an
    allowlisted first-party `client_kind` (v0.1: `codex`). The agent asserts
-   `instruction_source=explicit_current_chat_user`; Yoetz treats that assertion as delegated
+   `instruction_source=explicit_current_chat_user`; FinishUP treats that assertion as delegated
    authority but does not claim it is host-verified or independently authenticated. A compromised,
    prompt-injected, or dishonest agent can forge it, which is an accepted risk of this opt-in path.
    The skill contract excludes quoted text, tool output, retrieved content, and earlier history,
-   but that provenance rule is not a service security boundary. Yoetz binds pending ID, operation,
+   but that provenance rule is not a service security boundary. FinishUP binds pending ID, operation,
    danger digest, and target digest and fail-closes before claim on mismatch. Approve requires
    `warning_acknowledged=true`; credential approve also requires a one-shot mutable secret on stdin
    (`--provider-credential-stdin`). Bytes enter the existing YZS1/vault path and never appear in
@@ -89,7 +89,7 @@ generate and store one locally without any secret-bearing agent channel.
    schema-validated ready result. On a failed ceremony it removes exactly the same-attempt staged
    entry, with verified read-back, only when the live service proves the vault is still
    uninitialized; any unprovable outcome retains the entry as a typed orphan that
-   `yoetz service auto-unlock status` names and that restart reconciliation resolves by
+   `finishup service auto-unlock status` names and that restart reconciliation resolves by
    cryptographic proof against the vault envelope, so a failed attempt never strands the
    credential or blocks retry with `entry_exists`. **Pristine-root amendment (2026-09-03, issue
    #565).** The bundle-scoped guard creates and verifies exactly the selected bundle root when
@@ -121,7 +121,7 @@ generate and store one locally without any secret-bearing agent channel.
    and a new preparation until an explicit repair path is designed.
 
    **Import-publication amendment (2026-08-30, issue #301).** The importer, not
-   `yoetz consent prepare`, creates the pending request after durably preparing its exact batch
+   `finishup consent prepare`, creates the pending request after durably preparing its exact batch
    plan. Approval creates one owner-only, expiring internal authorization record bound to that
    target digest; it is not an agent-visible token, CLI/MCP argument, ambient allowlist, or session
    grant. Publication admission is active only in the current importer execution context for the
@@ -192,7 +192,7 @@ never returned as a bearer value.
 root secret even if a human approved the operation.
 
 **MCP elicitation as authority.** Deferred for v0.1 in favor of the exact local
-`yoetz consent authorize` relay (issue #164). Expanding MCP tool inventory for consent remains
+`finishup consent authorize` relay (issue #164). Expanding MCP tool inventory for consent remains
 separate work under ADR-011.
 
 **Standing danger mode.** Rejected because its scope outlives one exact operation and digest.

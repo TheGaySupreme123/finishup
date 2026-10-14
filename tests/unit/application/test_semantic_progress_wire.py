@@ -7,9 +7,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 
-from yoetz.application.status import semantic_progress_wire
-from yoetz.ports.ledger import SemanticProgressRecord
-from yoetz.protocol.models import (
+from finishup.application.status import semantic_progress_wire
+from finishup.ports.ledger import SemanticProgressRecord
+from finishup.protocol.models import (
     SEMANTIC_PROGRESS_PHASE_RANK,
     SemanticProgressPhase,
     SemanticReason,

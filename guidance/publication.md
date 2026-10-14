@@ -47,7 +47,7 @@ statement with that file item, carry it with `plan_revised`, record an `edit` ac
 verification run after your last edit, and supersede the completion claim with one naming it in
 `obligation_refs`; then check. Otherwise, for a justified
 pre-existing test edit, put this exact line in a later decision statement, after the edit action:
-`yoetz:test-change:<action_id>:sha256:<path_digest>`. `<action_id>` is the exact edit action id;
+`finishup:test-change:<action_id>:sha256:<path_digest>`. `<action_id>` is the exact edit action id;
 `<path_digest>` is `sha256:` plus the lowercase SHA-256 of the captured path's UTF-8 spelling. Do
 not rely on free-form prose or repeat the raw path: generic prose does not clear the structural
 edit finding.

@@ -24,33 +24,33 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.receipt import ReceiptInternalResult
-from yoetz.application.service import Application, VerificationPolicy
-from yoetz.config.models import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.receipt import ReceiptInternalResult
+from finishup.application.service import Application, VerificationPolicy
+from finishup.config.models import (
     PROFILE_CAPABILITIES,
     ConfigError,
+    FinishUpConfig,
     NetworkPolicy,
     ProviderProfileConfig,
-    YoetzConfig,
 )
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.findings import CheckVerdict
-from yoetz.domain.privacy import CandidateContext
-from yoetz.domain.receipts import (
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.findings import CheckVerdict
+from finishup.domain.privacy import CandidateContext
+from finishup.domain.receipts import (
     OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
     PolicyVersionEntry,
     ReceiptVersionSlice,
     SchemaVersionEntry,
 )
-from yoetz.domain.values import Frontier
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import CheckRequest, FrontierModel, PublishWorkRequest, ReceiptRequest
+from finishup.domain.values import Frontier
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import CheckRequest, FrontierModel, PublishWorkRequest, ReceiptRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -59,7 +59,7 @@ _DIGEST = "sha256:" + "7" * 64
 
 class _IdleImporter:
     async def status(self, session: str) -> ImportStatusSnapshot:
-        from yoetz.domain.values import session_id
+        from finishup.domain.values import session_id
 
         return ImportStatusSnapshot(session_id(session), 0, 0, (), ())
 
@@ -119,7 +119,7 @@ async def _semantic_forbidden(
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -361,7 +361,7 @@ def test_strict_local_forbids_provider_attachment_structurally() -> None:
         capability_profile="review-default-v1",
     )
     with pytest.raises(ConfigError) as exc_info:
-        YoetzConfig(profile="strict-local", provider=provider)
+        FinishUpConfig(profile="strict-local", provider=provider)
     assert exc_info.value.reason_code == "strict_local_forbids_provider"
 
     # The provider schema itself structurally forbids any key that looks like a credential --
@@ -386,7 +386,7 @@ async def test_fake_credentials_are_not_read_or_reported(monkeypatch: pytest.Mon
     fake_secret = "sk-fake-strict-local-should-never-appear-anywhere"
     monkeypatch.setenv("OPENAI_API_KEY", fake_secret)
     monkeypatch.setenv("ANTHROPIC_API_KEY", fake_secret)
-    monkeypatch.setenv("YOETZ_PROVIDER_TOKEN", fake_secret)
+    monkeypatch.setenv("FINISHUP_PROVIDER_TOKEN", fake_secret)
 
     app, _runtime, _clock, _catalog = _build_strict_local_application()
     checked = await _run_deterministic_check(app, seed=920)

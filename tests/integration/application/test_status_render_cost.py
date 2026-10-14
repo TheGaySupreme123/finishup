@@ -19,7 +19,7 @@ receipts, audit subjects (field decisions and commitments) and the ``closure-pre
 must stay byte-identical. Regenerate it only for an intended output change, from the owning
 change, with::
 
-    YOETZ_STATUS_RENDER_GOLDEN=write uv run pytest \
+    FINISHUP_STATUS_RENDER_GOLDEN=write uv run pytest \
         tests/integration/application/test_status_render_cost.py -k golden
 
 The cost tests never compare wall-clock time with a fixed threshold. They count work that is
@@ -50,14 +50,14 @@ from builders.status_render_cost import (
     CodexStatusLedger,
     build_codex_status_ledger,
 )
-from yoetz.cli.closure import Selection, prepare_closure
-from yoetz.mcp.server import result_from_public_model
-from yoetz.ports.control import ControlMethod, ControlResult
-from yoetz.protocol import models as models_module
-from yoetz.protocol import schemas as schemas_module
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import StatusRequest, StatusResult, public_model_to_wire
-from yoetz.service.control_protocol import (
+from finishup.cli.closure import Selection, prepare_closure
+from finishup.mcp.server import result_from_public_model
+from finishup.ports.control import ControlMethod, ControlResult
+from finishup.protocol import models as models_module
+from finishup.protocol import schemas as schemas_module
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import StatusRequest, StatusResult, public_model_to_wire
+from finishup.service.control_protocol import (
     decode_control_frame,
     encode_control_frame,
     parse_control_result,
@@ -278,7 +278,7 @@ async def test_status_render_matches_pre_change_golden() -> None:
     redacted = cast(list[str], record["never_send_redacted"])
     assert any(item.startswith("evidence/") and item.endswith("/description") for item in redacted)
     assert any(item.startswith("evidence/") and item.endswith("/reference") for item in redacted)
-    if os.environ.get("YOETZ_STATUS_RENDER_GOLDEN") == "write":
+    if os.environ.get("FINISHUP_STATUS_RENDER_GOLDEN") == "write":
         _GOLDEN.parent.mkdir(parents=True, exist_ok=True)
         _GOLDEN.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n", encoding="utf-8")
         pytest.skip("golden regenerated")
@@ -505,7 +505,7 @@ async def test_closure_inventory_reads_each_view_once_per_page(
     }
     # ``--output`` saves exactly the bytes the command prints, which are the pre-#916 inventory.
     # Imported here so the golden test still runs against a pre-#916 source tree (runbook).
-    from yoetz.cli.closure import write_prepared_output
+    from finishup.cli.closure import write_prepared_output
 
     summary = write_prepared_output(inventory, tmp_path / "closure.json")
     saved = (tmp_path / "closure.json").read_bytes()

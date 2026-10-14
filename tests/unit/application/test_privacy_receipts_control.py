@@ -1,7 +1,7 @@
 """Privacy receipt get/list are reachable over ordinary control and round-trip the client wire.
 
 Issue #730: both methods existed in the port, the application, the client, and the CLI, but the
-service handler map never registered them, so every ``yoetz privacy receipts`` call was answered
+service handler map never registered them, so every ``finishup privacy receipts`` call was answered
 ``method_forbidden`` and rendered as ``invalid_request``.
 """
 
@@ -12,11 +12,11 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.application.privacy_control import (
+from finishup.application.privacy_control import (
     build_privacy_support_handlers,
     encode_privacy_receipt_view,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ConsentSource,
@@ -35,9 +35,9 @@ from yoetz.domain.privacy import (
     ReceiptTransformations,
     RequestCommitment,
 )
-from yoetz.domain.values import JsonObject, freeze_json
-from yoetz.ports.control import ControlError, ControlMethod
-from yoetz.ports.privacy import (
+from finishup.domain.values import JsonObject, freeze_json
+from finishup.ports.control import ControlError, ControlMethod
+from finishup.ports.privacy import (
     LocalDisclosureReceiptView,
     NetworkEgressReceiptView,
     PrivacyAuditUnreadable,
@@ -47,7 +47,7 @@ from yoetz.ports.privacy import (
     PrivacyReceiptQuery,
     PrivacyReceiptView,
 )
-from yoetz.service.client import (
+from finishup.service.client import (
     ListPrivacyReceiptsRequest,
     PrivacyReceiptFilters,
     PrivacyReceiptFound,

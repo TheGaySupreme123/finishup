@@ -2,7 +2,7 @@
 
 Each case replays a hook-observed ledger the way the observation coordinator writes it
 (``builders.observed_runs``) and asks the pure predicates of ``kernel.review_frame``. The tb4n4
-shapes: an ``action_without_result`` about the in-flight ``check`` call (Yoetz's own capture), and
+shapes: an ``action_without_result`` about the in-flight ``check`` call (FinishUP's own capture), and
 interleaved-vigenere S, where the agent's own oversized stress run failed while the task's sample
 verification passed.
 """
@@ -14,7 +14,7 @@ from collections.abc import Iterator
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     EventSchema,
@@ -24,21 +24,21 @@ from yoetz.domain.events import (
     RequestedItem,
     RequestedItemKind,
 )
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.values import EventId, ObligationId, ResultId, action_id, obligation_id
-from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
-from yoetz.kernel.observed_failures import (
+from finishup.domain.findings import FindingKind
+from finishup.domain.values import EventId, ObligationId, ResultId, action_id, obligation_id
+from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
+from finishup.kernel.observed_failures import (
     observed_action_description,
     observed_event_ids_from_records,
 )
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.review_frame import (
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.reducers import replay
+from finishup.kernel.review_frame import (
     PLANNED_VERIFICATION_DOUBT_GAPS,
     agent_probe_only,
-    yoetz_process_state_only,
+    finishup_process_state_only,
 )
-from yoetz.kernel.task_facts import agent_linked_run_events, register_command_identity_key
+from finishup.kernel.task_facts import agent_linked_run_events, register_command_identity_key
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 _OTHER = obligation_id("obl_00000000-0000-4000-8000-000000000002")
@@ -98,10 +98,10 @@ def _case_gaps(ledger: ObservedLedger) -> frozenset[str]:
     return frozenset(gap.code for gap in case.gaps)
 
 
-# --- Yoetz's own capture and process state (#1042 item 2) ---------------------------------------
+# --- FinishUP's own capture and process state (#1042 item 2) ---------------------------------------
 
 
-def test_an_action_without_result_about_the_check_in_flight_is_yoetz_state() -> None:
+def test_an_action_without_result_about_the_check_in_flight_is_finishup_state() -> None:
     """tb4n4: the reviewer saw the ``check`` call's own pre-tool observation (its result is
     recorded after the check freezes) and raised ``action_without_result`` on it."""
 
@@ -112,7 +112,7 @@ def test_an_action_without_result_about_the_check_in_flight_is_yoetz_state() -> 
         ActionRecordedPayload(
             check_call,
             ActionKind.OTHER,
-            observed_action_description("Observed other via Codex hook", "mcp__yoetz__check"),
+            observed_action_description("Observed other via Codex hook", "mcp__finishup__check"),
         ),
         observed=True,
     )
@@ -120,7 +120,7 @@ def test_an_action_without_result_about_the_check_in_flight_is_yoetz_state() -> 
     event = str(state.actions[check_call].source_event_id)
 
     for kind in (FindingKind.ACTION_WITHOUT_RESULT, FindingKind.LEDGER_STALE_OR_INCOMPLETE):
-        assert yoetz_process_state_only(state, kind, (event,), observed) is True
+        assert finishup_process_state_only(state, kind, (event,), observed) is True
 
 
 def test_an_observed_call_without_a_result_is_capture_state_only_for_that_kind() -> None:
@@ -139,10 +139,10 @@ def test_an_observed_call_without_a_result_is_capture_state_only_for_that_kind()
     state, observed = _state(ledger)
     event = str(state.actions[pending].source_event_id)
 
-    # Pairing a hook observation with its result is Yoetz's capture, never the agent's account.
-    assert yoetz_process_state_only(state, FindingKind.ACTION_WITHOUT_RESULT, (event,), observed)
+    # Pairing a hook observation with its result is FinishUP's capture, never the agent's account.
+    assert finishup_process_state_only(state, FindingKind.ACTION_WITHOUT_RESULT, (event,), observed)
     # Any other kind about the same run is about the work.
-    assert not yoetz_process_state_only(
+    assert not finishup_process_state_only(
         state, FindingKind.CLAIM_WITHOUT_ADMISSIBLE_EVIDENCE, (event,), observed
     )
 
@@ -156,7 +156,7 @@ def test_agent_published_actions_claims_and_obligations_are_never_process_state(
             published,
             ActionKind.COMMAND,
             # The agent may write the hook's spelling into its own description; it is not trusted.
-            observed_action_description("Ran tests", "mcp__yoetz__check"),
+            observed_action_description("Ran tests", "mcp__finishup__check"),
             command="pytest -q",
         ),
         observed=False,
@@ -166,9 +166,9 @@ def test_agent_published_actions_claims_and_obligations_are_never_process_state(
     event = str(state.actions[published].source_event_id)
 
     kind = FindingKind.ACTION_WITHOUT_RESULT
-    assert not yoetz_process_state_only(state, kind, (event,), observed)
-    assert not yoetz_process_state_only(state, kind, (str(_OBLIGATION),), observed)
-    assert not yoetz_process_state_only(state, kind, (), observed)
+    assert not finishup_process_state_only(state, kind, (event,), observed)
+    assert not finishup_process_state_only(state, kind, (str(_OBLIGATION),), observed)
+    assert not finishup_process_state_only(state, kind, (), observed)
 
 
 def test_a_real_observed_run_beside_the_check_call_keeps_the_challenge() -> None:
@@ -180,14 +180,14 @@ def test_a_real_observed_run_beside_the_check_call_keeps_the_challenge() -> None
         ActionRecordedPayload(
             check_call,
             ActionKind.OTHER,
-            observed_action_description("Observed other via Codex hook", "mcp__yoetz__check"),
+            observed_action_description("Observed other via Codex hook", "mcp__finishup__check"),
         ),
         observed=True,
     )
     state, observed = _state(ledger)
     refs = (_result_event(state, failed), str(state.actions[check_call].source_event_id))
 
-    assert not yoetz_process_state_only(state, FindingKind.FAILED_WORK_OMITTED, refs, observed)
+    assert not finishup_process_state_only(state, FindingKind.FAILED_WORK_OMITTED, refs, observed)
 
 
 # --- The agent's own probe beyond the task's declared verification (#1043 item 3) ---------------
@@ -274,7 +274,7 @@ def test_no_declared_verification_or_no_identity_key_keeps_the_task_requirement(
     event = _result_event(state, failed)
     kind = FindingKind.TASK_REQUIREMENT_UNMET
 
-    # The task supplied no verification Yoetz can see, so nothing says the run is beyond it.
+    # The task supplied no verification FinishUP can see, so nothing says the run is beyond it.
     assert not agent_probe_only(
         state, kind, (event,), observed=observed, case_gap_codes=_case_gaps(ledger)
     )

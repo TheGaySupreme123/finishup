@@ -7,38 +7,38 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ProjectionRenderMode,
     VerificationPolicy,
     resolve_client_disclosure_sink,
 )
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.privacy import LocalDisclosureSink
-from yoetz.domain.values import Frontier, JsonObject
-from yoetz.ports.control import (
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.privacy import LocalDisclosureSink
+from finishup.domain.values import Frontier, JsonObject
+from finishup.ports.control import (
     ControlClientKind,
     ControlError,
     ControlMethod,
     RepositoryPrivacyContext,
 )
-from yoetz.ports.publish_response_catalog import (
+from finishup.ports.publish_response_catalog import (
     PublishResponseCatalogPort,
     PublishResponseKey,
     StoredPublishResponse,
 )
-from yoetz.ports.start_catalog import (
+from finishup.ports.start_catalog import (
     SessionBinding,
     StartCatalogPort,
     TaskRoute,
     TaskRouteState,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkAcceptedEventModel,
     PublishWorkRequest,
@@ -653,7 +653,7 @@ async def test_omitted_check_mode_resolves_through_the_verification_policy(
         seen.append(request)
         return object()
 
-    monkeypatch.setattr("yoetz.application.check.execute_check", _capture)
+    monkeypatch.setattr("finishup.application.check.execute_check", _capture)
     application = _application(_Catalog(_route()))
     policy = VerificationPolicy(semantic=semantic, max_findings=3)  # type: ignore[arg-type]
     application = replace(application, verification_policy=policy)
@@ -684,7 +684,7 @@ async def test_present_check_mode_is_never_overridden_by_policy(
         seen.append(request)
         return object()
 
-    monkeypatch.setattr("yoetz.application.check.execute_check", _capture)
+    monkeypatch.setattr("finishup.application.check.execute_check", _capture)
     application = replace(
         _application(_Catalog(_route())),
         verification_policy=VerificationPolicy(semantic="required", max_findings=3),

@@ -1,4 +1,4 @@
-"""``yoetz instance create|status|dispose`` (issue #604).
+"""``finishup instance create|status|dispose`` (issue #604).
 
 Disposal must touch exactly one marked root, stop only the service that holds that root's
 singleton, never remove the everyday install or an unlabeled ADR-026 root, and be safe to repeat.
@@ -20,23 +20,23 @@ from typing import cast
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-from yoetz.cli.exits import INSTANCE_PUBLIC_CODES, exit_code_for
-from yoetz.cli.instance import (
+import finishup.cli.app as cli
+from finishup.cli.exits import INSTANCE_PUBLIC_CODES, exit_code_for
+from finishup.cli.instance import (
     create_instance,
     dispose_instance,
     instance_status,
     parse_expiry,
 )
-from yoetz.config.installation import (
+from finishup.config.installation import (
     InstanceIdentityError,
     new_instance_identity,
     read_instance_identity,
     write_instance_identity,
 )
-from yoetz.config.paths import ISOLATED_ROOT_ENV, RUNTIME_PIN_NAME, read_runtime_pin
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.service.lifecycle import SINGLETON_LOCK_NAME
+from finishup.config.paths import ISOLATED_ROOT_ENV, RUNTIME_PIN_NAME, read_runtime_pin
+from finishup.protocol.canonical import canonical_encode
+from finishup.service.lifecycle import SINGLETON_LOCK_NAME
 
 _NOW = datetime(2026, 9, 5, 15, 0, 0, tzinfo=UTC)
 _SOURCE_REF = "c3d553611c998df32a72c64337d1e8231560a37d"
@@ -74,7 +74,7 @@ def _ambient_state_dir(cell: Path) -> Callable[..., Path]:
 
 
 def _scrub(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in [name for name in os.environ if name.startswith("YOETZ_")]:
+    for name in [name for name in os.environ if name.startswith("FINISHUP_")]:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -213,7 +213,7 @@ def test_status_reports_pinned_instance_digest_only(
         runtime_prefix=prefix,
     )
     monkeypatch.setattr(sys, "prefix", str(prefix))
-    monkeypatch.setenv("YOETZ_CONFIG", str(cell / "missing.toml"))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(cell / "missing.toml"))
 
     status = instance_status(now=_NOW + timedelta(minutes=5))
 
@@ -246,8 +246,8 @@ def test_status_reports_the_everyday_install_as_permanent(
 ) -> None:
     _scrub(monkeypatch)
     monkeypatch.setattr(sys, "prefix", str(prefix))
-    monkeypatch.setenv("YOETZ_CONFIG", str(cell / "missing.toml"))
-    import yoetz.config.paths as paths
+    monkeypatch.setenv("FINISHUP_CONFIG", str(cell / "missing.toml"))
+    import finishup.config.paths as paths
 
     monkeypatch.setattr(paths, "state_dir", _ambient_state_dir(cell))
 
@@ -419,7 +419,7 @@ def test_cli_create_status_dispose_round_trip(
 ) -> None:
     _scrub(monkeypatch)
     monkeypatch.setattr(sys, "prefix", str(prefix))
-    monkeypatch.setenv("YOETZ_CONFIG", str(cell / "missing.toml"))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(cell / "missing.toml"))
     root = cell / "state"
     runner = CliRunner()
 
@@ -469,8 +469,8 @@ def test_cli_create_status_dispose_round_trip(
 def test_cli_service_run_names_an_instance_refusal(
     cell: Path, prefix: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.config.paths as paths
-    import yoetz.service.daemon as daemon_module
+    import finishup.config.paths as paths
+    import finishup.service.daemon as daemon_module
 
     monkeypatch.setattr(paths, "state_dir", _ambient_state_dir(cell))
 
@@ -482,14 +482,14 @@ def test_cli_service_run_names_an_instance_refusal(
 
     assert result.exit_code == exit_code_for(INSTANCE_PUBLIC_CODES["instance_expired"]) == 20
     assert result.stderr.startswith("instance_expired:")
-    assert "yoetz instance dispose" in result.stderr
+    assert "finishup instance dispose" in result.stderr
     assert "Traceback" not in result.stderr
 
 
 def test_cli_service_run_names_a_pin_conflict(cell: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import yoetz.config.paths as paths
-    import yoetz.service.daemon as daemon_module
-    from yoetz.config.paths import PathSafetyError
+    import finishup.config.paths as paths
+    import finishup.service.daemon as daemon_module
+    from finishup.config.paths import PathSafetyError
 
     monkeypatch.setattr(paths, "state_dir", _ambient_state_dir(cell))
 

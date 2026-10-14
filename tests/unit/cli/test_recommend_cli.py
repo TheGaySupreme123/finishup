@@ -9,12 +9,12 @@ from types import MappingProxyType, SimpleNamespace
 import anyio
 from typer.testing import CliRunner
 
-import yoetz.cli.recommend as recommend_module
-from yoetz.application.package_update import (
+import finishup.cli.recommend as recommend_module
+from finishup.application.package_update import (
     build_package_update_advisory,
     installed_package_version,
 )
-from yoetz.application.recommendations import (
+from finishup.application.recommendations import (
     RecommendationContext,
     RecommendationState,
     RecommendationStoreError,
@@ -24,10 +24,10 @@ from yoetz.application.recommendations import (
     refresh_pending,
     store_recommendation_state,
 )
-from yoetz.cli.app import app
-from yoetz.config.models import ConfigError, ObservationConfig, YoetzConfig
-from yoetz.config.write import write_config_toml
-from yoetz.ports.integrations import IntegrationTarget
+from finishup.cli.app import app
+from finishup.config.models import ConfigError, FinishUpConfig, ObservationConfig
+from finishup.config.write import write_config_toml
+from finishup.ports.integrations import IntegrationTarget
 
 _RUNNER = CliRunner()
 
@@ -56,7 +56,7 @@ def _activation_target(seed: str = "abcdef") -> RecommendationTarget:
 
 def _patch_state_root(monkeypatch: object, tmp_path: Path) -> None:
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.application.recommendations.state_dir", lambda: tmp_path
+        "finishup.application.recommendations.state_dir", lambda: tmp_path
     )
 
 
@@ -76,7 +76,7 @@ def _patch_pending_context(monkeypatch: object, recommendation_id: str) -> None:
         )
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend._current_context", context
+        "finishup.cli.recommend._current_context", context
     )
 
 
@@ -86,16 +86,18 @@ def test_accept_observation_writes_config_and_records_decision(
     _patch_state_root(monkeypatch, tmp_path)
     _patch_pending_context(monkeypatch, "observation-enabled")
     config_path = tmp_path / "config.toml"
-    write_config_toml(YoetzConfig(observation=ObservationConfig(enabled=False)), path=config_path)
+    write_config_toml(
+        FinishUpConfig(observation=ObservationConfig(enabled=False)), path=config_path
+    )
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend.config_file_path", lambda: config_path
+        "finishup.cli.recommend.config_file_path", lambda: config_path
     )
 
     result = _RUNNER.invoke(app, ["recommend", "accept", "observation-enabled"])
 
     assert result.exit_code == 0, result.output
     assert "[observation] enabled = true" in result.stdout
-    assert "restart the Yoetz service" in result.stdout
+    assert "restart the FinishUP service" in result.stdout
     assert tomllib.loads(config_path.read_text(encoding="utf-8"))["observation"] == {
         "enabled": True,
         "semantic_advice_min_interval_seconds": 180,
@@ -112,16 +114,18 @@ def test_accept_reports_applied_change_when_decision_record_fails(
     _patch_state_root(monkeypatch, tmp_path)
     _patch_pending_context(monkeypatch, "observation-enabled")
     config_path = tmp_path / "config.toml"
-    write_config_toml(YoetzConfig(observation=ObservationConfig(enabled=False)), path=config_path)
+    write_config_toml(
+        FinishUpConfig(observation=ObservationConfig(enabled=False)), path=config_path
+    )
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend.config_file_path", lambda: config_path
+        "finishup.cli.recommend.config_file_path", lambda: config_path
     )
 
     def failing_record(*_args: object, **_kwargs: object) -> None:
         raise RecommendationStoreError("recommendation_store_write_failed")
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend.record_recommendation_decision", failing_record
+        "finishup.cli.recommend.record_recommendation_decision", failing_record
     )
 
     result = _RUNNER.invoke(app, ["recommend", "accept", "observation-enabled"])
@@ -164,7 +168,7 @@ def test_package_accept_prints_pypi_upgrade_command_only(
     result = _RUNNER.invoke(app, ["recommend", "accept", "package-update"])
 
     assert result.exit_code == 0, result.output
-    assert "yoetz upgrade" in result.stdout
+    assert "finishup upgrade" in result.stdout
     assert "npm" not in result.stdout
 
 
@@ -176,15 +180,15 @@ def test_list_renders_pending_actions(monkeypatch: object) -> None:
         )
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend._refresh_for_cli", fake_refresh
+        "finishup.cli.recommend._refresh_for_cli", fake_refresh
     )
 
     result = _RUNNER.invoke(app, ["recommend", "list"])
 
     assert result.exit_code == 0, result.output
     assert "Enable local observation" in result.stdout
-    assert "yoetz recommend accept observation-enabled" in result.stdout
-    assert "yoetz recommend decline observation-enabled" in result.stdout
+    assert "finishup recommend accept observation-enabled" in result.stdout
+    assert "finishup recommend decline observation-enabled" in result.stdout
 
 
 def test_list_reoffers_activation_for_another_target_and_same_target_drift(
@@ -216,7 +220,7 @@ def test_list_reoffers_activation_for_another_target_and_same_target_drift(
             codex_activation_target=selected,
         )
 
-    monkeypatch.setattr("yoetz.cli.recommend._current_context", context)  # type: ignore[attr-defined]
+    monkeypatch.setattr("finishup.cli.recommend._current_context", context)  # type: ignore[attr-defined]
     other = _RUNNER.invoke(
         app,
         [
@@ -279,7 +283,7 @@ def test_activation_context_binds_the_exact_preview_target(
         preview_activation=preview_target,
     )
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend.importlib.import_module", import_adapter
+        "finishup.cli.recommend.importlib.import_module", import_adapter
     )
 
     state, target = recommend_module._activation_context(  # pyright: ignore[reportPrivateUsage]
@@ -321,7 +325,7 @@ def test_activation_context_preserves_foreign_state_without_previewing(
         return adapter
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend.importlib.import_module", import_adapter
+        "finishup.cli.recommend.importlib.import_module", import_adapter
     )
 
     state, target = recommend_module._activation_context(  # pyright: ignore[reportPrivateUsage]
@@ -400,18 +404,18 @@ def test_activation_accept_repreviews_and_applies_exact_digest(
     codex_home = tmp_path / "codex-testing"
     preview = SimpleNamespace(
         marketplace_bytes=b'{"plugins":[]}\n',
-        config_toml_block='[plugins."yoetz@yoetz"]\nenabled = true\n',
+        config_toml_block='[plugins."finishup@finishup"]\nenabled = true\n',
         preview_digest="sha256:" + "a" * 64,
         codex_home=codex_home,
-        plugin_install_path=codex_home / "plugins" / "cache" / "yoetz",
+        plugin_install_path=codex_home / "plugins" / "cache" / "finishup",
         plugin_source_digest="sha256:" + "b" * 64,
         plugin_install_digest="sha256:" + "c" * 64,
         executable_path=executable,
         executable_digest="sha256:" + "d" * 64,
         codex_version="0.148.0-alpha.6",
         probe_command=("--version",),
-        inventory_command=("plugin", "list", "--marketplace", "yoetz", "--json"),
-        install_command=("plugin", "add", "yoetz@yoetz", "--json"),
+        inventory_command=("plugin", "list", "--marketplace", "finishup", "--json"),
+        install_command=("plugin", "add", "finishup@finishup", "--json"),
         probe_environment="temporary_owner_private_home",
         activation_environment=(
             ("CODEX_HOME", str(codex_home)),
@@ -458,7 +462,7 @@ def test_activation_accept_repreviews_and_applies_exact_digest(
         apply_activation=apply,
     )
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend.importlib.import_module", import_adapter
+        "finishup.cli.recommend.importlib.import_module", import_adapter
     )
 
     result = _RUNNER.invoke(
@@ -477,7 +481,7 @@ def test_activation_accept_repreviews_and_applies_exact_digest(
 
     assert result.exit_code == 0, result.output
     assert preview.preview_digest in result.stdout
-    assert '[plugins."yoetz@yoetz"]' in result.stdout
+    assert '[plugins."finishup@finishup"]' in result.stdout
     assert str(codex_home) in result.stdout
     assert str(executable) in result.stdout
     assert preview.executable_digest in result.stdout
@@ -489,8 +493,8 @@ def test_activation_accept_repreviews_and_applies_exact_digest(
     assert f"{executable} --version" in result.stdout
     assert "Probe environment: temporary_owner_private_home" in result.stdout
     assert "Canonical plugin inventory verified before consent: no" in result.stdout
-    assert f"{executable} plugin list --marketplace yoetz --json" in result.stdout
-    assert f"{executable} plugin add yoetz@yoetz --json" in result.stdout
+    assert f"{executable} plugin list --marketplace finishup --json" in result.stdout
+    assert f"{executable} plugin add finishup@finishup --json" in result.stdout
     assert f"CODEX_HOME={codex_home}" in result.stdout
     assert f"CODEX_TESTING_HOME={codex_home}" in result.stdout
     assert applied and applied[0][1] == preview.preview_digest
@@ -507,18 +511,18 @@ def test_activation_store_failure_prevents_host_mutation(
     codex_home = tmp_path / "codex-testing"
     preview = SimpleNamespace(
         marketplace_bytes=b"{}\n",
-        config_toml_block='[plugins."yoetz@yoetz"]\nenabled = true\n',
+        config_toml_block='[plugins."finishup@finishup"]\nenabled = true\n',
         preview_digest="sha256:" + "a" * 64,
         codex_home=codex_home,
-        plugin_install_path=codex_home / "plugins" / "cache" / "yoetz",
+        plugin_install_path=codex_home / "plugins" / "cache" / "finishup",
         plugin_source_digest="sha256:" + "b" * 64,
         plugin_install_digest="sha256:" + "c" * 64,
         executable_path=executable,
         executable_digest="sha256:" + "d" * 64,
         codex_version="0.148.0-alpha.6",
         probe_command=("--version",),
-        inventory_command=("plugin", "list", "--marketplace", "yoetz", "--json"),
-        install_command=("plugin", "add", "yoetz@yoetz", "--json"),
+        inventory_command=("plugin", "list", "--marketplace", "finishup", "--json"),
+        install_command=("plugin", "add", "finishup@finishup", "--json"),
         probe_environment="temporary_owner_private_home",
         activation_environment=(
             ("CODEX_HOME", str(codex_home)),
@@ -593,7 +597,7 @@ def test_known_but_not_pending_recommendation_is_rejected(
         return RecommendationContext(observation_enabled=True)
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend._current_context", satisfied
+        "finishup.cli.recommend._current_context", satisfied
     )
 
     result = _RUNNER.invoke(app, ["recommend", "accept", "observation-enabled"])
@@ -608,16 +612,18 @@ def test_observation_accept_fails_closed_on_concurrent_config_change(
     _patch_state_root(monkeypatch, tmp_path)
     _patch_pending_context(monkeypatch, "observation-enabled")
     config_path = tmp_path / "config.toml"
-    write_config_toml(YoetzConfig(observation=ObservationConfig(enabled=False)), path=config_path)
+    write_config_toml(
+        FinishUpConfig(observation=ObservationConfig(enabled=False)), path=config_path
+    )
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend.config_file_path", lambda: config_path
+        "finishup.cli.recommend.config_file_path", lambda: config_path
     )
 
     def stale(*_args: object, **_kwargs: object) -> Path:
         raise ConfigError("config_preimage_mismatch")
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend.write_config_toml_if_unchanged", stale
+        "finishup.cli.recommend.write_config_toml_if_unchanged", stale
     )
 
     result = _RUNNER.invoke(app, ["recommend", "accept", "observation-enabled"])
@@ -638,18 +644,18 @@ def test_activation_preview_requires_explicit_post_preview_confirmation(
     codex_home = tmp_path / "codex-testing"
     preview = SimpleNamespace(
         marketplace_bytes=b"{}\n",
-        config_toml_block='[plugins."yoetz@yoetz"]\nenabled = true\n',
+        config_toml_block='[plugins."finishup@finishup"]\nenabled = true\n',
         preview_digest="sha256:" + "b" * 64,
         codex_home=codex_home,
-        plugin_install_path=codex_home / "plugins" / "cache" / "yoetz",
+        plugin_install_path=codex_home / "plugins" / "cache" / "finishup",
         plugin_source_digest="sha256:" + "c" * 64,
         plugin_install_digest="sha256:" + "d" * 64,
         executable_path=executable,
         executable_digest="sha256:" + "e" * 64,
         codex_version="0.148.0-alpha.6",
         probe_command=("--version",),
-        inventory_command=("plugin", "list", "--marketplace", "yoetz", "--json"),
-        install_command=("plugin", "add", "yoetz@yoetz", "--json"),
+        inventory_command=("plugin", "list", "--marketplace", "finishup", "--json"),
+        install_command=("plugin", "add", "finishup@finishup", "--json"),
         probe_environment="temporary_owner_private_home",
         activation_environment=(
             ("CODEX_HOME", str(codex_home)),
@@ -687,7 +693,7 @@ def test_activation_preview_requires_explicit_post_preview_confirmation(
         return adapter
 
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend.importlib.import_module", import_adapter
+        "finishup.cli.recommend.importlib.import_module", import_adapter
     )
 
     result = _RUNNER.invoke(
@@ -765,7 +771,7 @@ def _seed_package_update_pending(tmp_path: Path) -> None:
 
 def _patch_config_path(monkeypatch: object, tmp_path: Path) -> None:
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.cli.recommend.config_file_path", lambda: tmp_path / "config.toml"
+        "finishup.cli.recommend.config_file_path", lambda: tmp_path / "config.toml"
     )
 
 
@@ -788,7 +794,7 @@ def test_package_update_pending_survives_policyless_list_and_accepts(
 
     assert accepted.exit_code == 0, accepted.output
     assert "recommendation_not_pending" not in accepted.output
-    assert "yoetz upgrade" in accepted.stdout
+    assert "finishup upgrade" in accepted.stdout
     state = load_recommendation_state(root=tmp_path)
     assert state.decisions["package-update"].decision == "accepted"
     assert "package-update" not in state.pending

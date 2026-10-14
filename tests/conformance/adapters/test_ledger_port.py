@@ -15,11 +15,11 @@ import apsw
 import pytest
 
 from builders.replay import replay_records
-from yoetz.adapters.memory.importer import MemoryImportState
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.domain.events import (
+from finishup.adapters.memory.importer import MemoryImportState
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.domain.events import (
     REVIEW_CHECK_EVENT_SCHEMA_VERSION,
     CheckChangePartialFile,
     CheckChangeShownFiles,
@@ -30,7 +30,7 @@ from yoetz.domain.events import (
     MissingForAssessmentItem,
     UnknownEvent,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
@@ -42,7 +42,7 @@ from yoetz.domain.findings import (
     SemanticFailureClass,
     SemanticProvenance,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     Frontier,
@@ -53,18 +53,18 @@ from yoetz.domain.values import (
     obligation_id,
     parse_rfc3339_millis,
 )
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel.deterministic_checks import (
     deterministic_case_from_json,
     deterministic_case_to_json,
 )
-from yoetz.kernel.projections import ProjectionState, projection_snapshot
-from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
-from yoetz.ports.change_capture import (
+from finishup.kernel.projections import ProjectionState, projection_snapshot
+from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+from finishup.ports.change_capture import (
     TASK_CHANGE_BASE_MEDIA_TYPE,
     TaskChangeBase,
     encode_task_change_base,
 )
-from yoetz.ports.ledger import (
+from finishup.ports.ledger import (
     AppendCommand,
     AppendEntry,
     AppendResult,
@@ -83,7 +83,7 @@ from yoetz.ports.ledger import (
     SemanticJobRecord,
     SemanticProgressRecord,
 )
-from yoetz.ports.objects import (
+from finishup.ports.objects import (
     ObjectKind,
     ObjectMetadata,
     ObjectRef,
@@ -91,19 +91,19 @@ from yoetz.ports.objects import (
     ObjectSource,
     StagedObject,
 )
-from yoetz.ports.runtime import OwnershipFence
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.ports.runtime import OwnershipFence
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     Coverage,
     LedgerFreshness,
     PublicationChannel,
     coverage_for_channel,
 )
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
-from yoetz.protocol.models import SemanticProgressPhase, SemanticReason, SemanticStatus
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.protocol.models import SemanticProgressPhase, SemanticReason, SemanticStatus
 
 
 @pytest.fixture
@@ -2575,8 +2575,8 @@ async def test_short_semantic_execution_does_not_get_a_sixty_second_floor() -> N
 async def test_real_attempt_loop_crosses_old_lease_without_duplicate_dispatch(budget: int) -> None:
     """The shipped attempt loop dispatches once beyond 60s under the frozen AI-powered review cap."""
 
-    from yoetz.application.semantic_attempts import run_durable_semantic_attempts
-    from yoetz.ports.semantic import Deadline
+    from finishup.application.semantic_attempts import run_durable_semantic_attempts
+    from finishup.ports.semantic import Deadline
 
     @dataclass(frozen=True, slots=True)
     class _Eval:
@@ -2846,11 +2846,11 @@ async def test_raising_dispatch_strands_nothing_in_either_real_ledger() -> None:
     both shipped adapters.
     """
 
-    from yoetz.application.semantic_attempts import (
+    from finishup.application.semantic_attempts import (
         SemanticAttemptAccounting,
         run_durable_semantic_attempts,
     )
-    from yoetz.ports.semantic import Deadline
+    from finishup.ports.semantic import Deadline
 
     @dataclass(frozen=True, slots=True)
     class _Eval:
@@ -2929,8 +2929,8 @@ async def test_raising_dispatch_strands_nothing_in_either_real_ledger() -> None:
 async def test_expired_started_attempt_gets_local_cleanup_without_provider_dispatch() -> None:
     """A reclaimed operation can close stale local state after the provider deadline only."""
 
-    from yoetz.application.semantic_attempts import run_durable_semantic_attempts
-    from yoetz.ports.semantic import Deadline
+    from finishup.application.semantic_attempts import run_durable_semantic_attempts
+    from finishup.ports.semantic import Deadline
 
     class _AdvancingClock:
         def __init__(self) -> None:
@@ -3020,8 +3020,8 @@ async def test_expired_started_attempt_gets_local_cleanup_without_provider_dispa
 async def test_response_durable_replay_selects_existing_response_without_new_dispatch() -> None:
     """A crash after response publication reuses and selects that exact response object."""
 
-    from yoetz.application.semantic_attempts import run_durable_semantic_attempts
-    from yoetz.ports.semantic import Deadline
+    from finishup.application.semantic_attempts import run_durable_semantic_attempts
+    from finishup.ports.semantic import Deadline
 
     class _AdvancingClock:
         def __init__(self) -> None:

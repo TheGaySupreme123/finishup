@@ -209,7 +209,7 @@ jobs:
       - name: Create canonical source manifest/tar export tied to tag/commit
         run: |
           mkdir -p "${{ runner.temp }}/source-export"
-          git archive --format=tar --prefix="yoetz-${{ steps.version.outputs.value }}/" HEAD \
+          git archive --format=tar --prefix="finishup-${{ steps.version.outputs.value }}/" HEAD \
             | (cd "${{ runner.temp }}/source-export" && tar -xf -)
           (cd "${{ runner.temp }}/source-export" && tar -czf "${{ runner.temp }}/source-export.tar.gz" .)
 
@@ -359,8 +359,8 @@ jobs:
           const match = pyproject.match(/^version = "([^"]+)"$/m);
           if (!match || launcher.version !== match[1]) throw new Error("npm/PyPI version drift");
           if (launcher.private !== false) throw new Error("npm launcher is not public");
-          if (launcher.name !== "yoetz") throw new Error("unexpected npm package name");
-          if (launcher.repository?.url !== "git+https://github.com/TheGaySupreme123/yoetz.git") {
+          if (launcher.name !== "finishup") throw new Error("unexpected npm package name");
+          if (launcher.repository?.url !== "git+https://github.com/TheGaySupreme123/finishup.git") {
             throw new Error("npm provenance repository does not match the release repository");
           }
           for (const field of ["dependencies", "devDependencies", "optionalDependencies", "scripts"]) {
@@ -375,7 +375,7 @@ jobs:
           npm pack ./support/npm-launcher \
             --pack-destination "${{ runner.temp }}/npm-dist" --json \
             > "${{ runner.temp }}/npm-pack.json"
-          tar -xzf "${{ runner.temp }}/npm-dist/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz" \
+          tar -xzf "${{ runner.temp }}/npm-dist/finishup-${{ needs.validate-release-source.outputs.version }}.tgz" \
             -C "${{ runner.temp }}/npm-inspect"
           python3 - <<'PY'
           import json
@@ -388,11 +388,11 @@ jobs:
               for path in root.rglob("*")
               if path.is_file()
           )
-          expected = ["README.md", "bin/yoetz.js", "package.json"]
+          expected = ["README.md", "bin/finishup.js", "package.json"]
           if members != expected:
               raise SystemExit(f"unexpected npm tarball members: {members}")
           package = json.loads((root / "package.json").read_text(encoding="utf-8"))
-          if package["name"] != "yoetz" or package["version"] != "${{ needs.validate-release-source.outputs.version }}":
+          if package["name"] != "finishup" or package["version"] != "${{ needs.validate-release-source.outputs.version }}":
               raise SystemExit("packed npm identity mismatch")
           PY
 
@@ -400,7 +400,7 @@ jobs:
         id: digest
         run: |
           set -euo pipefail
-          tgz="${{ runner.temp }}/npm-dist/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz"
+          tgz="${{ runner.temp }}/npm-dist/finishup-${{ needs.validate-release-source.outputs.version }}.tgz"
           digest=$(sha256sum "$tgz" | cut -d' ' -f1)
           (cd "${{ runner.temp }}/npm-dist" && sha256sum "$(basename "$tgz")" > NPM_SHA256SUMS)
           python3 - <<PY
@@ -472,9 +472,9 @@ jobs:
         run: |
           uv venv "${{ runner.temp }}/verify-venv"
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" \
-            --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${{ needs.validate-release-source.outputs.version }}"
+            --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${{ needs.validate-release-source.outputs.version }}"
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" \
-            "yoetz[semantic-openai,portable-recovery]==${{ needs.validate-release-source.outputs.version }}"
+            "finishup[semantic-openai,portable-recovery]==${{ needs.validate-release-source.outputs.version }}"
           "${{ runner.temp }}/verify-venv/bin/python" -c "
           import apsw, platform, sys
           assert sys.version_info[:2] == (3, 14)
@@ -485,11 +485,11 @@ jobs:
 
       - name: version/startup, resource/schema/migration identity, strict-local six operations, MCP/CLI subprocess
         run: |
-          "${{ runner.temp }}/verify-venv/bin/yoetz" version --json
+          "${{ runner.temp }}/verify-venv/bin/finishup" version --json
           uv sync --locked --group dev
           # Production vault tests must not use pytest's shared /tmp base or a repository path.
           # Resolve runner temp first so macOS aliases cannot enter the private state path.
-          release_test_root="$(.venv/bin/python -c 'import os; from pathlib import Path; print((Path(os.environ["RUNNER_TEMP"]) / "yoetz-integration").resolve())')"
+          release_test_root="$(.venv/bin/python -c 'import os; from pathlib import Path; print((Path(os.environ["RUNNER_TEMP"]) / "finishup-integration").resolve())')"
           uv run --locked pytest tests/packaging \
             --deselect tests/packaging/test_offline_reinstall.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
             --deselect tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
@@ -512,12 +512,12 @@ jobs:
             if [[ "$has_no_index" == false ]]; then
               set -- --no-index "$@"
             fi
-            exec "${YOETZ_REAL_UV:?}" pip install "$@"
+            exec "${FINISHUP_REAL_UV:?}" pip install "$@"
           fi
-          exec "${YOETZ_REAL_UV:?}" "$@"
+          exec "${FINISHUP_REAL_UV:?}" "$@"
           UV_WRAPPER
           chmod +x "$tagged_uv_wrapper/uv"
-          YOETZ_REAL_UV="$real_uv" \
+          FINISHUP_REAL_UV="$real_uv" \
           PATH="$tagged_uv_wrapper:$PATH" \
           UV_CACHE_DIR="${{ runner.temp }}/tagged-offline-cache" \
             .venv/bin/pytest \
@@ -525,12 +525,12 @@ jobs:
             tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
             -q --timeout=900
           YZCI_DENY_NETWORK=1 \
-          YOETZ_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
+          FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
             uv run --locked pytest tests/subprocess \
             -m "not fault and not soak and not live" -q --timeout=900
           # Linux approved-command execution remains a documented fail-closed alpha limitation.
           YZCI_DENY_NETWORK=1 \
-          YOETZ_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
+          FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
             uv run --locked pytest tests/integration \
             --basetemp "$release_test_root" \
             --deselect tests/integration/observation/test_acceptance_scenarios.py::test_approved_check_stale_when_digest_changes \
@@ -540,15 +540,15 @@ jobs:
       - name: Clean install/upgrade/rollback/uninstall/data-retention/offline reinstall, backup/restore, key backend states
         run: |
           "${{ runner.temp }}/verify-venv/bin/uv" --version >/dev/null 2>&1 || true
-          uv pip uninstall --python "${{ runner.temp }}/verify-venv/bin/python" -y yoetz
+          uv pip uninstall --python "${{ runner.temp }}/verify-venv/bin/python" -y finishup
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" --no-index \
-            --find-links "${{ runner.temp }}/dist" "yoetz==${{ needs.validate-release-source.outputs.version }}"
-          "${{ runner.temp }}/verify-venv/bin/yoetz" version --json
+            --find-links "${{ runner.temp }}/dist" "finishup==${{ needs.validate-release-source.outputs.version }}"
+          "${{ runner.temp }}/verify-venv/bin/finishup" version --json
 
       - name: Installed-artifact boundary scan
         run: |
           installed_root=$("${{ runner.temp }}/verify-venv/bin/python" -c \
-            'import pathlib, yoetz; print(pathlib.Path(yoetz.__file__).parent)')
+            'import pathlib, finishup; print(pathlib.Path(finishup.__file__).parent)')
           uv run --locked python scripts/scan_public_boundary.py --runtime-tree "$installed_root"
 
   # ---------------------------------------------------------------------------------------------
@@ -596,9 +596,9 @@ jobs:
         run: |
           uv venv "${{ runner.temp }}/verify-venv"
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" \
-            --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${{ needs.validate-release-source.outputs.version }}"
+            --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${{ needs.validate-release-source.outputs.version }}"
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" \
-            "yoetz[semantic-openai,portable-recovery]==${{ needs.validate-release-source.outputs.version }}"
+            "finishup[semantic-openai,portable-recovery]==${{ needs.validate-release-source.outputs.version }}"
           "${{ runner.temp }}/verify-venv/bin/python" -c "
           import apsw, platform, sys
           assert sys.version_info[:2] == (3, 14)
@@ -609,11 +609,11 @@ jobs:
 
       - name: version/startup, resource/schema/migration identity, strict-local six operations, MCP/CLI subprocess
         run: |
-          "${{ runner.temp }}/verify-venv/bin/yoetz" version --json
+          "${{ runner.temp }}/verify-venv/bin/finishup" version --json
           uv sync --locked --group dev
           # Production vault tests must not use pytest's shared /tmp base or a repository path.
           # Resolve runner temp first so macOS aliases cannot enter the private state path.
-          release_test_root="$(.venv/bin/python -c 'import os; from pathlib import Path; print((Path(os.environ["RUNNER_TEMP"]) / "yoetz-integration").resolve())')"
+          release_test_root="$(.venv/bin/python -c 'import os; from pathlib import Path; print((Path(os.environ["RUNNER_TEMP"]) / "finishup-integration").resolve())')"
           uv run --locked pytest tests/packaging \
             --deselect tests/packaging/test_offline_reinstall.py::test_corrupted_wheel_fails_exact_hash_verification_before_any_install \
             --deselect tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
@@ -636,12 +636,12 @@ jobs:
             if [[ "$has_no_index" == false ]]; then
               set -- --no-index "$@"
             fi
-            exec "${YOETZ_REAL_UV:?}" pip install "$@"
+            exec "${FINISHUP_REAL_UV:?}" pip install "$@"
           fi
-          exec "${YOETZ_REAL_UV:?}" "$@"
+          exec "${FINISHUP_REAL_UV:?}" "$@"
           UV_WRAPPER
           chmod +x "$tagged_uv_wrapper/uv"
-          YOETZ_REAL_UV="$real_uv" \
+          FINISHUP_REAL_UV="$real_uv" \
           PATH="$tagged_uv_wrapper:$PATH" \
           UV_CACHE_DIR="${{ runner.temp }}/tagged-offline-cache" \
             .venv/bin/pytest \
@@ -649,26 +649,26 @@ jobs:
             tests/packaging/test_offline_reinstall.py::test_correct_hash_matching_the_real_wheel_installs_cleanly \
             -q --timeout=900
           YZCI_DENY_NETWORK=1 \
-          YOETZ_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
+          FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
             uv run --locked pytest tests/subprocess \
             -m "not fault and not soak and not live" -q --timeout=900
           YZCI_DENY_NETWORK=1 \
-          YOETZ_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
+          FINISHUP_CANDIDATE_PYTHON="${{ runner.temp }}/verify-venv/bin/python" \
             uv run --locked pytest tests/integration \
             --basetemp "$release_test_root" \
             -m "not fault and not soak and not live" -q --timeout=900
 
       - name: Clean install/upgrade/rollback/uninstall/data-retention/offline reinstall, backup/restore, key backend states
         run: |
-          uv pip uninstall --python "${{ runner.temp }}/verify-venv/bin/python" -y yoetz
+          uv pip uninstall --python "${{ runner.temp }}/verify-venv/bin/python" -y finishup
           uv pip install --python "${{ runner.temp }}/verify-venv/bin/python" --no-index \
-            --find-links "${{ runner.temp }}/dist" "yoetz==${{ needs.validate-release-source.outputs.version }}"
-          "${{ runner.temp }}/verify-venv/bin/yoetz" version --json
+            --find-links "${{ runner.temp }}/dist" "finishup==${{ needs.validate-release-source.outputs.version }}"
+          "${{ runner.temp }}/verify-venv/bin/finishup" version --json
 
       - name: Installed-artifact boundary scan
         run: |
           installed_root=$("${{ runner.temp }}/verify-venv/bin/python" -c \
-            'import pathlib, yoetz; print(pathlib.Path(yoetz.__file__).parent)')
+            'import pathlib, finishup; print(pathlib.Path(finishup.__file__).parent)')
           uv run --locked python scripts/scan_public_boundary.py --runtime-tree "$installed_root"
 
   # ---------------------------------------------------------------------------------------------
@@ -816,7 +816,7 @@ jobs:
         run: |
           set -euo pipefail
           source="${{ runner.temp }}/inputs/security-dependency-evidence/sbom.cdx.json"
-          destination="${{ runner.temp }}/release-evidence/${{ needs.validate-release-source.outputs.version }}/yoetz-${{ needs.validate-release-source.outputs.version }}.sbom.cdx.json"
+          destination="${{ runner.temp }}/release-evidence/${{ needs.validate-release-source.outputs.version }}/finishup-${{ needs.validate-release-source.outputs.version }}.sbom.cdx.json"
           [ -f "$source" ] || { echo "::error::security workflow SBOM artifact is missing"; exit 1; }
           cp -- "$source" "$destination"
 
@@ -912,18 +912,18 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-release-source.outputs.version }}"
           status=$(curl -s -o /dev/null -w '%{http_code}' \
-            "https://pypi.org/pypi/yoetz/${version}/json")
+            "https://pypi.org/pypi/finishup/${version}/json")
           case "$status" in
             404)
               echo "publish=true" >> "$GITHUB_OUTPUT"
               ;;
             200)
               [ "${{ github.event.inputs.recovery }}" = "true" ] || {
-                echo "::error::yoetz==${version} already exists on PyPI"
+                echo "::error::finishup==${version} already exists on PyPI"
                 exit 1
               }
               curl --fail --silent --show-error --location \
-                "https://pypi.org/pypi/yoetz/${version}/json" \
+                "https://pypi.org/pypi/finishup/${version}/json" \
                 --output "${{ runner.temp }}/pypi-existing.json"
               PYPI_METADATA="${{ runner.temp }}/pypi-existing.json" \
               PYPI_DIST="${{ runner.temp }}/pypi-dist" python3 - <<'PY'
@@ -989,7 +989,7 @@ jobs:
       - name: Verify npm candidate digest before publication
         run: |
           set -euo pipefail
-          tgz="${{ runner.temp }}/npm-dist/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz"
+          tgz="${{ runner.temp }}/npm-dist/finishup-${{ needs.validate-release-source.outputs.version }}.tgz"
           digest=$(sha256sum "$tgz" | cut -d' ' -f1)
           [ "$digest" = "${{ needs.build-npm-launcher.outputs.npm-digest }}" ] || {
             echo "::error::npm candidate digest mismatch before publish"
@@ -1006,21 +1006,21 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-release-source.outputs.version }}"
           status=$(curl -s -o /dev/null -w '%{http_code}' \
-            "https://registry.npmjs.org/yoetz/${version}")
+            "https://registry.npmjs.org/finishup/${version}")
           case "$status" in
             404)
               echo "publish=true" >> "$GITHUB_OUTPUT"
               ;;
             200)
               [ "${{ github.event.inputs.recovery }}" = "true" ] || {
-                echo "::error::yoetz@${version} already exists on npm"
+                echo "::error::finishup@${version} already exists on npm"
                 exit 1
               }
-              tarball=$(npm view "yoetz@${version}" dist.tarball)
+              tarball=$(npm view "finishup@${version}" dist.tarball)
               curl --fail --silent --show-error --location "$tarball" \
                 --output "${{ runner.temp }}/npm-published.tgz"
               cmp -s "${{ runner.temp }}/npm-published.tgz" \
-                "${{ runner.temp }}/npm-dist/yoetz-${version}.tgz" || {
+                "${{ runner.temp }}/npm-dist/finishup-${version}.tgz" || {
                 echo "::error::published npm bytes differ from recovery candidate"
                 exit 1
               }
@@ -1034,7 +1034,7 @@ jobs:
 
       - name: Publish the exact tarball through npm Trusted Publishing
         if: steps.npm-state.outputs.publish == 'true'
-        run: npm publish "${{ runner.temp }}/npm-dist/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz" --access public
+        run: npm publish "${{ runner.temp }}/npm-dist/finishup-${{ needs.validate-release-source.outputs.version }}.tgz" --access public
 
   # ---------------------------------------------------------------------------------------------
   # publish-github-release
@@ -1191,17 +1191,17 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-release-source.outputs.version }}"
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/yoetz/${version}/json")
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/finishup/${version}/json")
             [ "$code" = "200" ] && break
             sleep 20
           done
-          [ "$code" = "200" ] || { echo "::error::yoetz==${version} not visible on PyPI within bound"; exit 1; }
+          [ "$code" = "200" ] || { echo "::error::finishup==${version} not visible on PyPI within bound"; exit 1; }
 
       - name: Download published artifacts from PyPI by exact version/filename
         run: |
           set -euo pipefail
           mkdir -p "${{ runner.temp }}/published"
-          curl -sL "https://pypi.org/pypi/yoetz/${{ needs.validate-release-source.outputs.version }}/json" \
+          curl -sL "https://pypi.org/pypi/finishup/${{ needs.validate-release-source.outputs.version }}/json" \
             -o "${{ runner.temp }}/pypi-meta.json"
           python3 - <<'PY'
           import json, os, urllib.request
@@ -1243,19 +1243,19 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-release-source.outputs.version }}"
           venv="${{ runner.temp }}/published-venv"
-          wheel="${{ runner.temp }}/published/yoetz-${version}-py3-none-any.whl"
+          wheel="${{ runner.temp }}/published/finishup-${version}-py3-none-any.whl"
           [ -f "$wheel" ] || { echo "::error::published wheel is missing: $wheel"; exit 1; }
           uv python install 3.14
           uv venv --python 3.14 "$venv"
           # Resolve the wheel's pinned runtime dependencies while the registry is available, then
-          # remove Yoetz so the actual smoke installation is forced through the captured public wheel.
+          # remove FinishUP so the actual smoke installation is forced through the captured public wheel.
           uv pip install --python "$venv/bin/python" "$wheel"
-          uv pip uninstall --python "$venv/bin/python" yoetz
+          uv pip uninstall --python "$venv/bin/python" finishup
           uv pip install --python "${{ runner.temp }}/published-venv/bin/python" \
             --no-index --no-deps --find-links "${{ runner.temp }}/published" \
-            "yoetz==${version}"
-          "$venv/bin/yoetz" version --json
-          "$venv/bin/python" -c "import yoetz"
+            "finishup==${version}"
+          "$venv/bin/finishup" version --json
+          "$venv/bin/python" -c "import finishup"
 
   # ---------------------------------------------------------------------------------------------
   # verify-npm-published
@@ -1291,15 +1291,15 @@ jobs:
           set -euo pipefail
           version="${{ needs.validate-release-source.outputs.version }}"
           for i in $(seq 1 30); do
-            code=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/yoetz/${version}")
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://registry.npmjs.org/finishup/${version}")
             [ "$code" = "200" ] && break
             sleep 20
           done
           [ "$code" = "200" ] || {
-            echo "::error::yoetz@${version} not visible on npm within bound"
+            echo "::error::finishup@${version} not visible on npm within bound"
             exit 1
           }
-          curl -sL "https://registry.npmjs.org/yoetz/${version}" -o "${{ runner.temp }}/npm-meta.json"
+          curl -sL "https://registry.npmjs.org/finishup/${version}" -o "${{ runner.temp }}/npm-meta.json"
           python3 - <<'PY'
           import json
           import os
@@ -1314,7 +1314,7 @@ jobs:
       - name: Verify public npm bytes and exact-version delegation
         run: |
           set -euo pipefail
-          candidate="${{ runner.temp }}/npm-candidate/yoetz-${{ needs.validate-release-source.outputs.version }}.tgz"
+          candidate="${{ runner.temp }}/npm-candidate/finishup-${{ needs.validate-release-source.outputs.version }}.tgz"
           cmp -s "${{ runner.temp }}/npm-published.tgz" "$candidate" || {
             echo "::error::published npm tarball differs from the approved candidate"
             exit 1
@@ -1330,14 +1330,14 @@ jobs:
             > "${{ runner.temp }}/shims/uvx"
           chmod +x "${{ runner.temp }}/shims/uv" "${{ runner.temp }}/shims/uvx"
           PATH="${{ runner.temp }}/shims:$PATH" \
-            node "${{ runner.temp }}/npm-published/package/bin/yoetz.js" version --json
+            node "${{ runner.temp }}/npm-published/package/bin/finishup.js" version --json
           expected_uv="$(printf '%s\n%s' "--version" \
-            "tool install --quiet --python 3.14 yoetz==${{ needs.validate-release-source.outputs.version }}")"
+            "tool install --quiet --python 3.14 finishup==${{ needs.validate-release-source.outputs.version }}")"
           [ "$(cat "${{ runner.temp }}/uv-args")" = "$expected_uv" ] || {
             echo "::error::published npm launcher did not install the exact PyPI version as a uv tool"
             exit 1
           }
-          [ "$(cat "${{ runner.temp }}/uvx-args")" = "--python 3.14 yoetz version --json" ] || {
+          [ "$(cat "${{ runner.temp }}/uvx-args")" = "--python 3.14 finishup version --json" ] || {
             echo "::error::published npm launcher did not run the installed tool through uvx"
             exit 1
           }

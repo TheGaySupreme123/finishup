@@ -1,7 +1,7 @@
 """The check's reviewer fence for tb4n4 (issues #1042 and #1043).
 
 * #1042: a routine review judges incomplete work only. Its correctness concern (``code_defect``)
-  is recorded as an advisory, non-blocking note in the review summary; a challenge about Yoetz's
+  is recorded as an advisory, non-blocking note in the review summary; a challenge about FinishUP's
   own capture state, or a "never attempted" one during work in progress, is counted and disclosed
   (``semantic_process_state_filtered``), never minted, and never bounds the check.
 * #1043: a ``task_requirement_unmet`` whose only cited work is the agent's own run beyond the
@@ -20,13 +20,13 @@ from dataclasses import replace
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.application.check import (
+from finishup.application.check import (
+    SEMANTIC_REJECTED_FINISHUP_PROCESS_STATE,
     SEMANTIC_REJECTED_ROUTINE_COMPLETENESS,
-    SEMANTIC_REJECTED_YOETZ_PROCESS_STATE,
     SemanticJudgmentReview,
     validate_semantic_judgment,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     EventSchema,
@@ -36,33 +36,33 @@ from yoetz.domain.events import (
     RequestedItem,
     RequestedItemKind,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FindingKind,
     SamplingParams,
     SemanticDispatchKind,
     SemanticProvenance,
     is_limitation_request,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     SEMANTIC_CHALLENGES_REJECTED_GAP,
     SEMANTIC_PROCESS_STATE_FILTERED_GAP,
 )
-from yoetz.domain.values import EventId, action_id, obligation_id
-from yoetz.kernel.deterministic_checks import (
+from finishup.domain.values import EventId, action_id, obligation_id
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     DeterministicCase,
     build_deterministic_case,
 )
-from yoetz.kernel.finding_resolution import (
+from finishup.kernel.finding_resolution import (
     DETERMINISTIC_PROOF_TOLERATED_GAPS,
     SEMANTIC_ONLY_GAPS,
 )
-from yoetz.kernel.gap_effect import GapEffectKind, gap_effect
-from yoetz.kernel.observed_failures import observed_action_description
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import agent_linked_run_events, register_command_identity_key
-from yoetz.ports.semantic import ReviewerChallenge, SemanticJudgment
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.kernel.gap_effect import GapEffectKind, gap_effect
+from finishup.kernel.observed_failures import observed_action_description
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import agent_linked_run_events, register_command_identity_key
+from finishup.ports.semantic import ReviewerChallenge, SemanticJudgment
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _DIGEST = "sha256:" + "a" * 64
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
@@ -160,7 +160,7 @@ def _review(
 
 
 def _fence_gaps(review: SemanticJudgmentReview) -> frozenset[str]:
-    from yoetz.application.check import (
+    from finishup.application.check import (
         _review_fence_gaps,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -215,7 +215,7 @@ def test_an_incomplete_work_challenge_stays_a_finding_in_a_routine_review() -> N
     assert review.advisory_notes == 0
 
 
-# --- #1042 item 2: Yoetz's own state and work not yet started are filtered and disclosed -------
+# --- #1042 item 2: FinishUP's own state and work not yet started are filtered and disclosed -------
 
 
 def test_an_action_without_result_about_the_check_call_is_filtered_and_disclosed() -> None:
@@ -228,7 +228,7 @@ def test_an_action_without_result_about_the_check_call_is_filtered_and_disclosed
         ActionRecordedPayload(
             check_call,
             ActionKind.OTHER,
-            observed_action_description("Observed other via Codex hook", "mcp__yoetz__check"),
+            observed_action_description("Observed other via Codex hook", "mcp__finishup__check"),
         ),
         observed=True,
     )
@@ -241,7 +241,7 @@ def test_an_action_without_result_about_the_check_call_is_filtered_and_disclosed
     for phase in ("routine", "final"):
         review = _review(case, challenge, phase=phase)
         assert review.candidates == ()
-        assert review.rejected_by_reason == ((SEMANTIC_REJECTED_YOETZ_PROCESS_STATE, 1),)
+        assert review.rejected_by_reason == ((SEMANTIC_REJECTED_FINISHUP_PROCESS_STATE, 1),)
         assert _fence_gaps(review) == frozenset({SEMANTIC_PROCESS_STATE_FILTERED_GAP})
 
 
@@ -362,8 +362,8 @@ def test_a_requirement_citing_the_tasks_own_verification_stays_a_task_requiremen
 
 def test_an_agent_criterion_finding_is_a_limitation_request_whatever_the_next_step() -> None:
     from builders.policy_cases import finding_record, fnd
-    from yoetz.domain.findings import Finding, FindingChallenge, FindingOrigin
-    from yoetz.kernel.closure_class import finding_closure
+    from finishup.domain.findings import Finding, FindingChallenge, FindingOrigin
+    from finishup.kernel.closure_class import finding_closure
 
     case, _sample, stress = _vigenere()
     review = _review(

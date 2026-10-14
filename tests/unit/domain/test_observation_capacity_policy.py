@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.domain.observation_budget import (
+from finishup.domain.observation_budget import (
     LARGER_CAPACITY,
     LARGEST_CAPACITY,
     STANDARD_CAPACITY,
@@ -15,7 +15,7 @@ from yoetz.domain.observation_budget import (
     no_cap_support,
     parse_capacity_request,
 )
-from yoetz.domain.observation_capacity_policy import (
+from finishup.domain.observation_capacity_policy import (
     CAPACITY_DISCLOSURE_SCHEMA,
     SESSION_PLACEHOLDER,
     WORKSPACE_PLACEHOLDER,
@@ -25,10 +25,10 @@ from yoetz.domain.observation_capacity_policy import (
     render_capacity_disclosure_lines,
     scope_flag,
 )
-from yoetz.domain.values import JsonObject, JsonValue
+from finishup.domain.values import JsonObject, JsonValue
 
 _UNSUPPORTED = (
-    "No Yoetz cap is not available for the structural queue in this revision: the local "
+    "No FinishUP cap is not available for the structural queue in this revision: the local "
     "state document has a 16 MiB safety ceiling. The largest supported finite capacity is "
     "8,192 rows (--capacity largest or --capacity custom --queue-count 8192)."
 )
@@ -89,14 +89,14 @@ def test_increase_record_is_closed_and_complete() -> None:
         "no_cap": no_cap_support(),
         "authority_unchanged": ("content", "privacy", "provider", "credential", "network"),
         "lower_command": (
-            "yoetz observe selection-preview --workspace <workspace> --detail focused "
-            "--capacity standard --persist then yoetz observe selection-apply --workspace "
+            "finishup observe selection-preview --workspace <workspace> --detail focused "
+            "--capacity standard --persist then finishup observe selection-apply --workspace "
             "<workspace> --detail focused --capacity standard --persist --accept "
             "--preview-digest <preview-digest>"
         ),
-        "revoke_command": "yoetz observe selection-revoke --workspace <workspace> --persist",
-        "pause_command": "yoetz observe pause --workspace <workspace>",
-        "resume_command": "yoetz observe resume --workspace <workspace>",
+        "revoke_command": "finishup observe selection-revoke --workspace <workspace> --persist",
+        "pause_command": "finishup observe pause --workspace <workspace>",
+        "resume_command": "finishup observe resume --workspace <workspace>",
         "validation_status": "not_validated",
     }
     assert record == _disclosure(STANDARD_CAPACITY, "larger")
@@ -114,19 +114,19 @@ def test_increase_lines_disclose_cost_scope_limits_and_way_back() -> None:
     )
     assert lines == (
         "Larger local retention can increase disk use, memory use and CPU work, and may slow "
-        "Yoetz or other apps.",
+        "FinishUP or other apps.",
         "Scope: this session. Queue: 512 → 1,024 rows (512 KiB → 1 MiB queue bytes; state "
         "document up to 2 MiB).",
         "The shared workspace queue follows the largest active selection, so this can raise "
         "the queue and state-document bounds for every session in the workspace.",
         "Still limited: 256 pending pairs, 512 capture tickets / 128 MiB, 16 MiB state "
         "document; content, privacy and provider authority are unchanged.",
-        "Lower it later with: yoetz observe selection-preview --workspace <workspace> --detail "
-        "detailed --capacity standard --session-id <session-id> then yoetz observe "
+        "Lower it later with: finishup observe selection-preview --workspace <workspace> --detail "
+        "detailed --capacity standard --session-id <session-id> then finishup observe "
         "selection-apply --workspace <workspace> --detail detailed --capacity standard "
         "--session-id <session-id> --accept --preview-digest <preview-digest>. Pause new "
-        "observation ingest with: yoetz observe pause --workspace <workspace>.",
-        "Resume with: yoetz observe resume --workspace <workspace>.",
+        "observation ingest with: finishup observe pause --workspace <workspace>.",
+        "Resume with: finishup observe resume --workspace <workspace>.",
         "Performance validation is provisional (not_validated).",
     )
 
@@ -154,7 +154,7 @@ def test_lower_command_restores_the_current_capacity_after_an_increase() -> None
     lower = str(record["lower_command"])
     assert "--capacity custom --queue-count 64 --persist" in lower
     assert "--capacity standard" not in lower
-    assert "Lower it later with: yoetz observe selection-preview" in " ".join(
+    assert "Lower it later with: finishup observe selection-preview" in " ".join(
         render_capacity_disclosure_lines(record)
     )
     # A named profile is restored by its label.
@@ -203,8 +203,8 @@ def test_scope_flag_names_a_placeholder_unless_the_argument_is_safe() -> None:
 
 
 def test_safe_command_and_closed_token_predicates() -> None:
-    assert is_safe_command("yoetz observe pause --workspace <workspace>")
-    assert not is_safe_command("yoetz observe pause; curl evil")
+    assert is_safe_command("finishup observe pause --workspace <workspace>")
+    assert not is_safe_command("finishup observe pause; curl evil")
     assert not is_safe_command("rm -rf /")
     assert not is_safe_command(None)
     assert is_closed_token("not_validated")
@@ -218,7 +218,7 @@ def test_safe_command_and_closed_token_predicates() -> None:
         {"schema": "yoetz.capacity-change-disclosure/2"},
         {"change": "unlimited"},
         {"scope": "global"},
-        {"pause_command": "yoetz observe pause; curl evil"},
+        {"pause_command": "finishup observe pause; curl evil"},
         {"lower_command": "rm -rf /"},
         {"validation_status": "Validated! Totally safe."},
         {"requested": None},

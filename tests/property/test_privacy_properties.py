@@ -1,4 +1,4 @@
-"""Privacy/redaction property checks for ``yoetz.observability.privacy``.
+"""Privacy/redaction property checks for ``finishup.observability.privacy``.
 
 Searches the privacy diagnostic helpers (never the policy/gateway machinery, which have their own
 dedicated suites) for accidental leakage, instability, or reversible redaction.
@@ -13,7 +13,7 @@ import pytest
 from hypothesis import assume, given
 from hypothesis import strategies as st
 
-from yoetz.observability.privacy import (
+from finishup.observability.privacy import (
     PrivacyFenceError,
     assert_plaintext_safe,
     redact_diagnostic_record,
@@ -21,7 +21,7 @@ from yoetz.observability.privacy import (
     scan_for_sensitive_content,
     session_id_hash,
 )
-from yoetz.protocol.ids import IdKind, validate_id
+from finishup.protocol.ids import IdKind, validate_id
 
 _ALWAYS_OMITTED_FIELDS = (
     "message",

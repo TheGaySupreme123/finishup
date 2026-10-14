@@ -15,18 +15,18 @@ import apsw
 import pytest
 
 from builders.replay import replay_records
-from integration.storage.test_append_and_replay import command_from_records, memory_for, sqlite_for
-from yoetz.domain.events import (
+from finishup.domain.events import (
     LedgerRecord,
     RedactionRecordedPayload,
     encode_payload,
     is_observation_authored,
 )
-from yoetz.domain.privacy import SourceAuthorship
-from yoetz.domain.values import Frontier, object_id
-from yoetz.ports.ledger import AppendCommand, EvidenceProjectionFilter, ProjectionQuery
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.models import StatusEvidenceItemModel
+from finishup.domain.privacy import SourceAuthorship
+from finishup.domain.values import Frontier, object_id
+from finishup.ports.ledger import AppendCommand, EvidenceProjectionFilter, ProjectionQuery
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.models import StatusEvidenceItemModel
+from integration.storage.test_append_and_replay import command_from_records, memory_for, sqlite_for
 
 pytestmark = pytest.mark.anyio
 

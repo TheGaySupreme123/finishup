@@ -27,7 +27,7 @@ def session_meta(
     history_mode: str = "legacy",
     session_id: str = "019f8b27-b98e-7061-bbb5-d0b897594de6",
     ordinal: int | None = None,
-    cwd: str = "/tmp/yoetz-rollout",
+    cwd: str = "/tmp/finishup-rollout",
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {

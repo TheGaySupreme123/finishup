@@ -8,10 +8,10 @@ from typing import Protocol
 
 import pytest
 
-from yoetz.ports.control import ServiceState
-from yoetz.ports.secret_memory import HumanAuthorizationProof
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.service.lifecycle import (
+from finishup.ports.control import ServiceState
+from finishup.ports.secret_memory import HumanAuthorizationProof
+from finishup.protocol.canonical import canonical_encode
+from finishup.service.lifecycle import (
     IDLE_STOP_SECONDS,
     IdleRelockPolicy,
     LifecycleError,
@@ -375,8 +375,8 @@ def test_holder_probe_refuses_a_stamp_anyone_else_could_have_written(tmp_path: P
 async def test_singleton_stamp_names_the_holder_installation_identity(tmp_path: Path) -> None:
     """A client whose hello the holder rejects can still learn what it is talking to."""
 
-    from yoetz import __version__
-    from yoetz.protocol.schemas import schema_manifest_digest
+    from finishup import __version__
+    from finishup.protocol.schemas import schema_manifest_digest
 
     path = tmp_path / "service.lock"
     lifecycle = _lifecycle(_Clock(), singleton_lock_path=path)
@@ -400,7 +400,7 @@ async def test_singleton_stamp_names_the_holder_installation_identity(tmp_path: 
 async def test_singleton_stamp_carries_the_instance_lifecycle_and_source_ref(
     tmp_path: Path,
 ) -> None:
-    """A refused client, or ``yoetz instance status``, can name what kind of instance holds
+    """A refused client, or ``finishup instance status``, can name what kind of instance holds
     the singleton (issue #604); only the closed fields ride in the stamp."""
 
     path = tmp_path / "service.lock"

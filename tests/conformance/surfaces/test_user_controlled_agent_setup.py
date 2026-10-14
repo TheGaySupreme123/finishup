@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from yoetz.protocol.chat_user_authority import agent_chat_attestation_supported
-from yoetz.service.elevated_bootstrap import catalog_payload
+from finishup.protocol.chat_user_authority import agent_chat_attestation_supported
+from finishup.service.elevated_bootstrap import catalog_payload
 
 _ROOT = Path(__file__).resolve().parents[3]
 
@@ -16,10 +16,10 @@ def _text(path: str) -> str:
 
 def test_shared_guidance_makes_conversation_primary_and_user_choice_final() -> None:
     guidance = _text("guidance/agent-instructions.md")
-    skill = _text("skills/codex/yoetz/SKILL.md")
+    skill = _text("skills/codex/finishup/SKILL.md")
 
     for entrypoint in (guidance, skill):
-        assert "yoetz://guidance/request-templates.md" in entrypoint
+        assert "finishup://guidance/request-templates.md" in entrypoint
     for surface in (_text("guidance/request-templates.md"),):
         collapsed = " ".join(surface.split())
         assert "Normal conversation is the primary" in collapsed
@@ -59,7 +59,7 @@ def test_authorization_docs_do_not_contradict_the_implemented_consent_lane() -> 
     assert "only a reauthenticated local human at the trusted terminal" not in usage
     assert "authorize_command" in usage
     assert "trusted-terminal ceremony is the single authorization" not in protocol
-    assert "`yoetz consent` lane described above is its only exception" in protocol
+    assert "`finishup consent` lane described above is its only exception" in protocol
 
     # Issue #553: the shipped README, the architecture overview, the CONTRIBUTING honesty rules,
     # the usage privacy page, and INTERFACES made the same single-authority claim; each must name

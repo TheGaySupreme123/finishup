@@ -21,8 +21,8 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
 
-from yoetz.domain.coordination import CoordinationDisposition, OverlapKind
-from yoetz.domain.events import (
+from finishup.domain.coordination import CoordinationDisposition, OverlapKind
+from finishup.domain.events import (
     CLAIM_SCHEMA_VERSION,
     EVENT_FAMILIES,
     EVIDENCE_SCHEMA_VERSION,
@@ -84,7 +84,7 @@ from yoetz.domain.events import (
     media_type_for,
     normalize_payload_json,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     ResponseDisposition,
     RuntimeAttemptEvidence,
@@ -94,7 +94,7 @@ from yoetz.domain.findings import (
     SemanticProvenance,
     WaiverScope,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     JsonObject,
@@ -113,22 +113,22 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest
-from yoetz.protocol.coverage import (
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import canonical_digest, canonical_encode, entry_digest
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     EvidenceImmutability,
     PublicationChannel,
     coverage_from_json,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import (
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     SemanticReason,
     SemanticStatus,
 )
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.schemas import validate_schema_instance
 
 _FIXTURE_PATH = Path(__file__).parents[3] / "fixtures" / "replay" / "all-event-families.case.json"
 _LINEAGE_FIXTURE_PATH = (
@@ -151,9 +151,9 @@ _EVENT_MATRIX_SCRIPT: Final = textwrap.dedent(
     if hasattr(time, "tzset"):
         time.tzset()
 
-    from yoetz.domain.events import EventSchema, decode_payload, encode_payload
-    from yoetz.domain.values import freeze_json
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.domain.events import EventSchema, decode_payload, encode_payload
+    from finishup.domain.values import freeze_json
+    from finishup.protocol.canonical import canonical_encode
 
     rows = json.loads(base64.b64decode(sys.argv[2]).decode("utf-8"))
     encoded = []
@@ -854,7 +854,7 @@ def test_evidence_1_2_requires_closed_compatible_digest_provenance() -> None:
 
 
 def test_support_types_and_client_enum_identity_are_exact() -> None:
-    from yoetz.protocol import models
+    from finishup.protocol import models
 
     assert ClientKind is models.ClientKind
     assert IntegrationKind is models.IntegrationKind
@@ -2093,7 +2093,7 @@ def test_finding_payload_is_the_exact_finding_alias() -> None:
 
 
 def test_runtime_evidence_failure_stage_round_trips_and_stays_closed() -> None:
-    from yoetz.domain.findings import (
+    from finishup.domain.findings import (
         RUNTIME_FAILURE_STAGES,
         semantic_provenance_from_json,
         semantic_provenance_to_json,
@@ -2134,7 +2134,7 @@ def test_current_runtime_evidence_schema_accepts_every_failure_stage() -> None:
     every current result schema; a stale enum would make that result undeliverable on the wire.
     """
 
-    from yoetz.domain.findings import (
+    from finishup.domain.findings import (
         RUNTIME_FAILURE_STAGES,
         semantic_provenance_to_json,
     )
@@ -2169,7 +2169,7 @@ def test_current_runtime_evidence_schema_accepts_every_failure_stage() -> None:
 
 
 def test_runtime_evidence_token_usage_is_additive_and_omits_absent_bytes() -> None:
-    from yoetz.domain.findings import semantic_provenance_from_json, semantic_provenance_to_json
+    from finishup.domain.findings import semantic_provenance_from_json, semantic_provenance_to_json
 
     base = replace(
         _selected_final_provenance(),

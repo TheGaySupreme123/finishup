@@ -1,4 +1,4 @@
-"""``yoetz service run`` on a conda image, and a startup failure named on every surface (#1040).
+"""``finishup service run`` on a conda image, and a startup failure named on every surface (#1040).
 
 ``condaforge/miniforge3:24.9.2-0`` is Ubuntu 20.04 with glibc 2.31. glibc before 2.32 has no
 no-follow ``fchmodat``, so CPython raises ``NotImplementedError`` for
@@ -55,14 +55,14 @@ os.chmod = _chmod
 """
 _SERVICE_RUN = r"""
 import sys
-sys.argv = ["yoetz", "service", "run"]
-from yoetz.cli.app import main
+sys.argv = ["finishup", "service", "run"]
+from finishup.cli.app import main
 main()
 """
 _DIAGNOSTICS = r"""
 import sys
-sys.argv = ["yoetz", "service", "diagnostics", "--json", "--correlation-id", sys.argv[1]]
-from yoetz.cli.app import main
+sys.argv = ["finishup", "service", "diagnostics", "--json", "--correlation-id", sys.argv[1]]
+from finishup.cli.app import main
 main()
 """
 
@@ -70,10 +70,10 @@ main()
 def _conda_environment(environment: dict[str, str]) -> dict[str, str]:
     """Overlay the variables ``condaforge/miniforge3:24.9.2-0`` and ``conda activate`` set."""
 
-    prefix = Path(environment["_YOETZ_TEST_INSTALLATION"]) / "opt" / "conda"
+    prefix = Path(environment["_FINISHUP_TEST_INSTALLATION"]) / "opt" / "conda"
     (prefix / "bin").mkdir(parents=True, mode=0o700)
     (prefix / "lib").mkdir(mode=0o700)
-    # The image's ``python`` is conda's 3.12, never the Yoetz runtime; one that is resolved from
+    # The image's ``python`` is conda's 3.12, never the FinishUP runtime; one that is resolved from
     # PATH would fail loudly here.
     shim = prefix / "bin" / "python"
     shim.write_text("#!/bin/sh\nexit 97\n", encoding="ascii")
@@ -148,13 +148,13 @@ def test_an_injected_startup_failure_is_typed_on_the_service_log_and_its_record(
         assert "Traceback" not in text
         assert "the command could not be completed" not in text
         assert "injected" not in text
-        assert environment["_YOETZ_TEST_INSTALLATION"] not in text
+        assert environment["_FINISHUP_TEST_INSTALLATION"] not in text
         lines = text.splitlines()
         typed = [line for line in lines if line.startswith("internal_error:")]
         assert len(typed) == 1
         assert typed[0].startswith(
             "internal_error: the service could not start (stage: activation; "
-            "exception_not_implemented_error; at yoetz.adapters.control.unix_socket:"
+            "exception_not_implemented_error; at finishup.adapters.control.unix_socket:"
         )
         correlation_id = typed[0].split("correlation_id ", 1)[1].split(";", 1)[0]
         # The structural stderr record carries the same identity.
@@ -172,7 +172,7 @@ def test_an_injected_startup_failure_is_typed_on_the_service_log_and_its_record(
         assert record["operation"] == "service_startup_failed"
         assert record["phase"] == "activation"
         assert record["reason"] == "exception_not_implemented_error"
-        assert cast(str, record["origin"]).startswith("yoetz.adapters.control.unix_socket:")
+        assert cast(str, record["origin"]).startswith("finishup.adapters.control.unix_socket:")
     finally:
         cleanup_environment(environment)
 
@@ -183,9 +183,9 @@ def injected_spawn_failure(
 ) -> Iterator[list[object]]:
     """Make every service this process spawns on demand fail at activation, and reap it."""
 
-    import yoetz.observability.diagnostics as diagnostics
-    import yoetz.service.client as client_module
-    from yoetz.config.paths import log_dir
+    import finishup.observability.diagnostics as diagnostics
+    import finishup.service.client as client_module
+    from finishup.config.paths import log_dir
 
     # The suite points this process's diagnostic ring at a temp directory; the spawned service
     # writes to the hermetic installation's real log directory, which is where a bridge reads.
@@ -214,7 +214,7 @@ def injected_spawn_failure(
 
 
 def _service_log() -> str:
-    from yoetz.config.paths import log_dir
+    from finishup.config.paths import log_dir
 
     return (log_dir() / "service.stderr.jsonl").read_text(encoding="ascii")
 
@@ -223,7 +223,7 @@ def _service_log() -> str:
 async def test_mcp_start_names_the_spawned_service_startup_failure(
     injected_spawn_failure: list[object],
 ) -> None:
-    import yoetz.mcp.server as bridge
+    import finishup.mcp.server as bridge
 
     request = {
         "protocol_version": "0.1",
@@ -254,8 +254,8 @@ async def test_mcp_start_names_the_spawned_service_startup_failure(
     assert details["reason_code"] == "service_start_failed"
     assert details["phase"] == "activation"
     assert cast(str, error["message"]).startswith(
-        "The local Yoetz service exited while starting (stage: activation; "
-        "exception_not_implemented_error; at yoetz.adapters.control.unix_socket:"
+        "The local FinishUP service exited while starting (stage: activation; "
+        "exception_not_implemented_error; at finishup.adapters.control.unix_socket:"
     )
     text = cast(types.TextContent, result.content[0]).text
     assert "Reason: service_start_failed (stage: activation)." in text
@@ -273,7 +273,7 @@ async def test_mcp_start_names_the_spawned_service_startup_failure(
 def test_cli_on_demand_start_names_the_spawned_service_startup_failure(
     injected_spawn_failure: list[object],
 ) -> None:
-    import yoetz.cli.app as cli
+    import finishup.cli.app as cli
 
     result = CliRunner().invoke(cli.app, ["service", "restart"])
 
@@ -281,7 +281,7 @@ def test_cli_on_demand_start_names_the_spawned_service_startup_failure(
     assert result.exit_code == 20
     assert result.stderr.startswith(
         "service_unavailable: the local service exited while starting (stage: activation; "
-        "exception_not_implemented_error; at yoetz.adapters.control.unix_socket:"
+        "exception_not_implemented_error; at finishup.adapters.control.unix_socket:"
     )
     assert "under your selected user supervisor" not in result.stderr
 

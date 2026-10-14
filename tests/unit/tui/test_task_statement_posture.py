@@ -1,7 +1,7 @@
 """The terminal interface says whether the task statement reaches the reviewer (issue #908).
 
 Review 942-G3: without this, a policy that withholds the user's request and one that sends it look
-the same in routine status. The words are the ones ``yoetz privacy show`` prints, read from the
+the same in routine status. The words are the ones ``finishup privacy show`` prints, read from the
 same composed policy document, so the two surfaces cannot disagree.
 """
 
@@ -15,15 +15,15 @@ from typing import cast
 import pytest
 
 from builders.privacy_policies import minimal_external_policy
-from yoetz.adapters.privacy.catalog import encode_privacy_policy_json
-from yoetz.cli.app import (
+from finishup.adapters.privacy.catalog import encode_privacy_policy_json
+from finishup.cli.app import (
     _effective_task_statement_line,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.privacy import PrivacyPolicy, ReviewSelectionPolicy
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import DataCategory
-from yoetz.tui.models import LayerState, PrivacyPosture, ProviderPosture
-from yoetz.tui.runtime import YoetzRuntime
+from finishup.domain.privacy import PrivacyPolicy, ReviewSelectionPolicy
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import DataCategory
+from finishup.tui.models import LayerState, PrivacyPosture, ProviderPosture
+from finishup.tui.runtime import FinishUpRuntime
 
 
 def _legacy(policy: PrivacyPolicy) -> PrivacyPolicy:
@@ -60,11 +60,11 @@ async def _posture(monkeypatch: pytest.MonkeyPatch, composed: JsonValue | None) 
             return {} if composed is None else {"composed_policy": composed}
 
     @asynccontextmanager
-    async def connect(_self: YoetzRuntime) -> AsyncGenerator[_Client]:
+    async def connect(_self: FinishUpRuntime) -> AsyncGenerator[_Client]:
         yield _Client()
 
-    monkeypatch.setattr(YoetzRuntime, "_client", connect)
-    return await YoetzRuntime().privacy_posture()
+    monkeypatch.setattr(FinishUpRuntime, "_client", connect)
+    return await FinishUpRuntime().privacy_posture()
 
 
 def _layer(privacy: PrivacyPosture) -> tuple[LayerState, str]:
@@ -79,7 +79,7 @@ def _layer(privacy: PrivacyPosture) -> tuple[LayerState, str]:
         semantic_ready=True,
         readiness_determinable=True,
     )
-    layers = YoetzRuntime()._provider_layers(provider, privacy)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+    layers = FinishUpRuntime()._provider_layers(provider, privacy)  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     layer = next(layer for layer in layers if layer.key == "task_statement_review")
     return layer.state, layer.detail
 
@@ -112,7 +112,7 @@ async def test_status_names_whether_the_statement_is_sent_in_privacy_show_words(
     assert layer_state is state
     assert detail == posture.task_statement_disclosure
     assert "host-captured user prompt is never used" in detail
-    # The same words `yoetz privacy show` prints for the same document.
+    # The same words `finishup privacy show` prints for the same document.
     line = _effective_task_statement_line(cast(JsonValue, {"policy": document}))
     assert line == "Task statement: " + posture.task_statement_disclosure
 
@@ -135,10 +135,10 @@ async def test_an_unreadable_policy_is_unknown_never_a_guess(
 async def test_the_privacy_screen_states_the_task_statement_line() -> None:
     from collections.abc import Sequence
 
-    from yoetz.tui.app import YoetzTui
-    from yoetz.tui.models import PrivacyRecommendation
-    from yoetz.tui.symbols import Level
-    from yoetz.tui.widgets.views import BaseView
+    from finishup.tui.app import FinishUpTui
+    from finishup.tui.models import PrivacyRecommendation
+    from finishup.tui.symbols import Level
+    from finishup.tui.widgets.views import BaseView
 
     posture = PrivacyPosture(
         profile="assisted_review",
@@ -155,9 +155,9 @@ async def test_the_privacy_screen_states_the_task_statement_line() -> None:
             return PrivacyRecommendation("metadata_only", "Least.", "Costs detail.")
 
         def project_root(self) -> str:
-            return "/srv/yoetz"
+            return "/srv/finishup"
 
-    app = YoetzTui(_Runtime())  # pyright: ignore[reportArgumentType]
+    app = FinishUpTui(_Runtime())  # pyright: ignore[reportArgumentType]
     said: list[str] = []
 
     def say(level: Level, title: str, body: Sequence[str] = (), *, details: object = ()) -> None:

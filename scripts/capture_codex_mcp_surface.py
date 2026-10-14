@@ -153,8 +153,8 @@ def main() -> int:
                 "id": 1,
                 "params": {
                     "clientInfo": {
-                        "name": "yoetz-boundary-probe",
-                        "title": "Yoetz boundary probe",
+                        "name": "finishup-boundary-probe",
+                        "title": "FinishUP boundary probe",
                         "version": "0.1.0",
                     },
                     "capabilities": {

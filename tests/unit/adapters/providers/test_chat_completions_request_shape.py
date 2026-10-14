@@ -8,27 +8,27 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.adapters.providers.openai_chat_completions import (
+from finishup.adapters.providers.openai_chat_completions import (
     ChatCompletionsProfile,
     StructuredOutputEnforcement,
     classify_provider_failure,
     normalize_response,
     render_case,
 )
-from yoetz.adapters.providers.openai_responses import (
+from finishup.adapters.providers.openai_responses import (
     SEMANTIC_REVIEW_INSTRUCTION,
     owner_declared_data_use_profile,
 )
-from yoetz.domain.findings import SemanticFailureClass
-from yoetz.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
-from yoetz.ports.semantic import (
+from finishup.domain.findings import SemanticFailureClass
+from finishup.domain.privacy import ApprovedOutboundCase, DataCategory, ProviderBinding
+from finishup.ports.semantic import (
     SemanticResultInvalid,
     SemanticResultRefused,
     SemanticResultSuccess,
     SemanticResultTimeout,
     SemanticResultUnavailable,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
 _NOW = datetime(2026, 7, 24, tzinfo=UTC)
 _DIGEST = "sha256:" + "c" * 64
@@ -220,7 +220,7 @@ def test_grok_profile_renders_the_exact_xai_chat_completions_shape() -> None:
     assert profile.base_url == "https://api.x.ai/v1"
     assert profile.path == "/v1/chat/completions"
     assert response_format["type"] == "json_schema"
-    assert json_schema["name"] == "yoetz_semantic_judgment"
+    assert json_schema["name"] == "finishup_semantic_judgment"
     assert json_schema["strict"] is True
 
 

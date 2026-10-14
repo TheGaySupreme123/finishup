@@ -14,32 +14,32 @@ import pytest
 
 from builders.ledger_adapters import ownership_fence
 from builders.start_application import MemoryStartRuntime, protocol_id, start_composition
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.semantic_case import build_semantic_case
-from yoetz.application.service import Application, VerificationPolicy
-from yoetz.domain.events import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.semantic_case import build_semantic_case
+from finishup.application.service import Application, VerificationPolicy
+from finishup.domain.events import (
     AcceptedEvent,
     PlanRevisedPayload,
     RuntimeProfile,
     SessionOpenedPayload,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.task_statement import TaskStatementSource, current_task_statement
-from yoetz.domain.values import Frontier
-from yoetz.kernel.deterministic_checks import (
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.task_statement import TaskStatementSource, current_task_statement
+from finishup.domain.values import Frontier
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     build_deterministic_case,
     deterministic_case_from_json,
     deterministic_case_to_json,
 )
-from yoetz.kernel.reducers import replay
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import FrontierModel, PublishWorkRequest, StartRequest
+from finishup.kernel.reducers import replay
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import FrontierModel, PublishWorkRequest, StartRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -52,7 +52,7 @@ _AMENDED = _REQUEST + " Also keep U+200B at width 0."
 
 class _IdleImporter:
     async def status(self, session: str) -> ImportStatusSnapshot:
-        from yoetz.domain.values import session_id
+        from finishup.domain.values import session_id
 
         return ImportStatusSnapshot(session_id(session), 0, 0, (), ())
 

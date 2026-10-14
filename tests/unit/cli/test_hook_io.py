@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.cli import hook_io as hook_io_module
-from yoetz.cli.hook_io import (
+from finishup.cli import hook_io as hook_io_module
+from finishup.cli.hook_io import (
     MAX_HOOK_SKIM_BYTES,
     MAX_HOOK_STDIN_BYTES,
     CursorOversizedPayloadError,
@@ -21,8 +21,8 @@ from yoetz.cli.hook_io import (
     read_hook_payload,
     stdout_json,
 )
-from yoetz.protocol.canonical import strict_json_parse
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.canonical import strict_json_parse
+from finishup.protocol.errors import ProtocolValueError
 
 
 def test_session_start_and_post_tool_use_emit_additional_context() -> None:
@@ -86,14 +86,16 @@ def test_cursor_outputless_and_unknown_events_emit_empty_object() -> None:
 
 
 def test_cursor_context_is_bounded_and_a_cut_ends_with_a_visible_marker() -> None:
-    """Yoetz's own 2,000-character cap (not a documented host limit); a cut says so (tb4n3)."""
+    """FinishUP's own 2,000-character cap (not a documented host limit); a cut says so (tb4n3)."""
 
     advice = "x" * 2_001
     for event in ("sessionStart", "postToolUse"):
         delivered = cursor_context_output(event, advice)["additional_context"]
         assert isinstance(delivered, str)
         assert len(delivered) == 2_000
-        assert delivered.endswith("[Yoetz text cut at 2000 characters; read status or the receipt]")
+        assert delivered.endswith(
+            "[FinishUP text cut at 2000 characters; read status or the receipt]"
+        )
         assert delivered.startswith("x" * 100)
     exact = "y" * 2_000
     assert cursor_context_output("sessionStart", exact) == {"additional_context": exact}
@@ -156,7 +158,7 @@ def test_claude_context_is_bounded_by_the_shared_context_limit() -> None:
     assert isinstance(delivered, dict)
     text = delivered["additionalContext"]
     assert isinstance(text, str) and len(text) == 2_000
-    assert text.endswith("[Yoetz text cut at 2000 characters; read status or the receipt]")
+    assert text.endswith("[FinishUP text cut at 2000 characters; read status or the receipt]")
 
 
 @pytest.mark.parametrize("host", ("codex", "claude", "cursor"))
@@ -176,18 +178,18 @@ def test_truncated_bootstrap_keeps_the_current_procedure_route(host: str) -> Non
     assert isinstance(delivered, str)
     assert len(delivered) <= 2_000
     assert len(delivered) < len(instructions)
-    assert "yoetz://guidance/workflow.md" in delivered
+    assert "finishup://guidance/workflow.md" in delivered
     assert "current" in delivered.lower()
     assert "memory" in delivered.lower()
 
 
 def test_intake_cue_keeps_a_complete_workflow_uri_before_the_byte_limit() -> None:
-    from yoetz.cli.hooks import intake_cue_text
+    from finishup.cli.hooks import intake_cue_text
 
     root = Path(__file__).resolve().parents[3]
     cue = intake_cue_text(resource_root=root)
     assert len(cue.encode("utf-8")) <= 512
-    assert "yoetz://guidance/workflow.md" in cue
+    assert "finishup://guidance/workflow.md" in cue
     assert "start" in cue
     assert "material" in cue
 
@@ -283,10 +285,10 @@ def test_oversize_refusal_precedes_every_body_inspecting_rejection() -> None:
 
 
 def test_hook_stdin_cap_is_one_shared_definition() -> None:
-    from yoetz.cli import hooks
+    from finishup.cli import hooks
 
     assert hooks.MAX_HOOK_STDIN_BYTES == MAX_HOOK_STDIN_BYTES
-    # Raised from 256 KiB in tb4n1 (B5): Yoetz's own closure_prepare replies,
+    # Raised from 256 KiB in tb4n1 (B5): FinishUP's own closure_prepare replies,
     # image views and large outputs outgrew it and lost their PostToolUse rows.
     assert MAX_HOOK_STDIN_BYTES == 1_048_576
     # A second private copy of this number is how the documented 1 MiB cap

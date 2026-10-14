@@ -12,16 +12,16 @@ from typing import cast
 import apsw
 import pytest
 
-from yoetz.adapters.memory.importer import (
+from finishup.adapters.memory.importer import (
     ImportPlanMaterial,
     MemoryImporter,
     MemoryImportState,
 )
-from yoetz.adapters.sqlite.connection import SqliteWriterThread
-from yoetz.adapters.sqlite.importer import SqliteImporter
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.domain.events import EventDraft, EventSchema
-from yoetz.domain.values import (
+from finishup.adapters.sqlite.connection import SqliteWriterThread
+from finishup.adapters.sqlite.importer import SqliteImporter
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.domain.events import EventDraft, EventSchema
+from finishup.domain.values import (
     Frontier,
     JsonObject,
     event_id,
@@ -33,9 +33,9 @@ from yoetz.domain.values import (
     timestamp_from_datetime,
     writer_id,
 )
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.importer import (
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.importer import (
     CapturedImportSource,
     EncryptedImportReportRef,
     ImportAllocation,
@@ -50,11 +50,11 @@ from yoetz.ports.importer import (
     ImportSourceIdentity,
     PreparedImportPlan,
 )
-from yoetz.ports.ledger import AcceptedEventSummary, AppendResult, LedgerPort
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectStorePort
-from yoetz.ports.runtime import OwnershipFence
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.ports.ledger import AcceptedEventSummary, AppendResult, LedgerPort
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectStorePort
+from finishup.ports.runtime import OwnershipFence
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -63,8 +63,8 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind
 
 _TASK = "tsk_00000000-0000-4000-8000-000000000001"
 _SESSION = "ses_00000000-0000-4000-8000-000000000002"

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from builders.observed_runs import ObservedLedger
-from yoetz.application.check_change import declared_output_paths
-from yoetz.domain.events import (
+from finishup.application.check_change import declared_output_paths
+from finishup.domain.events import (
     EventSchema,
     ObligationPublishedPayload,
     ObligationStatus,
@@ -13,9 +13,9 @@ from yoetz.domain.events import (
     RequestedItemKind,
     RequestedItemRole,
 )
-from yoetz.domain.values import obligation_id
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.reducers import replay
+from finishup.domain.values import obligation_id
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.reducers import replay
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 

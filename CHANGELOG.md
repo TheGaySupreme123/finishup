@@ -1,6 +1,6 @@
 # Changelog
 
-All notable user-visible changes to Yoetz are documented in this file. Format is a lightweight,
+All notable user-visible changes to FinishUP are documented in this file. Format is a lightweight,
 project-native heading style that marks the pending version as unreleased above
 reverse-chronological released versions.
 
@@ -10,15 +10,15 @@ reverse-chronological released versions.
 
 - `check` accepts `"mode": "inspect"`: a read that records nothing, mints no finding and runs no
   review. One call returns what is left to close and whose move each gap is (the agent's, or a gap
-  in Yoetz's own observation), what the host's hooks observed since the last check, and whether each
+  in FinishUP's own observation), what the host's hooks observed since the last check, and whether each
   obligation's resolution evidence links to its declared deliverables or requested commands
   (`evidence_off_declared_items` when it does not); obligations whose evidence has no such link are
   listed first, and the answer counts every obligation and every such case even when the list is
-  shortened. Available through MCP `check` and `yoetz check` on every host; your agent host
+  shortened. Available through MCP `check` and `finishup check` on every host; your agent host
   approves it as it approves any `check` call (#1048, ADR-047).
 
 - When the AI-powered reviewer answers `insufficient_packet` and names a recorded run's output, its
-  exact command, or a captured edit Yoetz holds but had no room to send, the same check now sends
+  exact command, or a captured edit FinishUP holds but had no room to send, the same check now sends
   the case again with that content first and asks again, up to three times, instead of handing the
   request back to the agent. Each round is its own disclosure under the same privacy policy,
   limits and never-send rules and its own durable review job; requested content uses at most half
@@ -38,7 +38,7 @@ reverse-chronological released versions.
   repository or a submodule-style checkout), counted from the commit it had when the task started;
   one that cannot be read safely is named in the change header with the reason. Its untracked
   files are treated like yours (those already there when the task started and unchanged are left
-  out); when Yoetz could not list them whole at the task's start (for example, a repository created
+  out); when FinishUP could not list them whole at the task's start (for example, a repository created
   during the task, one with no commit yet, one past the eighth, one a safety check refused, or one
   whose untracked files did not fit), they are named but their content is never sent, because any
   of them may predate the task. Up to four files the task statement
@@ -47,12 +47,12 @@ reverse-chronological released versions.
   they are in the repository, unchanged since the task started (a tracked file only when its
   content still matches the task's starting commit and Git compares it normally), not ignored and
   not credential-named. The reviewer also gets one list of the declared
-  deliverables with Yoetz's facts about them; a command's older output is never shown as its
+  deliverables with FinishUP's facts about them; a command's older output is never shown as its
   latest; and untracked files that predate the task and are unchanged are no longer shown as the
   agent's additions (the task's encrypted starting point keeps their names and a metadata digest,
   never content). The packet's byte budget is unchanged (#1045).
 
-- When a host starts your agent again after a context compaction, Yoetz now adds a short recap of
+- When a host starts your agent again after a context compaction, FinishUP now adds a short recap of
   what it recorded to the context the agent is given: the held task, session and writer ids, the
   head frontier, the plan counts, the readiness state, open obligations, findings waiting for an
   answer, the latest check's verdict and frontier, the declared deliverables, and one next-step
@@ -72,7 +72,7 @@ reverse-chronological released versions.
   work (#982).
 
 - You can turn off the possible-credential filter for the external AI reviewer in one repository
-  with `yoetz privacy credential-heuristic disable`, and back on with `enable` (#982). Off, values
+  with `finishup privacy credential-heuristic disable`, and back on with `enable` (#982). Off, values
   that only look like passwords or tokens are sent to the external reviewer as written instead of
   as `[withheld-by-yoetz:possible-credential]`; local outputs (agent context, local model) keep the
   filter, and known credential shapes, private keys, URL passwords and an unfinished scan still
@@ -80,7 +80,7 @@ reverse-chronological released versions.
   only after the trusted approval on your terminal (in a repository without a grant, it walks the
   normal grant approval), and no agent can apply it; turning it back on applies at once to that
   repository. `--machine-default` changes the installation-wide default new grants start from.
-  `yoetz status` and MCP `status` show the repository state and the default before any check;
+  `finishup status` and MCP `status` show the repository state and the default before any check;
   `privacy show`, `provider status`, `/privacy`, every external privacy receipt
   (`secret_scan.credential_heuristic`) and every check whose external review ran under it
   (`semantic_review_credential_heuristic_disabled`) say so. Existing policies keep their exact
@@ -92,7 +92,7 @@ reverse-chronological released versions.
   last ran before your latest edit; an edit after the last test, lint, typecheck or build run; a
   requested output file that is missing (a receipt-blocking finding, even if an action named it),
   git-ignored or excluded, unchanged, or outside the repository; and package installs that went
-  into Yoetz's own runtime or a private environment, writes outside the workspace, and
+  into FinishUP's own runtime or a private environment, writes outside the workspace, and
   verification that only ran as root. Matching uses the hooks' keyed command identity; no command
   text or path is stored. The work-integrity pack is now `0.3.0`.
 
@@ -100,12 +100,12 @@ reverse-chronological released versions.
   obligations, an unrepaired receipt-blocking finding, a missing or stale planned verification, a
   git-ignored requested output), on Codex (`decision: block`), Claude Code (`additionalContext`)
   and Cursor (`followup_message`). Host loop guards are honoured, and every decision is visible in
-  `yoetz observe status` hook diagnostics (#977).
+  `finishup observe status` hook diagnostics (#977).
 
 - A blocker outside the agent's control is now explicit: a `decision_recorded` naming the
-  obligations with the statement line `yoetz-blocker:<authority|consent|credential|
+  obligations with the statement line `finishup-blocker:<authority|consent|credential|
   dependency_unavailable>`. Those obligations read as a disclosed standing limitation (#977).
-  Yoetz cannot verify the claim, so the first Stop after it is recorded asks the agent once to
+  FinishUP cannot verify the claim, so the first Stop after it is recorded asks the agent once to
   confirm each blocked obligation and its kind (status `closure_readiness.blocked_obligations`
   names them). That Stop says that data the task calls recoverable, a failing test or an
   infeasible-looking result is not a blocker. Stopping again honours the blocker without asking
@@ -114,11 +114,11 @@ reverse-chronological released versions.
 
 - Hooks classify three closed runtime facts per tool call (`install_target`, `write_scope`,
   `effective_user`; no path or command text) on the unreleased control-request 2.9.0, and
-  observation advice 0.1.8 tells the agent once when a package install went into Yoetz's own
+  observation advice 0.1.8 tells the agent once when a package install went into FinishUP's own
   runtime or a private environment, or a write landed outside the workspace. A publish rejected for
   its result `outcome` now names the closed outcome set and the blocker line (#977).
 
-- `yoetz closure-prepare --output <file>` saves the complete inventory or prepared request to an
+- `finishup closure-prepare --output <file>` saves the complete inventory or prepared request to an
   owner-only file, replaced whole, and prints a short summary, so agents query the file instead of
   preparing again (#916).
 
@@ -162,7 +162,7 @@ reverse-chronological released versions.
   policy are unchanged (#907).
 
 - AI-powered review now receives the task statement: what the user asked for, apart from the
-  agent's plan. Agents pass the request verbatim as `start.task_statement` (or `yoetz start
+  agent's plan. Agents pass the request verbatim as `start.task_statement` (or `finishup start
   --task-statement-file`) and may revise it by calling `start` again on the same session (or in a
   `plan_revised` 1.1.0 payload through the CLI); history is kept. The
   packet carries a source-labelled `task_statement` section (`agent_transcribed`, or
@@ -171,16 +171,16 @@ reverse-chronological released versions.
   never to ask for behaviour it excludes. Sending it needs the new `task_statement` review section
   in privacy policy 1.2.0 (Goal-aware, Assisted and Expanded presets; never Structural). Existing
   approvals are not widened: checks and receipts say `task_statement_unavailable` /
-  `task_statement_not_authorized` until you approve a current recipe with `yoetz --privacy`, and
-  the approval screen, `yoetz --privacy` and `yoetz privacy show` say whether it is sent.
+  `task_statement_not_authorized` until you approve a current recipe with `finishup --privacy`, and
+  the approval screen, `finishup --privacy` and `finishup privacy show` say whether it is sent.
   Host-captured prompts are not used (#908).
 
 - The Expanded review recipe no longer stops at 16 excerpts. From privacy policy 1.2.0 it allows up
   to 64, a new protocol maximum, within its unchanged byte budget (16 KiB per excerpt, 128 KiB in
   total), so on long sessions the bytes rather than the count decide what the reviewer sees.
   Assisted keeps 16. An Expanded policy approved earlier keeps 16 until you re-approve through
-  `yoetz --privacy`, whose approval screen marks the higher count as a widening. `yoetz privacy
-  show` and `yoetz --privacy` show your current limits beside the proposed ones. A review packet
+  `finishup --privacy`, whose approval screen marks the higher count as a widening. `finishup privacy
+  show` and `finishup --privacy` show your current limits beside the proposed ones. A review packet
   with more excerpts or bytes than the policy allows is refused as `policy_denied` and is never
   trimmed. A case that would exceed the per-case ceiling is planned with fewer excerpts, and says
   so, instead of being refused. Resuming a stored review rechecks the current limits. Choosing
@@ -203,7 +203,7 @@ reverse-chronological released versions.
   cue, not the grant explanation. Shipped guidance keeps grant claims conditional and host approval
   separate. Live acceptance and the remaining cross-host work stay tracked in #857.
 
-- `yoetz observe status` now reports what the observation ingress hooks cost on every pass they
+- `finishup observe status` now reports what the observation ingress hooks cost on every pass they
   run, not only over-budget ones: `hook_diagnostics.pass_timings` in `--json` and a `hook_pass_timing` line in text give,
   per host, raw hook event and path (Codex `observe` or legacy spool, Claude Code and Cursor
   `structural` or `ordinary` profile), the pass count, mean, p50 and p95 as histogram bucket
@@ -238,7 +238,7 @@ reverse-chronological released versions.
   done that is not, planned verification not run, a missing or emptied output, a done or ran claim
   the record does not show, an early stop. A correctness concern it raises then comes back as an
   advisory note in the review summary, not a finding; the closing review still judges correctness
-  and completeness. Challenges about Yoetz's own state (a Yoetz tool call, a hook observation
+  and completeness. Challenges about FinishUP's own state (a FinishUP tool call, a hook observation
   awaiting its result), or calling work "never attempted" mid-work, are no longer findings;
   `semantic_process_state_filtered` discloses them without bounding the receipt (#1042).
 
@@ -264,7 +264,7 @@ reverse-chronological released versions.
   fails validation appends nothing and names what stopped it (for events, the first rejected event
   and its field), and the agent fixes that and sends it again (#1048).
 
-- `yoetz service run` refuses an unusable configuration with `invalid_request: <reason>` (exit 2),
+- `finishup service run` refuses an unusable configuration with `invalid_request: <reason>` (exit 2),
   like other commands, instead of `internal_error` (#1040).
 
 - `requested_item_never_attempted` is no longer raised before the agent has started acting, and
@@ -279,22 +279,22 @@ reverse-chronological released versions.
   publish-work result moves to schema 1.1.0 (control 2.9.0); the released 1.0.0 keeps `0.1.0`.
 - Codex and Cursor now receive a compact initialize instructions body (at most 2,048 bytes)
   instead of the 19.8 KB `agent-instructions.md` document, which Codex code mode copied into
-  every Yoetz tool description. The body keeps when to call `start`, the no-false-activation,
+  every FinishUP tool description. The body keeps when to call `start`, the no-false-activation,
   consent, disclosure and coverage-wording rules, and tells the agent to read the full safety
   floor with `read_guidance` before the first `start`. The Codex skill gains a code-mode section:
   declaration-only tool discovery, a UUIDv4 helper that uses `crypto.randomUUID()` or
   `crypto.getRandomValues()` when present and falls back to a labelled non-cryptographic
   `Math.random()` source only without `crypto`, and a `yield_time_ms`
-  sized to each Yoetz call's deadline. On Codex only, `read_guidance` returns its document once,
+  sized to each FinishUP call's deadline. On Codex only, `read_guidance` returns its document once,
   in `structuredContent.text`. Claude Code and the generic host are unchanged. Codex dogfood
   acceptance is pending (#918).
 
 - Background AI-powered observation advice stays on by default wherever AI-powered review is
   configured (`[verification] semantic` is `required` or `optional`), so upgrading does not change
   it. `[observation] semantic_advice_enabled` is now an explicit owner choice: `false` turns
-  background advice off and `true` keeps it on whatever the default. Yoetz writes the line only
-  when you set it, so a config without it follows the default. `yoetz provider status`,
-  `yoetz setup status --next` and the terminal interface `/status` show whether it is on and why.
+  background advice off and `true` keeps it on whatever the default. FinishUP writes the line only
+  when you set it, so a config without it follows the default. `finishup provider status`,
+  `finishup setup status --next` and the terminal interface `/status` show whether it is on and why.
   While you have it off, rows queued before you switched it off are closed at service start
   without being sent, so turning it back on never sends old work (#888).
 
@@ -311,7 +311,7 @@ reverse-chronological released versions.
 ### Fixed
 
 - In a repository holding another Git repository inside it (an `api` directory with its own
-  `.git`), Yoetz's local, names-only read of what changed no longer fails: it reads the nested
+  `.git`), FinishUP's local, names-only read of what changed no longer fails: it reads the nested
   repository the same way the change shown to the reviewer does. So the check again tells whether
   the workspace changed at all, which outputs the change touches, and whether a delivered file
   refers to one you created there but did not declare; a nested repository that is unchanged since
@@ -321,18 +321,18 @@ reverse-chronological released versions.
   (`code_defect`, `task_requirement_unmet` or `agent_criterion_unmet`): the parent's
   child-dependency manifest and JSON receipt carry the child's finding under its own kind (#1043).
 
-- `yoetz service run` now starts on Linux with glibc older than 2.32 (Ubuntu 20.04, Debian 11,
+- `finishup service run` now starts on Linux with glibc older than 2.32 (Ubuntu 20.04, Debian 11,
   RHEL 8 and images built on them, such as `condaforge/miniforge3`), where it could not set its
   endpoint permissions and stopped with only `internal_error`. A service that cannot start now
   names the failing stage, the kind of error and where, with a correlation id that
-  `yoetz service diagnostics --correlation-id` resolves; an agent's `start`, or a command that
+  `finishup service diagnostics --correlation-id` resolves; an agent's `start`, or a command that
   starts the service, reports `service_start_failed` with the same stage and id at once instead of
   waiting out the start budget (#1040).
 
 - With Codex 0.159.3, code-mode cells and direct tool calls pair with their outputs again: each
-  rollout row carries its own id beside the shared `call_id`, and Yoetz paired on the wrong one.
-  The agent's own Yoetz calls after a check no longer read as unclassified work that keeps the
-  receipt at "current as of an earlier frontier"; a cell that only calls Yoetz is recorded by those
+  rollout row carries its own id beside the shared `call_id`, and FinishUP paired on the wrong one.
+  The agent's own FinishUP calls after a check no longer read as unclassified work that keeps the
+  receipt at "current as of an earlier frontier"; a cell that only calls FinishUP is recorded by those
   calls, and a hooked direct call is recorded once (#1038).
 
 - In Codex, a shell `apply_patch <<EOF` no longer leaves a "pending attempt expired" limitation
@@ -343,7 +343,7 @@ reverse-chronological released versions.
   prompt is no longer an unsupported event (#1041).
 
 - A shell command that writes into the workspace (`cat > f`, `sed -i`), one that writes only the
-  agent's own notes, and a long build or simulator command now reach Yoetz's record. The local
+  agent's own notes, and a long build or simulator command now reach FinishUP's record. The local
   control wire refused them, the hook retried until it gave up, and a check could stay current
   after the edit that should have made it stale (#1039).
 
@@ -379,11 +379,11 @@ reverse-chronological released versions.
   whose only remaining gap is such a blocker no longer fails internally with
   `invalid_ranked_findings`; standing task facts are disclosures, not `ledger_stale_or_incomplete`
   findings (#977).
-- `yoetz observe checks status` no longer reports a workspace without `.yoetz/checks.toml` as
+- `finishup observe checks status` no longer reports a workspace without `.finishup/checks.toml` as
   `invalid_policy` (exit 20). Approved checks are optional: it now reports `state: not_configured`
   and exits successfully; `preview`, `trust` and `run` say `policy_not_configured`, and only a
   real read or parse fault says `invalid_policy`. Every such failure, and the guidance, now states
-  that this is Yoetz configuration, never a `yoetz-blocker` (#977).
+  that this is FinishUP configuration, never a `finishup-blocker` (#977).
 - AI-powered reviewer challenges are no longer dropped when a citation or quote cannot be proved.
   The review packet now lists as citable only the records it actually sent; a challenge keeps the
   sent records it cites (disclosed as `semantic_review_refs_reduced`), and one that cites no sent
@@ -427,7 +427,7 @@ reverse-chronological released versions.
   observed-edit rule only. Cooperative results keep their disclosure duty (#909).
 
 - Hooks no longer tell the agent "task frontier moved … run status before an exact-frontier check"
-  after routine tool calls. Every such notice described motion by the Yoetz observation writer,
+  after routine tool calls. Every such notice described motion by the FinishUP observation writer,
   which leaves a held publish frontier valid, and the text contradicted the `status` cadence in the
   workflow guidance. Motion by any other writer still surfaces as `frontier_conflict` on the next
   state-sensitive call (#915).
@@ -435,7 +435,7 @@ reverse-chronological released versions.
 - Publishing a change the way the guidance recommends no longer traps agents in a finding they
   cannot clear. A digest-only (or withheld) `caller_asserted` evidence digest now raises no
   `ledger_stale_or_incomplete` finding; the receipt's limitations name once, with a count, the
-  cited evidence items whose caller-asserted digests Yoetz did not verify, keeping digest-only
+  cited evidence items whose caller-asserted digests FinishUP did not verify, keeping digest-only
   items (bytes not retained) apart from withheld ones, and the coverage gap
   stays. A legacy digest's finding text now names only actions an agent can take, and the
   publication and coverage guidance no longer promise "content-bearing evidence". A resolved
@@ -517,23 +517,23 @@ reverse-chronological released versions.
   readiness is memoized by binding and file fingerprints and re-checked off the event loop only
   when they change. Every evaluator launch still verifies both files (#881).
 - Codex subscription AI-powered review no longer stops at a `runtime_warning` on Codex `0.157.1`.
-  Yoetz's retained evaluator runtime now keeps Codex's `codex-code-mode-host` helper, pinned by
+  FinishUP's retained evaluator runtime now keeps Codex's `codex-code-mode-host` helper, pinned by
   digest, beside the native executable. Setup, repair, launch, `runtime status` and
   `runtime remove` now cover both files. The evaluator capability is now
   `codex-evaluator/0.157.1/v2`, with an unchanged isolated config, so existing sign-ins keep
-  working. `yoetz provider codex-subscription repair` moves a `v1` binding and keeps its sign-in
+  working. `finishup provider codex-subscription repair` moves a `v1` binding and keeps its sign-in
   and choices. Retaining Codex's bundled `bwrap` remains open (#874).
 - Codex subscription AI-powered review now admits Codex `0.157.1` on macOS arm64 and Linux
   x86_64 in place of `0.150.1`, which cannot run the `gpt-6-luna` default. Existing bindings
-  report `codex_runtime_capability_unsupported`. `yoetz provider codex-subscription repair`
-  moves them to Yoetz's own verified copy of `0.157.1` and keeps the sign-in, model and
+  report `codex_runtime_capability_unsupported`. `finishup provider codex-subscription repair`
+  moves them to FinishUP's own verified copy of `0.157.1` and keeps the sign-in, model and
   settings. Rate-limit bookkeeping accepts the new `normalModelSlug` field, and the native
   `rateLimitExceeded` error is reported as rate-limited. Other new app-server events still fail
   closed. Authenticated live evidence for `0.157.1` is pending (#871).
 - Codex subscription AI-powered review no longer breaks when your everyday Codex updates. Setup
-  binds Yoetz's own verified private copy of the one admitted Codex release. It offers only an
+  binds FinishUP's own verified private copy of the one admitted Codex release. It offers only an
   eligible runtime as the default, and it can download that release with your npm after asking.
-  The new `yoetz provider codex-subscription repair` rebinds a binding stranded by a replaced
+  The new `finishup provider codex-subscription repair` rebinds a binding stranded by a replaced
   executable or an older capability identity. It reuses the existing ChatGPT sign-in and never
   signs in, logs out, or switches accounts. Re-running setup or repair keeps the model, reasoning
   effort, timeout, retries, and fallback role. `runtime status`, `provider status`, the prompt
@@ -548,7 +548,7 @@ reverse-chronological released versions.
 
 - Concurrent Codex, Claude Code and Cursor sessions, including their delegates, no longer queue
   behind one another on the local observation store until hooks time out and inputs are lost.
-  Reads such as `yoetz observe status`, consent checks and the service's delivery selection no
+  Reads such as `finishup observe status`, consent checks and the service's delivery selection no
   longer wait for the store lock; each write holds it only for what changed rather than for the
   whole observation state; and every lock wait in a hook stays inside that host's hook timeout.
   When the store is still contended, the hook reports `store_lock_timeout` with the role and step
@@ -563,7 +563,7 @@ reverse-chronological released versions.
   session, so a child callback that names its own rollout takes its child identity from that
   rollout's header: the attach publishes the child lane, the provisional annotation is bound, and
   the child's command, file, and advice evidence stays on the child lane. The child's own rollout
-  is reconciled into that lane automatically, and `yoetz observe reconcile` of a child rollout
+  is reconciled into that lane automatically, and `finishup observe reconcile` of a child rollout
   resolves the same lane idempotently instead of failing `mapping_missing`; an unprovable child
   rollout is refused with a bounded `child_*` reason. Native v2 acceptance remains open (#841).
 
@@ -595,7 +595,7 @@ Prepared public-alpha release candidate; publication remains gated by #785. See
 - Opt-in required startup for native Claude Code and Cursor plugins, with scope-bound plan
   checks, owner controls, and same-task pending-operation recovery (#692, #797). Native acceptance
   remains bounded as documented in the required-startup runbook.
-- `yoetz setup status --json` reports each Claude installation's MCP mode (plugin-managed or
+- `finishup setup status --json` reports each Claude installation's MCP mode (plugin-managed or
   bare) and whether a session-start cue is installed; a bare registration has none (#789).
 - Observation capacity can be set to a custom queue count from 64 to 8,192 rows with
   `--capacity custom --queue-count N`, in addition to standard (512), larger (2,048) and largest
@@ -605,16 +605,16 @@ Prepared public-alpha release candidate; publication remains gated by #785. See
   one queue sized by the largest active selection, so an increase says it raises that queue for
   every session; a smaller session count limits only that session. Status reports the effective
   budget and its limiting dimension (#828).
-- Requesting No Yoetz cap (`--capacity none`) returns `capacity_no_cap_unsupported` and changes
+- Requesting No FinishUP cap (`--capacity none`) returns `capacity_no_cap_unsupported` and changes
   nothing: the local observation state has a 16 MiB safety ceiling, so the largest supported
   capacity is 8,192 rows. With `--json` the facts are under `error.capacity` beside the standard
   `error.recovery` (#828).
 
 ### Changed
 
-- Updating Yoetz no longer requires quitting agent apps or stopping the service. `yoetz upgrade
+- Updating FinishUP no longer requires quitting agent apps or stopping the service. `finishup upgrade
   --accept` runs from inside an open session, which keeps working on the previous version; the
-  first Yoetz call of the next session switches to the new version and retires the previous
+  first FinishUP call of the next session switches to the new version and retires the previous
   service. Upgrading from 0.2 still follows 0.2's stop-first procedure once (#820).
 - Updating from 0.2 preserves existing tasks, settings, permissions, and host registrations.
   On ordinary service startup after unlock, supported task ledgers receive a verified backup
@@ -635,7 +635,7 @@ Prepared public-alpha release candidate; publication remains gated by #785. See
   observed 2,048-character rendering cap, with the "call `start` first" trigger and the
   late-start rule as its first two sentences; other hosts keep the full document (#789).
 - Guidance, the Claude skill and `AGENTS.md` state what to do when material work began before
-  `start`, and how to load deferred Yoetz tool schemas by name (#789).
+  `start`, and how to load deferred FinishUP tool schemas by name (#789).
 - Local control schema 2.9.0 carries custom capacity counts, capacity labels and the effective
   budget; both client and service must run it. Defaults are unchanged (Focused, 512), and a
   saved custom count reads as the default on an older version. Agent guidance and the skills
@@ -644,25 +644,25 @@ Prepared public-alpha release candidate; publication remains gated by #785. See
 
 ### Fixed
 
-- Connecting Codex, rerunning setup, or repeating `yoetz observe grant` no longer turns off
+- Connecting Codex, rerunning setup, or repeating `finishup observe grant` no longer turns off
   native content capture you enabled for Claude Code or Cursor. Repeating consent that is
   already in effect changes nothing, so content capture already in progress keeps its
   authorization. Your observation detail and capacity settings are also kept. Only
   `observe content-disable` or `observe revoke` removes a host's content capture, and granting
   again after a revoke starts with none (#835).
 - `status view=project` answers again after any project member records a receipt; previously every
-  member's project view failed as `INVALID_REQUEST`. Status faults in stored state or in Yoetz's
+  member's project view failed as `INVALID_REQUEST`. Status faults in stored state or in FinishUP's
   own projection now return `STORAGE_CORRUPT` or `INTERNAL_ERROR` with a correlation id that
   resolves to the failing stage and source location, and one unreadable member is reported as a
   `project_member_unavailable` gap instead of failing the whole view (#840).
 
 - Active native work is no longer abandoned while it keeps working, and abandoned work has a
   supported way forward (#837):
-  - Host activity counts as contact from when the host reported it, even when Yoetz delivers or
+  - Host activity counts as contact from when the host reported it, even when FinishUP delivers or
     retries it later. That includes a turn ending or a subagent finishing.
   - A native subagent the host reported starting keeps its parent in contact until the host
     reports it finished, for up to an hour.
-  - Queued host events are delivered before Yoetz decides whether contact was lost.
+  - Queued host events are delivered before FinishUP decides whether contact was lost.
   - Resuming finished or abandoned work is refused without disturbing the session still in use.
   - A task whose work is finished or abandoned cannot start child work. It gets its own reason
     and directs you to a successor task for new work, while its history and receipts stay as

@@ -15,11 +15,11 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.kernel.policies.observation_advice import ObservationCompositionFact
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.kernel.policies.observation_advice import ObservationCompositionFact
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
 _PROVIDER_REPAIR_TOKENS = (
     "connect_provider",

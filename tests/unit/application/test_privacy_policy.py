@@ -10,8 +10,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from yoetz.adapters.memory.privacy import MemoryPrivacyCatalogState, MemoryPrivacyPolicyStore
-from yoetz.application.privacy_policy import (
+from finishup.adapters.memory.privacy import MemoryPrivacyCatalogState, MemoryPrivacyPolicyStore
+from finishup.application.privacy_policy import (
     GetPrivacyEffectiveRequest,
     GetPrivacyReceiptRequest,
     GetPrivacySetupRequest,
@@ -27,7 +27,7 @@ from yoetz.application.privacy_policy import (
     privacy_receipts_list,
     privacy_tighten_policy,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
@@ -39,15 +39,15 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.ports.privacy import (
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     PolicyCommitResult,
     PreparedPolicyTransition,
     PrivacyReceiptAudience,
     PrivacyReceiptPage,
 )
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import DataCategory
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import DataCategory
 
 _NOW = datetime(2026, 7, 19, tzinfo=UTC)
 _INSTALLATION = "ins_20000000-0000-4000-8000-000000000001"
@@ -463,7 +463,7 @@ def test_heuristic_opt_out_is_proposed_on_the_grant_and_never_moves_the_machine_
 
     from dataclasses import replace as _replace
 
-    from yoetz.domain.privacy import CredentialHeuristic
+    from finishup.domain.privacy import CredentialHeuristic
 
     state = MemoryPrivacyCatalogState()
     store = MemoryPrivacyPolicyStore(state, _Clock())
@@ -505,8 +505,8 @@ def test_status_reports_the_grant_a_pending_migration_will_create() -> None:
 
     from dataclasses import replace as _replace
 
-    from yoetz.application.privacy_policy import credential_heuristic_state
-    from yoetz.domain.privacy import CredentialHeuristic
+    from finishup.application.privacy_policy import credential_heuristic_state
+    from finishup.domain.privacy import CredentialHeuristic
 
     repository_scope = AuthorizationScope(
         AuthorizationScopeKind.WORKSPACE, _INSTALLATION, _REPOSITORY

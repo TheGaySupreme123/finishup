@@ -8,9 +8,7 @@ from typing import cast
 
 import pytest
 
-from fixture_loader import JsonValue as FixtureJsonValue
-from fixture_loader import load_fixture_json
-from yoetz.protocol.canonical import (
+from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
     canonical_encode,
@@ -21,7 +19,9 @@ from yoetz.protocol.canonical import (
     request_digest,
     strict_json_parse,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
+from fixture_loader import JsonValue as FixtureJsonValue
+from fixture_loader import load_fixture_json
 
 _POSITIVE_FIXTURES = (
     "canonical/rfc8785-applicable.case.json",

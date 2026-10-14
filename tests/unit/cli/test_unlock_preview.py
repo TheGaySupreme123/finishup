@@ -16,12 +16,12 @@ from typing import cast
 
 import pytest
 
-from yoetz.cli.unlock import (
+from finishup.cli.unlock import (
     HumanCeremonyCliError,
     _verify_preview,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.service.confidential_client import HumanControlSession
-from yoetz.service.confidential_protocol import (
+from finishup.service.confidential_client import HumanControlSession
+from finishup.service.confidential_protocol import (
     DecisionRequiredPhase,
     HumanCeremonyBinding,
     HumanCeremonyKind,
@@ -80,7 +80,7 @@ def _opened_session(target: ProviderCredentialTarget) -> HumanControlSession:
             ceremony_id="1" * 64,
             secret_challenge="2" * 64,
             purpose=__import__(
-                "yoetz.service.confidential_protocol", fromlist=["ConfidentialSecretPurpose"]
+                "finishup.service.confidential_protocol", fromlist=["ConfidentialSecretPurpose"]
             ).ConfidentialSecretPurpose.PROVIDER_CREDENTIAL,
             service_instance_id=_SERVICE_ID,
             service_generation=3,

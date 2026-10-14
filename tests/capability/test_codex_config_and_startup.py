@@ -2,7 +2,7 @@
 
 Non-live cells prove isolated config-profile digests, no real-HOME mutation, and that
 unfrozen Codex profiles cannot claim startup support. Live cells require
-``YOETZ_LIVE_CODEX=1`` and exercise real Codex registration/startup.
+``FINISHUP_LIVE_CODEX=1`` and exercise real Codex registration/startup.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from capability.evidence import (
     record_and_write,
     runtime_capability_context,
 )
-from yoetz.protocol.canonical import canonical_digest
+from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _CANDIDATE_VERSION = "0.139.0"
@@ -71,10 +71,10 @@ def _optional_required_profiles() -> tuple[str, str]:
 
     base = {
         "channel": "codex_mcp_stdio",
-        "command_tokens": ("yoetz", "mcp", "serve"),
+        "command_tokens": ("finishup", "mcp", "serve"),
         "cwd_policy": "project_root",
         "env_policy": "none",
-        "server_name": "yoetz",
+        "server_name": "finishup",
     }
     optional = canonical_digest({**base, "required": False})
     required = canonical_digest({**base, "required": True})
@@ -103,7 +103,7 @@ def test_isolated_optional_and_required_config_profiles_are_distinct(
     before = preexisting.read_bytes()
 
     # Capability harness writes only under the isolated root; never mutates real HOME.
-    profile_root = isolated_home / ".codex" / "yoetz-capability"
+    profile_root = isolated_home / ".codex" / "finishup-capability"
     profile_root.mkdir(parents=True, mode=0o700)
     (profile_root / "optional.profile").write_text(optional_digest + "\n", encoding="ascii")
     (profile_root / "required.profile").write_text(required_digest + "\n", encoding="ascii")

@@ -15,8 +15,8 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.adapters.providers import codex_app_server as module
-from yoetz.adapters.providers.codex_app_server import (
+from finishup.adapters.providers import codex_app_server as module
+from finishup.adapters.providers.codex_app_server import (
     CODEX_APP_SERVER_SCHEMA_SHA256,
     CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
     CODEX_EVALUATOR_CAPABILITY_PROFILE,
@@ -34,20 +34,20 @@ from yoetz.adapters.providers.codex_app_server import (
     CodexReviewBudget,
     CodexRuntimeStatus,
 )
-from yoetz.adapters.providers.data_use_catalog import data_use_record_for_endpoint
-from yoetz.adapters.providers.openai_responses import (
+from finishup.adapters.providers.data_use_catalog import data_use_record_for_endpoint
+from finishup.adapters.providers.openai_responses import (
     JUDGMENT_JSON_SCHEMA,
     SEMANTIC_REVIEW_INSTRUCTION,
 )
-from yoetz.domain.findings import SemanticFailureClass
-from yoetz.domain.privacy import (
+from finishup.domain.findings import SemanticFailureClass
+from finishup.domain.privacy import (
     ApprovedOutboundCase,
     DataCategory,
     ProviderBinding,
     RequestCommitment,
 )
-from yoetz.ports.secret_memory import ProviderAttemptAuthBinding
-from yoetz.ports.semantic import (
+from finishup.ports.secret_memory import ProviderAttemptAuthBinding
+from finishup.ports.semantic import (
     Deadline,
     ExternalRuntimeAuthority,
     SemanticResultInvalid,
@@ -55,8 +55,8 @@ from yoetz.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultUnavailable,
 )
-from yoetz.ports.semantic_budget import semantic_budget_profile_scope
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
+from finishup.ports.semantic_budget import semantic_budget_profile_scope
+from finishup.protocol.canonical import canonical_digest, canonical_encode
 
 pytestmark = pytest.mark.anyio
 
@@ -86,7 +86,7 @@ def _profile() -> CodexAppServerProfile:
         capability_cell_sha256=CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
         capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
         capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-        codex_home=Path("/var/lib/yoetz/codex-0.150.1"),
+        codex_home=Path("/var/lib/finishup/codex-0.150.1"),
         isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
         model="gpt-5.6-sol",
         reasoning_effort="high",
@@ -488,7 +488,7 @@ class _Runtime:
         if method == "initialize":
             return {
                 "codexHome": str(self.profile.codex_home),
-                "userAgent": "yoetz_semantic_evaluator/0.157.1",
+                "userAgent": "finishup_semantic_evaluator/0.157.1",
             }
         if method == "account/read":
             return {"account": self.account}
@@ -580,7 +580,7 @@ class _LoginRuntime:
         if method == "initialize":
             return {
                 "codexHome": str(self.profile.codex_home),
-                "userAgent": "yoetz_semantic_evaluator/0.157.1",
+                "userAgent": "finishup_semantic_evaluator/0.157.1",
             }
         if method == "account/login/start":
             assert isinstance(params, dict)
@@ -2280,7 +2280,7 @@ async def test_post_ack_read_timeout_names_the_deadline_stage(
 
 
 def test_every_adapter_stage_token_is_a_registered_closed_stage() -> None:
-    from yoetz.domain.findings import RUNTIME_FAILURE_STAGES
+    from finishup.domain.findings import RUNTIME_FAILURE_STAGES
 
     mapped = set(module._FAILURE_STAGE_BY_TOKEN.values())  # pyright: ignore[reportPrivateUsage]
     assert mapped <= RUNTIME_FAILURE_STAGES
@@ -2546,7 +2546,7 @@ def test_factory_builds_the_evaluator_for_the_dispatch_budget_profile(
 async def _evaluate_recording_progress(
     monkeypatch: pytest.MonkeyPatch, runtime: _Runtime
 ) -> tuple[object, list[object]]:
-    from yoetz.observability.semantic_context import semantic_progress_sink
+    from finishup.observability.semantic_context import semantic_progress_sink
 
     recorded: list[object] = []
 
@@ -2566,7 +2566,7 @@ async def test_runtime_reports_only_closed_structural_phases_in_execution_order(
 ) -> None:
     """Issue #571 A2: tokens, reasoning, deltas, and account identity never reach progress."""
 
-    from yoetz.protocol.models import SemanticProgressPhase
+    from finishup.protocol.models import SemanticProgressPhase
 
     sentinel = "SENTINEL-REASONING-DELTA-91c2"
     runtime = _Runtime(_profile())
@@ -2594,7 +2594,7 @@ async def test_runtime_reports_only_closed_structural_phases_in_execution_order(
 async def test_runtime_failure_before_sampling_still_reports_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.protocol.models import SemanticProgressPhase
+    from finishup.protocol.models import SemanticProgressPhase
 
     runtime = _Runtime(_profile(), model_available=False)
 
@@ -2611,7 +2611,7 @@ async def test_runtime_failure_before_sampling_still_reports_cleanup(
 async def test_progress_sink_failure_never_changes_the_review_outcome(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.observability.semantic_context import semantic_progress_sink
+    from finishup.observability.semantic_context import semantic_progress_sink
 
     async def failing_sink(phase: object) -> None:
         del phase

@@ -24,26 +24,26 @@ from typing import Any, Literal, cast
 
 import pytest
 
+import finishup.application.status as status_module
 import integration.application.test_respond_status_receipt as workflow
-import yoetz.application.status as status_module
 from builders.ledger_adapters import MemoryObjects
 from builders.start_application import protocol_id, start_request
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.application.check import CheckCommitResult
-from yoetz.application.observation_materialize import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.application.check import CheckCommitResult
+from finishup.application.observation_materialize import (
     materialize_observation_envelope,
     observation_author,
 )
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import Application, VerificationPolicy
-from yoetz.application.start import StartInternalResult
-from yoetz.application.status import StatusInternalResult
-from yoetz.cli.render import render_human_status
-from yoetz.domain.events import EVIDENCE_SCHEMA_VERSION, media_type_for
-from yoetz.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
-from yoetz.domain.values import Frontier, JsonObject, Timestamp
-from yoetz.mcp.summaries import summary_for_status
-from yoetz.ports.ledger import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import Application, VerificationPolicy
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.cli.render import render_human_status
+from finishup.domain.events import EVIDENCE_SCHEMA_VERSION, media_type_for
+from finishup.domain.observation import ObservationCursor, ObservationEnvelope, ObservationSource
+from finishup.domain.values import Frontier, JsonObject, Timestamp
+from finishup.mcp.summaries import summary_for_status
+from finishup.ports.ledger import (
     AppendCommand,
     AppendEntry,
     LedgerPort,
@@ -51,9 +51,9 @@ from yoetz.ports.ledger import (
     ProjectionPage,
     ProjectionQuery,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import (
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import (
     CheckRequest,
     FrontierModel,
     PublishWorkRequest,
@@ -62,7 +62,7 @@ from yoetz.protocol.models import (
     StatusResultModel,
     StatusSuccessModel,
 )
-from yoetz.protocol.readiness_text import readiness_directive
+from finishup.protocol.readiness_text import readiness_directive
 
 pytestmark = pytest.mark.anyio
 

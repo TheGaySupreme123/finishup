@@ -18,20 +18,20 @@ from typing import Any, cast
 import pytest
 from mcp import types
 
-import yoetz.cli.app as cli
-import yoetz.mcp.server as bridge
-from yoetz.cli.render import render_human_error
-from yoetz.mcp.errors import build_public_error_result
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES
-from yoetz.ports.control import ControlError
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+import finishup.cli.app as cli
+import finishup.mcp.server as bridge
+from finishup.cli.render import render_human_error
+from finishup.mcp.errors import build_public_error_result
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES
+from finishup.ports.control import ControlError
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     OperationFailureModel,
     PublishWorkResultModel,
     StartRequest,
 )
-from yoetz.protocol.recovery import RECOVERY_DIRECTIVES
+from finishup.protocol.recovery import RECOVERY_DIRECTIVES
 
 _REQUEST = "req_80d0cc7a-150f-4d7b-9aa3-a50312db0078"
 _CORRELATION = "err_2f56f4b8-2852-40b4-8052-9c5748fbf053"
@@ -218,7 +218,7 @@ class TestAnInspectionFailsAsARead:
         self, monkeypatch: pytest.MonkeyPatch, mode: str, deadline: int, token: str
     ) -> None:
         for name in ("", "_CHECK", "_STATUS"):
-            monkeypatch.delenv(f"YOETZ_MCP_DEADLINE_MS{name}", raising=False)
+            monkeypatch.delenv(f"FINISHUP_MCP_DEADLINE_MS{name}", raising=False)
         client = _TimingOutCheckClient(
             ControlError(
                 "request_timeout", retryable=True, correlation_id=_CORRELATION, phase="handler"
@@ -397,7 +397,7 @@ class TestCliSurfaces:
         assert lines[0] == "EVENT_INVALID: The event batch is invalid."
         assert "Continuation: sorted_set_required" in lines
         assert any(
-            line.startswith("Guidance: yoetz://guidance/publication-policy.md") for line in lines
+            line.startswith("Guidance: finishup://guidance/publication-policy.md") for line in lines
         )
 
     def test_lifecycle_refusal_line_carries_the_local_directive(self) -> None:
@@ -423,7 +423,7 @@ class TestCliSurfaces:
         assert lines[0].endswith(f"; correlation_id {_CORRELATION}")
         assert "Continuation: start_timeout_same_identity" in lines
         assert lines[-1] == RECOVERY_DIRECTIVES["start_timeout_same_identity"].nudge
-        assert "yoetz service run" not in captured
+        assert "finishup service run" not in captured
 
     def test_a_timeout_of_unknown_operation_keeps_the_generic_line(
         self, capsys: pytest.CaptureFixture[str]

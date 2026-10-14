@@ -15,12 +15,12 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.applied_mcp_route import read_applied_route, record_applied_route
-from yoetz.cli import setup as setup_cli
-from yoetz.cli.hook_diagnostics import record_hook_diagnostic
-from yoetz.mcp.server import record_startup_route_drift
-from yoetz.ports.harness_mcp import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.applied_mcp_route import read_applied_route, record_applied_route
+from finishup.cli import setup as setup_cli
+from finishup.cli.hook_diagnostics import record_hook_diagnostic
+from finishup.mcp.server import record_startup_route_drift
+from finishup.ports.harness_mcp import (
     MCP_SERVE_COMMAND,
     MCP_STRICT_SERVE_COMMAND,
     HarnessBinary,
@@ -29,7 +29,7 @@ from yoetz.ports.harness_mcp import (
     McpRegistrationPreview,
     McpRegistrationState,
 )
-from yoetz.ports.integrations import HarnessId
+from finishup.ports.integrations import HarnessId
 
 pytestmark = pytest.mark.anyio
 
@@ -94,7 +94,7 @@ async def _status_json(
     *,
     registered: str | None,
     applied: str | None,
-    state: McpRegistrationState = McpRegistrationState.YOETZ_OWNED,
+    state: McpRegistrationState = McpRegistrationState.FINISHUP_OWNED,
 ) -> dict[str, Any]:
     if applied is not None:
         serve = MCP_STRICT_SERVE_COMMAND if applied == "strict" else MCP_SERVE_COMMAND
@@ -104,7 +104,7 @@ async def _status_json(
     async def _fake_observe(self: object, _binary: object) -> McpRegistrationObservation:
         return _observation_with_state(state, registered)
 
-    monkeypatch.setattr("yoetz.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
     captured: dict[str, Any] = {}
 
     def _capture(value: object, *, json_output: bool) -> None:
@@ -228,7 +228,7 @@ async def test_mcp_remove_noop_absent_clears_stale_record(
         return preview
 
     monkeypatch.setattr(
-        "yoetz.application.harness_mcp.HarnessMcpService.preview_unregistration",
+        "finishup.application.harness_mcp.HarnessMcpService.preview_unregistration",
         _fake_preview_unregistration,
     )
     captured: dict[str, Any] = {}
@@ -276,7 +276,7 @@ async def test_mcp_install_noop_refreshes_a_stale_record(
     preview = McpRegistrationPreview(
         HarnessId.CODEX,
         McpRegistrationAction.NOOP,
-        McpRegistrationState.YOETZ_OWNED,
+        McpRegistrationState.FINISHUP_OWNED,
         (),
         _DIGEST,
         MCP_STRICT_SERVE_COMMAND,
@@ -287,12 +287,12 @@ async def test_mcp_install_noop_refreshes_a_stale_record(
         return preview
 
     async def _fake_observe(self: object, _binary: object) -> McpRegistrationObservation:
-        return _observation_with_state(McpRegistrationState.YOETZ_OWNED, "strict")
+        return _observation_with_state(McpRegistrationState.FINISHUP_OWNED, "strict")
 
-    monkeypatch.setattr("yoetz.application.harness_mcp.HarnessMcpService.preview", _fake_preview)
-    monkeypatch.setattr("yoetz.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.preview", _fake_preview)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_mcp.CodexMcpAdapter.observe_registration",
+        "finishup.adapters.integrations.codex_mcp.CodexMcpAdapter.observe_registration",
         _fake_observe,
     )
 
@@ -390,7 +390,7 @@ def test_observe_session_start_runs_no_host_probe(
     latency loop again. Discovery raising here is the guard: nothing may call it.
     """
 
-    from yoetz.cli.observe_hooks import handle_observe
+    from finishup.cli.observe_hooks import handle_observe
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -407,7 +407,7 @@ def test_observe_session_start_runs_no_host_probe(
         raise AssertionError("a hook must not probe the host for the applied route")
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", _explode
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", _explode
     )
 
     stdout = io.BytesIO()

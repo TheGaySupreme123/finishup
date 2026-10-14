@@ -18,10 +18,10 @@ from typing import Any, get_args
 
 import pytest
 
-from yoetz.cli.render import _CHECKLIST_NEXT_TEXT  # pyright: ignore[reportPrivateUsage]
-from yoetz.mcp.summaries import _CHECKLIST_NEXT as MCP_CHECKLIST_NEXT
-from yoetz.ports import ledger as ports
-from yoetz.protocol.models import CheckFindingChecklistModel, CheckOverallNextModel
+from finishup.cli.render import _CHECKLIST_NEXT_TEXT  # pyright: ignore[reportPrivateUsage]
+from finishup.mcp.summaries import _CHECKLIST_NEXT as MCP_CHECKLIST_NEXT
+from finishup.ports import ledger as ports
+from finishup.protocol.models import CheckFindingChecklistModel, CheckOverallNextModel
 
 _SCHEMA = (
     Path(__file__).resolve().parents[3]

@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Final, cast
 
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 
 _PATH: Final = "canonical/check-inspection-1.4.0.case.json"
 _FIXTURE_ID: Final = "CAN-017"

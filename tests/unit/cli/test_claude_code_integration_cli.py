@@ -7,7 +7,7 @@ from typing import Literal
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.cli.app import app
+from finishup.cli.app import app
 
 
 def _fake_claude(tmp_path: Path) -> Path:
@@ -104,10 +104,10 @@ def test_claude_install_reports_post_mutation_startup_mode(
 ) -> None:
     from types import SimpleNamespace
 
-    import yoetz.cli.claude_code_integration as cli_module
-    from yoetz.adapters.integrations.claude_code_integration import ClaudeCodePluginAction
-    from yoetz.cli.claude_code_integration import run_claude_code_plugin_command
-    from yoetz.ports.plugin_artifacts import (
+    import finishup.cli.claude_code_integration as cli_module
+    from finishup.adapters.integrations.claude_code_integration import ClaudeCodePluginAction
+    from finishup.cli.claude_code_integration import run_claude_code_plugin_command
+    from finishup.ports.plugin_artifacts import (
         ArtifactAuthority,
         PluginArtifactState,
         PluginOperationState,
@@ -215,7 +215,7 @@ def test_claude_cli_export_writes_a_plugin_dir_root_without_host_state(tmp_path:
     assert (output / ".yoetz-claude-plugin-export.json").is_file()
     manifest = json.loads((output / ".claude-plugin" / "plugin.json").read_text())
     assert manifest["defaultEnabled"] is True
-    mcp = json.loads((output / ".mcp.json").read_text())["mcpServers"]["yoetz"]
+    mcp = json.loads((output / ".mcp.json").read_text())["mcpServers"]["finishup"]
     assert Path(mcp["command"]).is_absolute()
     assert body["yoetz_launcher"][0] == mcp["command"]
     # No Claude config, marketplace, or cache root was ever named, so none can have changed.
@@ -240,7 +240,7 @@ def test_a_strict_re_render_preview_discloses_the_host_admission_it_would_revoke
     project = tmp_path / "project"
     (project / ".claude").mkdir(parents=True)
     (project / ".claude" / "settings.local.json").write_text(
-        json.dumps({"permissions": {"allow": ["mcp__plugin_yoetz_yoetz__check"]}}),
+        json.dumps({"permissions": {"allow": ["mcp__plugin_finishup_finishup__check"]}}),
         encoding="utf-8",
     )
     runner = CliRunner()
@@ -308,13 +308,13 @@ def test_default_presence_cell_follows_the_platform_and_fails_closed_before_muta
 ) -> None:
     from types import SimpleNamespace
 
-    from yoetz.adapters.integrations import artifact_presence
-    from yoetz.adapters.integrations.artifact_presence import describe_artifact_presence
-    from yoetz.adapters.integrations.linux_artifact_presence import LinuxArtifactUserPresence
-    from yoetz.adapters.integrations.macos_artifact_presence import MacOSArtifactUserPresence
-    from yoetz.adapters.integrations.portable_plugin import prepare_portable_artifact_review
-    from yoetz.cli.claude_code_integration import run_claude_code_plugin_command
-    from yoetz.ports.plugin_artifacts import ArtifactAuthority
+    from finishup.adapters.integrations import artifact_presence
+    from finishup.adapters.integrations.artifact_presence import describe_artifact_presence
+    from finishup.adapters.integrations.linux_artifact_presence import LinuxArtifactUserPresence
+    from finishup.adapters.integrations.macos_artifact_presence import MacOSArtifactUserPresence
+    from finishup.adapters.integrations.portable_plugin import prepare_portable_artifact_review
+    from finishup.cli.claude_code_integration import run_claude_code_plugin_command
+    from finishup.ports.plugin_artifacts import ArtifactAuthority
 
     runner = CliRunner()
     state = tmp_path / "private-state"

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.control.unix_socket import (
+from finishup.adapters.control.unix_socket import (
     CONTROL_ENDPOINT_BASENAME,
     ENDPOINT_MODE,
     RUNTIME_DIRECTORY_MODE,
@@ -40,7 +40,7 @@ async def test_real_peer_credentials_modes_and_close_on_exec(
     runtime = Path(tempfile.mkdtemp(prefix=".yctl-cap-", dir=Path.cwd()))
     runtime.chmod(RUNTIME_DIRECTORY_MODE)
     monkeypatch.setattr(
-        "yoetz.adapters.control.unix_socket._runtime_directory",
+        "finishup.adapters.control.unix_socket._runtime_directory",
         lambda: runtime,
     )
     listener = await bind_control_listener()

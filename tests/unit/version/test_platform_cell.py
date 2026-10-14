@@ -8,8 +8,8 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
-import yoetz.version as version_module
-from yoetz.version import (
+import finishup.version as version_module
+from finishup.version import (
     PLATFORM_CELL_UNTESTED,
     build_version_manifest,
     platform_cell,

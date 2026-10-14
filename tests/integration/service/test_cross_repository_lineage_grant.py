@@ -7,34 +7,34 @@ from pathlib import Path
 import pytest
 
 from builders.multi_agent import MultiAgentService, multi_agent_service
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.repository_identity import resolve_repository_privacy_context
-from yoetz.application.projects import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.application.projects import (
     CreateProjectCommand,
     LinkProjectCommand,
     ProjectCommandError,
     ProjectGrantCommand,
     ProjectRevokeCommand,
 )
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.receipt import ReceiptInternalResult
-from yoetz.application.start import StartInternalResult
-from yoetz.domain.coordination import CoordinationErrorCode, MemberKind
-from yoetz.domain.events import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.receipt import ReceiptInternalResult
+from finishup.application.start import StartInternalResult
+from finishup.domain.coordination import CoordinationErrorCode, MemberKind
+from finishup.domain.events import (
     AcceptedEvent,
     ChildDependenciesRecordedPayload,
     ChildDependencySnapshot,
 )
-from yoetz.ports.control import WorkspaceLocator
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.keys import MacKeyPurpose
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.runtime import RouteAccess, RouteCommand
-from yoetz.ports.start_catalog import StartIdentityInput
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import CheckRequest, PublishWorkRequest, ReceiptRequest, StartRequest
-from yoetz.service.elevated_bootstrap import (
+from finishup.ports.control import WorkspaceLocator
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.keys import MacKeyPurpose
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.runtime import RouteAccess, RouteCommand
+from finishup.ports.start_catalog import StartIdentityInput
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import CheckRequest, PublishWorkRequest, ReceiptRequest, StartRequest
+from finishup.service.elevated_bootstrap import (
     load_pending,
     record_project_coordination_authorization,
 )

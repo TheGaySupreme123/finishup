@@ -15,31 +15,31 @@ from typing import cast
 
 import pytest
 
+import finishup.service.ready_composition as ready_composition_module
 import integration.service.test_semantic_non_dispatch as non_dispatch
-import yoetz.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import FixedClock, append_command, memory_adapter, sqlite_adapter
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.egress import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.egress import (
     PrivacyCoordinator,
     SemanticEgressProviderOutcome,
     SemanticEgressSuccess,
 )
-from yoetz.application.semantic_attempts import SemanticAttemptAccounting
-from yoetz.application.semantic_case import ReviewPacketDisclosure
-from yoetz.domain.findings import (
+from finishup.application.semantic_attempts import SemanticAttemptAccounting
+from finishup.application.semantic_case import ReviewPacketDisclosure
+from finishup.domain.findings import (
     SamplingParams,
     SemanticDispatchKind,
     SemanticFailureClass,
     SemanticFallbackOrigin,
 )
-from yoetz.domain.privacy import PrivacyOutcome, PrivacyReason, ProviderBinding
-from yoetz.domain.receipts import SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP
-from yoetz.ports.ledger import AttemptOutcome, FrozenCase
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.ports.semantic import (
+from finishup.domain.privacy import PrivacyOutcome, PrivacyReason, ProviderBinding
+from finishup.domain.receipts import SEMANTIC_PROVIDER_INPUT_MANIFEST_RECOVERY_FAILED_GAP
+from finishup.ports.ledger import AttemptOutcome, FrozenCase
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
+from finishup.ports.runtime import TaskRuntime
+from finishup.ports.semantic import (
     Deadline,
     ProviderAttemptProvenance,
     SemanticJudgment,
@@ -47,10 +47,10 @@ from yoetz.ports.semantic import (
     SemanticResultSuccess,
     SemanticResultUnavailable,
 )
-from yoetz.ports.semantic_budget import current_semantic_budget_profile
-from yoetz.ports.start_catalog import StartCatalogPort
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.ports.semantic_budget import current_semantic_budget_profile
+from finishup.ports.start_catalog import StartCatalogPort
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 # The single-endpoint harness owns the durable case, route, catalog, and coordinator fakes; this
 # module only adds the second destination, so it reuses them rather than duplicating them.

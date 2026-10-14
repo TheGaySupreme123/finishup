@@ -21,9 +21,9 @@ from builders.policy_cases import (
     plan_record,
     record,
 )
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.application.check import validate_semantic_judgment
-from yoetz.application.semantic_case import (
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.application.check import validate_semantic_judgment
+from finishup.application.semantic_case import (
     MAX_TASK_STATEMENT_ITEM_BYTES,
     TASK_STATEMENT_ITEM_ID,
     assemble_filtered_review_packet,
@@ -35,7 +35,7 @@ from yoetz.application.semantic_case import (
     semantic_case_to_candidate_context,
     semantic_case_to_prepared_payload,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     ObligationPublishedPayload,
@@ -43,13 +43,13 @@ from yoetz.domain.events import (
     PlanPublishedPayload,
     PlanRevisedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FindingKind,
     SamplingParams,
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ClassifiedContext,
@@ -61,31 +61,36 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_MISMATCH_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_PARSE_FAILED_GAP,
 )
-from yoetz.domain.task_statement import (
+from finishup.domain.task_statement import (
     TASK_STATEMENT_GAPS,
     TASK_STATEMENT_NOT_AUTHORIZED_GAP,
     TASK_STATEMENT_NOT_SUPPLIED_GAP,
     TASK_STATEMENT_UNAVAILABLE_GAP,
     RecordedTaskStatement,
 )
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.ports.semantic import ReviewerChallenge, ReviewOmission, SemanticCase, SemanticJudgment
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.models import DataCategory, SemanticReason, SemanticStatus
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.ports.semantic import (
+    ReviewerChallenge,
+    ReviewOmission,
+    SemanticCase,
+    SemanticJudgment,
+)
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.models import DataCategory, SemanticReason, SemanticStatus
 
 _TERMENV_STATEMENT = (
     "Add preserve-resets and ANSI-safe truncation to termenv. Add Style.Truncate(int, "
     "TruncateOptions) string and Output.Truncate(string, int, TruncateOptions) string. "
     "Unicode widths apply (wide runes=2, U+200B=0). Under Ascii, Style.Truncate returns plain "
     "text without tail; Output.Truncate returns text with tail; no ANSI emitted.\n"
-    "Use Yoetz throughout this task."
+    "Use FinishUP throughout this task."
 )
 _TERMENV_PLAN = (
     "Implement ANSI tokenization and width-safe truncation, integrate preserve-resets across "

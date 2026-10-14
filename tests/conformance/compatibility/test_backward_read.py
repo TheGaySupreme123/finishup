@@ -2,14 +2,14 @@
 
 Grounded entirely in the two permanent ``fixtures/backward-read/v0.1.0-*.case.json`` fixtures --
 BWR-001, a first-release empty bundle, and BWR-002, a full sixteen-family event bundle carrying one
-deliberately unknown ``future_fixture_event/2.0.0`` row -- plus the installed ``yoetz.version``
-identity constants and the real ``yoetz.kernel.projections`` domain codec.
+deliberately unknown ``future_fixture_event/2.0.0`` row -- plus the installed ``finishup.version``
+identity constants and the real ``finishup.kernel.projections`` domain codec.
 
 Every archive member is decoded and digest-verified directly from the fixture's own declared
 inventory. The embedded ``bundle.sqlite3`` is materialized to a private scratch file and opened with
 ``apsw.SQLITE_OPEN_READONLY`` -- the same raw read-only idiom used by
-``tests/integration/storage/test_build_and_pragma_gate.py`` -- never through Yoetz's own
-``yoetz.adapters.sqlite.connection`` wrapper, whose path-safety policy is scoped to Yoetz's live
+``tests/integration/storage/test_build_and_pragma_gate.py`` -- never through FinishUP's own
+``finishup.adapters.sqlite.connection`` wrapper, whose path-safety policy is scoped to FinishUP's live
 per-user runtime directories, not to an arbitrary archived fixture artifact under test. No fixture
 byte is written back at any point; every claim of "no migration, no database writes, no archive
 regeneration" is checked by re-hashing the materialized file and the raw archive bytes after use.
@@ -24,16 +24,16 @@ from typing import cast
 
 import apsw
 
-from fixture_loader import FixtureLoader, JsonValue
-from yoetz.domain.values import event_id, frontier_from_json, object_id, validate_sha256_digest
-from yoetz.kernel.projections import (
+from finishup.domain.values import event_id, frontier_from_json, object_id, validate_sha256_digest
+from finishup.kernel.projections import (
     empty_projection_state,
     projection_digest,
     projection_from_snapshot,
     projection_snapshot,
 )
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
-from yoetz.version import BUNDLE_SCHEMA_VERSION, ENGINE_VERSION, PROTOCOL_VERSION
+from finishup.protocol.canonical import canonical_digest, canonical_encode, strict_json_parse
+from finishup.version import BUNDLE_SCHEMA_VERSION, ENGINE_VERSION, PROTOCOL_VERSION
+from fixture_loader import FixtureLoader, JsonValue
 
 _EMPTY_BUNDLE = "v0.1.0-empty-bundle.case.json"
 _FULL_EVENT_BUNDLE = "v0.1.0-full-event-bundle.case.json"
@@ -135,7 +135,7 @@ def test_released_corpus_still_reads(fixture_loader: FixtureLoader, tmp_path: Pa
             assert all(_digest(data) != plaintext_canary for data in members.values()), name
 
         release_identity = cast(dict[str, JsonValue], input_block["release_manifest_identity"])
-        assert release_identity["package"] == "yoetz", name
+        assert release_identity["package"] == "finishup", name
         assert release_identity["protocol"] == PROTOCOL_VERSION, name
         assert _classify_bundle_schema(cast(str, release_identity["bundle_schema"])) in {
             "supported",

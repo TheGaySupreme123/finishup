@@ -17,19 +17,22 @@ from typing import cast
 import pytest
 
 from builders.multi_agent import MultiAgentService, multi_agent_service
-from yoetz.application.lineage_recovery import lineage_recovery_runtime, observed_activity_renewal
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import Application
-from yoetz.application.start import StartInternalResult
-from yoetz.domain.coordination import SESSION_LEASE_SECONDS, SessionHealth, WorkState
-from yoetz.domain.events import AcceptedEvent, WorkAbandonedPayload
-from yoetz.domain.host_lineage import host_lineage_from_payload
-from yoetz.domain.observation import ObservationSource
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.application.lineage_recovery import (
+    lineage_recovery_runtime,
+    observed_activity_renewal,
+)
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import Application
+from finishup.application.start import StartInternalResult
+from finishup.domain.coordination import SESSION_LEASE_SECONDS, SessionHealth, WorkState
+from finishup.domain.events import AcceptedEvent, WorkAbandonedPayload
+from finishup.domain.host_lineage import host_lineage_from_payload
+from finishup.domain.observation import ObservationSource
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.ledger import CheckCommitResult
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,

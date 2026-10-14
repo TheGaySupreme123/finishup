@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from yoetz.application.egress import SemanticEgressProviderOutcome
-from yoetz.domain.findings import SamplingParams, SemanticDispatchKind, SemanticFailureClass
-from yoetz.ports.semantic import ProviderAttemptProvenance, SemanticResultUnavailable
-from yoetz.protocol.models import SemanticReason, SemanticStatus
-from yoetz.service.ready_composition import (  # pyright: ignore[reportPrivateUsage]
+from finishup.application.egress import SemanticEgressProviderOutcome
+from finishup.domain.findings import SamplingParams, SemanticDispatchKind, SemanticFailureClass
+from finishup.ports.semantic import ProviderAttemptProvenance, SemanticResultUnavailable
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from finishup.service.ready_composition import (  # pyright: ignore[reportPrivateUsage]
     _map_egress_to_final,  # pyright: ignore[reportPrivateUsage]
 )
 

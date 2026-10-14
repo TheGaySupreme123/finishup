@@ -18,7 +18,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from yoetz.domain.values import (
+from finishup.domain.values import (
     GENESIS_DIGEST,
     Actor,
     ActorId,
@@ -54,15 +54,15 @@ from yoetz.domain.values import (
     validate_sha256_digest,
     writer_id,
 )
-from yoetz.protocol.canonical import (
+from finishup.protocol.canonical import (
     MAX_JSON_DEPTH,
     canonical_encode,
 )
-from yoetz.protocol.canonical import (
+from finishup.protocol.canonical import (
     JsonValue as CanonicalJsonValue,
 )
-from yoetz.protocol.coverage import AuthorshipAssurance
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.coverage import AuthorshipAssurance
+from finishup.protocol.errors import ProtocolValueError
 
 _UUID = "00000000-0000-4000-8000-000000000001"
 _DIGEST_A = "sha256:" + "a" * 64
@@ -84,8 +84,8 @@ _VALUE_MATRIX_SCRIPT: Final = textwrap.dedent(
     if hasattr(time, "tzset"):
         time.tzset()
 
-    from yoetz.domain.values import Frontier, freeze_json, timestamp_from_datetime
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.domain.values import Frontier, freeze_json, timestamp_from_datetime
+    from finishup.protocol.canonical import canonical_encode
 
     frozen = freeze_json({"z": [3, 2, 1], "a": {"unicode": "Cafe\\u0301"}})
     print(canonical_encode(frozen).hex())

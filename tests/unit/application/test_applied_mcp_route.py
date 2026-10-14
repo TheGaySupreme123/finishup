@@ -11,13 +11,13 @@ from typing import Literal
 import anyio
 import pytest
 
-from yoetz.application.applied_mcp_route import (
+from finishup.application.applied_mcp_route import (
     clear_applied_route,
     read_applied_route,
     record_applied_route,
 )
-from yoetz.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
-from yoetz.ports.harness_mcp import (
+from finishup.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
+from finishup.ports.harness_mcp import (
     MCP_SERVE_COMMAND,
     MCP_STRICT_SERVE_COMMAND,
     HarnessBinary,
@@ -30,8 +30,8 @@ from yoetz.ports.harness_mcp import (
     McpRegistrationResult,
     McpRegistrationState,
 )
-from yoetz.ports.integrations import HarnessId
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
+from finishup.ports.integrations import HarnessId
+from finishup.protocol.canonical import canonical_digest, canonical_encode
 
 _DIGEST = "sha256:" + "a" * 64
 _OTHER_DIGEST = "sha256:" + "b" * 64
@@ -247,7 +247,9 @@ class _RoutePort:
     async def status_registration(self, binary: HarnessBinary) -> McpRegistrationState:
         del binary
         return (
-            McpRegistrationState.YOETZ_OWNED if self._already_owned else McpRegistrationState.ABSENT
+            McpRegistrationState.FINISHUP_OWNED
+            if self._already_owned
+            else McpRegistrationState.ABSENT
         )
 
     async def observe_registration(self, binary: HarnessBinary) -> McpRegistrationObservation:
@@ -255,7 +257,7 @@ class _RoutePort:
             raise McpRegistrationError(McpRegistrationReason.PARSE_FAILED, {})
         return McpRegistrationObservation(
             binary.harness_id,
-            McpRegistrationState.YOETZ_OWNED,
+            McpRegistrationState.FINISHUP_OWNED,
             self._profile,
             "ambient",
         )
@@ -282,15 +284,15 @@ class _RoutePort:
             return McpRegistrationResult(
                 binary.harness_id,
                 McpRegistrationAction.NOOP,
-                McpRegistrationState.YOETZ_OWNED,
-                McpRegistrationState.YOETZ_OWNED,
+                McpRegistrationState.FINISHUP_OWNED,
+                McpRegistrationState.FINISHUP_OWNED,
                 _DIGEST,
             )
         return McpRegistrationResult(
             binary.harness_id,
             McpRegistrationAction.REGISTER,
             McpRegistrationState.ABSENT,
-            McpRegistrationState.YOETZ_OWNED,
+            McpRegistrationState.FINISHUP_OWNED,
             _DIGEST,
         )
 
@@ -298,7 +300,7 @@ class _RoutePort:
         return McpRegistrationPreview(
             binary.harness_id,
             McpRegistrationAction.UNREGISTER,
-            McpRegistrationState.YOETZ_OWNED,
+            McpRegistrationState.FINISHUP_OWNED,
             (),
             _DIGEST,
             self._serve_command(),
@@ -314,7 +316,7 @@ class _RoutePort:
         return McpRegistrationResult(
             binary.harness_id,
             McpRegistrationAction.UNREGISTER,
-            McpRegistrationState.YOETZ_OWNED,
+            McpRegistrationState.FINISHUP_OWNED,
             McpRegistrationState.ABSENT,
             _DIGEST,
         )
@@ -327,7 +329,7 @@ def _confirmation() -> McpRegistrationConfirmation:
 def test_service_register_records_the_observed_route(tmp_path: Path) -> None:
     service = HarnessMcpService(_RoutePort("policy"))
     result = anyio.run(lambda: service.register(_BINARY, _confirmation(), _state=tmp_path))
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     record = read_applied_route(_state=tmp_path)
     assert record is not None
     assert record["applied_profile"] == "policy"
@@ -397,13 +399,13 @@ def test_service_register_survives_persistence_failure(tmp_path: Path) -> None:
     blocker.write_bytes(b"unrelated")
     service = HarnessMcpService(_RoutePort("policy"))
     result = anyio.run(lambda: service.register(_BINARY, _confirmation(), _state=blocker))
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
 
 
 def test_service_register_survives_observation_failure(tmp_path: Path) -> None:
     service = HarnessMcpService(_RoutePort("policy", observe_fails=True))
     result = anyio.run(lambda: service.register(_BINARY, _confirmation(), _state=tmp_path))
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     assert read_applied_route(_state=tmp_path) is None
 
 
@@ -426,7 +428,7 @@ def test_service_strict_register_with_observe_failure_clears_stale_policy(
     assert read_applied_route(_state=tmp_path) is not None
     service = HarnessMcpService(_RoutePort("strict", observe_fails=True))
     result = anyio.run(lambda: service.register(_BINARY, _confirmation(), _state=tmp_path))
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     assert read_applied_route(_state=tmp_path) is None
 
 
@@ -439,5 +441,5 @@ def test_service_never_records_a_non_codex_route(tmp_path: Path) -> None:
     )
     service = HarnessMcpService(_RoutePort("policy"))
     result = anyio.run(lambda: service.register(foreign, _confirmation(), _state=tmp_path))
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     assert read_applied_route(_state=tmp_path) is None

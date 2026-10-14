@@ -1,4 +1,4 @@
-"""Hypothesis strategies for the restricted Yoetz JSON profile."""
+"""Hypothesis strategies for the restricted FinishUP JSON profile."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Final, cast
 from hypothesis import strategies as st
 from hypothesis.strategies import SearchStrategy
 
-from yoetz.protocol.canonical import MAX_JSON_DEPTH, JsonValue
+from finishup.protocol.canonical import MAX_JSON_DEPTH, JsonValue
 
 __all__ = [
     "strategy_invalid_json_bytes",

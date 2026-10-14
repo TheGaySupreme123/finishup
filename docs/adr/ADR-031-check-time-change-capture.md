@@ -3,16 +3,16 @@
 **Status:** Accepted for issue #883. The maintainer asked for this scoped work in the issue's
 2026-09-29 acceptance boundary (items 1 and 3) and recorded the design-gate acknowledgement for
 the privacy/egress and storage changes it needs.
-**Implemented by:** `src/yoetz/ports/change_capture.py`,
-`src/yoetz/adapters/git_change_capture.py`, the public seam of
-`src/yoetz/adapters/git_subject_state.py`, `src/yoetz/application/check_change.py`,
-`CheckTimeChange` and `_check_time_change_reservation` in `src/yoetz/application/semantic_case.py`,
-the reason codes and sentences in `src/yoetz/domain/receipts.py`, the semantic evaluator in
-`src/yoetz/service/ready_composition.py`, `start`/`check` in `src/yoetz/application/service.py`,
-the task-base root in `src/yoetz/adapters/sqlite/repository.py` and
-`src/yoetz/adapters/memory/ledger.py`, the shown-file record (`CheckChangeShownFiles` in
-`src/yoetz/domain/events.py`) and resolution rule (`src/yoetz/kernel/finding_resolution.py`,
-`src/yoetz/kernel/projections.py`), and the suites `tests/unit/adapters/test_git_change_capture.py`,
+**Implemented by:** `src/finishup/ports/change_capture.py`,
+`src/finishup/adapters/git_change_capture.py`, the public seam of
+`src/finishup/adapters/git_subject_state.py`, `src/finishup/application/check_change.py`,
+`CheckTimeChange` and `_check_time_change_reservation` in `src/finishup/application/semantic_case.py`,
+the reason codes and sentences in `src/finishup/domain/receipts.py`, the semantic evaluator in
+`src/finishup/service/ready_composition.py`, `start`/`check` in `src/finishup/application/service.py`,
+the task-base root in `src/finishup/adapters/sqlite/repository.py` and
+`src/finishup/adapters/memory/ledger.py`, the shown-file record (`CheckChangeShownFiles` in
+`src/finishup/domain/events.py`) and resolution rule (`src/finishup/kernel/finding_resolution.py`,
+`src/finishup/kernel/projections.py`), and the suites `tests/unit/adapters/test_git_change_capture.py`,
 `tests/unit/application/test_semantic_case_check_change.py`,
 `tests/unit/application/test_check_time_change_facade.py`,
 `tests/unit/application/test_semantic_case_packet_completeness.py`,
@@ -162,11 +162,11 @@ content-returning read needed its own decision. This is that decision, for exact
    newest captured edit per path, the latest verification runs, finding repair evidence) leave,
    ahead of older edit hunks and general output, and any still left backfill whatever the recipe
    has free after those. Because the case planner narrows the excerpt budget from the lowest rank
-   up, older hunks and general output are narrowed before the change. Each part begins `[Yoetz
+   up, older hunks and general output are narrowed before the change. Each part begins `[FinishUP
    check-time change, part i of n]`, its item ids sort ahead of every other item, and it links to
    the case's effective claims and obligations (else its latest plan). When a planned case leaves
    less room than one whole part, the first part is cut to that room (on a line end where one lies
-   in its second half) and begins `[Yoetz check-time change, part 1 of n, cut to the packet's
+   in its second half) and begins `[FinishUP check-time change, part 1 of n, cut to the packet's
    room]`, so the change still precedes every recorded excerpt; nothing follows a cut part, and the
    cut is disclosed as `check_time_change_truncated` (issue #983). The shown-file record counts the
    change bytes the carried parts hold, never a part count, so it stays exact whatever part size a

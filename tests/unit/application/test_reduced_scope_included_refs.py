@@ -26,14 +26,14 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     REVIEW_PACKET_ITEM_ID,
     build_semantic_case,
     review_packet_content_refs,
     semantic_case_to_candidate_context,
     semantic_case_to_prepared_payload,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     CheckMode,
@@ -50,7 +50,7 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
@@ -60,18 +60,18 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ProviderBinding,
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.values import Frontier, timestamp_from_string
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.finding_resolution import resolution_blockers
-from yoetz.ports.semantic import SamplingParams, SemanticCase
-from yoetz.protocol.coverage import (
+from finishup.domain.values import Frontier, timestamp_from_string
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.finding_resolution import resolution_blockers
+from finishup.ports.semantic import SamplingParams, SemanticCase
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -80,7 +80,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.models import (
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     SemanticReason,
@@ -383,8 +383,8 @@ def test_a_carried_multi_part_excerpt_carries_every_part_it_combines() -> None:
     or event does not, and nothing counts when the lead excerpt itself was left out.
     """
 
-    from yoetz.application.semantic_case import review_packet_disclosure
-    from yoetz.protocol.canonical import JsonValue, canonical_encode
+    from finishup.application.semantic_case import review_packet_disclosure
+    from finishup.protocol.canonical import JsonValue, canonical_encode
 
     lead, part, claim, event = str(evd(1)), str(evd(2)), str(clm(1)), str(evt(3))
 
@@ -423,8 +423,8 @@ def _history_case(evidence: EvidenceRecordedPayload) -> DeterministicCase:
     events that recorded them, keyed by those ``evt_`` ids.
     """
 
-    from yoetz.domain.events import EVIDENCE_SCHEMA_VERSION, encode_payload
-    from yoetz.kernel.deterministic_checks import FrozenHistoryEvent
+    from finishup.domain.events import EVIDENCE_SCHEMA_VERSION, encode_payload
+    from finishup.kernel.deterministic_checks import FrozenHistoryEvent
 
     base = _case()
     projection = base.projection
@@ -466,13 +466,13 @@ def _history_case(evidence: EvidenceRecordedPayload) -> DeterministicCase:
 def _captured() -> EvidenceRecordedPayload:
     """Repair evidence whose content is an observation-captured object."""
 
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         EvidenceContentAvailability,
         EvidenceDigestBinding,
         EvidenceDigestProvenance,
         EvidenceDigestSubject,
     )
-    from yoetz.domain.values import object_id
+    from finishup.domain.values import object_id
 
     return EvidenceRecordedPayload(
         evidence_id=_REPAIR,
@@ -500,7 +500,7 @@ def _history_blockers(
     resolution blockers.
     """
 
-    from yoetz.application.semantic_case import review_packet_disclosure, sent_ledger_refs
+    from finishup.application.semantic_case import review_packet_disclosure, sent_ledger_refs
 
     semantic = build_semantic_case(
         case_id="cas_10000000-0000-4000-8000-000000000905",
@@ -595,8 +595,8 @@ def test_recorded_evidence_carried_by_its_event_is_credited_without_omission_row
 
 
 def test_a_history_item_replaced_by_the_size_marker_carries_no_payload() -> None:
-    from yoetz.application.semantic_case import review_packet_disclosure
-    from yoetz.protocol.canonical import JsonValue, canonical_encode
+    from finishup.application.semantic_case import review_packet_disclosure
+    from finishup.protocol.canonical import JsonValue, canonical_encode
 
     event = str(evt(6))
 
@@ -639,8 +639,8 @@ def test_the_finding_counts_as_sent_through_its_structural_prior_finding_row() -
     leaves the row as all the ledger holds, so it still counts; a withholding omission does not.
     """
 
-    from yoetz.application.semantic_case import review_packet_disclosure
-    from yoetz.protocol.canonical import JsonValue, canonical_encode
+    from finishup.application.semantic_case import review_packet_disclosure
+    from finishup.protocol.canonical import JsonValue, canonical_encode
 
     finding = str(fnd(1))
 
@@ -702,12 +702,12 @@ def test_a_history_row_with_its_payload_credits_its_action_and_claim_records() -
     """
 
     from builders.policy_cases import claim_record
-    from yoetz.application.semantic_case import review_packet_disclosure, sent_ledger_refs
-    from yoetz.domain.events import (
+    from finishup.application.semantic_case import review_packet_disclosure, sent_ledger_refs
+    from finishup.domain.events import (
         ClaimRecordedPayloadV1_1,
         encode_payload,
     )
-    from yoetz.kernel.deterministic_checks import FrozenHistoryEvent
+    from finishup.kernel.deterministic_checks import FrozenHistoryEvent
 
     base = _history_case(
         EvidenceRecordedPayload(

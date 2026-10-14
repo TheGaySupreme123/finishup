@@ -12,36 +12,36 @@ import pytest
 
 from builders.ledger_adapters import MemoryObjects
 from builders.replay import replay_records
-from integration.storage.test_append_and_replay import (
-    command_from_records,
-    deterministic_result_ref,
-    file_sqlite_for,
-    uuid_id,
-)
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.domain.findings import CheckVerdict, RankedFindings
-from yoetz.domain.observation import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.domain.findings import CheckVerdict, RankedFindings
+from finishup.domain.observation import (
     ObservationCaptureTicket,
     ObservationContentChunk,
     ObservationContentKind,
     ObservationCursor,
     ObservationSource,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.domain.values import Timestamp
-from yoetz.ports.ledger import (
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.values import Timestamp
+from finishup.ports.ledger import (
     AppendCommand,
     CheckCommitResult,
     CheckPhase,
     CheckPolicyExecution,
     FrozenCase,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from integration.storage.test_append_and_replay import (
+    command_from_records,
+    deterministic_result_ref,
+    file_sqlite_for,
+    uuid_id,
+)
 
 
 @pytest.fixture

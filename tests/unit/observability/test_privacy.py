@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 import pytest
 
-import yoetz.observability.privacy as privacy_module
-from yoetz.observability.privacy import (
+import finishup.observability.privacy as privacy_module
+from finishup.observability.privacy import (
     EGRESS_CREDENTIAL_PLACEHOLDER,
     PRIVACY_REQUEST_BODY_DOMAIN,
     SESSION_HASH_DOMAIN,
@@ -30,8 +30,8 @@ from yoetz.observability.privacy import (
     scan_for_sensitive_content,
     session_id_hash,
 )
-from yoetz.ports.keys import MacKeyHandle
-from yoetz.protocol.canonical import canonical_encode
+from finishup.ports.keys import MacKeyHandle
+from finishup.protocol.canonical import canonical_encode
 
 _SESSION_ID = "ses_11111111-1111-4111-8111-111111111111"
 _REQUEST_ID = "req_22222222-2222-4222-8222-222222222222"
@@ -481,7 +481,7 @@ def test_request_commitment_covers_final_body_only() -> None:
     ),
 )
 def test_redacted_line_stays_clean_after_json_encoding(line: bytes) -> None:
-    """TB4 tb4f1 (issue #976): Yoetz's own marker must not re-match once JSON-escaped.
+    """TB4 tb4f1 (issue #976): FinishUP's own marker must not re-match once JSON-escaped.
 
     The prepared review packet is canonical JSON, so ``[REDACTED]\\n`` used to read as a fresh
     token assignment value and the egress rescan blocked the whole packet.
@@ -565,7 +565,7 @@ def test_encoded_escapes_never_shorten_a_redacted_value(data: bytes, secret: byt
         b"{'mean_logprob_per_token': -4.722294041641461, 'mean_token': None}\n",
         b"for char in token:\n            node = x\n",
         b"        if self.unk_token:\n            return None\n",
-        b"Use `yoetz status`; the finding token: `work_open_findings` is open.\n",
+        b"Use `finishup status`; the finding token: `work_open_findings` is open.\n",
         b"session_token: mask_secret\n",
         b"rules:\n  mask_secret:\n    anonymizer: sha256\n",
         b"OPENAI_API_KEY=\nOPENAI_BASE_URL=\nPAGER=cat\n",

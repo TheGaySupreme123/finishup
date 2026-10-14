@@ -17,47 +17,47 @@ from typing import Any, cast
 
 import pytest
 
+import finishup.service.ready_composition as ready_composition_module
 import integration.service.test_semantic_fallback_dispatch as fallback
 import integration.service.test_semantic_non_dispatch as non_dispatch
-import yoetz.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import append_command, memory_adapter, sqlite_adapter
 from builders.policy_cases import evd, res
-from unit.application.test_review_follow_up import (
-    _captured_group_case,  # pyright: ignore[reportPrivateUsage]
-    _verification_case,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.check import (
     FinalSemanticEvaluation,
     _review_follow_up,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.egress import SemanticEgressProviderOutcome, SemanticEgressSuccess
-from yoetz.application.missing_for_assessment import ReviewFollowUp, plan_review_follow_up
-from yoetz.application.semantic_case import (
+from finishup.application.egress import SemanticEgressProviderOutcome, SemanticEgressSuccess
+from finishup.application.missing_for_assessment import ReviewFollowUp, plan_review_follow_up
+from finishup.application.semantic_case import (
     assemble_filtered_review_packet,
     review_packet_disclosure_result,
 )
-from yoetz.application.semantic_content import CapturedContentResolution
-from yoetz.domain.events import MissingForAssessmentItem
-from yoetz.domain.findings import SemanticDispatchKind, SemanticFailureClass
-from yoetz.domain.privacy import (
+from finishup.application.semantic_content import CapturedContentResolution
+from finishup.domain.events import MissingForAssessmentItem
+from finishup.domain.findings import SemanticDispatchKind, SemanticFailureClass
+from finishup.domain.privacy import (
     REVIEW_PACKET_ITEM_ID,
     CandidateContext,
     ProviderBinding,
     ReviewContextProfile,
 )
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.ports.ledger import FrozenCase
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.ports.semantic import (
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.ports.ledger import FrozenCase
+from finishup.ports.runtime import TaskRuntime
+from finishup.ports.semantic import (
     MissingForAssessment,
     SemanticJudgment,
     SemanticResultSuccess,
     SemanticResultUnavailable,
 )
-from yoetz.protocol.canonical import strict_json_parse
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.canonical import strict_json_parse
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from unit.application.test_review_follow_up import (
+    _captured_group_case,  # pyright: ignore[reportPrivateUsage]
+    _verification_case,  # pyright: ignore[reportPrivateUsage]
+)
 
 _PROVIDER = non_dispatch._PROVIDER  # pyright: ignore[reportPrivateUsage]
 _Privacy = non_dispatch._Privacy  # pyright: ignore[reportPrivateUsage]

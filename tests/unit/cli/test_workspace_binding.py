@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from yoetz.cli.workspace_binding import canonical_workspace_locator, resolve_workspace_locator
+from finishup.cli.workspace_binding import canonical_workspace_locator, resolve_workspace_locator
 
 
 def _env(home: Path, **values: str) -> dict[str, str]:

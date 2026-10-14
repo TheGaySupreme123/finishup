@@ -1,4 +1,4 @@
-# Contributing to Yoetz
+# Contributing to FinishUP
 
 Thank you for considering a contribution. External work is welcome when it meets a high bar: this
 project is **open with rigor**, not invitation-only and not closed to contributions.
@@ -54,7 +54,7 @@ The pinned toolchain is Ruff for lint/format and the official npm-distributed Py
 (`npx --no-install pyright`) in strict mode for type checking; Node/npm are contributor and CI
 prerequisites only, never an end-user runtime requirement.
 
-### Testing against a real installed Yoetz without touching your own
+### Testing against a real installed FinishUP without touching your own
 
 When a change needs an installed launcher, a running service, a host registration, or an upgrade
 path — not just `uv run pytest` — provision an independent test instance instead of using your
@@ -87,14 +87,14 @@ The write command repeats the complete dependency sequence until the owned bytes
 point, then runs the same read-only checks as CI. Those checks include building the installed
 version manifest and validating it against the generated version-manifest schema, which is what
 catches a stale cardinality constant locally instead of in CI. When the number of inventory entries
-changes, review and update the single `REVIEWED_RESOURCE_COUNT` tripwire in `src/yoetz/version.py`
+changes, review and update the single `REVIEWED_RESOURCE_COUNT` tripwire in `src/finishup/version.py`
 before running it; every per-kind count and generated cardinality is derived from the manifest
 entries.
 
-After the package digests converge, the same command renders `.agents/plugins/yoetz` and
-`.agents/skills/yoetz` through the supported integration renderers, including their ownership
+After the package digests converge, the same command renders `.agents/plugins/finishup` and
+`.agents/skills/finishup` through the supported integration renderers, including their ownership
 markers. Their complete file sets participate in the fixed point and in CI's `--check`. Edit
-`guidance/`, `skills/codex/yoetz/`, or the owning integration renderer, then run the command above.
+`guidance/`, `skills/codex/finishup/`, or the owning integration renderer, then run the command above.
 Agent-only drift reports those canonical owners and the same remediation. Repository generation
 uses only these two checkout-relative destinations. Preflight refuses linked paths and foreign
 files before any package resources or committed agent trees are written;

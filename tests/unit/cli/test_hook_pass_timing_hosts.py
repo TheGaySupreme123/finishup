@@ -3,11 +3,11 @@
 Payloads follow the current host hook contracts rather than pre-normalised envelopes:
 
 * Codex 0.157.1 code mode: one ``exec`` cell makes nested ``apply_patch``, ``exec_command`` and
-  ``mcp__yoetz__status`` calls, each firing its own ``PreToolUse``/``PostToolUse`` with the
+  ``mcp__finishup__status`` calls, each firing its own ``PreToolUse``/``PostToolUse`` with the
   generated hook input fields (``session_id``, ``turn_id``, ``transcript_path``, ``cwd``,
   ``model``, ``permission_mode``, ``tool_name``, ``tool_input``, ``tool_use_id`` and, after the
   call, ``tool_response``).
-* Claude Code ``PostToolUse`` with ``tool_use_id`` for a plugin-scoped Yoetz tool (structural
+* Claude Code ``PostToolUse`` with ``tool_use_id`` for a plugin-scoped FinishUP tool (structural
   profile) and for ``Bash`` (ordinary profile).
 * Cursor 3.17 ``postToolUse`` (ordinary profile) and ``afterMCPExecution`` (structural profile)
   keyed by ``conversation_id``.
@@ -24,21 +24,21 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_local import (
     AdviceDelivery,
     LocalObservationStore,
 )
-from yoetz.application import observation_advice
-from yoetz.cli import observe as observe_cli
-from yoetz.cli import observe_hooks
-from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
-from yoetz.cli.hook_timing import hook_pass_timing_summary
-from yoetz.domain.observation import AdviceSnapshot
-from yoetz.domain.observation_profiles import (
+from finishup.application import observation_advice
+from finishup.cli import observe as observe_cli
+from finishup.cli import observe_hooks
+from finishup.cli.hook_diagnostics import hook_diagnostic_summary
+from finishup.cli.hook_timing import hook_pass_timing_summary
+from finishup.domain.observation import AdviceSnapshot
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 _CODEX_SESSION = "019a0000-0000-7000-8000-000000000915"
 _REPOSITORY = Path(__file__).resolve().parents[3]
@@ -102,7 +102,7 @@ def _code_mode_cell(workspace: Path) -> list[tuple[str, str, JsonValue, JsonValu
             "Exit code: 0\nWall time: 1.2 seconds\nOutput:\n3 passed in 0.41s\n",
         ),
         (
-            "mcp__yoetz__status",
+            "mcp__finishup__status",
             "call_915_status",
             {"request": {"session_id": "ses_00000000-0000-4000-8000-000000000915"}},
             {"content": [], "structuredContent": {"ok": True}, "isError": False},
@@ -242,7 +242,7 @@ def test_claude_structural_and_ordinary_tool_hooks_are_separate_paths(tmp_path: 
         "cwd": str(tmp_path),
         "permission_mode": "default",
         "hook_event_name": "PostToolUse",
-        "tool_name": "mcp__plugin_yoetz_yoetz__status",
+        "tool_name": "mcp__plugin_finishup_finishup__status",
         "tool_input": {"request": {}},
         "tool_response": {"ok": True},
         "tool_use_id": "toolu_01STATUS",
@@ -577,7 +577,7 @@ def test_pending_advice_is_still_delivered_on_the_next_post_tool_use(
         snapshot=cast(AdviceSnapshot, object()),
         item=None,
         delivery_identity="deliver-915",
-        text="Yoetz: Unresolved failed command observed. Next: resolve_failed_command.",
+        text="FinishUP: Unresolved failed command observed. Next: resolve_failed_command.",
     )
     commits: list[str] = []
 
@@ -605,7 +605,7 @@ def test_pending_advice_is_still_delivered_on_the_next_post_tool_use(
     assert commits == ["deliver-915"]
 
 
-# An instruction to call the MCP ``status`` operation; the host-shell ``yoetz observe status`` and
+# An instruction to call the MCP ``status`` operation; the host-shell ``finishup observe status`` and
 # provider status commands are different things and stay allowed.
 _STATUS_INSTRUCTION = re.compile(r"\b(?:run|call|read|re-read|check)\s+`?status\b", re.IGNORECASE)
 

@@ -3,19 +3,19 @@
 **Status:** Working decision revised 2026-08-30 for issue #404 vendor-runtime egress. Ratification requires an independent
 privacy/security review plus executable no-bypass, never-send, approval-resume, and zero-egress
 evidence.
-**Implemented by:** `src/yoetz/domain/privacy.py`,
-`src/yoetz/application/egress.py`,
-`src/yoetz/application/privacy_policy.py`,
-`src/yoetz/ports/privacy.py`, the privacy adapters/configuration/audit modules, ADR-006,
+**Implemented by:** `src/finishup/domain/privacy.py`,
+`src/finishup/application/egress.py`,
+`src/finishup/application/privacy_policy.py`,
+`src/finishup/ports/privacy.py`, the privacy adapters/configuration/audit modules, ADR-006,
 ADR-011 structural subject-state capture, `PRIVACY.md`, the technical privacy protocol, policy
 schemas, fixtures, and tests.
 
 ## Context and trust boundary
 
-Yoetz is the policy authority. CLI, MCP, future UI, plugins, provider adapters, integrations,
+FinishUP is the policy authority. CLI, MCP, future UI, plugins, provider adapters, integrations,
 agents, and LLMs are clients or constrained effectors; none may decide what data is disclosable.
 Network egress and local disclosure are distinct: an MCP response may enter an agent/LLM context,
-and a local model still receives user content through Yoetz's AF_UNIX-only path. A pre-existing
+and a local model still receives user content through FinishUP's AF_UNIX-only path. A pre-existing
 model runtime is a separate trusted disclosure sink unless its exact support cell proves enforced
 no-network isolation; AF_UNIX delivery alone does not prove what that process does later (F-013).
 
@@ -59,11 +59,11 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    sensitive task/user content.
 
    **Revised 2026-08-03 — `update_checks` transport and product default.** v0.1 ships a bounded
-   structural transport for `update_checks` only: a fixed allowlisted HTTPS GET of the `yoetz`
-   distribution identity on PyPI (`https://pypi.org/pypi/yoetz/json`), with `trust_env=False`,
+   structural transport for `update_checks` only: a fixed allowlisted HTTPS GET of the `finishup`
+   distribution identity on PyPI (`https://pypi.org/pypi/finishup/json`), with `trust_env=False`,
    size/timeout caps, and response use limited to the latest version string. Interactive TUI
    surfaces (first-run finish, resume tip, `/doctor`) and interactive setup/`/connect` may surface
-   an advisory plus the exact upgrade command `uv tool upgrade yoetz`; work receipts never carry
+   an advisory plus the exact upgrade command `uv tool upgrade finishup`; work receipts never carry
    update metadata. The product durable seed and named recipes default `update_checks` **on** with
    `network_egress_permitted=true` solely because that channel is on, while `llm_inference` and the
    other three non-LLM channels stay off and profile remains `local_only`. Config.toml generation-1
@@ -83,7 +83,7 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    approval preview and exact policy diff, but it never exposes cryptographic material or
    service-vault credentials.
    A local-model runtime receives plaintext and belongs to the trusted local computing base unless
-   its exact artifact/profile supplies independently enforceable sandbox evidence; Yoetz's adapter
+   its exact artifact/profile supplies independently enforceable sandbox evidence; FinishUP's adapter
    makes no claim about another process's ambient network authority.
    `HumanAuthorityCapability.source=unavailable` fences external-provider activation, credential
    mutation, and durable policy widening; it is not a second use-time authorization gate for an
@@ -146,7 +146,7 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    left as a follow-up.
 
    **Revised 2026-07-24 — default agent-context disclosure of verification output.** Under the
-   default LOCAL_ONLY bootstrap policy, `agent_context` may include Yoetz-authored verification
+   default LOCAL_ONLY bootstrap policy, `agent_context` may include FinishUP-authored verification
    projection content for the requesting agent's own task: `finding_summary` and
    `obligation_text` (receipt document sections, human_text, check findings/obligations). These
    remain `ordinary_user_content` at the data-class layer; the default policy allowlist is widened
@@ -193,7 +193,7 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    *Amended by ADR-016 decision 5 (issues #164/#533) and the "Human required?" table below:* the
    user's explicit current-chat instruction, relayed by a capable agent through the consent lane for
    one exact prepared, previewed, expiring consent target, is a second reauthenticated loosening
-   path; that relay is an agent attestation Yoetz cannot independently authenticate, and it never
+   path; that relay is an agent attestation FinishUP cannot independently authenticate, and it never
    overrides the never-send set.
    Answering a `confirm_every_request` disclosure is deliberately *not* one of these loosening
    operations and does not require passphrase mode or strong reauthentication: it decides one exact
@@ -206,7 +206,7 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    consume-first admits one attempt that may send, must be best-effort closed/nonselectable, and
    records its actual terminal or unknown receipt. Tightening never claims to retract bytes already
    admitted.
-   **Desired-state TOML (ADR-014):** `yoetz privacy export-desired` / `apply-desired` may declare
+   **Desired-state TOML (ADR-014):** `finishup privacy export-desired` / `apply-desired` may declare
    nonsecret policy intent in a sidecar TOML document. Apply classifies against the effective
    store: equivalent is a no-op; tighten routes to the existing tighten gate; widen never commits
    from the file alone and requires the ordinary propose→decide path. The generation-1
@@ -280,12 +280,12 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    likewise preserves terminal evidence but restores no live disclosure authority.
    A dangling/tampered catalog root quarantines the audit row and fences content disclosure rather
    than being swept or repaired with an invented ledger row.
-10. **Zero-egress definition:** true Yoetz zero-network egress is the composite policy state
+10. **Zero-egress definition:** true FinishUP zero-network egress is the composite policy state
     `profile=local_only`, `network_egress_permitted=false`, all five channels disabled, and no
     network-capable runtime path. The product default is **not** that state: it is `local_only`
     with structural `update_checks` permitted (opt-out) and no task-content egress. Zero-network
     for package identity checks requires the operator to disable `update_checks` (and therefore
-    the ceiling when no other channel is on). In the true zero-network state the Yoetz-owned tested
+    the ceiling when no other channel is on). In the true zero-network state the FinishUP-owned tested
     process set permits only the
     exact service/confidential AF_UNIX endpoints; a separately approved exact local-model AF_UNIX
     endpoint; and exact release-cell platform IPC needed for OS credential storage, user presence,
@@ -293,19 +293,19 @@ case → single-use authorization → bounded gateway → bound sink/provider �
     The last category includes measured Linux AF_UNIX routes to allowlisted session-bus Secret
     Service peers/methods and, separately, system-bus `org.freedesktop.login1` peers/methods, or
     measured macOS native security/presence/session notifications; it never permits
-    arbitrary AF_UNIX, arbitrary bus names/methods, or a local proxy. Yoetz denies AF_INET, AF_INET6,
+    arbitrary AF_UNIX, arbitrary bus names/methods, or a local proxy. FinishUP denies AF_INET, AF_INET6,
     DNS, proxies, redirects, external provider
     construction, telemetry, diagnostics upload, update checks, and capability calls. The
     `local_only` profile alone is not a zero-network claim because a separately authorized
     structural non-LLM row (today: `update_checks`) may raise the ceiling without enabling LLM
     disclosure; the remaining three non-LLM rows stay unsupported/off.
-    Evidence names the exact platform/release profile, Yoetz service/client/confidential-helper
+    Evidence names the exact platform/release profile, FinishUP service/client/confidential-helper
     processes, lifecycle interval from startup through `locked|ready` and tested operations, and
-    allowlisted local IPC peers. It proves those Yoetz paths, not the ambient authority of the OS
+    allowlisted local IPC peers. It proves those FinishUP paths, not the ambient authority of the OS
     credential agent or a separately running model process; public wording is conditional on the
     resolved F-013 trust boundary.
 11. **Setup is an application use case:** a wizard or UI reads effective policy and submits a
-    proposed policy transition through the Yoetz use case. It cannot write configuration or policy
+    proposed policy transition through the FinishUP use case. It cannot write configuration or policy
     storage directly. Its first question, `network_egress`, controls the global
     `network_egress_permitted` ceiling; answering yes still leaves all five channels denied until
     they are chosen independently. Setup explains concrete allowed/blocked examples, all five
@@ -391,13 +391,13 @@ case → single-use authorization → bounded gateway → bound sink/provider �
 
     This boundary protects stolen object files, SQLite files, backups, and copied local state when
     vault keys are unavailable, and tampering must fail authenticated decryption. It does **not**
-    claim protection from root, kernel compromise, or a compromised same-user Yoetz/Codex process
+    claim protection from root, kernel compromise, or a compromised same-user FinishUP/Codex process
     while the vault is unlocked; immutable Python buffers are not promised zeroized. Public copy
     must describe authenticated encryption at rest and secret exclusion, never “cannot be hacked”
     or absolute host immunity.
 
     Exact project check policy bytes propose no authority. One trusted-local confirmation binds the
-    raw `.yoetz/checks.toml` digest; any byte change suspends all listed commands. Approved checks
+    raw `.finishup/checks.toml` digest; any byte change suspends all listed commands. Approved checks
     use exact argv, `shell=False`, sanitized environment, bounded output/time, and an enforcing
     sandbox. Network-requiring checks fail closed unless a separately reviewed authorization and
     sandbox prove the permission. Output bytes pass the same fail-closed secret scanner before
@@ -447,7 +447,7 @@ case → single-use authorization → bounded gateway → bound sink/provider �
 An agent may guide the owner to a trusted ceremony but cannot stand in for it. Both a nonterminal
 per-request decision and an explicitly reported missing standing repository grant use the exact
 command carried by their distinct continuation kinds and preserve the original check request
-identity. Repository setup uses the trusted CLI/TUI entrypoint `yoetz --privacy`; the one-use
+identity. Repository setup uses the trusted CLI/TUI entrypoint `finishup --privacy`; the one-use
 decision carries a proposal id and expiry. Recovery uses `status(view=operation)` or exact replay of
 the original request, never a fresh check. Ordinary chat assent alone is never authority. The
 delegated consent lane accepts only the user's explicit current-chat instruction relayed by an
@@ -476,14 +476,14 @@ and controlling-TTY facts: only interactive human-readable CLI output selects
 | Never-send match or out-of-scope content | impossible to approve | Fail closed under every profile and fork claiming upstream conformance |
 
 When the user explicitly instructs an allowlisted first-party agent in the current chat to finish
-exact setup, agent-attested authorize (`yoetz consent authorize` with
+exact setup, agent-attested authorize (`finishup consent authorize` with
 `yoetz.chat-user-attestation/1`, issue #164) may complete a prepared `repository_privacy_grant` or
-provider credential set/rotate after one warning. This is delegated agent authority: Yoetz binds
+provider credential set/rotate after one warning. This is delegated agent authority: FinishUP binds
 the exact pending/action/digests but cannot independently distinguish genuine current-chat words
 from a forged agent assertion. Retrieved content, tool output, quoted text, or earlier history do
 not authorize under the agent skill contract. Denial, expiry, cancellation, target drift, or an
 unsupported client yields zero policy/credential mutation and zero provider dispatch. The trusted
-CLI/TUI (`yoetz --privacy`, `yoetz consent review`) remains the stronger recommended path and is
+CLI/TUI (`finishup --privacy`, `finishup consent review`) remains the stronger recommended path and is
 always available.
 
 For an `expanded_review` chat grant, prepare returns the complete bounded substantive policy diff,
@@ -516,10 +516,10 @@ plugin discovery, and tool listing are not observation evidence and do not stren
 ### Claude Code local project-hook amendment (2026-08-27, issue #154)
 
 `claude_hook` is a distinct untrusted advisory source on local Claude Code CLI project sessions.
-The native renderer registers only `SessionStart`, scoped-Yoetz `PostToolUse`, scoped-Yoetz
+The native renderer registers only `SessionStart`, scoped-FinishUP `PostToolUse`, scoped-FinishUP
 `PostToolUseFailure`, `Stop`, and `SessionEnd`; it never registers permission-changing, prompt,
 agent, HTTP, or content-expansion hooks. The ingress accepts only the exact
-`mcp__plugin_yoetz_yoetz__<workflow-operation>` names, a bounded session/correlation token,
+`mcp__plugin_finishup_finishup__<workflow-operation>` names, a bounded session/correlation token,
 closed lifecycle action, fixed capability-profile identity, and host-derived success bit.
 
 Transcript/cwd/file paths, prompts, assistant messages, tool input/output, MCP results, raw errors,
@@ -528,7 +528,7 @@ the common observation boundary. No Claude content capture or transcript reconci
 Hook failure and the host's three-second timeout are fail-soft; declaration, delivery, consent, and
 accepted evidence remain separate. Local-control schema `2.2.0` appends only the `claude_hook`
 envelope/coverage row and retains `2.1.0` byte-for-byte for Cursor peers. Claude trust or plugin
-enablement grants no Yoetz observation/egress/provider authority.
+enablement grants no FinishUP observation/egress/provider authority.
 
 The privacy policy is more than an AI-powered review provider toggle and cannot be represented by
 one `network=true` capability. Releases must prove the global ceiling; policy-intersection behavior;
@@ -536,7 +536,7 @@ valid `local_only` policies with one bounded but v0.1-unavailable non-LLM channe
 independence; agent-context and local-model fences; exact approval binding/restart behavior; no
 secret-bearing configuration/environment/arguments; reviewed bundled-adapter composition (without
 claiming OS sandbox isolation); keyed terminal-receipt commitments; the initial-reservation
-no-receipt exception; Yoetz-process local-only AF_UNIX behavior without overclaiming a separate
+no-receipt exception; FinishUP-process local-only AF_UNIX behavior without overclaiming a separate
 model runtime; and no plaintext canaries across databases, objects, logs, traces, prompts, receipts,
 errors, or transports. Public copy must reserve “zero network egress” for the composite
 ceiling-plus-channel state, not infer it from `local_only` alone. The runtime plaintext release gate
@@ -576,7 +576,7 @@ strict route and an unapproved repository both stop before runtime factory const
 launch.
 
 Codex composes its upstream OpenAI request internally, so the gateway commitment covers the exact
-final disclosed Yoetz case bytes at the boundary Yoetz controls. The terminal AI-powered review
+final disclosed FinishUP case bytes at the boundary FinishUP controls. The terminal AI-powered review
 provenance adds the exact runtime/launcher/config/instruction/schema/selection/output commitments
 and states `upstream_body_observability=unavailable`. Neither the case digest nor its HMAC may be
 labeled an upstream request-body digest. Receipt counts are zero when structural readiness fails
@@ -605,7 +605,7 @@ Destination group right after the primary. Removing it is a tightening. Effectiv
 intersection keeps a fallback only when both scopes name the identical one; disagreement tightens
 to the primary alone rather than disabling a channel both scopes allow. Policy JSON emits
 `fallback_provider_binding` only when present, so single-endpoint policy digests are unchanged.
-`yoetz privacy setup` reads both bound endpoints and shows the fallback as "Fallback destination
+`finishup privacy setup` reads both bound endpoints and shows the fallback as "Fallback destination
 (after the primary cannot serve)". Which endpoint an attempt reaches is decided by ADR-006's closed
 engagement rule; this amendment only makes both destinations exact, approved, receipted, and
 independently revocable.
@@ -665,8 +665,8 @@ though both are `task_description`, so an approval given for the plan (`goal`) n
   `sections` widening, so it needs the trusted approval ceremony, whose screen says in fixed words
   that the agent's transcription of the user's request will be sent and that the host-captured
   prompt is not used. A 1.0.0/1.1.0 document that names the section is corrupt.
-- `yoetz --privacy` and the policy draft print whether the current and proposed policies send
-  the task statement; `yoetz privacy show` on a terminal adds the same sentence after the policy.
+- `finishup --privacy` and the policy draft print whether the current and proposed policies send
+  the task statement; `finishup privacy show` on a terminal adds the same sentence after the policy.
 - The statement item passes the same classifier and never-send scanner as every other item and is
   bounded like one excerpt (16 KiB of canonical JSON, head and tail kept, elision marked).
 - The host-captured user prompt (`host_captured_user_prompt`) is a reserved source. No path
@@ -705,15 +705,15 @@ into the unreleased privacy-policy wire 1.2.0 (the #908 version), so one re-appr
   data class the destination withholds never cost an eligible excerpt its place.
   There are at most four rebuilds, the result is deterministic so a recovered review keeps its
   case digest, and egress still decides every dispatch.
-- `yoetz privacy show` on a terminal and `yoetz --privacy` show the current limits beside those the
+- `finishup privacy show` on a terminal and `finishup --privacy` show the current limits beside those the
   current recipe offers. The policy draft prints the limits it would approve. The terminal
   interface says a newer version of the owner's recipe exists instead of "already recommended".
   `privacy show --json` does not carry the proposed limits: that would need a control-result
   schema change.
 - The ceremony's count note says the byte limits are unchanged only when no byte limit widens on
   the same screen. Otherwise it points at the limits shown there.
-- Way back: approving the earlier preset again (with `yoetz privacy propose`, or by choosing Assisted
-  in `yoetz --privacy`) is a narrowing that needs no widening approval. An Expanded policy returned
+- Way back: approving the earlier preset again (with `finishup privacy propose`, or by choosing Assisted
+  in `finishup --privacy`) is a narrowing that needs no widening approval. An Expanded policy returned
   to the 1.1.0 preset encodes as the exact 1.1.0 bytes it had before.
 - Token budgets and raised channel ceilings are not part of this amendment (issue #924).
 
@@ -777,7 +777,7 @@ heuristic spans before storage.
 
 ## Partial withholding and encoding-stable redaction amendment (2026-10-06, issue #976)
 
-TB4 run tb4f1 lost every implementation-stage review in two tasks to a Yoetz false positive: a
+TB4 run tb4f1 lost every implementation-stage review in two tasks to a FinishUP false positive: a
 heuristic span redacted to `[REDACTED]` re-matched the token-assignment detector once the item was
 JSON-encoded into the prepared case (`\n` became part of the "value"), and the prepared-bytes rescan
 blocked the whole packet with `never_send_detected`. Decisions:
@@ -849,7 +849,7 @@ reviewer only, and status shows it before any check. Decisions:
   task checks first).
 - Turning it off is a widening (`global` / `credential_heuristic` in the policy diff) that applies
   only through the separately reauthenticated trusted-terminal decision; no MCP tool, hook or
-  agent path can apply it. `yoetz privacy credential-heuristic disable` proposes it on the current
+  agent path can apply it. `finishup privacy credential-heuristic disable` proposes it on the current
   repository's grant; in a repository without a grant it walks the ordinary grant-creation
   ceremony with the filter off and records the setting in the grant the owner approves. It never
   creates a grant silently. `enable` is the symmetric reverse: a tightening of the current
@@ -859,8 +859,8 @@ reviewer only, and status shows it before any check. Decisions:
   same gates.
 - Visibility: the status result (status-result 1.4.0, additive) carries `credential_heuristic`
   with the `repository` state and the `machine_default` (`enforced`, `disabled` or `unknown`),
-  shown by MCP `status` and `yoetz status` before any check runs; `yoetz privacy show`,
-  `yoetz provider status` and the terminal interface name it when it is off. Every external
+  shown by MCP `status` and `finishup status` before any check runs; `finishup privacy show`,
+  `finishup provider status` and the terminal interface name it when it is off. Every external
   disclosure receipt prepared under it records `secret_scan.credential_heuristic: disabled`
   (egress-receipt 1.1.0; omitted when enforced). Every check whose external AI-powered review ran
   under it carries the standing-limitation gap `semantic_review_credential_heuristic_disabled`. It
@@ -902,7 +902,7 @@ here.
   rows rank with the current
   diff instead of competing with general tool output for excerpt room, and the content resolver
   reads their captures first.
-- No new read path: Yoetz never opens the outside file itself. Only content a hook already captured
+- No new read path: FinishUP never opens the outside file itself. Only content a hook already captured
   under the session's content-capture consent, or text the agent published, can be carried. A
   declared input, a role-less item, a relative path and a task with no known workspace root select
   nothing.

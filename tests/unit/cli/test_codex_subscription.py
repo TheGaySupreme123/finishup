@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.adapters.providers.codex_app_server import (
+from finishup.adapters.providers.codex_app_server import (
     CODEX_APP_SERVER_SCHEMA_SHA256,
     CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
     CODEX_EVALUATOR_CAPABILITY_PROFILE,
@@ -22,13 +22,13 @@ from yoetz.adapters.providers.codex_app_server import (
     CodexEvaluatorCell,
     CodexRuntimeStatus,
 )
-from yoetz.adapters.providers.codex_evaluator_runtime import (
+from finishup.adapters.providers.codex_evaluator_runtime import (
     CodexBindingDiagnosis,
     managed_runtime_path,
 )
-from yoetz.cli import codex_subscription as module
-from yoetz.config.models import ConfigError, ExternalRuntimeProfileConfig, YoetzConfig
-from yoetz.config.write import codex_subscription_runtime, render_config_toml
+from finishup.cli import codex_subscription as module
+from finishup.config.models import ConfigError, ExternalRuntimeProfileConfig, FinishUpConfig
+from finishup.config.write import codex_subscription_runtime, render_config_toml
 
 
 @pytest.fixture(autouse=True)
@@ -38,22 +38,22 @@ def _ambient_config_environment(  # pyright: ignore[reportUnusedFunction]
     """Resolve the default evaluator home from an empty configuration, not the ambient one.
 
     ``default_codex_home`` reads the process environment through the strict loader, which
-    refuses every unknown ``YOETZ_``-prefixed variable. A developer machine can carry
+    refuses every unknown ``FINISHUP_``-prefixed variable. A developer machine can carry
     configuration overrides and its own ``config.toml``; neither is under test here, so every
-    case starts from no ``YOETZ_`` variables and a config path that does not exist.
+    case starts from no ``FINISHUP_`` variables and a config path that does not exist.
     """
 
     for name in tuple(os.environ):
-        if name.startswith("YOETZ_"):
+        if name.startswith("FINISHUP_"):
             monkeypatch.delenv(name)
     absent = tmp_path_factory.mktemp("config") / "absent.toml"
-    monkeypatch.setenv("YOETZ_CONFIG", str(absent))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(absent))
     # The retained evaluator runtime lives in the data bundle. No case may reach the invoking
     # user's real data directory, discover a real Codex on PATH, or download with a real npm
     # (#855); a case that exercises any of them opts in explicitly.
     bundle = tmp_path_factory.mktemp("bundle")
 
-    def runtime_bundle(_config: YoetzConfig | None = None) -> Path:
+    def runtime_bundle(_config: FinishUpConfig | None = None) -> Path:
         return bundle
 
     monkeypatch.setattr(module, "runtime_bundle", runtime_bundle)
@@ -64,11 +64,11 @@ def _ambient_config_environment(  # pyright: ignore[reportUnusedFunction]
         return None
 
     monkeypatch.setattr(
-        "yoetz.adapters.providers.codex_evaluator_runtime.verify_private_local_bundle",
+        "finishup.adapters.providers.codex_evaluator_runtime.verify_private_local_bundle",
         allow_private,
     )
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: ()
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: ()
     )
 
     def no_download(**_kwargs: object) -> Path:
@@ -127,12 +127,12 @@ def _stub_setup_persistence(
     def build_profile(_binding: ExternalRuntimeProfileConfig) -> object:
         return object()
 
-    def write_binding(_config: YoetzConfig, **_kwargs: object) -> Path:
+    def write_binding(_config: FinishUpConfig, **_kwargs: object) -> Path:
         written.append(binding)
         return tmp_path / "config.toml"
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
-        return YoetzConfig(), None
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
+        return FinishUpConfig(), None
 
     def preflight(*_args: object, **_kwargs: object) -> Path:
         return tmp_path / "config.toml"
@@ -614,7 +614,7 @@ def test_environment_selected_config_path_is_used_for_reads_and_writes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     selected = tmp_path / "isolated" / "config.toml"
-    monkeypatch.setenv("YOETZ_CONFIG", str(selected))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(selected))
 
     assert module._target_config_path(None) == selected  # pyright: ignore[reportPrivateUsage]
 
@@ -634,12 +634,12 @@ async def test_setup_persists_binding_only_after_codex_confirms_chatgpt_readines
     def build_profile(_binding: ExternalRuntimeProfileConfig) -> object:
         return object()
 
-    def write_binding(_config: YoetzConfig, **_kwargs: object) -> Path:
+    def write_binding(_config: FinishUpConfig, **_kwargs: object) -> Path:
         written.append(binding)
         return tmp_path / "config.toml"
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
-        return YoetzConfig(), None
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
+        return FinishUpConfig(), None
 
     def preflight(*_args: object, **_kwargs: object) -> Path:
         return tmp_path / "config.toml"
@@ -692,8 +692,8 @@ async def test_setup_failure_never_writes_a_binding(
     def forbidden_write(*_args: object, **_kwargs: object) -> Path:
         pytest.fail("failed readiness must not persist a binding")
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
-        return YoetzConfig(), None
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
+        return FinishUpConfig(), None
 
     def preflight(*_args: object, **_kwargs: object) -> Path:
         return tmp_path / "config.toml"
@@ -775,17 +775,17 @@ async def test_disconnect_confirms_logout_before_removing_only_the_binding(
 ) -> None:
     _assume_structurally_ready(monkeypatch)
     binding = _binding(tmp_path / "codex", tmp_path / "dedicated-home")
-    config = YoetzConfig(profile="codex-subscription", external_runtime=binding)
+    config = FinishUpConfig(profile="codex-subscription", external_runtime=binding)
     removed: list[object] = []
 
     def build_profile(_binding: ExternalRuntimeProfileConfig) -> object:
         return object()
 
-    def clear_binding(_config: YoetzConfig, **_kwargs: object) -> Path:
+    def clear_binding(_config: FinishUpConfig, **_kwargs: object) -> Path:
         removed.append(binding)
         return tmp_path / "config.toml"
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
         return config, b"before"
 
     def preflight(*_args: object, **_kwargs: object) -> Path:
@@ -833,12 +833,12 @@ def test_rollback_preserves_the_dedicated_home_and_installation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     binding = _binding(tmp_path / "codex", tmp_path / "dedicated-home")
-    config = YoetzConfig(profile="codex-subscription", external_runtime=binding)
+    config = FinishUpConfig(profile="codex-subscription", external_runtime=binding)
 
-    def clear_binding(_config: YoetzConfig, **_kwargs: object) -> Path:
+    def clear_binding(_config: FinishUpConfig, **_kwargs: object) -> Path:
         return tmp_path / "config.toml"
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
         return config, b"before"
 
     monkeypatch.setattr(module, "_config_snapshot", snapshot)
@@ -878,7 +878,7 @@ def test_missing_executable_is_a_closed_token(tmp_path: Path) -> None:
 
 
 def test_cli_setup_maps_missing_executable_without_echoing_the_path(tmp_path: Path) -> None:
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     missing = tmp_path / "no-such-codex"
     result = CliRunner().invoke(
@@ -903,7 +903,7 @@ def test_cli_setup_disconnect_and_rollback_recompose_the_service(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _mock_macos_arm64_host(monkeypatch)
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     restarts: list[str] = []
 
@@ -932,7 +932,7 @@ def test_cli_setup_disconnect_and_rollback_recompose_the_service(
     monkeypatch.setattr(module, "codex_subscription_disconnect", disconnect)
     monkeypatch.setattr(module, "codex_subscription_rollback", rollback)
     monkeypatch.setattr(
-        "yoetz.cli.setup.restart_service_for_semantic_composition",
+        "finishup.cli.setup.restart_service_for_semantic_composition",
         restart,
     )
 
@@ -965,7 +965,7 @@ def test_cli_setup_disconnect_and_rollback_recompose_the_service(
 def test_menu_disconnect_and_rollback_recompose_the_service(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.cli import menu
+    from finishup.cli import menu
 
     restarts: list[str] = []
 
@@ -992,7 +992,7 @@ def test_menu_disconnect_and_rollback_recompose_the_service(
     monkeypatch.setattr("typer.confirm", always_confirm)
     monkeypatch.setattr(module, "codex_subscription_disconnect", disconnect)
     monkeypatch.setattr(
-        "yoetz.cli.setup.restart_service_for_semantic_composition",
+        "finishup.cli.setup.restart_service_for_semantic_composition",
         restart,
     )
     monkeypatch.setattr(menu, "_show", hide)
@@ -1050,11 +1050,13 @@ def test_guided_setup_offers_account_switch(
             "capability_cell_sha256": "sha256:" + "b" * 64,
             "capability_evidence_expires_at": "2026-11-30T00:00:00Z",
             "codex_home": "/home",
-            "disconnect_command": "yoetz provider codex-subscription disconnect",
-            "rollback_command": "yoetz provider codex-subscription rollback",
+            "disconnect_command": "finishup provider codex-subscription disconnect",
+            "rollback_command": "finishup provider codex-subscription rollback",
         }
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", list)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", list
+    )
     monkeypatch.setattr("typer.prompt", prompt)
     monkeypatch.setattr("typer.confirm", confirm)
     monkeypatch.setattr(module, "codex_subscription_preview", preview)
@@ -1109,11 +1111,13 @@ def test_guided_setup_preserves_existing_model_when_switching_accounts(
             "capability_cell_sha256": "sha256:" + "b" * 64,
             "capability_evidence_expires_at": "2026-11-30T00:00:00Z",
             "codex_home": "/home",
-            "disconnect_command": "yoetz provider codex-subscription disconnect",
-            "rollback_command": "yoetz provider codex-subscription rollback",
+            "disconnect_command": "finishup provider codex-subscription disconnect",
+            "rollback_command": "finishup provider codex-subscription rollback",
         }
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", list)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", list
+    )
     monkeypatch.setattr(module, "default_codex_subscription_model", lambda: "gpt-5.6-sol")
     monkeypatch.setattr("typer.prompt", prompt)
     monkeypatch.setattr("typer.confirm", confirm)
@@ -1168,11 +1172,13 @@ def test_guided_setup_discloses_login_reuse_before_the_confirmation(
             "capability_cell_sha256": "sha256:" + "b" * 64,
             "capability_evidence_expires_at": "2026-11-30T00:00:00Z",
             "codex_home": "/home",
-            "disconnect_command": "yoetz provider codex-subscription disconnect",
-            "rollback_command": "yoetz provider codex-subscription rollback",
+            "disconnect_command": "finishup provider codex-subscription disconnect",
+            "rollback_command": "finishup provider codex-subscription rollback",
         }
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", list)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", list
+    )
     monkeypatch.setattr("typer.prompt", prompt)
     monkeypatch.setattr("typer.confirm", confirm)
     monkeypatch.setattr(module, "codex_subscription_preview", preview)
@@ -1191,7 +1197,7 @@ def test_cli_setup_discloses_reuse_and_names_its_override_before_the_confirmatio
     """The `setup` notice must state reuse and the flag that forces a fresh sign-in (#534)."""
 
     _mock_macos_arm64_host(monkeypatch)
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     def resolve(selected: Path) -> tuple[Path, str, str]:
         return (
@@ -1212,7 +1218,7 @@ def test_cli_setup_discloses_reuse_and_names_its_override_before_the_confirmatio
     monkeypatch.setattr(module, "resolve_supported_codex_executable", resolve)
     monkeypatch.setattr(module, "default_codex_subscription_model", lambda: "gpt-5.6-sol")
     monkeypatch.setattr(module, "codex_subscription_setup", setup)
-    monkeypatch.setattr("yoetz.cli.setup.restart_service_for_semantic_composition", restart)
+    monkeypatch.setattr("finishup.cli.setup.restart_service_for_semantic_composition", restart)
 
     runner = CliRunner()
     arguments = [
@@ -1405,7 +1411,7 @@ class _SignedInAppServer:
         if method == "initialize":
             return {
                 "codexHome": str(getattr(self.profile, "codex_home")),
-                "userAgent": "yoetz_semantic_evaluator/0.157.1",
+                "userAgent": "finishup_semantic_evaluator/0.157.1",
             }
         if method == "account/read":
             assert params == {"refreshToken": False}
@@ -1433,7 +1439,7 @@ async def test_setup_against_fake_app_server_reads_account_and_never_starts_logi
 ) -> None:
     """End to end through the real adapter: ``account/read`` ready means no ``account/login/start``."""
 
-    from yoetz.adapters.providers import codex_app_server
+    from finishup.adapters.providers import codex_app_server
 
     executable = tmp_path / "codex"
     home = tmp_path / "dedicated-home"
@@ -1481,8 +1487,8 @@ async def test_setup_against_fake_app_server_reads_account_and_never_starts_logi
 def test_setup_rejects_a_reused_home_whose_config_differs_before_any_process(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from yoetz.adapters.providers import codex_app_server
-    from yoetz.adapters.providers.codex_app_server import prepare_codex_home
+    from finishup.adapters.providers import codex_app_server
+    from finishup.adapters.providers.codex_app_server import prepare_codex_home
 
     def allow_private_bundle(_path: Path) -> None:
         return None
@@ -1503,9 +1509,9 @@ def _data_dir_config_text(data_dir: Path) -> str:
 def _bound_config_file(tmp_path: Path, binding: ExternalRuntimeProfileConfig) -> Path:
     """Write the exact rendered config selecting the binding, with an explicit data_dir."""
 
-    from yoetz.config.models import StorageConfig
+    from finishup.config.models import StorageConfig
 
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="codex-subscription",
         storage=StorageConfig(data_dir=tmp_path / "state"),
         external_runtime=binding,
@@ -1697,11 +1703,11 @@ def test_cli_status_reports_a_bounded_config_token_instead_of_internal_error(
 ) -> None:
     """Exit 70 ``internal_error`` for a local configuration problem was the #520 defect."""
 
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     target = tmp_path / "config.toml"
     target.write_text("[storage]\ndata_dir = 5\n", encoding="utf-8")
-    monkeypatch.setenv("YOETZ_CONFIG", str(target))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(target))
 
     result = CliRunner().invoke(app, ["provider", "codex-subscription", "status", "--json"])
 
@@ -1714,11 +1720,11 @@ def test_cli_status_reports_a_bounded_config_token_instead_of_internal_error(
 def test_cli_status_accepts_a_valid_storage_data_dir_configuration(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     target = tmp_path / "config.toml"
     target.write_text(_data_dir_config_text(tmp_path / "state"), encoding="utf-8")
-    monkeypatch.setenv("YOETZ_CONFIG", str(target))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(target))
 
     result = CliRunner().invoke(app, ["provider", "codex-subscription", "status"])
 
@@ -1728,7 +1734,7 @@ def test_cli_status_accepts_a_valid_storage_data_dir_configuration(
 
 
 def test_cli_setup_recommends_luna_and_keeps_independent_high_effort() -> None:
-    from yoetz.cli.app import provider_codex_subscription_setup
+    from finishup.cli.app import provider_codex_subscription_setup
 
     params = inspect.signature(provider_codex_subscription_setup).parameters
     assert params["model"].default is None
@@ -1772,12 +1778,12 @@ def _budget_setup(
             **kwargs,
         }
 
-    def snapshot(_path: Path) -> tuple[YoetzConfig, bytes | None]:
+    def snapshot(_path: Path) -> tuple[FinishUpConfig, bytes | None]:
         if existing is None:
-            return YoetzConfig(), None
-        return YoetzConfig(profile="codex-subscription", external_runtime=existing), None
+            return FinishUpConfig(), None
+        return FinishUpConfig(profile="codex-subscription", external_runtime=existing), None
 
-    def write_binding(config: YoetzConfig, **_kwargs: object) -> Path:
+    def write_binding(config: FinishUpConfig, **_kwargs: object) -> Path:
         assert config.external_runtime is not None
         written.append(config.external_runtime)
         return tmp_path / "config.toml"
@@ -1875,8 +1881,8 @@ def test_routine_default_follows_the_existing_binding(
     legacy = _binding(tmp_path / "codex", tmp_path / "home")
     selected: list[ExternalRuntimeProfileConfig] = [legacy]
 
-    def base_config(_path: Path | None = None) -> YoetzConfig:
-        return YoetzConfig(profile="codex-subscription", external_runtime=selected[0])
+    def base_config(_path: Path | None = None) -> FinishUpConfig:
+        return FinishUpConfig(profile="codex-subscription", external_runtime=selected[0])
 
     monkeypatch.setattr(module, "_base_config", base_config)
     assert module.default_codex_subscription_routine_effort() is None
@@ -1890,7 +1896,7 @@ def test_preview_rejects_an_unsupported_routine_effort(
     import platform
     import sys
 
-    from yoetz.adapters.providers.codex_app_server import codex_evaluator_cell_for_platform
+    from finishup.adapters.providers.codex_app_server import codex_evaluator_cell_for_platform
 
     try:
         cell = codex_evaluator_cell_for_platform(sys.platform, platform.machine())

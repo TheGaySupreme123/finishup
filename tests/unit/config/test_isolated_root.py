@@ -1,6 +1,6 @@
 """Exact-target isolation-root contract for every identity root (issue #518).
 
-``YOETZ_ISOLATED_ROOT`` must rebase config, storage bundle, state (service lock/generation),
+``FINISHUP_ISOLATED_ROOT`` must rebase config, storage bundle, state (service lock/generation),
 runtime endpoints, cache, and logs onto one validated private root — and must fail closed rather
 than fall back to the ambient platform directories when the root is set but unusable. These are
 the locks that keep a dogfood/test runtime from ever reaching the live singleton.
@@ -14,9 +14,9 @@ from pathlib import Path
 import pytest
 from platformdirs import PlatformDirs
 
-from yoetz.adapters.control import unix_socket
-from yoetz.config import paths as paths_module
-from yoetz.config.paths import (
+from finishup.adapters.control import unix_socket
+from finishup.config import paths as paths_module
+from finishup.config.paths import (
     ISOLATED_ROOT_ENV,
     PathSafetyError,
     _PathProbe,  # pyright: ignore[reportPrivateUsage]
@@ -49,7 +49,7 @@ def _probe(
         home=tmp_path,
         shared_temp=private_temp,
         fixed_shared_temps=fixed_shared_temps,
-        platform_dirs=PlatformDirs(appname="yoetz", appauthor=False, roaming=False),
+        platform_dirs=PlatformDirs(appname="finishup", appauthor=False, roaming=False),
         mount_table=lambda: "rootfs / ext4 rw 0 0",
         macos_fstype=lambda _path: None,
         diagnostic=lambda _reason: None,

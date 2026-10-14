@@ -1,4 +1,4 @@
-"""Issue #1012: `yoetz check --await-observations` and the rendered wait outcome (CLI + MCP)."""
+"""Issue #1012: `finishup check --await-observations` and the rendered wait outcome (CLI + MCP)."""
 
 from __future__ import annotations
 
@@ -12,10 +12,10 @@ from tests.unit.protocol.test_models_and_schemas import (
 )
 from typer.testing import CliRunner
 
-import yoetz.cli.app as module
-from yoetz.cli.render import render_human_check
-from yoetz.mcp.summaries import summary_for_check
-from yoetz.protocol.models import CheckRequest, CheckResult, CheckSuccessModel
+import finishup.cli.app as module
+from finishup.cli.render import render_human_check
+from finishup.mcp.summaries import summary_for_check
+from finishup.protocol.models import CheckRequest, CheckResult, CheckSuccessModel
 
 _REQUEST: dict[str, Any] = {
     "protocol_version": "0.1",
@@ -130,7 +130,7 @@ def test_absent_field_renders_nothing_new() -> None:
 
 
 def test_mcp_check_tool_advertises_the_optional_flag() -> None:
-    from yoetz.mcp.descriptors import (  # pyright: ignore[reportPrivateUsage]
+    from finishup.mcp.descriptors import (  # pyright: ignore[reportPrivateUsage]
         _mcp_presentation_schema,  # pyright: ignore[reportPrivateUsage]
         _tool_input_schema_version,  # pyright: ignore[reportPrivateUsage]
     )

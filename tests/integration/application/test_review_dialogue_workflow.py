@@ -24,27 +24,27 @@ from builders.projection_workflow import (
 )
 from builders.review_manifests import provider_bound_manifest
 from builders.start_application import protocol_id, start_request
-from yoetz.application.check import FinalSemanticEvaluation, check_internal_json
-from yoetz.application.semantic_case import build_semantic_case, semantic_case_packet_view
-from yoetz.application.service import Application
-from yoetz.domain.events import CheckRecordedPayload, EventSchema, LedgerRecord
-from yoetz.domain.findings import (
+from finishup.application.check import FinalSemanticEvaluation, check_internal_json
+from finishup.application.semantic_case import build_semantic_case, semantic_case_packet_view
+from finishup.application.service import Application
+from finishup.domain.events import CheckRecordedPayload, EventSchema, LedgerRecord
+from finishup.domain.findings import (
     Finding,
     FindingKind,
     FindingOrigin,
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.kernel.finding_resolution import finding_resolution_explanation
-from yoetz.kernel.finding_todo import FindingTodoState, finding_todo, finding_todo_state
-from yoetz.kernel.projections import ProjectionState, projection_snapshot
-from yoetz.kernel.receipt_capacity import receipt_blocking_finding_count
-from yoetz.kernel.reducers import replay
-from yoetz.mcp.summaries import summary_for_check
-from yoetz.ports.control import ControlMethod
-from yoetz.ports.ledger import CheckCommitResult, FrozenCase
-from yoetz.ports.semantic import (
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.kernel.finding_resolution import finding_resolution_explanation
+from finishup.kernel.finding_todo import FindingTodoState, finding_todo, finding_todo_state
+from finishup.kernel.projections import ProjectionState, projection_snapshot
+from finishup.kernel.receipt_capacity import receipt_blocking_finding_count
+from finishup.kernel.reducers import replay
+from finishup.mcp.summaries import summary_for_check
+from finishup.ports.control import ControlMethod
+from finishup.ports.ledger import CheckCommitResult, FrozenCase
+from finishup.ports.semantic import (
     MissingForAssessment,
     PriorFindingVerdict,
     ReviewerChallenge,
@@ -52,9 +52,9 @@ from yoetz.ports.semantic import (
     SemanticCase,
     SemanticJudgment,
 )
-from yoetz.protocol.canonical import JsonValue, strict_json_parse
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
@@ -704,9 +704,9 @@ async def test_an_assessable_withdrawn_ruling_on_a_rejection_reads_rejection_acc
     findings view and CLI text, the check's checklist and MCP text, and every receipt format.
     """
 
-    from yoetz.cli.render import render_human_check, render_human_status
-    from yoetz.mcp.summaries import summary_for_status
-    from yoetz.protocol.models import (
+    from finishup.cli.render import render_human_check, render_human_status
+    from finishup.mcp.summaries import summary_for_status
+    from finishup.protocol.models import (
         CheckFindingChecklistModel,
         CheckSuccessModel,
         CoverageModel,
@@ -964,7 +964,7 @@ async def test_a_checklist_read_failure_never_strands_the_committed_check(
 ) -> None:
     """D2: the checklist is additive context; any failure reading it drops only the list."""
 
-    from yoetz.application import check as check_module
+    from finishup.application import check as check_module
 
     def broken(*_args: object, **_kwargs: object) -> object:
         raise RuntimeError("checklist read failed")
@@ -1009,7 +1009,7 @@ async def test_every_rebuttal_and_the_reviewers_answer_reach_the_next_review() -
     review round, no further answer accepted, and carried to the next packet as a nameable,
     non-rulable settled row with the agent's rebuttal."""
 
-    from yoetz.application.semantic_case import SETTLED_FINDING_ITEM_PREFIX
+    from finishup.application.semantic_case import SETTLED_FINDING_ITEM_PREFIX
 
     seed = 3300
     reviewer = _Reviewer([_challenge_obligation, _re_raise_first_finding, _no_discrepancy])
@@ -1068,7 +1068,7 @@ async def test_every_rebuttal_and_the_reviewers_answer_reach_the_next_review() -
     )
 
 
-# Issue #984 (ADR-034): a repair only a Yoetz limit keeps unproven is answered ``self_verified``.
+# Issue #984 (ADR-034): a repair only a FinishUP limit keeps unproven is answered ``self_verified``.
 # The agent says how it verified it and cites its own recorded evidence; the item is final,
 # never re-reviewed, not agent work, and never lets the receipt read clean.
 
@@ -1139,8 +1139,8 @@ def _refusal(error: pytest.ExceptionInfo[PublicOperationError]) -> str:
     return cast(str, error.value.safe_details["reason_code"])
 
 
-async def test_self_verified_closes_a_repair_only_a_yoetz_limit_keeps_unproven() -> None:
-    """tb4n1: the recheck's packet budget cut excerpts, so Yoetz could not prove the repair."""
+async def test_self_verified_closes_a_repair_only_a_finishup_limit_keeps_unproven() -> None:
+    """tb4n1: the recheck's packet budget cut excerpts, so FinishUP could not prove the repair."""
 
     seed = 3400
     reviewer = _Reviewer(
@@ -1248,14 +1248,14 @@ async def test_self_verified_closes_a_repair_only_a_yoetz_limit_keeps_unproven()
     assert "receipt_findings_unresolved" not in readiness.blocking_conditions
 
     json_receipt = await _receipt(session, final, seed + 80, "json")
-    # At best insufficient_coverage: Yoetz never reads the agent's own verification as clean.
+    # At best insufficient_coverage: FinishUP never reads the agent's own verification as clean.
     assert json_receipt.conclusion == "insufficient_coverage"
     document = cast(Mapping[str, JsonValue], json_receipt.document)
     assert document["self_verified_finding_ids"] == [raised.finding_id]
     for fmt in ("markdown", "text"):
         rendered = await _receipt(session, final, seed + 81 + len(fmt), fmt)
         text = cast(str, rendered.human_text)
-        assert "Self-verified by the agent; Yoetz could not prove the repair" in text
+        assert "Self-verified by the agent; FinishUP could not prove the repair" in text
         assert raised.finding_id in text
     assert projection_snapshot(replay(_records(session.app))) == projection_snapshot(
         _live_projection(session.app)
@@ -1329,7 +1329,7 @@ async def test_a_reviewer_restating_a_self_verified_issue_with_newer_material_mi
 ):
     """A later positive sighting is never hidden under ``self_verified`` (adversarial review).
 
-    ``self_verified`` is final only because Yoetz could not see the repair. A reviewer that raises
+    ``self_verified`` is final only because FinishUP could not see the repair. A reviewer that raises
     the same issue again with concern-relevant material newer than the agent's answer (here a run
     that failed after it) is a new sighting: it is minted as a new open finding the agent must
     answer. tb4n3 RC-7 changed the other half: a repeat citing nothing newer is recorded on the
@@ -1384,7 +1384,7 @@ async def test_a_reviewer_restating_a_self_verified_issue_with_newer_material_mi
 
 
 async def test_self_verified_is_refused_while_a_complete_review_still_sees_the_issue() -> None:
-    """A reviewer with no packet limit ruled it still present: that is not a Yoetz limit."""
+    """A reviewer with no packet limit ruled it still present: that is not a FinishUP limit."""
 
     seed = 3500
     reviewer = _Reviewer([_challenge_obligation, _still_present_first_finding])
@@ -1418,13 +1418,13 @@ async def test_self_verified_is_refused_while_a_complete_review_still_sees_the_i
 
 async def test_formal_crypto_repeat_over_a_reasoned_rebuttal_is_a_standing_disagreement() -> None:
     """Issue #1020 (ADR-040, TB4 tb4n2 formal-crypto S): the reviewer repeats a finding the agent
-    rejected with a reason, citing nothing newer. Yoetz records ``disputed_after_rebuttal``: final,
+    rejected with a reason, citing nothing newer. FinishUP records ``disputed_after_rebuttal``: final,
     not agent work, never a review round, and named on every surface; the receipt discloses it
     and cannot read clean."""
 
-    from yoetz.cli.render import render_human_check, render_human_status
-    from yoetz.mcp.summaries import summary_for_status
-    from yoetz.protocol.models import (
+    from finishup.cli.render import render_human_check, render_human_status
+    from finishup.mcp.summaries import summary_for_status
+    from finishup.protocol.models import (
         CheckFindingChecklistModel,
         CheckSuccessModel,
         CoverageModel,
@@ -1549,7 +1549,7 @@ async def test_a_self_verified_refusal_names_the_recorded_blocking_reasons() -> 
     """tb4n2 R5 (issue #1023): the refusal says what disqualified it and the way out.
 
     The refusal carries the recorded resolution-reason tokens in ``safe_details`` and names them,
-    a next step and the ``yoetz-verification-limit:`` exit in its message, so the agent need not
+    a next step and the ``finishup-verification-limit:`` exit in its message, so the agent need not
     retry ``self_verified`` blind.
     """
 
@@ -1582,6 +1582,6 @@ async def test_a_self_verified_refusal_names_the_recorded_blocking_reasons() -> 
     assert "reviewer_verdict_still_present" in blocking
     message = refused.value.message
     assert all(token in message for token in blocking)
-    assert "yoetz-verification-limit:" in message
+    assert "finishup-verification-limit:" in message
     assert "the check still sees the issue" in message
     assert "I checked it myself." not in message

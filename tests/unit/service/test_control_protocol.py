@@ -10,9 +10,9 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.control.unix_socket import LocalControlTransportError
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import (
+from finishup.adapters.control.unix_socket import LocalControlTransportError
+from finishup.domain.values import JsonObject
+from finishup.ports.control import (
     ControlCallRequest,
     ControlCancelRequest,
     ControlClientKind,
@@ -25,14 +25,14 @@ from yoetz.ports.control import (
     ServiceStatus,
     WorkspaceLocator,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.protocol.schemas import (
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import PublicErrorCode
+from finishup.protocol.schemas import (
     SchemaInstanceInvalid,
     load_schema_catalog,
     validate_schema_instance,
 )
-from yoetz.service.control_protocol import (
+from finishup.service.control_protocol import (
     CONTROL_PROTOCOL_VERSION,
     MAX_ACTIVE_REQUESTS_PER_SESSION,
     MAX_CONTROL_FRAME_BYTES,
@@ -352,7 +352,7 @@ def test_status_projection_phase_survives_the_control_wire() -> None:
 
 
 def test_workflow_start_request_round_trips_through_frozen_json_object() -> None:
-    from yoetz.protocol.models import StartRequest
+    from finishup.protocol.models import StartRequest
 
     start = StartRequest.model_validate(
         {
@@ -389,7 +389,7 @@ def test_workflow_start_request_round_trips_through_frozen_json_object() -> None
 
 
 def test_private_mcp_route_profile_round_trips_only_for_check_and_status() -> None:
-    from yoetz.protocol.models import CheckRequest
+    from finishup.protocol.models import CheckRequest
 
     check = CheckRequest.model_validate(
         {
@@ -719,7 +719,7 @@ def test_client_handshake_names_an_answered_foreign_digest_as_manifest_mismatch(
     """A 2.1.0-shaped hello-result with another installation's digest is not frame_invalid."""
 
     async def exercise() -> None:
-        import yoetz.service.control_protocol as proto
+        import finishup.service.control_protocol as proto
 
         client, server, _peer = _stream_pair()
 

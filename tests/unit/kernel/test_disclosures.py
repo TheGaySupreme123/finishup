@@ -1,6 +1,6 @@
 """Assumption and verification-limit disclosure lines (issue #995, ADR-033).
 
-tb4n1: ks-solver, lake-temp-glm and vpp-loss-divergence (semantic arms) declared ``yoetz-blocker``
+tb4n1: ks-solver, lake-temp-glm and vpp-loss-divergence (semantic arms) declared ``finishup-blocker``
 on finished work because a hidden verifier or a private trace was out of reach, and
 cargo-flight-dispatch blocked four times "pending the task owner's cruise-altitude policy
 decision" where a best-effort choice with a disclosed assumption was possible. A disclosure line
@@ -10,15 +10,15 @@ records that honestly without blocking anything.
 from __future__ import annotations
 
 from builders.observed_runs import ObservedLedger
-from yoetz.domain.events import (
+from finishup.domain.events import (
     DecisionRecordedPayload,
     EventSchema,
     ObligationPublishedPayload,
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.values import EventId, actor_id, obligation_id
-from yoetz.kernel.closure_readiness import (
+from finishup.domain.values import EventId, actor_id, obligation_id
+from finishup.kernel.closure_readiness import (
     ASSUMPTION_DISCLOSED_GAP,
     GAP_CLASSIFICATION,
     VERIFICATION_LIMIT_DISCLOSED_GAP,
@@ -26,8 +26,8 @@ from yoetz.kernel.closure_readiness import (
     closure_readiness_facts,
     derive_closure_readiness,
 )
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     blocker_declarations,
     decision_batches,
     disclosure_declarations,
@@ -79,14 +79,14 @@ def _decide(
 def test_only_exact_lines_with_a_well_formed_obligation_id_count() -> None:
     statement = "\n".join(
         (
-            f"yoetz-assumption:{_OBLIGATION}",
-            f"  yoetz-verification-limit:{_OBLIGATION}  ",
-            f"yoetz-assumption:{_OBLIGATION}",
-            f"yoetz-assumption: {_OTHER} because",
-            f"yoetz-assumption : {_OTHER}",
-            "yoetz-assumption:obl_not-an-id",
-            f"I assume yoetz-assumption:{_OTHER}",
-            f"yoetz-verification-limit:{_OTHER}",
+            f"finishup-assumption:{_OBLIGATION}",
+            f"  finishup-verification-limit:{_OBLIGATION}  ",
+            f"finishup-assumption:{_OBLIGATION}",
+            f"finishup-assumption: {_OTHER} because",
+            f"finishup-assumption : {_OTHER}",
+            "finishup-assumption:obl_not-an-id",
+            f"I assume finishup-assumption:{_OTHER}",
+            f"finishup-verification-limit:{_OTHER}",
         )
     )
     assert disclosure_line_obligations(statement) == (
@@ -104,7 +104,7 @@ def test_a_disclosure_is_standing_and_never_blocks_or_resolves() -> None:
     decision = _decide(
         ledger,
         "Chose the documented default altitude.\n"
-        f"yoetz-assumption:{_OBLIGATION}\nyoetz-verification-limit:{_OTHER}",
+        f"finishup-assumption:{_OBLIGATION}\nfinishup-verification-limit:{_OTHER}",
     )
     prefix = ledger.prefix
     projection = replay(prefix)
@@ -140,7 +140,7 @@ def test_finished_work_with_a_verification_limit_is_ready_with_limitations() -> 
     """ks-solver sem: "hidden-verifier accuracy cannot be performed" on finished work."""
 
     ledger = _ledger(ObligationStatus.OPEN)
-    _decide(ledger, f"yoetz-verification-limit:{_OBLIGATION}")
+    _decide(ledger, f"finishup-verification-limit:{_OBLIGATION}")
     prefix = ledger.prefix
     facts = closure_readiness_facts(replay(prefix), prefix)
     from dataclasses import replace
@@ -154,7 +154,7 @@ def test_finished_work_with_a_verification_limit_is_ready_with_limitations() -> 
 
 def test_an_unknown_obligation_is_a_missing_ref_and_discloses_nothing() -> None:
     ledger = _ledger()
-    decision = _decide(ledger, f"yoetz-assumption:{_UNKNOWN}")
+    decision = _decide(ledger, f"finishup-assumption:{_UNKNOWN}")
     projection = replay(ledger.prefix)
     assert disclosure_declarations(projection) == ()
     assert f"missing_ref:{decision}:{_UNKNOWN}" in projection.coverage_gaps
@@ -162,7 +162,7 @@ def test_an_unknown_obligation_is_a_missing_ref_and_discloses_nothing() -> None:
 
 def test_superseding_the_decision_withdraws_the_disclosure() -> None:
     ledger = _ledger()
-    first = _decide(ledger, f"yoetz-assumption:{_OBLIGATION}")
+    first = _decide(ledger, f"finishup-assumption:{_OBLIGATION}")
     assert len(disclosure_declarations(replay(ledger.prefix))) == 1
     _decide(ledger, "The assumption no longer applies; the policy was found.", supersedes=first)
     prefix = ledger.prefix
@@ -176,7 +176,7 @@ def test_superseding_the_decision_withdraws_the_disclosure() -> None:
 
 def test_the_earliest_unsuperseded_decision_records_each_kind() -> None:
     ledger = _ledger()
-    first = _decide(ledger, f"yoetz-assumption:{_OBLIGATION}")
-    _decide(ledger, f"yoetz-assumption:{_OBLIGATION}")
+    first = _decide(ledger, f"finishup-assumption:{_OBLIGATION}")
+    _decide(ledger, f"finishup-assumption:{_OBLIGATION}")
     [row] = disclosure_declarations(replay(ledger.prefix))
     assert (row.obligation_id, row.decision_event_id) == (_OBLIGATION, first)

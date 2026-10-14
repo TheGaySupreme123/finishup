@@ -12,21 +12,21 @@ import pytest
 
 from builders.gate_readiness import blocker_recheck, premise_recheck
 from builders.observed_runs import ObservedLedger
-from yoetz.cli.closure_gate import (
+from finishup.cli.closure_gate import (
     BLOCKER_RECHECK_ITEM,
     PREMISE_RECHECK_ITEM,
     closure_gate_from_readiness,
 )
-from yoetz.domain.values import FindingId
-from yoetz.kernel import closure_readiness
-from yoetz.kernel.closure_readiness import (
+from finishup.domain.values import FindingId
+from finishup.kernel import closure_readiness
+from finishup.kernel.closure_readiness import (
     FINDING_PREMISE_DISPUTED_GAP,
     GAP_CLASSIFICATION,
     GapClass,
     closure_readiness_facts,
     derive_closure_readiness,
 )
-from yoetz.kernel.reducers import replay
+from finishup.kernel.reducers import replay
 
 _FINDING = FindingId("fnd_00000000-0000-4000-8000-000000000007")
 
@@ -54,7 +54,7 @@ def test_a_build_without_the_predicate_reports_nothing(monkeypatch: pytest.Monke
         recorded.append(str(fields.get("operation")))
         return "cor_test"
 
-    import yoetz.observability.logging as logging_module
+    import finishup.observability.logging as logging_module
 
     monkeypatch.setattr(logging_module, "record_unexpected_exception_without_raising", record)
     monkeypatch.setattr(closure_readiness, "_standing_premise_disputes", broken)
@@ -105,7 +105,7 @@ def test_the_gate_asks_once_about_a_premise_dispute() -> None:
     assert gate.items == (PREMISE_RECHECK_ITEM,)  # type: ignore[attr-defined]
     assert gate.blocker_keys == ("premise:2",)  # type: ignore[attr-defined]
     assert "the reviewer says the task itself requires" in gate.text  # type: ignore[attr-defined]
-    assert "a Yoetz limit or a hard result is not a reason" in gate.text  # type: ignore[attr-defined]
+    assert "a FinishUP limit or a hard result is not a reason" in gate.text  # type: ignore[attr-defined]
     # Asked already: the agent may stop. A new acknowledgement asks again.
     assert _gate(_view(), reasked_blockers=frozenset({"premise:2"})) is None
     assert _gate(_view(rechecks=(premise_recheck(3),)), reasked_blockers=frozenset({"premise:2"}))

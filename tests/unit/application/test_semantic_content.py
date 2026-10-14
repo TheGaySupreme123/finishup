@@ -13,18 +13,18 @@ from typing import cast
 import pytest
 
 from builders.policy_cases import claim_record, clm, evd, make_case
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_materialize import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_materialize import (
     MATERIALIZATION_MAPPING_VERSION,
     materialize_observation_envelope,
     stable_observation_id,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     build_semantic_case,
     semantic_case_to_prepared_payload,
 )
-from yoetz.application.semantic_content import resolve_captured_semantic_content
-from yoetz.domain.events import (
+from finishup.application.semantic_content import resolve_captured_semantic_content
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceContentAvailability,
@@ -38,7 +38,7 @@ from yoetz.domain.events import (
     ResultRecordedPayload,
     encode_payload,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationContentKind,
     ObservationContentManifest,
     ObservationControlCommand,
@@ -47,13 +47,13 @@ from yoetz.domain.observation import (
     ObservationRevokeCommand,
     ObservationSource,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.values import (
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.values import (
     EvidenceId,
     JsonObject,
     JsonValue,
@@ -61,15 +61,15 @@ from yoetz.domain.values import (
     object_id,
     timestamp_from_string,
 )
-from yoetz.kernel.projections import EvidenceProjectionRecord
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.ledger import CheckPhase, FrozenCase, LedgerPort, OperationLease
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectStorePort
-from yoetz.ports.observation import TaskObservationPort
-from yoetz.ports.runtime import OwnershipFence, TaskRuntime
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.ids import IdKind
+from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort
+from finishup.ports.ledger import CheckPhase, FrozenCase, LedgerPort, OperationLease
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectStorePort
+from finishup.ports.observation import TaskObservationPort
+from finishup.ports.runtime import OwnershipFence, TaskRuntime
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.ids import IdKind
 
 _TASK = "tsk_10000000-0000-4000-8000-000000000001"
 _SESSION = "ses_10000000-0000-4000-8000-000000000001"
@@ -1358,8 +1358,8 @@ async def test_resolver_discloses_selected_capture_it_cannot_reach() -> None:
 @pytest.mark.anyio
 async def test_response_linked_multipart_repair_precedes_old_claim_evidence() -> None:
     from builders.policy_cases import BASE_COVERAGE, finding_record, fnd, record
-    from yoetz.domain.events import ResponseRecordedPayload
-    from yoetz.domain.findings import Finding, FindingKind, FindingOrigin, ResponseDisposition
+    from finishup.domain.events import ResponseRecordedPayload
+    from finishup.domain.findings import Finding, FindingKind, FindingOrigin, ResponseDisposition
 
     frozen, runtime, objects = _multipart_fixture()
     finding = Finding(

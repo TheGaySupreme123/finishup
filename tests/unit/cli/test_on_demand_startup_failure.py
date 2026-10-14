@@ -1,6 +1,6 @@
 """CLI commands that start the service on demand name a startup failure (#1040, review).
 
-``yoetz service restart`` and the MCP bridge already rendered the ``service_unavailable`` error an
+``finishup service restart`` and the MCP bridge already rendered the ``service_unavailable`` error an
 on-demand start raises when the spawned service records a startup failure. Setup's on-demand
 starts and its post-configuration restart caught that error and said only that the service was
 not reachable; these cases hold them to the same line, with their own exit codes unchanged.
@@ -13,21 +13,21 @@ from typing import Any
 
 import pytest
 
-import yoetz.cli.app as app_module
-import yoetz.observability.diagnostics as diagnostics
-import yoetz.service.client as client_module
-from yoetz.adapters.control.unix_socket import LocalControlTransportError
-from yoetz.cli import setup
-from yoetz.cli.bootstrap import control_failure
-from yoetz.ports.control import ControlError
-from yoetz.service.startup_failure import record_startup_failure
+import finishup.cli.app as app_module
+import finishup.observability.diagnostics as diagnostics
+import finishup.service.client as client_module
+from finishup.adapters.control.unix_socket import LocalControlTransportError
+from finishup.cli import setup
+from finishup.cli.bootstrap import control_failure
+from finishup.ports.control import ControlError
+from finishup.service.startup_failure import record_startup_failure
 
 _SPAWN_ID = "err_11111111-2222-4333-8444-555555555555"
 _EXPECTED = (
     "service_unavailable: the local service exited while starting (stage: activation; "
     "exception_local_control_transport_error; runtime_directory_unsafe); "
     f"correlation_id {_SPAWN_ID}; read it with "
-    f"'yoetz service diagnostics --correlation-id {_SPAWN_ID}'"
+    f"'finishup service diagnostics --correlation-id {_SPAWN_ID}'"
 )
 
 
@@ -63,7 +63,7 @@ def _failing_on_demand(error: ControlError, calls: list[str]) -> Any:
 
 
 def test_the_shared_line_is_the_one_service_restart_prints(startup_error: ControlError) -> None:
-    from yoetz.cli.bootstrap import spawned_startup_failure_line
+    from finishup.cli.bootstrap import spawned_startup_failure_line
 
     printed: list[str] = []
 

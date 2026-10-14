@@ -9,10 +9,10 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationContentChunk,
     ObservationContentKind,
@@ -21,7 +21,7 @@ from yoetz.domain.observation import (
     ObservationSource,
     observation_ingest_result_to_json,
 )
-from yoetz.domain.values import JsonObject
+from finishup.domain.values import JsonObject
 
 
 @pytest.mark.anyio

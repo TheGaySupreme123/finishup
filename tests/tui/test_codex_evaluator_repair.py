@@ -8,13 +8,13 @@ from dataclasses import dataclass, field
 import pytest
 
 from builders.tui_runtime import FakeRuntime
-from yoetz.tui.app import YoetzTui
-from yoetz.tui.runtime import RuntimeError_
+from finishup.tui.app import FinishUpTui
+from finishup.tui.runtime import RuntimeError_
 
 pytestmark = pytest.mark.anyio
 
 WIDE = (100, 34)
-MakeApp = Callable[..., YoetzTui]
+MakeApp = Callable[..., FinishUpTui]
 
 
 @pytest.fixture
@@ -22,13 +22,13 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def transcript(app: YoetzTui) -> str:
+def transcript(app: FinishUpTui) -> str:
     return "\n".join(
         "\n".join((event.title, *event.body, *event.details)) for event in app.transcript.events
     )
 
 
-async def run_command(pilot: object, app: YoetzTui, command: str) -> None:
+async def run_command(pilot: object, app: FinishUpTui, command: str) -> None:
     app.composer.focus_input()
     app.composer.text = command
     await pilot.pause()  # type: ignore[attr-defined]
@@ -48,7 +48,7 @@ class _RepairRuntime(FakeRuntime):
         return {
             "state_before": "codex_runtime_executable_changed",
             "source_path": "/opt/evaluator/codex",
-            "executable_path_after": "/var/lib/yoetz/external-runtimes/codex-evaluator/x/codex",
+            "executable_path_after": "/var/lib/finishup/external-runtimes/codex-evaluator/x/codex",
             "capability_profile_before": "codex-evaluator/0.150.1/v1",
             "capability_profile_after": "codex-evaluator/0.150.1/v2",
             "changed_fields": ["executable_path", "capability_cell_sha256", "capability_profile"],
@@ -57,7 +57,7 @@ class _RepairRuntime(FakeRuntime):
     async def repair_codex_subscription(self) -> dict[str, object]:
         self.repairs.append("repair")
         return {
-            "executable_path": "/var/lib/yoetz/external-runtimes/codex-evaluator/x/codex",
+            "executable_path": "/var/lib/finishup/external-runtimes/codex-evaluator/x/codex",
             "model_available": True,
             "process_cleanup": "terminated",
             "login_reused": True,
@@ -65,13 +65,13 @@ class _RepairRuntime(FakeRuntime):
 
     def codex_evaluator_runtime_status(self) -> dict[str, object]:
         return {
-            "managed_runtime": {"path": "/var/lib/yoetz/x/codex", "state": "absent"},
+            "managed_runtime": {"path": "/var/lib/finishup/x/codex", "state": "absent"},
             "binding": {"state": "codex_runtime_executable_changed"},
-            "next_command": "yoetz provider codex-subscription repair",
+            "next_command": "finishup provider codex-subscription repair",
         }
 
 
-async def _choose(pilot: object, app: YoetzTui, text: str) -> None:
+async def _choose(pilot: object, app: FinishUpTui, text: str) -> None:
     await run_command(pilot, app, "/provider")
     view = app.open_view
     assert view is not None
@@ -136,15 +136,15 @@ async def test_runtime_status_reports_structure_without_a_sign_in_check(
         await _choose(pilot, app, "evaluator runtime status")
         text = transcript(app)
         assert "Binding: codex_runtime_executable_changed" in text
-        assert "Next: yoetz provider codex-subscription repair" in text
+        assert "Next: finishup provider codex-subscription repair" in text
         assert "Sign-in was not checked" in text
 
 
 async def test_setup_preselects_the_existing_reasoning_effort(make_app: MakeApp) -> None:
     runtime = _RepairRuntime()
     runtime.codex_subscription_defaults = lambda: (  # type: ignore[method-assign]
-        "/var/lib/yoetz/external-runtimes/codex-evaluator/x/codex",
-        "/var/lib/yoetz/codex-home",
+        "/var/lib/finishup/external-runtimes/codex-evaluator/x/codex",
+        "/var/lib/finishup/codex-home",
         "gpt-5.6-sol",
         "xhigh",
     )
@@ -170,8 +170,8 @@ async def test_setup_preselects_the_existing_reasoning_effort(make_app: MakeApp)
 
     assert runtime.subscription_setups == [
         (
-            "/var/lib/yoetz/external-runtimes/codex-evaluator/x/codex",
-            "/var/lib/yoetz/codex-home",
+            "/var/lib/finishup/external-runtimes/codex-evaluator/x/codex",
+            "/var/lib/finishup/codex-home",
             "gpt-5.6-sol",
             "xhigh",
             True,
@@ -185,7 +185,7 @@ async def test_setup_without_a_runtime_shows_the_consented_download_command(
     runtime = _RepairRuntime()
     runtime.codex_subscription_defaults = lambda: (  # type: ignore[method-assign]
         "",
-        "/var/lib/yoetz/codex-home",
+        "/var/lib/finishup/codex-home",
         "gpt-5.6-sol",
         "high",
     )
@@ -193,7 +193,7 @@ async def test_setup_without_a_runtime_shows_the_consented_download_command(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await _choose(pilot, app, "switch")
-        assert "yoetz provider codex-subscription runtime install --download" in transcript(app)
+        assert "finishup provider codex-subscription runtime install --download" in transcript(app)
         assert "asks before downloading" in transcript(app)
         assert getattr(app.open_view, "view_name", None) == "codex-subscription-executable"
         assert runtime.subscription_setups == []

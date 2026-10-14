@@ -18,7 +18,7 @@ from builders.policy_cases import (
     plan_record,
     record,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -28,23 +28,23 @@ from yoetz.domain.events import (
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
     FindingKind,
     FindingOrigin,
     finding_policy_identity,
 )
-from yoetz.domain.values import EventId, Frontier
-from yoetz.kernel import self_verification
-from yoetz.kernel.finding_resolution import ResolutionAttempt
-from yoetz.kernel.projections import ProjectionState, empty_projection_state
-from yoetz.kernel.task_fact_scope import (
+from finishup.domain.values import EventId, Frontier
+from finishup.kernel import self_verification
+from finishup.kernel.finding_resolution import ResolutionAttempt
+from finishup.kernel.projections import ProjectionState, empty_projection_state
+from finishup.kernel.task_fact_scope import (
     finding_obligation_scope,
     scoped_resolution_reasons,
     task_fact_bears_on_finding,
 )
-from yoetz.protocol.coverage import (
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,

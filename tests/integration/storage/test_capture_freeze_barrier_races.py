@@ -16,14 +16,14 @@ from conformance.adapters.test_ledger_port import (
     _local_result_ref,  # pyright: ignore[reportPrivateUsage]
     ledger_command,
 )
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.ports.ledger import CheckAdmissionStage, CheckPhase, FrozenCase, check_admission_stage
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 from integration.storage.test_append_and_replay import uuid_id
 from integration.storage.test_capture_freeze_barrier import (
     _ticket,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.ports.ledger import CheckAdmissionStage, CheckPhase, FrozenCase, check_admission_stage
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 
 
 @pytest.fixture

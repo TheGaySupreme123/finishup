@@ -19,8 +19,8 @@ from typing import Final
 
 import pytest
 
-from yoetz.domain.observation_budget import ObservationCapacity, parse_capacity_request
-from yoetz.domain.observation_capacity_policy import (
+from finishup.domain.observation_budget import ObservationCapacity, parse_capacity_request
+from finishup.domain.observation_capacity_policy import (
     capacity_change_disclosure,
     render_capacity_disclosure_lines,
 )
@@ -30,7 +30,7 @@ _AGENT_INSTRUCTIONS: Final = _REPO_ROOT / "guidance" / "agent-instructions.md"
 _WORKFLOW: Final = _REPO_ROOT / "guidance" / "workflow.md"
 _USAGE: Final = _REPO_ROOT / "docs" / "usage" / "observation-selection.md"
 _SKILLS: Final = tuple(
-    _REPO_ROOT / "skills" / host / "yoetz" / "SKILL.md"
+    _REPO_ROOT / "skills" / host / "finishup" / "SKILL.md"
     for host in ("codex", "claude-code", "cursor", "portable")
 )
 _SECTION_TITLE: Final = "Capacity and cost changes need a disclosed choice"
@@ -59,7 +59,7 @@ def test_workflow_carries_the_complete_disclosed_choice_rules() -> None:
         "task permission, a busy queue, or a pressure notice never authorizes it",
         "the exact scope",
         "current and requested values",
-        "disk use, memory use, CPU work, possible slowdown of Yoetz or other apps",
+        "disk use, memory use, CPU work, possible slowdown of FinishUP or other apps",
         "what stays limited, and how to lower, pause, and resume",
         "Repeat the scope and the remaining limits exactly as the preview states them",
         "The shared workspace queue follows the largest active selection, so an increase can raise "
@@ -77,14 +77,14 @@ def test_workflow_carries_the_complete_disclosed_choice_rules() -> None:
 def test_workflow_gives_the_preview_accept_apply_commands_and_the_no_cap_outcome() -> None:
     section = _section(_WORKFLOW, "### Change local retention capacity")
     for phrase in (
-        "yoetz observe selection-status --workspace /exact/project",
-        "yoetz observe selection-preview --workspace /exact/project",
+        "finishup observe selection-status --workspace /exact/project",
+        "finishup observe selection-preview --workspace /exact/project",
         "--capacity custom --queue-count 1024",
-        "yoetz observe selection-apply --workspace /exact/project",
+        "finishup observe selection-apply --workspace /exact/project",
         "--accept --preview-digest <preview-digest>",
         "`custom` with `--queue-count` from 64 to 8,192",
-        "yoetz observe pause --workspace /exact/project",
-        "yoetz observe resume --workspace /exact/project",
+        "finishup observe pause --workspace /exact/project",
+        "finishup observe resume --workspace /exact/project",
         "accepted records drain and are not deleted",
         f"return `{_NO_CAP_TOKEN}` and change nothing",
         "16 MiB safety ceiling",
@@ -113,7 +113,7 @@ def test_every_skill_points_to_the_disclosed_choice(skill: Path) -> None:
     for phrase in (
         f"{_SECTION_TITLE}: never choose a larger or uncapped local observation capacity for an "
         "ordinary task",
-        "run `yoetz observe selection-preview`",
+        "run `finishup observe selection-preview`",
         "apply only after the user accepts that preview",
         "lower/pause/resume path",
         f"returns `{_NO_CAP_TOKEN}`",
@@ -134,7 +134,7 @@ def test_renderer_emits_the_increase_consequences_the_guidance_names() -> None:
     lines = render_capacity_disclosure_lines(disclosure)
     assert lines[0] == (
         "Larger local retention can increase disk use, memory use and CPU work, "
-        "and may slow Yoetz or other apps."
+        "and may slow FinishUP or other apps."
     )
     rendered = " ".join(lines)
     assert (
@@ -142,17 +142,18 @@ def test_renderer_emits_the_increase_consequences_the_guidance_names() -> None:
         in (rendered)
     )
     assert (
-        "Lower it later with: yoetz observe selection-preview --workspace <workspace>" in rendered
+        "Lower it later with: finishup observe selection-preview --workspace <workspace>"
+        in rendered
     )
-    assert "Pause new observation ingest with: yoetz observe pause --workspace <workspace>" in (
+    assert "Pause new observation ingest with: finishup observe pause --workspace <workspace>" in (
         rendered
     )
-    assert "Resume with: yoetz observe resume --workspace <workspace>" in rendered
+    assert "Resume with: finishup observe resume --workspace <workspace>" in rendered
     assert "Performance validation is provisional (not_validated)." in rendered
     consequences = disclosure["consequences"]
     assert isinstance(consequences, (list, tuple))
     assert "workspace_aggregate_raised" in consequences
-    assert disclosure["resume_command"] == "yoetz observe resume --workspace <workspace>"
+    assert disclosure["resume_command"] == "finishup observe resume --workspace <workspace>"
     aggregate = (
         "The shared workspace queue follows the largest active selection, so this can raise the "
         "queue and state-document bounds for every session in the workspace."
@@ -175,7 +176,7 @@ def test_renderer_emits_the_no_cap_outcome_the_guidance_says_to_relay() -> None:
     assert disclosure["change"] == "unsupported"
     lines = render_capacity_disclosure_lines(disclosure)
     assert lines == (
-        "No Yoetz cap is not available for the structural queue in this revision: the local "
+        "No FinishUP cap is not available for the structural queue in this revision: the local "
         "state document has a 16 MiB safety ceiling. The largest supported finite capacity is "
         "8,192 rows (--capacity largest or --capacity custom --queue-count 8192).",
     )

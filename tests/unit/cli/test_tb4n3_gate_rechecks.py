@@ -32,14 +32,14 @@ from builders.gate_readiness import (
     premise_recheck,
     readiness,
 )
-from yoetz.cli import closure_gate as gate_module
-from yoetz.cli.closure_gate import (
+from finishup.cli import closure_gate as gate_module
+from finishup.cli.closure_gate import (
     ACCEPTANCE_RECHECK_ITEM,
     ACKNOWLEDGEMENT_RECHECK_ITEM,
     PREMISE_RECHECK_ITEM,
     closure_gate_from_readiness,
 )
-from yoetz.kernel.task_facts import (
+from finishup.kernel.task_facts import (
     DECLARED_OUTPUT_EMPTIED_GAP,
     DECLARED_OUTPUT_REMOVED_GAP,
     STOP_GATE_TOKENS,
@@ -222,7 +222,7 @@ def test_the_acceptance_reread_is_not_offered_beside_open_obligations_and_stays_
 def test_the_acceptance_sentence_has_a_verification_limit_branch_that_is_not_a_retreat() -> None:
     text = gate_module._ACCEPTANCE_TEXT  # pyright: ignore[reportPrivateUsage]
     assert "acknowledged_not_done" in text
-    assert "`yoetz-verification-limit:<obligation id>`" in text
+    assert "`finishup-verification-limit:<obligation id>`" in text
     assert "outside this environment" in text
     # The branch is for what cannot be verified here; "I could not find it" does not qualify.
     assert "you did the work" in text
@@ -523,7 +523,7 @@ def test_an_unreadable_state_never_gates(state: object, active: bool) -> None:
 
 
 def test_closure_prepare_names_the_rechecks_the_gate_will_ask() -> None:
-    from yoetz.domain.closure import recheck_note
+    from finishup.domain.closure import recheck_note
 
     announced = readiness(
         "ready_with_limitations",
@@ -757,7 +757,7 @@ def test_the_prediction_never_changes_what_else_the_gate_says(
     assert (with_tail.items, with_tail.blocker_keys) == (bare.items, bare.blocker_keys)
     assert len(with_tail.text) <= 2000
     state = "action_required" if tokens else "ready_with_limitations"
-    from yoetz.protocol.readiness_text import predicted_receipt_variants
+    from finishup.protocol.readiness_text import predicted_receipt_variants
 
     tails = {f" {variant}" for variant in predicted_receipt_variants(_PREDICTION, state=state)}
     assert with_tail.text == bare.text or any(
@@ -773,7 +773,7 @@ def test_the_gate_never_claims_a_challenge_it_did_not_deliver() -> None:
     legacy = _gate(readiness("action_required", (token,), rechecks=None))
     assert legacy is not None
     assert "You were already asked" not in legacy.text
-    assert "same yoetz-blocker line again" not in legacy.text
+    assert "same finishup-blocker line again" not in legacy.text
     silent = _gate(readiness("action_required", (token,), rechecks=()))
     assert silent is not None
     assert "You were already asked" not in silent.text
@@ -793,8 +793,8 @@ def test_the_gate_never_claims_a_challenge_it_did_not_deliver() -> None:
 
 
 def _wire_lineage() -> Any:
-    from yoetz.domain.values import obligation_id as typed_obligation_id
-    from yoetz.kernel.fact_lineage import FactLineage, lineage_to_wire
+    from finishup.domain.values import obligation_id as typed_obligation_id
+    from finishup.kernel.fact_lineage import FactLineage, lineage_to_wire
 
     return lineage_to_wire(
         FactLineage(
@@ -815,7 +815,7 @@ def _wire_lineage() -> Any:
 
 
 def test_the_lineage_sentence_is_present_when_the_gate_fits_and_trimmed_first_otherwise() -> None:
-    from yoetz.kernel.fact_lineage import lineage_from_wire, lineage_text
+    from finishup.kernel.fact_lineage import lineage_from_wire, lineage_text
 
     wire = _wire_lineage()
     why = lineage_text(lineage_from_wire(wire))

@@ -13,12 +13,12 @@ from typing import Final, cast
 
 import pytest
 
-import yoetz.application.service as service_module
-import yoetz.service.control_protocol as control_protocol_module
-import yoetz.service.daemon as daemon_module
-from yoetz.ports.control import ACCEPTED_STATE_KEYS, ControlError, ControlMethod
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import PROTOCOL_REASON_CODES, SafeDetailValue
+import finishup.application.service as service_module
+import finishup.service.control_protocol as control_protocol_module
+import finishup.service.daemon as daemon_module
+from finishup.ports.control import ACCEPTED_STATE_KEYS, ControlError, ControlMethod
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import PROTOCOL_REASON_CODES, SafeDetailValue
 
 # Deliberately reaching for module privates: these are the exact internals inside the post-commit
 # window, and the public surface cannot express "this internal never raises an unbounded error".

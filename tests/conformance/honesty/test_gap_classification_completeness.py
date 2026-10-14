@@ -3,14 +3,14 @@
 ``ready_with_limitations`` is only reachable if every gap code the product emits is classified:
 a real code that falls through to the conservative ``unclassified_gap:<code>`` default keeps
 readiness actionable forever. This test therefore enumerates every gap-code producer and fails
-when one emits a code the closed table in ``yoetz.kernel.closure_readiness`` does not classify.
+when one emits a code the closed table in ``finishup.kernel.closure_readiness`` does not classify.
 
 Producers are enumerated two ways:
 
 * by value, where the vocabulary is typed: ``ObservationGapCode``, ``CoordinationGapCode``, every
   ``semantic_coverage_gap_code`` output, the publication-channel baselines, and the lineage
   manifest read-gap template;
-* by source, where codes are string literals: a syntax-tree scan of ``src/yoetz`` collects the
+* by source, where codes are string literals: a syntax-tree scan of ``src/finishup`` collects the
   literals that reach a gap sink — ``*_GAP``/``*_GAPS`` constants, ``gaps.add(...)``-style
   accumulators, ``CaseGap``/``LineageGap``/``ImportGap`` constructors, ``known_gaps=`` and
   ``gap_codes=`` keywords, set unions with a gap collection, lineage blocker accumulators, and
@@ -29,14 +29,14 @@ from typing import Final
 
 import pytest
 
-import yoetz
-from yoetz.domain.coordination import CoordinationGapCode
-from yoetz.domain.observation import ObservationGapCode
-from yoetz.domain.receipts import (
+import finishup
+from finishup.domain.coordination import CoordinationGapCode
+from finishup.domain.observation import ObservationGapCode
+from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_UNAVAILABLE_REASON_GAPS,
     semantic_coverage_gap_code,
 )
-from yoetz.kernel.closure_readiness import (
+from finishup.kernel.closure_readiness import (
     GAP_CLASSIFICATION,
     GAP_CLASSIFICATION_VERSION,
     READINESS_CHECK_CONDITIONS,
@@ -46,13 +46,13 @@ from yoetz.kernel.closure_readiness import (
     gap_base_code,
     split_gaps,
 )
-from yoetz.kernel.lineage import (
+from finishup.kernel.lineage import (
     _READ_GAP_REASONS,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.protocol.coverage import COVERAGE_DEFAULTS_BY_CHANNEL
-from yoetz.protocol.models import VALID_SEMANTIC_REASONS
+from finishup.protocol.coverage import COVERAGE_DEFAULTS_BY_CHANNEL
+from finishup.protocol.models import VALID_SEMANTIC_REASONS
 
-_SRC: Final = Path(yoetz.__file__).resolve().parent
+_SRC: Final = Path(finishup.__file__).resolve().parent
 _CODE: Final = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 _GAP_KEYWORDS: Final = frozenset({"known_gaps", "gap_codes", "gaps", "coverage_gaps", "gap_code"})
 _SINK_CALLS: Final = frozenset(
@@ -344,7 +344,7 @@ def test_every_emitted_gap_code_is_classified(
         emitted.pop(token, None)
     unclassified = {code: site for code, site in emitted.items() if code not in GAP_CLASSIFICATION}
     assert not unclassified, (
-        "Classify these gap codes in yoetz.kernel.closure_readiness.GAP_CLASSIFICATION "
+        "Classify these gap codes in finishup.kernel.closure_readiness.GAP_CLASSIFICATION "
         f"(agent-actionable or standing) in the same change that emits them: {unclassified}"
     )
 

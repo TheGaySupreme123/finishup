@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters import release_runtime as runtimes
+from finishup.adapters import release_runtime as runtimes
 
 
 @pytest.fixture
@@ -20,12 +20,12 @@ def prefix(tmp_path: Path) -> Generator[Path]:
     (root / "bin/python").write_bytes(b"interpreter fixture")
     (root / "bin/python").chmod(0o700)
     (root / "pyvenv.cfg").write_text("home = /python\n")
-    (packages / "yoetz-0.3.0.dist-info").mkdir(parents=True)
-    (packages / "yoetz-0.3.0.dist-info/RECORD").write_text("release one\n")
+    (packages / "finishup-0.3.0.dist-info").mkdir(parents=True)
+    (packages / "finishup-0.3.0.dist-info/RECORD").write_text("release one\n")
     (packages / "dependency").mkdir()
     (packages / "dependency/lazy.py").write_text("VALUE = 'old dependency'\n")
-    (packages / "yoetz/resources").mkdir(parents=True)
-    (packages / "yoetz/resources/guidance.md").write_text("old guidance\n")
+    (packages / "finishup/resources").mkdir(parents=True)
+    (packages / "finishup/resources/guidance.md").write_text("old guidance\n")
     try:
         yield root
     finally:
@@ -40,15 +40,15 @@ def test_copied_code_and_resources_survive_in_place_replacement(prefix: Path) ->
     packages = Path("lib/python3.14/site-packages")
     for relative, new in (
         (packages / "dependency/lazy.py", "VALUE = 'new dependency'\n"),
-        (packages / "yoetz/resources/guidance.md", "new guidance\n"),
-        (packages / "yoetz-0.3.0.dist-info/RECORD", "release two\n"),
+        (packages / "finishup/resources/guidance.md", "new guidance\n"),
+        (packages / "finishup-0.3.0.dist-info/RECORD", "release two\n"),
     ):
         (prefix / relative).write_text(new)
     new = runtimes.prepare_release_runtime(prefix)
     assert old != new
     assert (old / packages / "dependency/lazy.py").read_text() == "VALUE = 'old dependency'\n"
-    assert (old / packages / "yoetz/resources/guidance.md").read_text() == "old guidance\n"
-    assert (new / packages / "yoetz/resources/guidance.md").read_text() == "new guidance\n"
+    assert (old / packages / "finishup/resources/guidance.md").read_text() == "old guidance\n"
+    assert (new / packages / "finishup/resources/guidance.md").read_text() == "new guidance\n"
     assert runtimes.prepare_release_runtime(prefix) == new
 
 

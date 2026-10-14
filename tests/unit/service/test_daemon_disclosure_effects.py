@@ -11,18 +11,18 @@ from typing import cast
 import pytest
 
 from builders.privacy_policies import minimal_external_policy
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.privacy_policy import PrivacyPolicyApplication
-from yoetz.domain.privacy import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.privacy_policy import PrivacyPolicyApplication
+from finishup.domain.privacy import (
     ConsentSource,
     DisclosureProposal,
     HumanPrivacyDecision,
     LocalDisclosureSink,
 )
-from yoetz.ports.privacy import EffectivePrivacyPolicy
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.models import DataCategory
-from yoetz.service.confidential_protocol import (
+from finishup.ports.privacy import EffectivePrivacyPolicy
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.models import DataCategory
+from finishup.service.confidential_protocol import (
     ClientOpenEnvelope,
     HumanCeremonyKind,
     PrivacyDecisionResult,
@@ -30,8 +30,8 @@ from yoetz.service.confidential_protocol import (
     PrivacyPendingTarget,
     ProviderCredentialTarget,
 )
-from yoetz.service.daemon import _LockedHumanEffects, _PrivacyPolicyAppRelay
-from yoetz.service.human_control import HumanControlError
+from finishup.service.daemon import _LockedHumanEffects, _PrivacyPolicyAppRelay
+from finishup.service.human_control import HumanControlError
 
 _NOW = datetime(2026, 8, 5, 12, tzinfo=UTC)
 _REQUEST_ID = "req_30000000-0000-4000-8000-000000000001"
@@ -276,7 +276,7 @@ async def test_disclosure_excerpt_drops_only_a_trailing_partial_utf8_sequence() 
 async def test_keyring_mode_can_preview_and_decide_a_bounded_disclosure() -> None:
     """Keyring is the ordinary production vault mode.
 
-    The passphrase gate made `yoetz privacy decide-disclosure` return kind_forbidden on
+    The passphrase gate made `finishup privacy decide-disclosure` return kind_forbidden on
     every keyring installation, so the confirm_every_request posture had no way to be
     answered at all. Recording an already-bounded disclosure grants no new authority.
     """
@@ -379,7 +379,7 @@ async def test_credential_probe_uses_the_ceremonys_trusted_repository_scope(
 
     monkeypatch.setattr(PrivacyCoordinator, "activate_repository", activate)
     monkeypatch.setattr(PrivacyCoordinator, "evaluate_semantic", evaluate)
-    monkeypatch.setattr("yoetz.config.load.load_config", load_config)
+    monkeypatch.setattr("finishup.config.load.load_config", load_config)
 
     refused = await effects._provider_credential_refused(target, object())
 

@@ -9,16 +9,16 @@ from typing import cast
 
 import pytest
 
-import yoetz.service.ready_composition as ready_composition
+import finishup.service.ready_composition as ready_composition
 from builders.privacy_policies import local_only_policy
-from yoetz.adapters.providers.fake import scripted_success
-from yoetz.application.egress import (
+from finishup.adapters.providers.fake import scripted_success
+from finishup.application.egress import (
     PrivacyCoordinator,
     SemanticEgressBlocked,
     SemanticEgressSuccess,
 )
-from yoetz.domain.findings import SemanticDispatchKind
-from yoetz.domain.privacy import (
+from finishup.domain.findings import SemanticDispatchKind
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -32,12 +32,12 @@ from yoetz.domain.privacy import (
     PrivacyReason,
     ProviderBinding,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     SEMANTIC_PROVIDER_INPUT_MANIFEST_INVALID_GAP,
     SEMANTIC_PROVIDER_INPUT_MANIFEST_MISSING_GAP,
 )
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.privacy import (
+from finishup.ports.clock import ClockPort
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     MinimizedDisclosure,
     OutboundGatewayPort,
@@ -45,9 +45,9 @@ from yoetz.ports.privacy import (
     PrivacyClassifierPort,
     PrivacyPolicyStorePort,
 )
-from yoetz.ports.semantic import Deadline, SemanticJudgment, SemanticResultSuccess
-from yoetz.protocol.models import DataCategory, SemanticReason, SemanticStatus
-from yoetz.protocol.redacted_values import SemanticRedactedValue
+from finishup.ports.semantic import Deadline, SemanticJudgment, SemanticResultSuccess
+from finishup.protocol.models import DataCategory, SemanticReason, SemanticStatus
+from finishup.protocol.redacted_values import SemanticRedactedValue
 
 _NOW = datetime(2026, 7, 26, tzinfo=UTC)
 _REQUEST = "req_30000000-0000-4000-8000-000000000001"
@@ -356,8 +356,8 @@ async def test_semantic_success_names_only_content_the_exact_prepared_packet_car
     """
 
     from builders.policy_cases import act, evt, make_case, record, res
-    from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
-    from yoetz.protocol.canonical import JsonValue, canonical_encode
+    from finishup.domain.events import ResultOutcome, ResultRecordedPayload
+    from finishup.protocol.canonical import JsonValue, canonical_encode
 
     shown = "evd_30000000-0000-4000-8000-000000000011"
     withheld = "evd_30000000-0000-4000-8000-000000000012"

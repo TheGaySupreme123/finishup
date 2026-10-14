@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.cli import setup
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.protocol.setup_status import SetupStatus
+from finishup.cli import setup
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.protocol.setup_status import SetupStatus
 
 
 def test_setup_status_golden_vector_matches_schema() -> None:
@@ -39,7 +39,7 @@ async def test_setup_status_output_is_validated_as_assembled_contract(
         assert start_if_absent is False
         return {"reachable": False, "state": None, "vault_mode": None}
 
-    from yoetz.cli import host_connection
+    from finishup.cli import host_connection
 
     def empty_installation_rows(_project: Path | None = None) -> list[JsonValue]:
         return []

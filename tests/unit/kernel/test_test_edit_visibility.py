@@ -5,7 +5,7 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     DecisionRecordedPayload,
@@ -16,8 +16,8 @@ from yoetz.domain.events import (
     RequestedItemKind,
     encode_payload,
 )
-from yoetz.domain.values import EventId, action_id, actor_id, event_id, obligation_id
-from yoetz.kernel.projections import (
+from finishup.domain.values import EventId, action_id, actor_id, event_id, obligation_id
+from finishup.kernel.projections import (
     DecisionProjectionRecord,
     ObligationProjectionRecord,
     PlanProjectionRecord,
@@ -25,14 +25,14 @@ from yoetz.kernel.projections import (
     ProjectionState,
     empty_projection_state,
 )
-from yoetz.kernel.test_edit_visibility import preexisting_test_edits
-from yoetz.ports.change_capture import (
+from finishup.kernel.test_edit_visibility import preexisting_test_edits
+from finishup.ports.change_capture import (
     ChangeBaseKind,
     ChangeMetadataEntry,
     CheckChangeCapture,
     CheckChangeMetadata,
 )
-from yoetz.protocol.canonical import canonical_digest
+from finishup.protocol.canonical import canonical_digest
 
 
 def _projection(*, justified: bool) -> ProjectionState:
@@ -50,7 +50,7 @@ def _projection(*, justified: bool) -> ProjectionState:
         source_frontier=1,
     )
     statement = (
-        "yoetz:test-change:act_10000000-0000-4000-8000-000000000001:sha256:"
+        "finishup:test-change:act_10000000-0000-4000-8000-000000000001:sha256:"
         + hashlib.sha256(b"tests/skip_test.py").hexdigest()
         if justified
         else "The test changed for a broader reason."
@@ -92,7 +92,7 @@ def _capture(
         else b""
     )
     text = (
-        b"""Yoetz check-time change
+        b"""FinishUP check-time change
 Files:
   M tests/skip_test.py (+1 -1)
 """
@@ -129,7 +129,7 @@ def test_skip_marker_is_scoped_to_the_file_with_the_added_marker() -> None:
 def test_renamed_diff_uses_the_destination_path_for_skip_accounting() -> None:
     capture = CheckChangeCapture(
         base="task_start",
-        text=b"""Yoetz check-time change
+        text=b"""FinishUP check-time change
 Files:
   R tests/new_test.py (+1 -1)
 End of header. The unified diff follows.
@@ -156,7 +156,7 @@ diff --git a/tests/old_test.py b/tests/new_test.py
 def test_quoted_rename_header_decodes_destination_for_skip_accounting() -> None:
     capture = CheckChangeCapture(
         base="task_start",
-        text=b"""Yoetz check-time change
+        text=b"""FinishUP check-time change
 Files:
   R "tests/new test.py" (+1 -1)
 End of header. The unified diff follows.
@@ -231,7 +231,7 @@ def test_metadata_with_omitted_files_keeps_the_baseline_unknown() -> None:
 def test_js_skip_marker_and_unquoted_spaces_are_scoped_to_the_added_file() -> None:
     capture = CheckChangeCapture(
         base="task_start",
-        text=b"""Yoetz check-time change
+        text=b"""FinishUP check-time change
 Files:
   M tests/foo b/test.js (+1 -1)
 End of header. The unified diff follows.

@@ -17,17 +17,17 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.providers import codex_app_server
-from yoetz.adapters.providers import codex_evaluator_runtime as module
-from yoetz.adapters.providers.codex_app_server import (
+from finishup.adapters.providers import codex_app_server
+from finishup.adapters.providers import codex_evaluator_runtime as module
+from finishup.adapters.providers.codex_app_server import (
     CODEX_EVALUATOR_CONFIG,
     CODEX_EVALUATOR_RUNTIME_VERSION,
     CodexEvaluatorCell,
     codex_evaluator_cell_for_platform,
 )
-from yoetz.config.models import ExternalRuntimeProfileConfig
-from yoetz.config.paths import PathSafetyError
-from yoetz.config.write import codex_subscription_runtime
+from finishup.config.models import ExternalRuntimeProfileConfig
+from finishup.config.paths import PathSafetyError
+from finishup.config.write import codex_subscription_runtime
 
 _ADMITTED_BYTES = b"admitted evaluator runtime bytes"
 _HOST_BYTES = b"admitted code-mode host bytes"

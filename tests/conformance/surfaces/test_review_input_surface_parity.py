@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from yoetz.cli.render import render_human_check
-from yoetz.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
-from yoetz.protocol.models import (
+from finishup.cli.render import render_human_check
+from finishup.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
+from finishup.protocol.models import (
     CheckMissingItemModel,
     CheckSuccessModel,
     CoverageModel,

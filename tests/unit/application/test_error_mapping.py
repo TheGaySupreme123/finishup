@@ -16,10 +16,10 @@ from typing import get_args
 
 import pytest
 
-from yoetz.application.service import ProjectedControlBody
-from yoetz.cli.exits import PUBLIC_EXIT_CODES, exit_code_for
-from yoetz.ports.control import ControlMethod
-from yoetz.protocol.errors import (
+from finishup.application.service import ProjectedControlBody
+from finishup.cli.exits import PUBLIC_EXIT_CODES, exit_code_for
+from finishup.ports.control import ControlMethod
+from finishup.protocol.errors import (
     PROTOCOL_REASON_CODES,
     SAFE_DETAIL_KEYS,
     ProtocolValueError,
@@ -28,7 +28,7 @@ from yoetz.protocol.errors import (
     normalize_safe_details,
 )
 
-_APPLICATION_SRC: Path = Path(__file__).parents[3] / "src/yoetz/application"
+_APPLICATION_SRC: Path = Path(__file__).parents[3] / "src/finishup/application"
 
 # The five behavioral classes named by the owning spec, plus the last-resort fallback code.
 # Every ``PublicErrorCode`` member belongs to exactly one bucket below.

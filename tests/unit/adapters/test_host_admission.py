@@ -4,7 +4,7 @@ Every host's automatic reviewer refuses the policy-route ``check`` because the o
 grant is invisible to it. These tests pin the rules that make the admission entry an honest
 mirror of that grant: exact-entry recognition, no edits beside a foreign rule, ``unknown`` for a
 file that could not be read, digest-bound writes, and reverse transitions that remove exactly what
-Yoetz wrote.
+FinishUP wrote.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations import host_admission as module
-from yoetz.adapters.integrations.host_admission import (
+from finishup.adapters.integrations import host_admission as module
+from finishup.adapters.integrations.host_admission import (
     CLAUDE_CHECK_TOOL_NAME,
     CLAUDE_EXTERNAL_CHECK_TOOL_NAME,
     CLAUDE_PLUGIN_CHECK_TOOL_NAME,
@@ -300,9 +300,9 @@ def test_claude_mode_change_apply_refuses_a_file_changed_after_preview(tmp_path:
     ("permissions", "detail"),
     [
         ({"deny": [CLAUDE_CHECK_TOOL_NAME]}, "deny_rule_present"),
-        ({"deny": ["mcp__plugin_yoetz_yoetz__*"]}, "deny_rule_present"),
-        ({"allow": ["mcp__plugin_yoetz_yoetz__*"]}, "wider_rule_present"),
-        ({"allow": ["mcp__plugin_yoetz_yoetz"]}, "wider_rule_present"),
+        ({"deny": ["mcp__plugin_finishup_finishup__*"]}, "deny_rule_present"),
+        ({"allow": ["mcp__plugin_finishup_finishup__*"]}, "wider_rule_present"),
+        ({"allow": ["mcp__plugin_finishup_finishup"]}, "wider_rule_present"),
         (
             {"allow": [CLAUDE_CHECK_TOOL_NAME], "ask": [CLAUDE_CHECK_TOOL_NAME]},
             "allow_and_ask_present",
@@ -428,7 +428,7 @@ def test_codex_grant_appends_the_owner_form_table_and_revoke_strips_only_it(
     written = config.read_bytes()
     assert written == owner_toml + b"\n" + CODEX_EXTERNAL_ADMISSION_TABLE.encode("utf-8")
     parsed = tomllib.loads(written.decode("utf-8"))
-    assert parsed["mcp_servers"]["yoetz"]["tools"]["check"]["approval_mode"] == "approve"
+    assert parsed["mcp_servers"]["finishup"]["tools"]["check"]["approval_mode"] == "approve"
     assert parsed["mcp_servers"]["other"] == {"command": "other"}
     assert observe_host_admission("codex", tmp_path, owner="external").entries[0].detail == (
         "external"
@@ -446,10 +446,10 @@ def test_codex_plugin_owner_uses_the_plugin_form_and_a_file_it_created_is_remove
     assert result.state_after is HostAdmissionState.PRESENT
     assert config.read_bytes() == CODEX_PLUGIN_ADMISSION_TABLE.encode("utf-8")
     parsed = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert parsed["plugins"]["yoetz@yoetz"]["mcp_servers"]["yoetz"]["tools"]["check"] == {
+    assert parsed["plugins"]["finishup@finishup"]["mcp_servers"]["finishup"]["tools"]["check"] == {
         "approval_mode": "approve"
     }
-    # Observed without an owner, the plugin form still reads as Yoetz's own entry.
+    # Observed without an owner, the plugin form still reads as FinishUP's own entry.
     assert observe_host_admission("codex", tmp_path).entries[0].detail == "plugin"
     _revoke("codex", tmp_path, owner="plugin")
     assert not config.exists()
@@ -469,8 +469,8 @@ def test_codex_grant_adds_the_active_owner_form_when_only_the_inactive_form_exis
 
     assert result.action is HostAdmissionAction.GRANT
     parsed = tomllib.loads(config.read_text(encoding="utf-8"))
-    assert parsed["mcp_servers"]["yoetz"]["tools"]["check"] == {"approval_mode": "approve"}
-    assert parsed["plugins"]["yoetz@yoetz"]["mcp_servers"]["yoetz"]["tools"]["check"] == {
+    assert parsed["mcp_servers"]["finishup"]["tools"]["check"] == {"approval_mode": "approve"}
+    assert parsed["plugins"]["finishup@finishup"]["mcp_servers"]["finishup"]["tools"]["check"] == {
         "approval_mode": "approve"
     }
     assert observe_host_admission("codex", tmp_path, owner="external").state is (
@@ -481,13 +481,13 @@ def test_codex_grant_adds_the_active_owner_form_when_only_the_inactive_form_exis
 @pytest.mark.parametrize(
     ("content", "detail"),
     [
-        (b'[mcp_servers.yoetz.tools.check]\napproval_mode = "prompt"\n', "entry_not_exact"),
+        (b'[mcp_servers.finishup.tools.check]\napproval_mode = "prompt"\n', "entry_not_exact"),
         (
-            b'[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\noutput_token_limit = 4\n',
+            b'[mcp_servers.finishup.tools.check]\napproval_mode = "approve"\noutput_token_limit = 4\n',
             "entry_not_exact",
         ),
         (
-            b'[mcp_servers.yoetz]\ndefault_tools_approval_mode = "approve"\n',
+            b'[mcp_servers.finishup]\ndefault_tools_approval_mode = "approve"\n',
             "server_default_present",
         ),
     ],
@@ -565,7 +565,7 @@ def test_cursor_partial_state_names_the_missing_surface_and_grant_completes_it(
     ide = tmp_path / ".cursor" / "permissions.json"
     ide.parent.mkdir()
     # Case-insensitive host matching: an owner-spelled entry still counts as present.
-    ide.write_text(json.dumps({"mcpAllowlist": ["YOETZ:CHECK", "github:*"]}), encoding="utf-8")
+    ide.write_text(json.dumps({"mcpAllowlist": ["FINISHUP:CHECK", "github:*"]}), encoding="utf-8")
     observation = observe_host_admission("cursor", tmp_path, owner="external")
     assert observation.state is HostAdmissionState.PARTIAL
     assert [entry.state.value for entry in observation.entries] == ["present", "absent"]
@@ -573,7 +573,7 @@ def test_cursor_partial_state_names_the_missing_surface_and_grant_completes_it(
     result = _grant("cursor", tmp_path, owner="external")
     assert result.surfaces_changed == (".cursor/cli.json",)
     assert json.loads(ide.read_text(encoding="utf-8")) == {
-        "mcpAllowlist": ["YOETZ:CHECK", "github:*"]
+        "mcpAllowlist": ["FINISHUP:CHECK", "github:*"]
     }
     assert result.state_after is HostAdmissionState.PRESENT
 
@@ -581,9 +581,13 @@ def test_cursor_partial_state_names_the_missing_surface_and_grant_completes_it(
 @pytest.mark.parametrize(
     ("surface", "content", "detail"),
     [
-        (".cursor/permissions.json", {"mcpAllowlist": ["yoetz:*"]}, "wider_rule_present"),
+        (".cursor/permissions.json", {"mcpAllowlist": ["finishup:*"]}, "wider_rule_present"),
         (".cursor/permissions.json", {"mcpAllowlist": ["*:*"]}, "wider_rule_present"),
-        (".cursor/cli.json", {"permissions": {"deny": ["Mcp(yoetz:check)"]}}, "deny_rule_present"),
+        (
+            ".cursor/cli.json",
+            {"permissions": {"deny": ["Mcp(finishup:check)"]}},
+            "deny_rule_present",
+        ),
         (".cursor/cli.json", {"permissions": {"allow": ["Mcp(*:*)"]}}, "wider_rule_present"),
     ],
 )
@@ -743,12 +747,14 @@ def test_preview_digest_binds_host_action_owner_and_checkpoint(tmp_path: Path) -
     assert digest() == digest()
 
 
-def test_sweep_removes_exactly_yoetz_entries_across_hosts_and_reports_each(tmp_path: Path) -> None:
+def test_sweep_removes_exactly_finishup_entries_across_hosts_and_reports_each(
+    tmp_path: Path,
+) -> None:
     _grant("claude", tmp_path)
     _grant("codex", tmp_path, owner="plugin")
     cursor_ide = tmp_path / ".cursor" / "permissions.json"
     cursor_ide.parent.mkdir()
-    cursor_ide.write_text(json.dumps({"mcpAllowlist": ["yoetz:*"]}), encoding="utf-8")
+    cursor_ide.write_text(json.dumps({"mcpAllowlist": ["finishup:*"]}), encoding="utf-8")
 
     outcomes = sweep_host_admission(tmp_path)
 
@@ -760,8 +766,8 @@ def test_sweep_removes_exactly_yoetz_entries_across_hosts_and_reports_each(tmp_p
     assert outcomes[0].surfaces_changed == (".claude/settings.local.json",)
     assert not (tmp_path / ".claude" / "settings.local.json").exists()
     assert not (tmp_path / ".codex" / "config.toml").exists()
-    assert json.loads(cursor_ide.read_text(encoding="utf-8")) == {"mcpAllowlist": ["yoetz:*"]}
-    # A second sweep finds nothing of Yoetz's to remove.
+    assert json.loads(cursor_ide.read_text(encoding="utf-8")) == {"mcpAllowlist": ["finishup:*"]}
+    # A second sweep finds nothing of FinishUP's to remove.
     assert [item.outcome for item in sweep_host_admission(tmp_path)] == [
         "absent",
         "absent",

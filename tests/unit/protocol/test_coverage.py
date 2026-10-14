@@ -7,9 +7,9 @@ from typing import cast
 
 import pytest
 
-import yoetz.protocol.coverage as coverage_module
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.coverage import (
+import finishup.protocol.coverage as coverage_module
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.coverage import (
     ARTIFACT_OBSERVATION_ORDER,
     AUTHORSHIP_ASSURANCE_ORDER,
     COVERAGE_DEFAULTS_BY_CHANNEL,
@@ -27,7 +27,7 @@ from yoetz.protocol.coverage import (
     coverage_to_json,
     weakest,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
 
 
 class _StringSubclass(str):

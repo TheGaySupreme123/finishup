@@ -21,7 +21,7 @@ def test_missing_installed_argon2_kdf_reports_a_bounded_startup_remedy(tmp_path:
         "UV_CACHE_DIR": str(root / "cache"),
         "UV_TOOL_BIN_DIR": str(root / "bin"),
         "UV_TOOL_DIR": str(root / "tool"),
-        "YOETZ_STORAGE_DATA_DIR": str(root / "data"),
+        "FINISHUP_STORAGE_DATA_DIR": str(root / "data"),
     }
     build = subprocess.run(
         ["uv", "build", "--no-sources", "-o", str(dist), str(_REPO_ROOT)],
@@ -51,8 +51,10 @@ def test_missing_installed_argon2_kdf_reports_a_bounded_startup_remedy(tmp_path:
     )
     assert install.returncode == 0, install.stderr.decode("utf-8", errors="replace")
 
-    executable = Path(env["UV_TOOL_BIN_DIR"]) / "yoetz"
-    argon2 = next((root / "tool" / "yoetz").rglob("cryptography/hazmat/primitives/kdf/argon2.py"))
+    executable = Path(env["UV_TOOL_BIN_DIR"]) / "finishup"
+    argon2 = next(
+        (root / "tool" / "finishup").rglob("cryptography/hazmat/primitives/kdf/argon2.py")
+    )
     argon2.rename(argon2.with_suffix(".py.hidden"))
 
     startup = subprocess.run(
@@ -64,6 +66,6 @@ def test_missing_installed_argon2_kdf_reports_a_bounded_startup_remedy(tmp_path:
     )
     assert startup.returncode == 20
     assert b"passphrase_kdf_unavailable" in startup.stderr
-    assert b"reinstall this Yoetz package" in startup.stderr
+    assert b"reinstall this FinishUP package" in startup.stderr
     assert b"Traceback (most recent call last)" not in startup.stderr
     assert not (root / "data").exists(), "missing KDF must fail before any retained-state write"

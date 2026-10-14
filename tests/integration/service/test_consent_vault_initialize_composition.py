@@ -1,6 +1,6 @@
 """Agent-authorized vault initialization over the real client/service composition (#510/#511).
 
-The defects these lock against: `yoetz consent authorize` completed the real human-control
+The defects these lock against: `finishup consent authorize` completed the real human-control
 ceremony, received a non-ready `VaultStateResult`, and still consumed the approval before the
 result was validated (#510); and the generated auto-unlock credential was durably written before
 the ceremony, so a failed initialization stranded it with no recovery path — the retry refused
@@ -23,18 +23,18 @@ from unittest.mock import patch
 
 import pytest
 
-import yoetz.service.daemon as daemon_module
-from yoetz.adapters.control.unix_socket import (
+import finishup.service.daemon as daemon_module
+from finishup.adapters.control.unix_socket import (
     bind_control_listener,
     bind_human_control_listener,
     bind_secret_listener,
 )
-from yoetz.adapters.keys.os_keyring import AutoUnlockPassphraseStore, OSKeyringError
-from yoetz.cli import elevated
-from yoetz.config.load import YoetzConfig
-from yoetz.service.daemon import ServiceDaemon
-from yoetz.service.elevated_bootstrap import ElevatedBootstrapError, load_pending
-from yoetz.service.unlock import UnlockThrottleRecord
+from finishup.adapters.keys.os_keyring import AutoUnlockPassphraseStore, OSKeyringError
+from finishup.cli import elevated
+from finishup.config.load import FinishUpConfig
+from finishup.service.daemon import ServiceDaemon
+from finishup.service.elevated_bootstrap import ElevatedBootstrapError, load_pending
+from finishup.service.unlock import UnlockThrottleRecord
 
 _FOREIGN_INSTALLATION_ID = "ins_30000000-0000-4000-8000-000000000001"
 _FOREIGN_WRITER_ID = "svc_30000000-0000-4000-8000-000000000002"
@@ -53,7 +53,7 @@ def runtime_directory(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     runtime = Path(tempfile.mkdtemp(prefix=".yctl-", dir=Path.cwd()))
     runtime.chmod(0o700)
     monkeypatch.setattr(
-        "yoetz.adapters.control.unix_socket._runtime_directory",
+        "finishup.adapters.control.unix_socket._runtime_directory",
         lambda: runtime,
     )
     try:
@@ -132,7 +132,7 @@ async def _production_daemon(tmp_path: Path, *, pristine: bool) -> ServiceDaemon
         bind_human_control_listener,
     )
     composition = await daemon_module._production_composition(  # pyright: ignore[reportPrivateUsage]
-        _config=YoetzConfig(),
+        _config=FinishUpConfig(),
         _paths=paths,
         _binders=binders,
     )
@@ -180,8 +180,8 @@ async def test_failed_initialize_discards_staged_credential_and_retry_succeeds(
     serving = asyncio.create_task(daemon.serve())
     try:
         with (
-            patch("yoetz.service.elevated_bootstrap.state_dir", return_value=consent_state),
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.service.elevated_bootstrap.state_dir", return_value=consent_state),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
         ):
             elevated.prepare_elevated("vault_initialize")
             pending = load_pending(_state=consent_state)
@@ -209,8 +209,8 @@ async def test_failed_initialize_discards_staged_credential_and_retry_succeeds(
     retry_serving = asyncio.create_task(retry_daemon.serve())
     try:
         with (
-            patch("yoetz.service.elevated_bootstrap.state_dir", return_value=consent_state),
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.service.elevated_bootstrap.state_dir", return_value=consent_state),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
         ):
             elevated.prepare_elevated("vault_initialize")
             pending = load_pending(_state=consent_state)
@@ -252,8 +252,8 @@ async def test_agent_authorized_initialize_non_ready_result_is_bounded_and_never
     serving = asyncio.create_task(daemon.serve())
     try:
         with (
-            patch("yoetz.service.elevated_bootstrap.state_dir", return_value=consent_state),
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.service.elevated_bootstrap.state_dir", return_value=consent_state),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
         ):
             elevated.prepare_elevated("vault_initialize")
             pending = load_pending(_state=consent_state)
@@ -309,8 +309,8 @@ async def test_agent_authorized_initialize_succeeds_on_pristine_state_without_se
     serving = asyncio.create_task(daemon.serve())
     try:
         with (
-            patch("yoetz.service.elevated_bootstrap.state_dir", return_value=consent_state),
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.service.elevated_bootstrap.state_dir", return_value=consent_state),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
         ):
             elevated.prepare_elevated("vault_initialize")
             pending = load_pending(_state=consent_state)
@@ -361,8 +361,8 @@ async def test_promotion_crash_is_reconciled_by_proof_at_restart(
     serving = asyncio.create_task(daemon.serve())
     try:
         with (
-            patch("yoetz.service.elevated_bootstrap.state_dir", return_value=consent_state),
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.service.elevated_bootstrap.state_dir", return_value=consent_state),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
             patch.object(
                 AutoUnlockPassphraseStore,
                 "promote_staged_initialization",

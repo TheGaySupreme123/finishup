@@ -10,10 +10,10 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
-from yoetz.domain.events import ChildDependencySnapshot as DomainChildDependencySnapshot
-from yoetz.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
-from yoetz.domain.values import (
+from finishup.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
+from finishup.domain.events import ChildDependencySnapshot as DomainChildDependencySnapshot
+from finishup.domain.findings import FINDING_KIND_TRAITS, FindingKind, FindingOrigin
+from finishup.domain.values import (
     Actor,
     ActorType,
     EventId,
@@ -24,7 +24,7 @@ from yoetz.domain.values import (
     receipt_id,
     task_id,
 )
-from yoetz.kernel.lineage import (
+from finishup.kernel.lineage import (
     ChildDependencySnapshot,
     ChildFindingSnapshot,
     LineageManifest,
@@ -33,7 +33,7 @@ from yoetz.kernel.lineage import (
     evaluate_recorded_lineage,
     lineage_manifest_from_records,
 )
-from yoetz.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
+from finishup.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
 
 _DIGEST = "sha256:" + "1" * 64
 _CHILD = task_id("tsk_00000000-0000-4000-8000-000000000001")
@@ -471,7 +471,7 @@ def test_rejected_child_with_actionable_finding_and_read_gap_stays_blocking() ->
 
 
 # -- Issue #984 (ADR-034): a child's self_verified finding rolls up as "self-verified by the child
-# agent; Yoetz could not prove it" -- never clean, never parent work, parent at best
+# agent; FinishUP could not prove it" -- never clean, never parent work, parent at best
 # insufficient_coverage. The tb4n1 children met exactly this: a repair left unproven by
 # ``command_attempt_uncorroborated`` that the child agent verified itself.
 
@@ -492,12 +492,12 @@ def _self_verified(number: str = _FINDING) -> ChildFindingSnapshot:
 
 
 def test_child_self_verified_finding_is_not_parent_work_and_never_clean() -> None:
-    from yoetz.kernel.closure_readiness import (
+    from finishup.kernel.closure_readiness import (
         FINDING_SELF_VERIFIED_GAP,
         GAP_CLASSIFICATION,
         GapClass,
     )
-    from yoetz.kernel.lineage import CHILD_SELF_VERIFIED_GAP
+    from finishup.kernel.lineage import CHILD_SELF_VERIFIED_GAP
 
     evaluation = evaluate_lineage(LineageManifest((_child(findings=(_self_verified(),)),)))
     (rollup,) = evaluation.children
@@ -575,18 +575,18 @@ def test_self_verified_child_finding_keeps_older_manifest_digests() -> None:
 
 
 def test_self_verified_child_finding_round_trips_the_recorded_event_and_schema() -> None:
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ChildDependenciesRecordedPayload,
         EventSchema,
         decode_payload,
         encode_payload,
     )
-    from yoetz.domain.events import ChildFindingSnapshot as DomainChildFindingSnapshot
-    from yoetz.domain.values import JsonValue as DomainJsonValue
-    from yoetz.protocol.canonical import JsonValue, canonical_encode
-    from yoetz.protocol.errors import ProtocolValueError
-    from yoetz.protocol.models import ChildFindingSnapshotModel
-    from yoetz.protocol.schemas import validate_schema_instance
+    from finishup.domain.events import ChildFindingSnapshot as DomainChildFindingSnapshot
+    from finishup.domain.values import JsonValue as DomainJsonValue
+    from finishup.protocol.canonical import JsonValue, canonical_encode
+    from finishup.protocol.errors import ProtocolValueError
+    from finishup.protocol.models import ChildFindingSnapshotModel
+    from finishup.protocol.schemas import validate_schema_instance
 
     kind = FindingKind.COMPLETION_WITH_OPEN_OBLIGATIONS
 

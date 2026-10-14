@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations import codex_plugin as plugin_mod
-from yoetz.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
-from yoetz.adapters.integrations.codex_plugin import (
+from finishup.adapters.integrations import codex_plugin as plugin_mod
+from finishup.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
+from finishup.adapters.integrations.codex_plugin import (
     PluginHookPresence,
     codex_supports_async_hooks,
     inspect_plugin,
@@ -18,8 +18,11 @@ from yoetz.adapters.integrations.codex_plugin import (
     parse_hooks_json,
     render_plugin_tree,
 )
-from yoetz.adapters.integrations.codex_skill import SkillResourceSource, load_packaged_skill_source
-from yoetz.ports.integrations import (
+from finishup.adapters.integrations.codex_skill import (
+    SkillResourceSource,
+    load_packaged_skill_source,
+)
+from finishup.ports.integrations import (
     HarnessId,
     IntegrationError,
     IntegrationFile,
@@ -29,7 +32,7 @@ from yoetz.ports.integrations import (
     IntegrationTarget,
     SkillSource,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
 
 
 class _Resources:
@@ -49,8 +52,8 @@ def _digest(data: bytes) -> str:
 
 def _resources() -> _Resources:
     skill = (
-        b"---\nname: yoetz\ndescription: Durable evidence guidance.\n"
-        b"metadata:\n  short-description: Yoetz guidance\n---\n\n# Yoetz\n"
+        b"---\nname: finishup\ndescription: Durable evidence guidance.\n"
+        b"metadata:\n  short-description: FinishUP guidance\n---\n\n# FinishUP\n"
     )
     guidance_files = {
         "references/agent-instructions.md": (
@@ -112,13 +115,13 @@ def _resources() -> _Resources:
         "managed_members": managed_members,
         "protocol_version": "0.1",
         "schema": "yoetz.codex-skill-manifest/1",
-        "skill": "yoetz",
+        "skill": "finishup",
         "skill_version": "0.1.0",
     }
     skill_manifest_body["member_digest"] = canonical_digest(skill_manifest_body)
     files = {
-        "skills/codex/yoetz/SKILL.md": skill,
-        "skills/codex/yoetz/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
+        "skills/codex/finishup/SKILL.md": skill,
+        "skills/codex/finishup/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
         **{package_path: data for package_path, data in guidance_files.values()},
     }
     entries: list[JsonValue] = []
@@ -138,7 +141,7 @@ def _resources() -> _Resources:
         )
     manifest_body: dict[str, JsonValue] = {
         "entries": entries,
-        "package": "yoetz",
+        "package": "finishup",
         "resource_set_version": "0.1.0",
         "schema": "yoetz.resource-manifest/1",
     }
@@ -160,7 +163,7 @@ def _enable_supported_profile(
         (
             IntegrationFile(
                 "SKILL.md",
-                len(resources.files["skills/codex/yoetz/SKILL.md"]),
+                len(resources.files["skills/codex/finishup/SKILL.md"]),
                 "sha256:" + "b" * 64,
                 "text/markdown",
             ),
@@ -178,17 +181,17 @@ def test_render_plugin_tree_wires_observation_and_compat_hooks() -> None:
     assert ".codex-plugin/plugin.json" in tree
     assert "hooks/hooks.json" in tree
     assert ".mcp.json" in tree
-    assert "skills/yoetz/SKILL.md" in tree
+    assert "skills/finishup/SKILL.md" in tree
     hooks = tree["hooks/hooks.json"].decode("utf-8")
-    assert "yoetz hooks user-prompt-submit --workspace ." in hooks
-    assert "yoetz hooks post-tool-use" in hooks
+    assert "finishup hooks user-prompt-submit --workspace ." in hooks
+    assert "finishup hooks post-tool-use" in hooks
     # The re-ground probe names its workspace like every other rendered hook (#659).
-    assert "yoetz hooks session-start --workspace ." in hooks
-    assert "yoetz hooks observe --workspace . --event SessionStart" in hooks
-    assert "yoetz hooks spool --workspace . --event PreToolUse" in hooks
-    assert "yoetz hooks spool --workspace . --event PermissionRequest" in hooks
-    assert "yoetz hooks observe --workspace . --event SubagentStop" in hooks
-    assert "mcp__yoetz__start" in hooks
+    assert "finishup hooks session-start --workspace ." in hooks
+    assert "finishup hooks observe --workspace . --event SessionStart" in hooks
+    assert "finishup hooks spool --workspace . --event PreToolUse" in hooks
+    assert "finishup hooks spool --workspace . --event PermissionRequest" in hooks
+    assert "finishup hooks observe --workspace . --event SubagentStop" in hooks
+    assert "mcp__finishup__start" in hooks
     assert "resume|compact" in hooks
 
 
@@ -196,7 +199,7 @@ def _observe_handler(parsed: Mapping[str, object], event: str) -> dict[str, obje
     groups = parsed["hooks"][event]  # type: ignore[index, call-overload]
     for group in groups:  # type: ignore[union-attr]
         for handler in group["hooks"]:  # type: ignore[index, call-overload]
-            if str(handler["command"]).startswith("yoetz hooks observe "):  # type: ignore[index]
+            if str(handler["command"]).startswith("finishup hooks observe "):  # type: ignore[index]
                 return dict(handler)  # type: ignore[arg-type, call-overload]
     raise AssertionError(f"no observe handler declared for {event}")
 
@@ -205,7 +208,7 @@ def _spool_handler(parsed: Mapping[str, object], event: str) -> dict[str, object
     groups = parsed["hooks"][event]  # type: ignore[index, call-overload]
     for group in groups:  # type: ignore[union-attr]
         for handler in group["hooks"]:  # type: ignore[index, call-overload]
-            if str(handler["command"]).startswith("yoetz hooks spool "):  # type: ignore[index]
+            if str(handler["command"]).startswith("finishup hooks spool "):  # type: ignore[index]
                 return dict(handler)  # type: ignore[arg-type, call-overload]
     raise AssertionError(f"no spool handler declared for {event}")
 
@@ -223,7 +226,7 @@ def test_observe_hook_execution_modes_use_async_only_on_capable_hosts() -> None:
     discards its stdout.
     """
 
-    from yoetz.cli.observe_hooks import ADVICE_SAFE_EVENTS, SUPPORTED_HOOK_EVENTS
+    from finishup.cli.observe_hooks import ADVICE_SAFE_EVENTS, SUPPORTED_HOOK_EVENTS
 
     parsed = dict(
         parse_hooks_json(
@@ -331,7 +334,7 @@ def test_install_allow_untested_installs_hooks(tmp_path: Path) -> None:
     assert inspection.presence is PluginHookPresence.INSTALLED
     assert inspection.state is IntegrationState.INSTALLED_EXACT
     assert inspection.trust_observable is False
-    assert (tmp_path / ".agents/plugins/yoetz/hooks/hooks.json").is_file()
+    assert (tmp_path / ".agents/plugins/finishup/hooks/hooks.json").is_file()
 
 
 def test_install_refuses_locally_modified_file(
@@ -345,7 +348,7 @@ def test_install_refuses_locally_modified_file(
     assert first.presence is PluginHookPresence.INSTALLED
     assert first.trust_observable is False
 
-    hooks_path = tmp_path / ".agents/plugins/yoetz/hooks/hooks.json"
+    hooks_path = tmp_path / ".agents/plugins/finishup/hooks/hooks.json"
     hooks_path.write_bytes(hooks_path.read_bytes() + b"# modified\n")
     with pytest.raises(IntegrationError) as caught:
         install_plugin(target, resource_source=resources)
@@ -371,7 +374,7 @@ def test_install_replaces_prior_managed_variant_render_without_replace_modified(
     _enable_supported_profile(monkeypatch, resources)
     target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
     install_plugin(target, resource_source=resources, codex_version="0.148.0-alpha.6")
-    hooks_path = tmp_path / ".agents/plugins/yoetz/hooks/hooks.json"
+    hooks_path = tmp_path / ".agents/plugins/finishup/hooks/hooks.json"
     assert b'"async":true' in hooks_path.read_bytes()
 
     inspection = install_plugin(target, resource_source=resources, codex_version=None)
@@ -381,7 +384,7 @@ def test_install_replaces_prior_managed_variant_render_without_replace_modified(
 
 
 def test_plugin_tree_matches_marker_accepts_only_marker_consistent_trees() -> None:
-    from yoetz.adapters.integrations.codex_plugin import (
+    from finishup.adapters.integrations.codex_plugin import (
         plugin_tree_matches_marker,
         render_plugin_install_tree,
     )
@@ -436,7 +439,7 @@ def test_install_restores_previous_plugin_when_swap_fails(
     _enable_supported_profile(monkeypatch, resources)
     target = IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(tmp_path))
     install_plugin(target, resource_source=resources)
-    destination = tmp_path / ".agents/plugins/yoetz"
+    destination = tmp_path / ".agents/plugins/finishup"
     marker_path = destination / ".yoetz-plugin-install.json"
     original_marker = marker_path.read_bytes()
     real_replace = plugin_mod.os.replace

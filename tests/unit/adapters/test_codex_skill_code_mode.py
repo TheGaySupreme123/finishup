@@ -1,6 +1,6 @@
 """The Codex skill's code-mode section works in a sandbox without `crypto` (issue #918).
 
-Codex code mode runs Yoetz calls from JavaScript cells. Its sandbox has no `crypto`, yet every
+Codex code mode runs FinishUP calls from JavaScript cells. Its sandbox has no `crypto`, yet every
 `request_id` and event-draft id must be a strict prefixed UUIDv4: the DeepSWE v2 run recorded 45
 `crypto is not defined` failures and hand-rolled ids the `request_id` pattern rejected. These
 tests execute the skill's exact helper snippet in JavaScript runtimes with and without `crypto`
@@ -22,12 +22,12 @@ from typing import Final, cast
 
 import pytest
 
-from yoetz.mcp import server as bridge
-from yoetz.protocol.schemas import load_schema_catalog, schema_document_for
+from finishup.mcp import server as bridge
+from finishup.protocol.schemas import load_schema_catalog, schema_document_for
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 _SKILL: Final = _REPO_ROOT / "guidance" / "startup.md"
-_PACKAGED_SKILL: Final = _REPO_ROOT / "src" / "yoetz" / "resources" / "guidance" / "startup.md"
+_PACKAGED_SKILL: Final = _REPO_ROOT / "src" / "finishup" / "resources" / "guidance" / "startup.md"
 _NODE: Final = shutil.which("node")
 _SAMPLES: Final = 10_000
 # Every id prefix the section tells the agent to mint with the helper.
@@ -239,14 +239,14 @@ def test_the_request_id_pattern_still_rejects_the_hand_rolled_workaround() -> No
 def test_the_discovery_pattern_prints_only_the_declaration(tmp_path: Path) -> None:
     snippet = _block_containing("exec tool declaration:")
     description = (
-        "# Yoetz: call start first\\n\\nInstructions.\\n\\nTool description.\\n\\n"
+        "# FinishUP: call start first\\n\\nInstructions.\\n\\nTool description.\\n\\n"
         "exec tool declaration:\\ndeclare const start: (args: StartRequest) => Promise<unknown>;"
     )
     driver = (
         'const vm = require("node:vm");\n'
         "const printed = [];\n"
         "const context = vm.createContext({\n"
-        f'  ALL_TOOLS: [{{ name: "mcp__yoetz__start", description: "{description}" }}],\n'
+        f'  ALL_TOOLS: [{{ name: "mcp__finishup__start", description: "{description}" }}],\n'
         "  text: (value) => printed.push(value),\n"
         "});\n"
         f"vm.runInContext({json.dumps(snippet)}, context);\n"
@@ -271,7 +271,7 @@ def test_every_code_mode_snippet_is_valid_javascript(tmp_path: Path) -> None:
 
 
 def test_guidance_is_read_from_the_structured_text() -> None:
-    snippet = _block_containing("mcp__yoetz__read_guidance")
+    snippet = _block_containing("mcp__finishup__read_guidance")
     # The page body is the structured result's `text`, never the pointer-only `content`.
     assert "const p=g.structuredContent;" in snippet
     assert 'typeof p.text!=="string"' in snippet
@@ -290,10 +290,10 @@ def test_the_yield_guidance_matches_the_bridge_call_deadlines() -> None:
     assert deadlines["start"] == deadlines["publish_work"] == deadlines["status"]
     assert f"`start`, `publish_work` and `status` {deadlines['status']} each" in section
     assert "Set `yield_time_ms` at or above the call deadline" in section
-    # Scoped to Yoetz calls: a big yield must not stall builds or tests.
-    assert "keep builds, tests and other non-Yoetz work in separate cells" in section
+    # Scoped to FinishUP calls: a big yield must not stall builds or tests.
+    assert "keep builds, tests and other non-FinishUP work in separate cells" in section
     assert "not a series of short waits" in section
-    example = _block_containing("mcp__yoetz__check")
+    example = _block_containing("mcp__finishup__check")
     pragma = re.match(r'// @exec: \{"yield_time_ms": (\d+)\}\n', example)
     assert pragma is not None
     assert int(pragma.group(1)) >= deadlines["check"]

@@ -2,7 +2,7 @@
 
 Status producers derive the checklist fields (``state``, ``agent_actionable``, …) from the same
 blocking conditions and gaps; hand-authored vectors use this helper so they stay consistent with
-``yoetz.kernel.closure_readiness`` instead of restating the split in every test.
+``finishup.kernel.closure_readiness`` instead of restating the split in every test.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from yoetz.kernel.closure_readiness import (
+from finishup.kernel.closure_readiness import (
     GAP_CLASSIFICATION_VERSION,
     ClosureReadinessFacts,
     derive_closure_readiness,

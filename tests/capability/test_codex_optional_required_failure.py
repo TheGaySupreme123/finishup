@@ -2,7 +2,7 @@
 
 Non-live cells prove config profiles differ only by the required flag, that a missing MCP
 executable fails closed without fabricating ledger state, and that unfrozen Codex host surfaces
-cannot claim continuation/blocking. Live Codex surface cells require ``YOETZ_LIVE_CODEX=1``.
+cannot claim continuation/blocking. Live Codex surface cells require ``FINISHUP_LIVE_CODEX=1``.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from capability.evidence import (
     record_and_write,
     runtime_capability_context,
 )
-from yoetz.protocol.canonical import canonical_digest
+from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _VERSION = "0.139.0"
@@ -33,8 +33,8 @@ _VERSION = "0.139.0"
 def _profiles() -> tuple[str, str]:
     base = {
         "channel": "codex_mcp_stdio",
-        "command_tokens": ("yoetz", "mcp", "serve"),
-        "server_name": "yoetz",
+        "command_tokens": ("finishup", "mcp", "serve"),
+        "server_name": "finishup",
     }
     return (
         canonical_digest({**base, "required": False}),
@@ -78,7 +78,7 @@ def test_optional_and_required_profiles_differ_only_by_flag(tmp_path: Path) -> N
 def test_missing_executable_fails_closed_without_ledger_fabrication(tmp_path: Path) -> None:
     evidence_root = tmp_path / "evidence"
     evidence_root.mkdir(mode=0o700)
-    missing = tmp_path / "missing-yoetz-mcp"
+    missing = tmp_path / "missing-finishup-mcp"
     child = (
         "import json,sys;"
         "print(json.dumps({'jsonrpc':'2.0','id':1,'error':{'code':-32000,"
@@ -86,7 +86,7 @@ def test_missing_executable_fails_closed_without_ledger_fabrication(tmp_path: Pa
         "sys.exit(1)"
     )
     # Simulate the MCP stdio child the host would launch when the configured executable is absent:
-    # the process exits before any Yoetz tool result or durable mutation.
+    # the process exits before any FinishUP tool result or durable mutation.
     completed = subprocess.run(
         [sys.executable, "-I", "-c", child],
         input=b"",

@@ -7,7 +7,7 @@ import shutil
 from collections.abc import Sequence
 from pathlib import Path
 
-from yoetz.adapters.approved_checks import (
+from finishup.adapters.approved_checks import (
     ApprovedCheckApproval,
     ApprovedCheckCommand,
     ApprovedCheckOutcome,
@@ -15,15 +15,15 @@ from yoetz.adapters.approved_checks import (
     ApprovedCheckStatus,
     approval_commitment,
 )
-from yoetz.adapters.check_sandbox import (
+from finishup.adapters.check_sandbox import (
     LinuxCheckSandbox,
     MacOSCheckSandbox,
     UnsupportedCheckSandbox,
     default_check_sandbox,
     probe_check_sandbox,
 )
-from yoetz.adapters.workspace_inspect import open_inspect_workspace
-from yoetz.ports.check_sandbox import CheckSandboxStatus
+from finishup.adapters.workspace_inspect import open_inspect_workspace
+from finishup.ports.check_sandbox import CheckSandboxStatus
 
 _TRUE = shutil.which("true") or "/usr/bin/true"
 
@@ -59,7 +59,7 @@ def test_unsupported_sandbox_never_claims_network_isolation() -> None:
     launch = UnsupportedCheckSandbox().prepare(
         argv=(_TRUE,),
         cwd=Path("/"),
-        env={"YOETZ_APPROVED_CHECK_NETWORK": "denied"},
+        env={"FINISHUP_APPROVED_CHECK_NETWORK": "denied"},
         deny_network=True,
     )
     assert launch.status is CheckSandboxStatus.UNAVAILABLE

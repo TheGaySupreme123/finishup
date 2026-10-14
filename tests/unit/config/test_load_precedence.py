@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.config.load import load_config, parse_minimal_safe_config
-from yoetz.config.models import ConfigError
+from finishup.config.load import load_config, parse_minimal_safe_config
+from finishup.config.models import ConfigError
 
 
 class _NoValueReads(Mapping[str, str]):
@@ -49,9 +49,9 @@ payloads = false
             "logging.level": "debug",
         },
         {
-            "YOETZ_VERIFICATION_MAX_FINDINGS": "5",
-            "YOETZ_LOG_LEVEL": "error",
-            "YOETZ_STORAGE_DATA_DIR": "/env/data",
+            "FINISHUP_VERIFICATION_MAX_FINDINGS": "5",
+            "FINISHUP_LOG_LEVEL": "error",
+            "FINISHUP_STORAGE_DATA_DIR": "/env/data",
         },
         config_path,
     )
@@ -74,7 +74,7 @@ max_fanout = 12
     )
     config = load_config(
         {"lineage.max_depth": "6"},
-        {"YOETZ_LINEAGE_MAX_FANOUT": "16"},
+        {"FINISHUP_LINEAGE_MAX_FANOUT": "16"},
         config_path,
     )
     assert config.lineage.max_depth == 6
@@ -84,21 +84,21 @@ max_fanout = 12
 def test_shadowed_lower_precedence_scalar_is_not_parsed(tmp_path: Path) -> None:
     config = load_config(
         {"verification.max_findings": "7"},
-        {"YOETZ_VERIFICATION_MAX_FINDINGS": "not-an-integer"},
+        {"FINISHUP_VERIFICATION_MAX_FINDINGS": "not-an-integer"},
         tmp_path / "missing.toml",
     )
     assert config.verification.max_findings == 7
 
 
 def test_secret_name_precedes_unknown_without_value_reads() -> None:
-    env = _NoValueReads(("YOETZ_Z_UNKNOWN", "YOETZ_PROVIDER_API_KEY"))
+    env = _NoValueReads(("FINISHUP_Z_UNKNOWN", "FINISHUP_PROVIDER_API_KEY"))
     with pytest.raises(ConfigError) as caught:
         load_config({}, env, None)
     assert caught.value.reason_code == "secret_env_forbidden"
-    assert caught.value.safe_name == "YOETZ_PROVIDER_API_KEY"
+    assert caught.value.safe_name == "FINISHUP_PROVIDER_API_KEY"
     assert env.reads == 0
 
-    unknown = _NoValueReads(("YOETZ_Z_UNKNOWN",))
+    unknown = _NoValueReads(("FINISHUP_Z_UNKNOWN",))
     with pytest.raises(ConfigError) as caught_unknown:
         load_config({}, unknown, None)
     assert caught_unknown.value.reason_code == "unknown_config_env_var"
@@ -117,9 +117,9 @@ def test_unknown_and_secret_service_override_names_fail_closed() -> None:
 
 def test_observation_has_no_environment_or_service_override_surface() -> None:
     with pytest.raises(ConfigError) as environment:
-        load_config({}, {"YOETZ_OBSERVATION_ENABLED": "false"}, None)
+        load_config({}, {"FINISHUP_OBSERVATION_ENABLED": "false"}, None)
     assert environment.value.reason_code == "unknown_config_env_var"
-    assert environment.value.safe_name == "YOETZ_OBSERVATION_ENABLED"
+    assert environment.value.safe_name == "FINISHUP_OBSERVATION_ENABLED"
 
     with pytest.raises(ConfigError) as service_override:
         load_config({"observation.enabled": "false"}, {}, None)
@@ -144,31 +144,31 @@ def test_toml_parser_size_and_release_probe_rules(tmp_path: Path) -> None:
     probe = tmp_path / "probe.toml"
     probe.write_text('profile="release-probe"\n')
     with pytest.raises(ConfigError) as release_probe:
-        load_config({}, {"YOETZ_PROFILE": "strict-local"}, probe)
+        load_config({}, {"FINISHUP_PROFILE": "strict-local"}, probe)
     assert release_probe.value.reason_code == "release_probe_not_a_user_profile"
 
 
 def test_missing_file_uses_defaults_and_empty_env_is_unset(tmp_path: Path) -> None:
-    config = load_config({}, {"YOETZ_LOG_LEVEL": ""}, tmp_path / "missing.toml")
+    config = load_config({}, {"FINISHUP_LOG_LEVEL": ""}, tmp_path / "missing.toml")
     assert config.profile == "strict-local"
     assert config.logging.level == "info"
 
 
 def test_tui_opt_out_is_known_process_control_not_a_config_override(tmp_path: Path) -> None:
-    config = load_config({}, {"YOETZ_TUI": "0"}, tmp_path / "missing.toml")
+    config = load_config({}, {"FINISHUP_TUI": "0"}, tmp_path / "missing.toml")
 
     assert config.profile == "strict-local"
 
 
 def test_isolated_root_is_known_paths_control_not_a_config_override(tmp_path: Path) -> None:
-    """The isolation root (issue #518) belongs to yoetz.config.paths, not to config leaves.
+    """The isolation root (issue #518) belongs to finishup.config.paths, not to config leaves.
 
     Strict loading must recognize it (an isolated service start would otherwise refuse with
     ``unknown_config_env_var``) while leaving every configuration value untouched.
     """
 
     config = load_config(
-        {}, {"YOETZ_ISOLATED_ROOT": str(tmp_path / "iso")}, tmp_path / "missing.toml"
+        {}, {"FINISHUP_ISOLATED_ROOT": str(tmp_path / "iso")}, tmp_path / "missing.toml"
     )
 
     assert config.profile == "strict-local"
@@ -235,11 +235,11 @@ def test_finding_attempt_budget_is_owner_configurable_and_written_only_when_chos
 ) -> None:
     """Issue #905: default 5, set by file, environment or override, and bounded 1..50."""
 
-    from yoetz.config.models import DEFAULT_FINDING_ATTEMPT_BUDGET
-    from yoetz.kernel.finding_todo import (
+    from finishup.config.models import DEFAULT_FINDING_ATTEMPT_BUDGET
+    from finishup.kernel.finding_todo import (
         DEFAULT_FINDING_ATTEMPT_BUDGET as KERNEL_DEFAULT,
     )
-    from yoetz.kernel.finding_todo import MAX_FINDING_ATTEMPT_BUDGET as KERNEL_MAX
+    from finishup.kernel.finding_todo import MAX_FINDING_ATTEMPT_BUDGET as KERNEL_MAX
 
     assert (DEFAULT_FINDING_ATTEMPT_BUDGET, KERNEL_DEFAULT, KERNEL_MAX) == (5, 5, 50)
     config_path = tmp_path / "config.toml"
@@ -247,7 +247,7 @@ def test_finding_attempt_budget_is_owner_configurable_and_written_only_when_chos
     assert load_config({}, {}, config_path).verification.finding_attempt_budget == 3
     assert (
         load_config(
-            {}, {"YOETZ_VERIFICATION_FINDING_ATTEMPT_BUDGET": "7"}, config_path
+            {}, {"FINISHUP_VERIFICATION_FINDING_ATTEMPT_BUDGET": "7"}, config_path
         ).verification.finding_attempt_budget
         == 7
     )
@@ -264,7 +264,7 @@ def test_finding_attempt_budget_is_owner_configurable_and_written_only_when_chos
 
 
 def test_rendered_config_writes_the_budget_only_when_the_owner_chose_one(tmp_path: Path) -> None:
-    from yoetz.config.write import render_config_toml
+    from finishup.config.write import render_config_toml
 
     config_path = tmp_path / "config.toml"
     config_path.write_text('profile = "test-fake"\n')

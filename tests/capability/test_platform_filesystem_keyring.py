@@ -24,11 +24,11 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.adapters.keys.encrypted_vault import EncryptedVaultStore, VaultRecordKind
-from yoetz.adapters.keys.os_keyring import OSKeyringState, OSVaultRootKeySource
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import SecretConsumer, SecretPurpose
-from yoetz.protocol.canonical import canonical_digest
+from finishup.adapters.keys.encrypted_vault import EncryptedVaultStore, VaultRecordKind
+from finishup.adapters.keys.os_keyring import OSKeyringState, OSVaultRootKeySource
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.secret_memory import SecretConsumer, SecretPurpose
+from finishup.protocol.canonical import canonical_digest
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _INSTALLATION_ID = "ins_70000000-0000-4000-8000-000000000001"
@@ -96,7 +96,7 @@ def test_isolated_filesystem_and_sqlite_durability_cells(tmp_path: Path) -> None
 
     data = bundle / "payload.bin"
     staged = bundle / "payload.bin.tmp"
-    staged.write_bytes(b"yoetz-capability-fsync")
+    staged.write_bytes(b"finishup-capability-fsync")
     with staged.open("rb+") as handle:
         handle.flush()
         os.fsync(handle.fileno())
@@ -106,7 +106,7 @@ def test_isolated_filesystem_and_sqlite_durability_cells(tmp_path: Path) -> None
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
-    assert data.read_bytes() == b"yoetz-capability-fsync"
+    assert data.read_bytes() == b"finishup-capability-fsync"
     assert stat.S_IMODE(bundle.stat().st_mode) == 0o700
     assert data.stat().st_uid == os.geteuid()
 

@@ -15,14 +15,14 @@ from typing import Final
 
 import pytest
 
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.readiness_text import READINESS_STATES, readiness_directive
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.readiness_text import READINESS_STATES, readiness_directive
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 _GUIDANCE: Final = _REPO_ROOT / "guidance"
 _SKILLS: Final = tuple(
-    _REPO_ROOT / "skills" / host / "yoetz" / "SKILL.md"
+    _REPO_ROOT / "skills" / host / "finishup" / "SKILL.md"
     for host in ("codex", "claude-code", "cursor", "portable")
 )
 _APPROVED: Final = (
@@ -133,7 +133,7 @@ def test_no_shipped_sentence_recommends_rechecking_after_the_stop_state(path: Pa
 def test_every_status_view_summary_names_the_closure_state(view: str) -> None:
     """The checklist rides on every view, so every view's text names it (Greptile P2)."""
 
-    from yoetz.mcp.summaries import summary_for_status
+    from finishup.mcp.summaries import summary_for_status
 
     readiness: dict[str, JsonValue] = {
         "declared_obligation_count": "1",

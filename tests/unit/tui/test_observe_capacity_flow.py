@@ -1,6 +1,6 @@
 """``/observe`` shows the effective budget and changes capacity only through a disclosed preview.
 
-A larger local retention capacity costs disk, memory, and CPU work, and "no Yoetz cap" is not
+A larger local retention capacity costs disk, memory, and CPU work, and "no FinishUP cap" is not
 supported by the structural queue in this storage revision (#828). These tests drive the flow
 with a fake runtime and pin the owner-visible contract: the status block names the effective
 budget, every change is previewed with the shared disclosure wording before anything is applied,
@@ -16,29 +16,29 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.domain.observation_budget import (
+from finishup.domain.observation_budget import (
     STANDARD_CAPACITY,
     BudgetLimits,
     CapacityRequest,
     ObservationCapacity,
     no_cap_support,
 )
-from yoetz.domain.observation_capacity_policy import (
+from finishup.domain.observation_capacity_policy import (
     capacity_change_disclosure,
     render_capacity_disclosure_lines,
 )
-from yoetz.tui.app import YoetzTui
-from yoetz.tui.commands import command_named
-from yoetz.tui.runtime import ObservationCapacityUnavailable, RuntimeError_
-from yoetz.tui.symbols import Level
-from yoetz.tui.widgets.views import ApprovalView, BaseView, SelectionView, TextEntryView
+from finishup.tui.app import FinishUpTui
+from finishup.tui.commands import command_named
+from finishup.tui.runtime import ObservationCapacityUnavailable, RuntimeError_
+from finishup.tui.symbols import Level
+from finishup.tui.widgets.views import ApprovalView, BaseView, SelectionView, TextEntryView
 
 pytestmark = pytest.mark.anyio
 
-_ROOT = Path("/srv/yoetz")
+_ROOT = Path("/srv/finishup")
 _DIGEST = "sha256:" + "ab" * 32
 _ALTERNATIVE = (
-    "yoetz observe selection-preview --workspace <workspace> --detail focused "
+    "finishup observe selection-preview --workspace <workspace> --detail focused "
     "--capacity largest --persist"
 )
 
@@ -156,7 +156,7 @@ class _Runtime:
             "current_selection": _selection(STANDARD_CAPACITY) | {"origin": "default"},
             "requested_selection": _selection(capacity.capacity),
             "current_effective_budget": _effective_budget(),
-            "next_command": "yoetz observe selection-apply --workspace <workspace>",
+            "next_command": "finishup observe selection-apply --workspace <workspace>",
         }
 
     async def apply_observation_selection(
@@ -173,11 +173,11 @@ class _Runtime:
 
 
 class _Harness:
-    """A ``YoetzTui`` with the mounted-widget surfaces replaced by recording stubs."""
+    """A ``FinishUpTui`` with the mounted-widget surfaces replaced by recording stubs."""
 
     def __init__(self, runtime: _Runtime, answers: Sequence[Answer]) -> None:
         self.runtime = runtime
-        self.app = YoetzTui(runtime)  # pyright: ignore[reportArgumentType]
+        self.app = FinishUpTui(runtime)  # pyright: ignore[reportArgumentType]
         self.said: list[tuple[Level, str, tuple[str, ...]]] = []
         self.views: list[BaseView] = []
         self.answers: list[Answer] = list(answers)
@@ -238,7 +238,7 @@ async def test_status_shows_the_effective_budget_then_offers_keep_first() -> Non
     assert "capacity: selected 512 rows (standard); effective 512 rows (standard)" in body
     assert "capacity reason: selected" in body
     assert "closest limit: count; 12.50% used (1250 bps)" in body
-    assert "no Yoetz cap: unavailable (state document ceiling 16 MiB)" in body
+    assert "no FinishUP cap: unavailable (state document ceiling 16 MiB)" in body
     assert "detail and capacity do not change content or privacy authority" in body
     view = harness.views[0]
     assert isinstance(view, SelectionView)
@@ -265,7 +265,7 @@ async def test_a_status_without_an_effective_budget_says_unknown() -> None:
     _level, body = harness.titled("Observation selection")
     assert "capacity: unknown" in body
     assert "closest limit: unknown" in body
-    assert "no Yoetz cap: unknown" in body
+    assert "no FinishUP cap: unknown" in body
 
 
 @pytest.mark.parametrize("answer", [None, "keep"])
@@ -302,8 +302,10 @@ async def test_custom_preview_discloses_the_change_and_cancel_leaves_it_unchange
         "The shared workspace queue follows the largest active selection, so this can raise "
         "the queue and state-document bounds for every session in the workspace."
     ) in shown
-    assert "Pause new observation ingest with: yoetz observe pause --workspace <workspace>" in shown
-    assert "Resume with: yoetz observe resume --workspace <workspace>." in shown
+    assert (
+        "Pause new observation ingest with: finishup observe pause --workspace <workspace>" in shown
+    )
+    assert "Resume with: finishup observe resume --workspace <workspace>." in shown
     assert str(_ROOT) not in shown
     assert "Performance validation is provisional (not_validated)." in shown
     approval = harness.views[-1]
@@ -326,7 +328,7 @@ async def test_applying_a_decrease_points_back_at_the_default_instead_of_lowerin
     _, body = harness.titled("Local retention capacity applied")
     assert "Lower it later: /observe → Recommended." not in body
     assert (
-        "Return to the default with: yoetz observe selection-revoke --workspace <workspace> "
+        "Return to the default with: finishup observe selection-revoke --workspace <workspace> "
         "--persist" in body
     )
 
@@ -346,11 +348,13 @@ async def test_apply_sends_the_previewed_digest_and_shows_the_lower_and_pause_pa
     assert "capacity: selected 2,048 rows (larger); effective 2,048 rows (larger)" in body
     assert "closest limit: count; 1.56% used (156 bps)" in body
     assert any(
-        line.startswith("Lower it later with: yoetz observe selection-preview") for line in body
+        line.startswith("Lower it later with: finishup observe selection-preview") for line in body
     )
     assert "--capacity standard --persist" in " ".join(body)
-    assert "Pause new observation ingest with: yoetz observe pause --workspace <workspace>" in body
-    assert "Resume with: yoetz observe resume --workspace <workspace>" in body
+    assert (
+        "Pause new observation ingest with: finishup observe pause --workspace <workspace>" in body
+    )
+    assert "Resume with: finishup observe resume --workspace <workspace>" in body
     # The project path is never echoed into a command.
     assert str(_ROOT) not in harness.transcript
     # The setting is never described as safe, and validation is never claimed.
@@ -368,7 +372,7 @@ async def test_custom_increase_below_standard_restores_the_smaller_count() -> No
     assert runtime.applies == [(CapacityRequest.for_capacity(ObservationCapacity(128)), _DIGEST)]
     _, body = harness.titled("Local retention capacity applied")
     assert any(
-        line.startswith("Lower it later with: yoetz observe selection-preview") for line in body
+        line.startswith("Lower it later with: finishup observe selection-preview") for line in body
     )
     assert "--capacity custom --queue-count 64 --persist" in " ".join(body)
     assert "Recommended" not in " ".join(body)
@@ -383,10 +387,10 @@ async def test_no_cap_explains_the_ceiling_and_never_applies() -> None:
 
     assert runtime.previews == [CapacityRequest("no_cap", None)]
     assert runtime.applies == []
-    level, body = harness.titled("No Yoetz cap is not available")
+    level, body = harness.titled("No FinishUP cap is not available")
     assert level is Level.OPTIONAL
     shown = "\n".join(body)
-    assert "No Yoetz cap is not available for the structural queue" in shown
+    assert "No FinishUP cap is not available for the structural queue" in shown
     assert "16 MiB safety ceiling" in shown
     assert f"Alternative: choose Largest (8,192 rows) in /observe, or run: {_ALTERNATIVE}" in shown
     assert "Capacity was left unchanged." in shown

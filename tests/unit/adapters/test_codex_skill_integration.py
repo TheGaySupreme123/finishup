@@ -7,16 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
-from yoetz.adapters.integrations.codex_skill import (
+from finishup.adapters.integrations.codex_capability_cells import skill_manifest_capability_fields
+from finishup.adapters.integrations.codex_skill import (
     CODEX_HARNESS_PROFILE,
     CodexSkillIntegration,
     build_managed_marker,
     inspect_destination,
     load_packaged_skill_source,
 )
-from yoetz.domain.values import request_id
-from yoetz.ports.integrations import (
+from finishup.domain.values import request_id
+from finishup.ports.integrations import (
     HarnessId,
     HarnessProfile,
     IntegrationAction,
@@ -29,8 +29,8 @@ from yoetz.ports.integrations import (
     SkillPreviewCommand,
     SkillStatusCommand,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
 
 
 @pytest.fixture
@@ -55,8 +55,8 @@ def _digest(data: bytes) -> str:
 
 def _resources() -> _Resources:
     skill = (
-        b"---\nname: yoetz\ndescription: Durable evidence guidance.\n"
-        b"metadata:\n  short-description: Yoetz guidance\n---\n\n# Yoetz\n"
+        b"---\nname: finishup\ndescription: Durable evidence guidance.\n"
+        b"metadata:\n  short-description: FinishUP guidance\n---\n\n# FinishUP\n"
     )
     skill_manifest_body: dict[str, JsonValue] = {
         **dict(skill_manifest_capability_fields()),
@@ -65,13 +65,13 @@ def _resources() -> _Resources:
         "managed_members": [],
         "protocol_version": "0.1",
         "schema": "yoetz.codex-skill-manifest/1",
-        "skill": "yoetz",
+        "skill": "finishup",
         "skill_version": "0.1.0",
     }
     skill_manifest_body["member_digest"] = canonical_digest(skill_manifest_body)
     files = {
-        "skills/codex/yoetz/SKILL.md": skill,
-        "skills/codex/yoetz/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
+        "skills/codex/finishup/SKILL.md": skill,
+        "skills/codex/finishup/manifest.json": canonical_encode(skill_manifest_body) + b"\n",
         "guidance/agent-instructions.md": b"# Agent instructions\n",
         "guidance/coverage-and-receipts.md": b"# Coverage and receipts\n",
         "guidance/publication-policy.md": b"# Publication policy\n",
@@ -87,7 +87,7 @@ def _resources() -> _Resources:
         "guidance/page-delivery.md": b"# Page delivery\n",
     }
     installed_paths = {
-        "SKILL.md": "skills/codex/yoetz/SKILL.md",
+        "SKILL.md": "skills/codex/finishup/SKILL.md",
         "references/agent-instructions.md": "guidance/agent-instructions.md",
         "references/coverage-and-receipts.md": "guidance/coverage-and-receipts.md",
         "references/publication-policy.md": "guidance/publication-policy.md",
@@ -127,7 +127,7 @@ def _resources() -> _Resources:
     skill_manifest_body["managed_members"] = managed_members
     skill_manifest_body.pop("member_digest")
     skill_manifest_body["member_digest"] = canonical_digest(skill_manifest_body)
-    files["skills/codex/yoetz/manifest.json"] = canonical_encode(skill_manifest_body) + b"\n"
+    files["skills/codex/finishup/manifest.json"] = canonical_encode(skill_manifest_body) + b"\n"
     entries: list[JsonValue] = []
     for package_path, data in sorted(files.items(), key=lambda item: item[0].encode("ascii")):
         entries.append(
@@ -145,7 +145,7 @@ def _resources() -> _Resources:
         )
     manifest_body: dict[str, JsonValue] = {
         "entries": entries,
-        "package": "yoetz",
+        "package": "finishup",
         "resource_set_version": "0.1.0",
         "schema": "yoetz.resource-manifest/1",
     }
@@ -156,14 +156,14 @@ def _resources() -> _Resources:
 
 def test_profile_does_not_promote_rollout_parser_evidence_to_skill_support() -> None:
     assert CODEX_HARNESS_PROFILE.harness_id is HarnessId.CODEX
-    assert CODEX_HARNESS_PROFILE.skill_root == ".agents/skills/yoetz/"
+    assert CODEX_HARNESS_PROFILE.skill_root == ".agents/skills/finishup/"
     assert CODEX_HARNESS_PROFILE.capability_profile_ids == ()
     assert CODEX_HARNESS_PROFILE.supported_versions == ()
     assert dict(CODEX_HARNESS_PROFILE.hooks_by_capability_profile) == {}
     with pytest.raises(ProtocolValueError):
         HarnessProfile(
             HarnessId.CODEX,
-            ".agents/skills/yoetz/",
+            ".agents/skills/finishup/",
             "codex_skill_frontmatter_v1",
             (),
             ("0.139.0",),
@@ -260,7 +260,7 @@ async def test_explicit_allow_untested_installs_discoverable_project_skill(
     status = await adapter.status_skill(HarnessId.CODEX, SkillStatusCommand(target))
     assert status.state is IntegrationState.INSTALLED_EXACT
     assert status.compatibility == "unsupported"
-    assert (tmp_path / ".agents/skills/yoetz/SKILL.md").is_file()
+    assert (tmp_path / ".agents/skills/finishup/SKILL.md").is_file()
 
 
 @pytest.mark.anyio
@@ -284,7 +284,7 @@ async def test_symlinked_agents_and_skills_parents_are_target_unsafe(tmp_path: P
     with pytest.raises(IntegrationError) as caught_skills:
         await adapter.status_skill(HarnessId.CODEX, SkillStatusCommand(target))
     assert caught_skills.value.reason is IntegrationReason.TARGET_UNSAFE
-    assert not (outside / "yoetz").exists()
+    assert not (outside / "finishup").exists()
 
 
 @pytest.mark.anyio
@@ -318,8 +318,8 @@ async def test_parent_replaced_between_preview_and_apply_fails_closed(tmp_path: 
             ),
         )
     assert caught.value.reason is IntegrationReason.PREVIEW_STALE
-    assert not (skills / "yoetz").exists()
-    assert not (replaced / "yoetz").exists()
+    assert not (skills / "finishup").exists()
+    assert not (replaced / "finishup").exists()
 
 
 @pytest.mark.anyio
@@ -328,7 +328,7 @@ async def test_parent_swap_after_path_identity_check_is_caught_by_retained_fd(
 ) -> None:
     """#396: the descriptor itself, not a prior pathname check, binds the preview."""
 
-    import yoetz.adapters.integrations.codex_skill as module
+    import finishup.adapters.integrations.codex_skill as module
 
     tmp_path.chmod(0o700)
     skills = tmp_path / ".agents" / "skills"
@@ -367,8 +367,8 @@ async def test_parent_swap_after_path_identity_check_is_caught_by_retained_fd(
             ),
         )
     assert caught.value.reason is IntegrationReason.PREVIEW_STALE
-    assert not (skills / "yoetz").exists()
-    assert not (replaced / "yoetz").exists()
+    assert not (skills / "finishup").exists()
+    assert not (replaced / "finishup").exists()
 
 
 @pytest.mark.anyio
@@ -392,7 +392,7 @@ async def test_install_and_remove_stay_atomic_on_owner_directories(tmp_path: Pat
             False,
         ),
     )
-    destination = tmp_path / ".agents/skills/yoetz"
+    destination = tmp_path / ".agents/skills/finishup"
     assert destination.is_dir()
     assert not destination.is_symlink()
 
@@ -419,5 +419,5 @@ def test_package_import_has_no_filesystem_side_effect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    __import__("yoetz.adapters.integrations")
+    __import__("finishup.adapters.integrations")
     assert list(tmp_path.iterdir()) == []

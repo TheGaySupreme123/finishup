@@ -12,27 +12,27 @@ import apsw  # pyright: ignore[reportMissingImports]
 import pytest
 
 from builders.ledger_adapters import FixedClock, FixedIds
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.migrations import (
     initialize_bundle,  # pyright: ignore[reportUnknownVariableType]
 )
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application import observation_coordinator as coordinator_module
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_materialize import (
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application import observation_coordinator as coordinator_module
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_materialize import (
     MATERIALIZATION_MAPPING_VERSION,
     observation_writer_id,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationIngestRequest,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 
 def _id(kind: IdKind) -> str:

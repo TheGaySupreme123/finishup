@@ -23,14 +23,18 @@ from builders.codex_rollout import (  # noqa: E402
     response_item,
     session_meta,
 )
-from yoetz.adapters.importers.codex_rollout_jsonl import (  # noqa: E402
+from finishup.adapters.importers.codex_rollout_jsonl import (  # noqa: E402
     CODEX_ROLLOUT_COMPATIBLE_PROFILE_ID,
     SUPPORTED_ROLLOUT_PROFILES,
 )
-from yoetz.adapters.integrations.codex_capability_cells import (  # noqa: E402
+from finishup.adapters.integrations.codex_capability_cells import (  # noqa: E402
     skill_manifest_capability_fields,
 )
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest  # noqa: E402
+from finishup.protocol.canonical import (  # noqa: E402
+    canonical_digest,
+    canonical_encode,
+    entry_digest,
+)
 
 _CANARY = "sk-proj-CANARYLEGACYTOKEN0001"
 _DIR = _ROOT / "fixtures" / "imports" / "codex"
@@ -949,7 +953,7 @@ def _refresh_manifest() -> None:
 
 
 def _refresh_skill_manifest() -> None:
-    path = _ROOT / "skills" / "codex" / "yoetz" / "manifest.json"
+    path = _ROOT / "skills" / "codex" / "finishup" / "manifest.json"
     document = json.loads(path.read_bytes())
     document.update(dict(skill_manifest_capability_fields()))
     document.pop("member_digest", None)

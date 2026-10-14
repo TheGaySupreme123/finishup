@@ -10,9 +10,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import get_args
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.observation_semantic_advice import NullSemanticAdvice, OptionalSemanticAdvice
-from yoetz.application.observation_advice import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.observation_semantic_advice import NullSemanticAdvice, OptionalSemanticAdvice
+from finishup.application.observation_advice import (
     ObservationAdviceBuildInput,
     ObservationAdviceContextBuilder,
     ObservationAdviceSemanticAddon,
@@ -25,11 +25,11 @@ from yoetz.application.observation_advice import (
     semantic_state_from_addon,
     should_reissue_advice,
 )
-from yoetz.application.observation_coordinator import (
+from finishup.application.observation_coordinator import (
     _materialized_advice_items,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC2701
 )
-from yoetz.cli.observe_hooks import handle_observe
-from yoetz.domain.observation import (
+from finishup.cli.observe_hooks import handle_observe
+from finishup.domain.observation import (
     AdviceSnapshot,
     ObservationCursor,
     ObservationEnvelope,
@@ -38,8 +38,8 @@ from yoetz.domain.observation import (
     ObservationStatus,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp, finding_id
-from yoetz.kernel.policies.observation_advice import (
+from finishup.domain.values import JsonObject, Timestamp, finding_id
+from finishup.kernel.policies.observation_advice import (
     OBSERVATION_ADVICE_POLICY_ID,
     OBSERVATION_ADVICE_POLICY_VERSION,
     AdviceNextAction,
@@ -48,7 +48,7 @@ from yoetz.kernel.policies.observation_advice import (
     evidence_basis_digest,
     observation_advice_findings,
 )
-from yoetz.mcp.resources import read_resource
+from finishup.mcp.resources import read_resource
 
 _COMMITMENT = "hmac-sha256:" + "a" * 64
 _TIME = Timestamp("2026-07-22T21:00:00.000Z")
@@ -884,7 +884,7 @@ def test_hook_advice_context_maps_refresh_observation_to_observe_status() -> Non
     item = snapshot.ranked_items[0]
     assert item.recommended_next_action == "refresh_observation"
     text = hook_advice_context(snapshot)
-    assert "yoetz observe status" in text
+    assert "finishup observe status" in text
     assert "Next: refresh_observation" not in text
     assert item.evidence_refs[0] in text
     assert len(text) <= 512
@@ -932,10 +932,10 @@ def test_hook_advice_context_keeps_work_next_action_tokens() -> None:
 
 
 def test_workflow_guidance_documents_advice_next_action_tokens() -> None:
-    text = read_resource("yoetz://guidance/workflow.md").decode("utf-8")
+    text = read_resource("finishup://guidance/workflow.md").decode("utf-8")
     for token in get_args(AdviceNextAction.__value__):
         assert f"`{token}`" in text, token
-    assert "`yoetz observe status`" in text
+    assert "`finishup observe status`" in text
     assert "not MCP tools" in text
 
 
@@ -1246,7 +1246,7 @@ def test_deterministic_only_vs_configured_semantic() -> None:
     assert len(snapshot.ranked_finding_ids) >= 2
 
 
-def test_semantic_observation_review_receives_the_trusted_yoetz_session() -> None:
+def test_semantic_observation_review_receives_the_trusted_finishup_session() -> None:
     session_id = "ses_00000000-0000-4000-8000-000000000001"
     observed: list[str | None] = []
 
@@ -1404,10 +1404,10 @@ def test_codex_sign_in_attention_tells_the_agent_to_involve_the_user() -> None:
 
     text = hook_advice_context(snapshot, item=item)
     assert len(text) <= 512
-    assert text.startswith("Yoetz: AI-powered review needs the user to sign in to Codex again.")
+    assert text.startswith("FinishUP: AI-powered review needs the user to sign in to Codex again.")
     assert "Next: renew_provider_sign_in. Tell the user now." in text
     assert "subagent" in text
-    assert "`yoetz provider codex-subscription setup`" in text
+    assert "`finishup provider codex-subscription setup`" in text
     assert "`--device-code`" in text
     assert "the user completes sign-in" in text
     assert text.endswith("Evidence: openai-codex.")
@@ -1415,12 +1415,12 @@ def test_codex_sign_in_attention_tells_the_agent_to_involve_the_user() -> None:
 
 def test_each_repairable_cause_renders_its_own_reason_and_repair() -> None:
     expectations = {
-        "credential_rejected": ("stored credential", "`yoetz provider status`"),
-        "access_denied": ("account or plan", "`yoetz provider status`"),
-        "quota_exhausted": ("usage quota exhausted", "`yoetz provider status`"),
-        "model_unavailable": ("no longer offered", "`yoetz provider status`"),
+        "credential_rejected": ("stored credential", "`finishup provider status`"),
+        "access_denied": ("account or plan", "`finishup provider status`"),
+        "quota_exhausted": ("usage quota exhausted", "`finishup provider status`"),
+        "model_unavailable": ("no longer offered", "`finishup provider status`"),
         "runtime_update_required": (
-            "newer Yoetz release",
+            "newer FinishUP release",
             "restart Codex, Claude Code, or Cursor",
         ),
     }
@@ -1456,7 +1456,7 @@ def test_connect_provider_keeps_its_token_and_gains_a_user_facing_repair() -> No
     assert snapshot is not None
     text = hook_advice_context(snapshot, item=select_standing_item(snapshot))
     assert "Next: connect_provider. Tell the user now." in text
-    assert "`yoetz provider status`" in text
+    assert "`finishup provider status`" in text
 
 
 def test_model_derived_advice_cannot_claim_an_attempt_derived_repair() -> None:

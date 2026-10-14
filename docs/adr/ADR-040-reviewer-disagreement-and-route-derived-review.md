@@ -8,7 +8,7 @@
 - Maintainer acknowledgement: the owner approved all tb4n2 core issues R1-R10, design changes
   included, on 2026-10-08 (maintainer TheGaySupreme123: "all r been agreed").
 - Implemented by: `kernel/later_material.py`, `kernel/check_standing.py`, `kernel/reducers.py`
-  (`invalidates_recorded_check`), `domain/yoetz_tools.py` (tb4n3 RC-6, #1029),
+  (`invalidates_recorded_check`), `domain/finishup_tools.py` (tb4n3 RC-6, #1029),
   `application/check.py` (`_admit_prior_verdicts`, `_disputed_after_rebuttal`,
   `_record_restatement`, `_restated_finding`, `semantic_route_required`), `kernel/concern.py`,
   `kernel/limitation.py`, `application/review_concern.py` (tb4n3 RC-1 and RC-7, amendment below),
@@ -24,7 +24,7 @@
 
 ## Context
 
-Yoetz exists to catch incomplete work. It is not a bug finder, and the worst outcome is Yoetz
+FinishUP exists to catch incomplete work. It is not a bug finder, and the worst outcome is FinishUP
 steering the agent wrong. In the tb4n2 benchmark the AI-powered reviewer did exactly that:
 
 - **formal-crypto (semantic arm, 2 of 2 runs).** The reviewer raised `task_requirement_unmet`
@@ -51,7 +51,7 @@ nothing told the reviewer that the artifact it asks for must be obtainable.
 ### 1. `disputed_after_rebuttal` (code rule, issue #1020)
 
 A reviewer ruling that keeps an AI-powered finding open (`still_present`, `answered_not_fixed` or
-`unassessable`) is recorded by Yoetz as the ruling `disputed_after_rebuttal` when all of these hold:
+`unassessable`) is recorded by FinishUP as the ruling `disputed_after_rebuttal` when all of these hold:
 
 - the finding was shown to the reviewer as a rulable prior finding;
 - the agent's latest readable response is `rejected` with a non-blank reason;
@@ -145,19 +145,19 @@ builder. Classes:
 
 | class | what it is | effect |
 |---|---|---|
-| `yoetz_own_call` | the observation of a call to one of Yoetz's own MCP tools, any host spelling (`mcp__yoetz__x`, `mcp__plugin_yoetz_yoetz__x`, bare `x`, `yoetz:x`, `plugin-yoetz-yoetz:x`, Cursor's generic `MCP:x` by the closed basenames) | ignored |
+| `yoetz_own_call` | the observation of a call to one of FinishUP's own MCP tools, any host spelling (`mcp__finishup__x`, `mcp__plugin_finishup_finishup__x`, bare `x`, `finishup:x`, `plugin-finishup-finishup:x`, Cursor's generic `MCP:x` by the closed basenames) | ignored |
 | `exploration` | an observed run of the hook's `exploration` runner class, a native read tool, a routine-read summary | ignored |
 | `no_tool_activity` | host stream bookkeeping that names no tool call: `Opaque observation kind=<Codex wrapper kind>`, `Observed completion signal kind=...`; and a host poll tool that returns the output of work started earlier (Codex `wait`, a poll output that follows the last check in 18 of 27 tb4n2/tb4n3 semantic-arm attempts) | ignored |
-| `non_counting_write` | an observed edit whose every path is scratch or Yoetz-owned (ADR-042) | ignored |
+| `non_counting_write` | an observed edit whose every path is scratch or FinishUP-owned (ADR-042) | ignored |
 | `response` | a cooperative answer to a finding | advisory (above) |
 | `edit_or_write` | an observed deliverable, workspace or outside-workspace edit | supersedes the check: `check_not_applicable`, freshness `stale_after_material_change`, closing review required again |
-| `other` | anything Yoetz cannot prove harmless: an unclassified command or tool, an unpaired host result, a subagent, a lineage manifest | keeps the bounding disclosure |
+| `other` | anything FinishUP cannot prove harmless: an unclassified command or tool, an unpaired host result, a subagent, a lineage manifest | keeps the bounding disclosure |
 
-A result is classified by the action it answers. A Yoetz receipt or export the agent saved is
+A result is classified by the action it answers. A FinishUP receipt or export the agent saved is
 exempt even when a declared output directory would otherwise make a lexical `yoetz_owned` write
 count for verification staleness (ADR-042 decision 1): it is the output about the check, so no
 check could cover it, and counting it would invalidate the check that produced it. The exemption
-ends where a declared output is itself a packaged Yoetz tree (`.agents/...`): a write there may be
+ends where a declared output is itself a packaged FinishUP tree (`.agents/...`): a write there may be
 the deliverable and keeps counting.
 
 Readiness keeps `check_current_as_of_earlier_frontier` a standing disclosure (the gap table and
@@ -166,7 +166,7 @@ receipt. The tb4n2 B5 proposal to list it as agent work ("one more check removes
 examined and not adopted: every variant of it can regenerate after the check it asks for, and an
 instruction an agent cannot complete is the worst outcome (steered wrong). Reproduced regenerators:
 Cursor's structural `afterMCPExecution` result of every call (including each check's own) carries
-no tool identity; an agent running the Yoetz CLI through its shell (`yoetz check ...`) records a
+no tool identity; an agent running the FinishUP CLI through its shell (`finishup check ...`) records a
 named command after every check; a late-delivered observation lands after any check. The receipt
 still discloses and bounds, and the limitations text names the first bounding record; wave 2's
 `gap_effect` decides with the host facts. Content the host captured for a call (tool output, a
@@ -233,7 +233,7 @@ tb4n3 RC-3 change (ADR-046), not here.
   receipt-blocking, never a Stop-gate token. Its only next action is one answer.
 - **limitation_disclosed**: the agent says the requirement may be met but cannot be verified here,
   by a reasoned `respond` (`acknowledged`, or `self_verified`, which already requires a reason and
-  the agent's evidence) or by a recorded `yoetz-verification-limit:<obligation id>` decision on an
+  the agent's evidence) or by a recorded `finishup-verification-limit:<obligation id>` decision on an
   obligation the finding concerns. Acknowledging a limitation request needs no recorded resolution
   attempt (this relaxes the #885 rule for that class only; repair demands keep it). It is settled and
   never clean: closure readiness and the receipt list it, and a re-raise of the same concern folds
@@ -243,7 +243,7 @@ tb4n3 RC-3 change (ADR-046), not here.
   requirement like any other, not a verification limit.
 
 Guards, each tested: **G1** a challenge asking the agent to `act` is never a limitation request, even
-beside a `yoetz-verification-limit` decision (the reviewer sees an obtainable path). **G2** nothing
+beside a `finishup-verification-limit` decision (the reviewer sees an obtainable path). **G2** nothing
 reads the agent's own words, so an agent that answers an `act` finding "I could not find it" does not
 turn it into a limitation (the pretrain-shard-corruption rescue, where the acknowledgement re-check
 sent the agent back and it recovered the inputs, is kept). **G3** `declared_output_emptied` is
@@ -253,7 +253,7 @@ emptied. **G4** the class is never clean.
 Reviewer instruction (same change): the final-phase question and the standing instruction say that a
 requirement only a hidden evaluator or an unobtainable artifact can establish is a `not_assessable`
 row once the packet shows the agent disclosed it (an obligation acknowledged as not done, a
-`yoetz-verification-limit` decision, or a limitation request it acknowledged); a requirement
+`finishup-verification-limit` decision, or a limitation request it acknowledged); a requirement
 quantified over unbounded inputs is judged on the tested part (`supported`) with the remainder stated
 as a limitation, never `not_supported`; the acknowledged-obligation question keeps the genuine-blocker
 carve-outs; and "a reasoned fallback ... may be approved" is replaced by: a working partial solution
@@ -336,7 +336,7 @@ means.
 | Agent answer | Meaning | State and class | Receipt |
 |---|---|---|---|
 | none yet | to disclose | `limitation_requested`, `agent_work`, next action `acknowledge` | counted "to disclose", never repair work (unchanged) |
-| `acknowledged` with a reason; a reasoned `self_verified`; a `yoetz-verification-limit:<obligation>` decision | the requirement may be met but cannot be verified here | `limitation_disclosed`, `settled_disclosed` | at best `insufficient_coverage`, listed under "Verification limits" (as before) |
+| `acknowledged` with a reason; a reasoned `self_verified`; a `finishup-verification-limit:<obligation>` decision | the requirement may be met but cannot be verified here | `limitation_disclosed`, `settled_disclosed` | at best `insufficient_coverage`, listed under "Verification limits" (as before) |
 | `acknowledged_not_done` | the requirement is NOT met | `limitation_acknowledged_not_done`, `settled_unmet` | `unresolved_findings_remain`, listed with the requirements acknowledged as not done, never under "Verification limits" |
 
 Why: the Q4 reading moved lake S (`fnd_8bdad2d0`, reward 0, accuracy really unmet) from
@@ -372,7 +372,7 @@ that request is the acknowledgement these design-gated changes need. tb4n4 measu
 arm: of 79 reviewer findings 34% were correctness opinions outside the frame and only 35% were
 in-frame incomplete-work catches; 19% were wrong (agents rejected 14 of 15 with evidence, so the
 cost was time). 5 `action_without_result` and 4 premature "nothing implemented yet" findings were
-about Yoetz's own process state although the instruction forbids it (section 5 dropped only "never
+about FinishUP's own process state although the instruction forbids it (section 5 dropped only "never
 attempted"). On interleaved-vigenere S the reviewer turned failures of the agent's own oversized
 stress runs (12 streams, seed lengths 9-32, beyond the sample family) into
 `task_requirement_unmet`; the agent spent about forty minutes adding a language model that loaded
@@ -389,7 +389,7 @@ or emptied output, a done or ran claim the packet does not show, an early stop);
 started is not a defect; a correctness concern is returned as `code_defect`. The check enforces the
 frame without extra packet bytes: `validate_semantic_judgment(..., review_phase="routine")` records a
 `code_defect` challenge that would mint a new finding as an advisory note, appended to the fenced
-`review_summary` under a fixed Yoetz header and counted in `advisory_notes` (the accounting is
+`review_summary` under a fixed FinishUP header and counted in `advisory_notes` (the accounting is
 returned = accepted + rejected + suppressed + advisory). A re-raise of a recorded finding still folds
 onto it. No gap is added: the review saw everything and the note is kept whole. The final phase
 (`final_review`, or any completion claim) is unchanged: correctness and completeness are findings
@@ -401,9 +401,9 @@ a caller that passes none keeps the earlier rules.
 `kernel/review_frame.py` decides from the frozen projection and the challenge's resolved subjects,
 never the reviewer's words; anything unreadable keeps the challenge.
 
-- `yoetz_process_state_only`: every subject is the hook observation of a call to one of Yoetz's own
+- `finishup_process_state_only`: every subject is the hook observation of a call to one of FinishUP's own
   tools (or its result), or, for `action_without_result`, any hook-observed action (pairing a hook
-  observation with its result is Yoetz's capture; the `check` call is always in flight). A
+  observation with its result is FinishUP's capture; the `check` call is always in flight). A
   description is trusted only on a service-stamped observation. Reason `yoetz_process_state`, every
   phase.
 - Section 5 now reads the phase the packet named: during a routine review an AI-powered
@@ -419,7 +419,7 @@ yet started is not a defect; whether that covers all four tb4n4 cases needs the 
 
 Both reasons disclose the new standing code `semantic_process_state_filtered` (gap table G5d,
 disclosed on both routes, tolerated by both absence proofs) instead of `semantic_challenges_rejected`,
-which keeps bounding for every other dropped challenge: a challenge about Yoetz's state is not
+which keeps bounding for every other dropped challenge: a challenge about FinishUP's state is not
 material the check failed to carry. Item 3 of #1042 (wrong-finding and in-frame rates per run) is
 the maintainer's harness measurement; the bounded `semantic_review_accounting` record now carries
 `semantic_challenges_advisory`, `semantic_agent_criteria` and `semantic_rejected_yoetz_process_state`
@@ -439,7 +439,7 @@ next actions `acknowledge` and `repair`; a reasoned `acknowledged` narrows it in
 `acknowledged_not_done` is `limitation_acknowledged_not_done`; a later check that proves it absent
 resolves it. The finding explanation says "Your own criterion ... fix it, or narrow the criterion".
 Two parts of that lifecycle belong to the reviewer's request to state a hidden evaluator's limit and
-never apply to the agent's own criterion (review of #1043). A `yoetz-verification-limit` decision
+never apply to the agent's own criterion (review of #1043). A `finishup-verification-limit` decision
 neither discloses it nor marks its obligation `externally_evaluated` (`kernel.limitation`, G1): the
 probe fails here, and only the agent's own answer to that finding narrows it, so an unrelated
 decision line recorded for a hidden grader can no longer settle it unanswered. And the check never
@@ -504,7 +504,7 @@ The deferral is not a failed review: the verdict reads from the local checks, ne
 `semantic_review_not_requested` it rides with (ADR-046 rule G1): where the check recorded
 `semantic_route_required: false` (a route that does not require review) both are disclosed, so the
 check, status and receipt read as a `deterministic_only` check on that route would, and a deferral
-Yoetz chose never reads worse than a local-only check the agent chose; where review is required
+FinishUP chose never reads worse than a local-only check the agent chose; where review is required
 both bound (`insufficient_coverage`) until a review is current. The next check after the first
 edit reviews as configured. Where the deferred check's route requires review, that review stays
 owed: the deferred check counts as a use of AI-powered review for `closing_review_required` (it

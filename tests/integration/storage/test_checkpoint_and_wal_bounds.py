@@ -10,15 +10,15 @@ import pytest
 
 from builders.ledger_adapters import MemoryObjects
 from builders.replay import replay_records
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.domain.values import event_id, object_id
+from finishup.ports.ledger import AppendCommand
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 from integration.storage.test_append_and_replay import (
     command_from_records,
     sqlite_for,
     uuid_id,
 )
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.domain.values import event_id, object_id
-from yoetz.ports.ledger import AppendCommand
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
 
 
 @pytest.fixture

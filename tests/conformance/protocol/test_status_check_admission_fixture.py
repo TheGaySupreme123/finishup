@@ -6,20 +6,20 @@ from typing import Any, cast
 
 import pytest
 
-from fixture_loader import load_fixture_json
-from yoetz.cli.render import render_check_admission_lines, render_human_status
-from yoetz.domain.values import freeze_json
-from yoetz.mcp.summaries import render_safe_compact_summary
-from yoetz.ports.ledger import CheckAdmissionStage
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import (
+from finishup.cli.render import render_check_admission_lines, render_human_status
+from finishup.domain.values import freeze_json
+from finishup.mcp.summaries import render_safe_compact_summary
+from finishup.ports.ledger import CheckAdmissionStage
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import (
     StatusCheckAdmissionModel,
     StatusOperationPageModel,
     StatusResultModel,
     StatusSuccessModel,
     public_model_to_wire,
 )
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from fixture_loader import load_fixture_json
 
 _PATH = "canonical/status-check-admission-1.4.0.case.json"
 _CASES = ("capture_refused", "acquiring", "unknown")

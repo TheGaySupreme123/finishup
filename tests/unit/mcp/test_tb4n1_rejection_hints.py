@@ -11,21 +11,21 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from yoetz.application.respond import (
+from finishup.application.respond import (
     _resolution_attempt_required_message,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ClaimRevisionMismatch,
     ObligationResolutionMismatch,
     public_error_for_claim_revision_mismatch,
     public_error_for_obligation_resolution_mismatch,
 )
-from yoetz.mcp.errors import safe_validation_locations
-from yoetz.mcp.server import (
+from finishup.mcp.errors import safe_validation_locations
+from finishup.mcp.server import (
     _guidance_page_size_message,  # pyright: ignore[reportPrivateUsage]
     invalid_request_message,
 )
-from yoetz.protocol.models import (
+from finishup.protocol.models import (
     _STATUS_FILTER_BY_VIEW,  # pyright: ignore[reportPrivateUsage]
     PublishWorkRequest,
     StatusRequest,
@@ -236,7 +236,7 @@ def test_status_filter_beside_a_filterless_view_names_filter(view: str) -> None:
 
 
 def test_status_filter_sentence_matches_the_routed_views() -> None:
-    from yoetz.mcp.errors import (
+    from finishup.mcp.errors import (
         _STATUS_FILTER_CORRECTION,  # pyright: ignore[reportPrivateUsage]
     )
 

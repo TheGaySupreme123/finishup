@@ -16,11 +16,11 @@ from tests.unit.protocol.test_models_and_schemas import (
     _check_result_wire,  # pyright: ignore[reportPrivateUsage]
 )
 
-from yoetz.cli.render import render_human_check
-from yoetz.domain.findings import CheckVerdict
-from yoetz.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES
-from yoetz.protocol.models import CheckResult, CheckSuccessModel, public_model_to_wire
+from finishup.cli.render import render_human_check
+from finishup.domain.findings import CheckVerdict
+from finishup.mcp.server import _result_text  # pyright: ignore[reportPrivateUsage]
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES
+from finishup.protocol.models import CheckResult, CheckSuccessModel, public_model_to_wire
 
 _CLOSING_OVERALL: dict[str, Any] = {
     "action": "request_receipt",

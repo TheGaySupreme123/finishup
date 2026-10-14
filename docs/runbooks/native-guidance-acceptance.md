@@ -47,7 +47,7 @@ procedure alone covers guidance use in the selected variant, not every carrier e
    pending decision instead of bypassing it. No setup or privacy widening is implicit in this gate.
 4. Complete the host-specific preflight: resolved launcher/runtime, exclusive MCP ownership,
    live route, model-visible declarations, active observation consent, native mapping, and drain.
-   Store the expected and observed route/argv only for a Yoetz-owned binding. For `absent`,
+   Store the expected and observed route/argv only for a FinishUP-owned binding. For `absent`,
    `foreign`, `dual`, or `ambiguous`, the effective route/argv is null; record conflicting
    candidates separately. A healthy raw inventory does not establish a model-controlled call.
 5. In the stale-memory variant, create only a disposable fixture note describing an older
@@ -63,7 +63,7 @@ hook context renderers cap advice at 2,000 characters. Presence in a source file
 from delivery to the model. Keep the exact URI route readable under truncation.
 
 For the personalization variant, record the loaded skill source and heading as well: the native
-Claude entrypoint is `Yoetz for Claude Code`, both Cursor formats select `Yoetz for Cursor Agent`,
+Claude entrypoint is `FinishUP for Claude Code`, both Cursor formats select `FinishUP for Cursor Agent`,
 and the generic portable export remains neutral. Confirm that all five referenced documents resolve
 inside the artifact. A project/global skill discovered through a compatibility directory is a
 separate source and must not accidentally satisfy native plugin acceptance. Observe whether the
@@ -149,7 +149,7 @@ receipt for any AI-powered review claim; strict-route controls require evidence 
 attempts.
 
 Perform the owning host's authorized rollback, compare before/after digests, and preserve foreign
-or modified state and durable Yoetz data. Dispose only the run's own disposable instance using its
+or modified state and durable FinishUP data. Dispose only the run's own disposable instance using its
 pinned launcher/provisioning script. Record rollback failures rather than deleting shared profiles.
 
 Publish only a bounded redacted summary and evidence digests on the owning issue. Never publish

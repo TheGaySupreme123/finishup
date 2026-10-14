@@ -21,9 +21,8 @@ from hypothesis import strategies as st
 
 import integration.application.test_respond_status_receipt as h
 from builders.policy_cases import evd, finding_record, fnd, obl, record
-from integration.closure import test_closure_shapes as shapes
-from yoetz.domain.events import ResponseRecordedPayload
-from yoetz.domain.findings import (
+from finishup.domain.events import ResponseRecordedPayload
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     Finding,
     FindingKind,
@@ -31,18 +30,18 @@ from yoetz.domain.findings import (
     ResponseDisposition,
     finding_policy_identity,
 )
-from yoetz.domain.receipts import SchemaVersionEntry
-from yoetz.domain.values import FindingId, Frontier
-from yoetz.kernel.closure_class import closure_counts, finding_closures
-from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION
-from yoetz.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
-from yoetz.kernel.projections import (
+from finishup.domain.receipts import SchemaVersionEntry
+from finishup.domain.values import FindingId, Frontier
+from finishup.kernel.closure_class import closure_counts, finding_closures
+from finishup.kernel.closure_readiness import GAP_CLASSIFICATION
+from finishup.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
+from finishup.kernel.projections import (
     FindingProjectionRecord,
     ProjectionRecord,
     ProjectionState,
     empty_projection_state,
 )
-from yoetz.protocol.coverage import (
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -51,7 +50,8 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.errors import PublicOperationError
+from finishup.protocol.errors import PublicOperationError
+from integration.closure import test_closure_shapes as shapes
 
 _CODES = tuple(sorted(GAP_CLASSIFICATION))
 _DIGEST = "sha256:" + "3" * 64

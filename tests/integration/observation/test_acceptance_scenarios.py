@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from builders.codex_rollout import failed_shell_rollout
-from yoetz.adapters.approved_checks import (
+from finishup.adapters.approved_checks import (
     ApprovedCheckApproval,
     ApprovedCheckCommand,
     ApprovedCheckOutcome,
@@ -19,25 +19,25 @@ from yoetz.adapters.approved_checks import (
     ApprovedCheckStatus,
     approval_commitment,
 )
-from yoetz.adapters.integrations.codex_session_stream import (
+from finishup.adapters.integrations.codex_session_stream import (
     SessionStreamReader,
     default_stream_profile,
 )
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_local import (
     STREAM_MAPPING_VERSION,
     LocalObservationStore,
 )
-from yoetz.adapters.memory.observation import MemoryObservationStore
-from yoetz.adapters.observation_semantic_advice import NullSemanticAdvice, OptionalSemanticAdvice
-from yoetz.adapters.workspace_inspect import open_inspect_workspace
-from yoetz.application.observation_advice import (
+from finishup.adapters.memory.observation import MemoryObservationStore
+from finishup.adapters.observation_semantic_advice import NullSemanticAdvice, OptionalSemanticAdvice
+from finishup.adapters.workspace_inspect import open_inspect_workspace
+from finishup.application.observation_advice import (
     ObservationAdviceBuildInput,
     build_observation_advice_snapshot,
     minimized_semantic_evidence_packet,
 )
-from yoetz.application.observation_control import build_observation_support_handlers
-from yoetz.cli.observe_hooks import handle_observe, map_hook_payload_to_envelope
-from yoetz.domain.observation import (
+from finishup.application.observation_control import build_observation_support_handlers
+from finishup.cli.observe_hooks import handle_observe, map_hook_payload_to_envelope
+from finishup.domain.observation import (
     ObservationControlCommand,
     ObservationCursor,
     ObservationEnvelope,
@@ -49,14 +49,14 @@ from yoetz.domain.observation import (
     ObservationStatusQuery,
     observation_ingest_result_to_json,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.kernel.policies.observation_advice import (
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.kernel.policies.observation_advice import (
     ObservationAdviceContext,
     ObservationCheckFact,
     ObservationCompositionFact,
     observation_advice_findings,
 )
-from yoetz.ports.control import ControlMethod
+from finishup.ports.control import ControlMethod
 
 _COMMITMENT = "hmac-sha256:" + "a" * 64
 _DIGEST_A = "sha256:" + "a" * 64
@@ -795,7 +795,7 @@ async def test_observation_support_handlers_call_memory_port() -> None:
     port.grant_consent(_COMMITMENT, _TIME)
     envelope = _envelope("hook:svc", {"tool_name": "shell", "exit_status": 0})
     port.bind_session(_COMMITMENT, envelope.session_commitment)
-    from yoetz.domain.observation import observation_envelope_to_json
+    from finishup.domain.observation import observation_envelope_to_json
 
     result = await handlers[ControlMethod.OBSERVATION_INGEST](
         observation_envelope_to_json(envelope)

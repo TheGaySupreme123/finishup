@@ -17,6 +17,51 @@ import pytest
 
 from builders.privacy_policies import INSTALLATION_ID, minimal_external_policy
 from builders.privacy_widenings import llm_channel
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.application.egress import PrivacyCoordinator, SemanticEgressBlocked
+from finishup.application.semantic_case import (
+    CHECK_TIME_CHANGE_ITEM_PREFIX,
+    build_semantic_case,
+    review_packet_disclosure_result,
+    semantic_case_to_candidate_context,
+)
+from finishup.domain.privacy import (
+    AuthorizationScope,
+    AuthorizationScopeKind,
+    CandidateContext,
+    EgressOriginOperation,
+    EgressReceipt,
+    PrivacyDecision,
+    PrivacyOutcome,
+    PrivacyReason,
+    ReviewContextProfile,
+    ReviewSelectionPolicy,
+)
+from finishup.domain.receipts import (
+    SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
+    SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
+)
+from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.privacy import (
+    DisclosureProposalRequest,
+    EffectivePrivacyPolicy,
+    HumanAuthorityCapability,
+    MinimizedDisclosure,
+    OutboundGatewayPort,
+    PrivacyAuditPort,
+    PrivacyAuditReservation,
+    PrivacyClassifierPort,
+    PrivacyPolicyStorePort,
+)
+from finishup.ports.semantic import Deadline, SemanticCase
+from finishup.protocol.canonical import strict_json_parse
+from finishup.protocol.redacted_values import SemanticRedactedValue
+from finishup.service.ready_composition import (
+    _egress_case_content_gaps,  # pyright: ignore[reportPrivateUsage]
+    _provider_manifest_has_redaction,  # pyright: ignore[reportPrivateUsage]
+)
 from unit.application.test_egress_origin_operation import (
     _COMMITMENT,  # pyright: ignore[reportPrivateUsage]
     _TASK,  # pyright: ignore[reportPrivateUsage]
@@ -30,51 +75,6 @@ from unit.application.test_semantic_case import (
 )
 from unit.application.test_semantic_case_check_change import (
     _change,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.application.egress import PrivacyCoordinator, SemanticEgressBlocked
-from yoetz.application.semantic_case import (
-    CHECK_TIME_CHANGE_ITEM_PREFIX,
-    build_semantic_case,
-    review_packet_disclosure_result,
-    semantic_case_to_candidate_context,
-)
-from yoetz.domain.privacy import (
-    AuthorizationScope,
-    AuthorizationScopeKind,
-    CandidateContext,
-    EgressOriginOperation,
-    EgressReceipt,
-    PrivacyDecision,
-    PrivacyOutcome,
-    PrivacyReason,
-    ReviewContextProfile,
-    ReviewSelectionPolicy,
-)
-from yoetz.domain.receipts import (
-    SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
-    SEMANTIC_REVIEW_VALUE_REDACTED_GAP,
-)
-from yoetz.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.privacy import (
-    DisclosureProposalRequest,
-    EffectivePrivacyPolicy,
-    HumanAuthorityCapability,
-    MinimizedDisclosure,
-    OutboundGatewayPort,
-    PrivacyAuditPort,
-    PrivacyAuditReservation,
-    PrivacyClassifierPort,
-    PrivacyPolicyStorePort,
-)
-from yoetz.ports.semantic import Deadline, SemanticCase
-from yoetz.protocol.canonical import strict_json_parse
-from yoetz.protocol.redacted_values import SemanticRedactedValue
-from yoetz.service.ready_composition import (
-    _egress_case_content_gaps,  # pyright: ignore[reportPrivateUsage]
-    _provider_manifest_has_redaction,  # pyright: ignore[reportPrivateUsage]
 )
 
 # A heuristic-only credential: an assignment to a token-named attribute with a high-entropy value

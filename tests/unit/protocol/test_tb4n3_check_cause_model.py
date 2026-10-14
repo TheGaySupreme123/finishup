@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from yoetz.protocol.models import StatusClosureReadinessModel
-from yoetz.protocol.readiness_text import check_cause_sentence
+from finishup.protocol.models import StatusClosureReadinessModel
+from finishup.protocol.readiness_text import check_cause_sentence
 
 _EVENT = "evt_00000000-0000-4000-8000-000000000001"
 _CHECK = "evt_00000000-0000-4000-8000-000000000002"

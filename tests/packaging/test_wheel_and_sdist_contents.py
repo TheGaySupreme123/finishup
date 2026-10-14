@@ -49,8 +49,8 @@ def _is_attestation_schema_member(name: str) -> bool:
     """The reviewed attestation schema contains ``test`` in ``attestation``."""
 
     return name in {
-        "yoetz/resources/schemas/consent/chat-user-attestation-1.0.0.schema.json",
-        "src/yoetz/resources/schemas/consent/chat-user-attestation-1.0.0.schema.json",
+        "finishup/resources/schemas/consent/chat-user-attestation-1.0.0.schema.json",
+        "src/finishup/resources/schemas/consent/chat-user-attestation-1.0.0.schema.json",
     }
 
 
@@ -58,8 +58,8 @@ def _is_test_edit_visibility_module(name: str) -> bool:
     """The reviewed runtime module that classifies test-file edits is named for its subject."""
 
     return name in {
-        "yoetz/kernel/test_edit_visibility.py",
-        "src/yoetz/kernel/test_edit_visibility.py",
+        "finishup/kernel/test_edit_visibility.py",
+        "src/finishup/kernel/test_edit_visibility.py",
     }
 
 
@@ -188,11 +188,11 @@ def _classify_wheel_member(name: str, *, dist_info_prefix: str) -> str:
         if rest.startswith("licenses/"):
             return "dist_info_license"
         return "unexpected"
-    if name == "yoetz/py.typed":
+    if name == "finishup/py.typed":
         return "py_typed"
-    if name.startswith("yoetz/resources/"):
+    if name.startswith("finishup/resources/"):
         return "package_resource"
-    if name.startswith("yoetz/") and name.endswith(".py"):
+    if name.startswith("finishup/") and name.endswith(".py"):
         return "package_python"
     return "unexpected"
 
@@ -228,12 +228,12 @@ def test_wheel_contains_exactly_one_package_console_entry_and_py_typed(
         for member_name in members
         if not member_name.startswith(dist_info_prefix)
     }
-    assert top_level_packages == {"yoetz"}
-    assert "yoetz/py.typed" in members
+    assert top_level_packages == {"finishup"}
+    assert "finishup/py.typed" in members
 
     entry_points = members[f"{dist_info_prefix}entry_points.txt"].decode("utf-8")
     assert "[console_scripts]" in entry_points
-    assert "yoetz = yoetz.cli.entry:main" in entry_points
+    assert "finishup = finishup.cli.entry:main" in entry_points
 
 
 def test_wheel_contains_portable_plugin_sources_and_exact_vendored_schemas(
@@ -241,20 +241,20 @@ def test_wheel_contains_portable_plugin_sources_and_exact_vendored_schemas(
 ) -> None:
     members = _wheel_file_members(candidate.wheel)
     expected = {
-        "yoetz/resources/skills/portable/yoetz/SKILL.md",
-        "yoetz/resources/support/agent-plugins/1.0.0/mcp.schema.json",
-        "yoetz/resources/support/agent-plugins/1.0.0/plugin.schema.json",
+        "finishup/resources/skills/portable/finishup/SKILL.md",
+        "finishup/resources/support/agent-plugins/1.0.0/mcp.schema.json",
+        "finishup/resources/support/agent-plugins/1.0.0/plugin.schema.json",
     }
     assert expected <= set(members)
     assert (
         hashlib.sha256(
-            members["yoetz/resources/support/agent-plugins/1.0.0/plugin.schema.json"]
+            members["finishup/resources/support/agent-plugins/1.0.0/plugin.schema.json"]
         ).hexdigest()
         == "0a4aad95ce337878ad38802ebf0daa3fde76abe3f65400c86bcbb1ec0b3ab883"
     )
     assert (
         hashlib.sha256(
-            members["yoetz/resources/support/agent-plugins/1.0.0/mcp.schema.json"]
+            members["finishup/resources/support/agent-plugins/1.0.0/mcp.schema.json"]
         ).hexdigest()
         == "6539175bfcdf43085855183e86da40ea94b166547a72b47ae9a0a390516d3acb"
     )
@@ -408,7 +408,7 @@ def test_sdist_member_inventory_matches_the_exact_allowlist(candidate: Candidate
         if "/" not in rest:
             assert rest in allowed_top_level_files, f"unexpected top-level sdist file: {rest}"
         else:
-            assert rest.startswith("src/yoetz/"), f"unexpected sdist path: {rest}"
+            assert rest.startswith("src/finishup/"), f"unexpected sdist path: {rest}"
 
 
 def test_sdist_ships_the_license_file(candidate: Candidate) -> None:
@@ -494,8 +494,8 @@ def _write_zip(path: Path, members: dict[str, bytes]) -> None:
     [
         "../escape.py",
         "/absolute.py",
-        "yoetz\\backslash.py",
-        "yoetz/nested/../../escape.py",
+        "finishup\\backslash.py",
+        "finishup/nested/../../escape.py",
     ],
 )
 def test_unsafe_member_path_is_rejected(bad_path: str) -> None:
@@ -510,26 +510,26 @@ def test_traversal_member_in_a_synthetic_wheel_is_rejected(tmp_path: Path) -> No
 
 
 def test_duplicate_and_case_collision_detection() -> None:
-    assert _case_collisions(["yoetz/a.py", "yoetz/A.py"]) == ["yoetz/A.py"]
-    assert _case_collisions(["yoetz/a.py", "yoetz/b.py"]) == []
+    assert _case_collisions(["finishup/a.py", "finishup/A.py"]) == ["finishup/A.py"]
+    assert _case_collisions(["finishup/a.py", "finishup/b.py"]) == []
 
 
 def test_unexpected_top_level_package_is_rejected() -> None:
-    assert _classify_wheel_member("evil/module.py", dist_info_prefix="yoetz-0.1.0.dist-info/") == (
-        "unexpected"
-    )
+    assert _classify_wheel_member(
+        "evil/module.py", dist_info_prefix="finishup-0.1.0.dist-info/"
+    ) == ("unexpected")
 
 
 def test_native_binary_suffix_is_flagged_by_the_forbidden_check() -> None:
-    assert "yoetz/_native.so".lower().endswith(_NATIVE_BINARY_SUFFIXES)
-    assert not "yoetz/pure.py".lower().endswith(_NATIVE_BINARY_SUFFIXES)
+    assert "finishup/_native.so".lower().endswith(_NATIVE_BINARY_SUFFIXES)
+    assert not "finishup/pure.py".lower().endswith(_NATIVE_BINARY_SUFFIXES)
 
 
 def test_forbidden_name_marker_catches_test_and_cache_paths() -> None:
     for marker_path in (
-        "yoetz/tests/test_x.py",
-        "yoetz/__pycache__/x.pyc",
-        "yoetz/.git/HEAD",
+        "finishup/tests/test_x.py",
+        "finishup/__pycache__/x.pyc",
+        "finishup/.git/HEAD",
         ".claude/settings.json",
     ):
         lowered = marker_path.lower()
@@ -538,10 +538,10 @@ def test_forbidden_name_marker_catches_test_and_cache_paths() -> None:
 
 def test_attestation_schema_exemption_is_exactly_archive_scoped() -> None:
     assert _is_attestation_schema_member(
-        "yoetz/resources/schemas/consent/chat-user-attestation-1.0.0.schema.json"
+        "finishup/resources/schemas/consent/chat-user-attestation-1.0.0.schema.json"
     )
     assert _is_attestation_schema_member(
-        "src/yoetz/resources/schemas/consent/chat-user-attestation-1.0.0.schema.json"
+        "src/finishup/resources/schemas/consent/chat-user-attestation-1.0.0.schema.json"
     )
     assert not _is_attestation_schema_member(
         "tests/fixtures/chat-user-attestation-1.0.0.schema.json"
@@ -549,7 +549,7 @@ def test_attestation_schema_exemption_is_exactly_archive_scoped() -> None:
 
 
 def test_test_edit_visibility_exemption_is_exactly_archive_scoped() -> None:
-    assert _is_reviewed_name_exemption("yoetz/kernel/test_edit_visibility.py")
-    assert _is_reviewed_name_exemption("src/yoetz/kernel/test_edit_visibility.py")
-    assert not _is_reviewed_name_exemption("yoetz/kernel/test_edit_visibility_extra.py")
+    assert _is_reviewed_name_exemption("finishup/kernel/test_edit_visibility.py")
+    assert _is_reviewed_name_exemption("src/finishup/kernel/test_edit_visibility.py")
+    assert not _is_reviewed_name_exemption("finishup/kernel/test_edit_visibility_extra.py")
     assert not _is_reviewed_name_exemption("tests/unit/kernel/test_edit_visibility.py")

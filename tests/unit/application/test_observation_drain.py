@@ -11,17 +11,17 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import acquire_session_lock
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.codex_lifecycle import acquire_session_lock
+from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     ObservationOutboxRow,
 )
-from yoetz.application.observation_drain import (
+from finishup.application.observation_drain import (
     ObservationDrainAction,
     ObservationOutboxSweeper,
     route_observation_ingest,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     OBSERVATION_BACKPRESSURE_REASON,
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationCursor,
@@ -33,7 +33,7 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 
 def _envelope(session: str, identity: str, ordinal: int) -> ObservationEnvelope:
@@ -356,7 +356,7 @@ async def test_sweep_backpressure_deferral_never_projects_a_coverage_gap(tmp_pat
     """#351: a check-barrier deferral keeps its row pending and annotated, but the
     workspace's current gaps never report the designed barrier as a condition."""
 
-    from yoetz.domain.observation import OBSERVATION_BACKPRESSURE_REASON
+    from finishup.domain.observation import OBSERVATION_BACKPRESSURE_REASON
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -909,7 +909,7 @@ async def test_sweep_uses_its_own_pool_and_releases_it_on_close(tmp_path: Path) 
     executor = sweeper._executor  # pyright: ignore[reportPrivateUsage]
 
     assert executor is not None
-    assert names and all(name.startswith("yoetz-obs-sweep") for name in names)
+    assert names and all(name.startswith("finishup-obs-sweep") for name in names)
 
     sweeper.close()
     assert sweeper._executor is None  # pyright: ignore[reportPrivateUsage]
@@ -957,7 +957,7 @@ async def test_sweep_quarantines_repeated_retry_reason_and_unblocks_lane(
 ) -> None:
     """#540: a future retry misclassification cannot make a FIFO head immortal."""
 
-    import yoetz.application.observation_drain as drain_module
+    import finishup.application.observation_drain as drain_module
 
     monkeypatch.setattr(drain_module, "MAX_CONSECUTIVE_OBSERVATION_REJECTIONS", 2)
     store = LocalObservationStore(_state=tmp_path)
@@ -1189,8 +1189,8 @@ def test_sweep_budget_must_be_a_positive_float_or_absent(tmp_path: Path) -> None
 def test_sweep_budget_yields_under_the_daemon_deadline() -> None:
     """The budget is only useful if it fires before the deadline that discards the summary."""
 
-    from yoetz.application.observation_drain import DEFAULT_OBSERVATION_SWEEP_BUDGET_SECONDS
-    from yoetz.service import daemon as daemon_module
+    from finishup.application.observation_drain import DEFAULT_OBSERVATION_SWEEP_BUDGET_SECONDS
+    from finishup.service import daemon as daemon_module
 
     deadline = daemon_module._OBSERVATION_SWEEP_DEADLINE_SECONDS  # pyright: ignore[reportPrivateUsage]
     assert DEFAULT_OBSERVATION_SWEEP_BUDGET_SECONDS < deadline
@@ -1212,8 +1212,8 @@ def test_sweep_budget_yields_under_the_daemon_deadline() -> None:
 def test_control_recovery_is_bounded_without_fabricated_ledger_refusal(
     reason: str, attempts: int, expected: ObservationDrainAction
 ) -> None:
-    from yoetz.application.observation_drain import observation_control_failure
-    from yoetz.ports.control import ControlError
+    from finishup.application.observation_drain import observation_control_failure
+    from finishup.ports.control import ControlError
 
     failure = observation_control_failure(ControlError(reason))
     row = ObservationOutboxRow(
@@ -1310,7 +1310,7 @@ async def test_contended_settlement_yields_and_the_accepted_row_replays(
 ) -> None:
     """A lost acknowledgement race stops the pass, keeps the row, and deduplicates on replay."""
 
-    import yoetz.adapters.integrations.observation_local as local
+    import finishup.adapters.integrations.observation_local as local
 
     monkeypatch.setattr(local, "_STORE_LOCK_TIMEOUT_SECONDS", 0.2)
     store = LocalObservationStore(_state=tmp_path)
@@ -1385,7 +1385,7 @@ class _StrandingStore(LocalObservationStore):
 async def test_next_pass_never_overlaps_a_worker_a_cancelled_pass_left_running(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.application.observation_drain as drain
+    import finishup.application.observation_drain as drain
 
     monkeypatch.setattr(drain, "_STRANDED_WORKER_JOIN_SECONDS", 0.05)
     store = _StrandingStore(_state=tmp_path)
@@ -1474,7 +1474,7 @@ class _ContendedMaintenanceStore(LocalObservationStore):
 
     def maintain_selected_admission(self, workspace: str, *, force: bool = False) -> None:
         if workspace == self.contended:
-            from yoetz.ports.observation import ObservationStoreLockTimeout
+            from finishup.ports.observation import ObservationStoreLockTimeout
 
             raise ObservationStoreLockTimeout(
                 scope="process",

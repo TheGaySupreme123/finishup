@@ -15,9 +15,9 @@ not a seventh operation.
 Each takes a strict JSON request and returns a canonical JSON result:
 
 ```text
-yoetz start --request '{"request_id":"req_...", ...}' --json
-yoetz check --input request.json --json
-yoetz status --input - --json          # read the request from stdin
+finishup start --request '{"request_id":"req_...", ...}' --json
+finishup check --input request.json --json
+finishup status --input - --json          # read the request from stdin
 ```
 
 `--deadline-ms` bounds the call. Every operation is idempotent on its request identity: **a timeout
@@ -25,7 +25,7 @@ has an unknown outcome, never a known failure.** Reuse the same `request_id` to 
 `status view=operation` with that `request_id` as a state lookup without reconstructing the
 original body. A `complete` publish returns stored frontiers and accepted event ids; other states
 report only what is honest for that state (`pending`/`quarantined`/`absent`/non-publish). An
-`absent` check page may add an `admission` stage when Yoetz refused or is still admitting it.
+`absent` check page may add an `admission` stage when FinishUP refused or is still admitting it.
 
 Field-level shapes live in [`docs/INTERFACES.md`](../INTERFACES.md); the JSON Schemas under
 [`schemas/`](../../schemas/) and the golden vectors under [`fixtures/`](../../fixtures/) are the
@@ -41,7 +41,7 @@ words only its anchor contains) reads that section, and the result names its lis
 anchor that could mean several sections is refused with the document's listed anchors.
 
 If an MCP host drops schema examples or renders required fields as unknown, read the topic for
-that operation, such as `yoetz://guidance/request-templates.md#publish-work-plan-plus-obligation`.
+that operation, such as `finishup://guidance/request-templates.md#publish-work-plan-plus-obligation`.
 It contains a complete request body. Replace every illustrative identifier,
 timestamp, frontier, digest, and content string before use; the resource is an authoring fallback,
 not a second wire authority.
@@ -50,8 +50,8 @@ not a second wire authority.
 
 ### `start`
 Opens a task, or attaches to an existing one, and issues a session and a distinct logical writer
-identity. Create-vs-attach is explicit in the request — Yoetz does not guess. Agents pass your
-request verbatim as `task_statement` (on the command line, `yoetz start --task-statement-file`);
+identity. Create-vs-attach is explicit in the request — FinishUP does not guess. Agents pass your
+request verbatim as `task_statement` (on the command line, `finishup start --task-statement-file`);
 it is recorded with the task and, when your privacy policy allows it, the AI-powered reviewer
 reads it as the specification.
 
@@ -83,7 +83,7 @@ to be disclosed; naming it there does not call it a partial or a failure. Read
 `status view=candidate_findings`, `history`, and `results` first, then dry-run the exact replacement;
 the original claim remains immutable history.
 
-A failed run that Yoetz observed through a host hook stops needing disclosure once a later observed
+A failed run that FinishUP observed through a host hook stops needing disclosure once a later observed
 run of the same command passes before the claim. A later failed or partial rerun replaces the earlier
 failure's disclosure duty with its own; a rerun with unknown outcome does not. An edit by itself never
 proves that a failed check was repaired.
@@ -92,10 +92,10 @@ the tool, its occurrence number, a keyed identity of the command, and its exit s
 find a run that is still red and name its result in `limitation_refs`. The command text itself is
 never stored or shown.
 
-Yoetz does not watch your workspace. What is published is what exists.
+FinishUP does not watch your workspace. What is published is what exists.
 
-Authoring help for MCP: tool descriptions name `yoetz://guidance/publication-policy.md`; invalid
-requests include nested field hints plus `yoetz://guidance/request-templates.md`.
+Authoring help for MCP: tool descriptions name `finishup://guidance/publication-policy.md`; invalid
+requests include nested field hints plus `finishup://guidance/request-templates.md`.
 
 ### `check`
 Runs the local policy packs over the recorded state and returns findings with an exact
@@ -131,7 +131,7 @@ tests, and disclose when the task-start baseline was unavailable.
 
 Commands you just ran reach the record through your host's hooks a moment later. To check them
 without polling `status`, add `"await_observations": true` to the check request (or run
-`yoetz check --await-observations`). Yoetz then waits up to about three seconds for this task's
+`finishup check --await-observations`). FinishUP then waits up to about three seconds for this task's
 observations that are still being delivered before it checks, and the result's
 `observations_awaited` says whether they all arrived (`complete`), some were still on their way
 (`bounded_timeout`, with how many), or the wait could not see them (`unavailable`). The wait never
@@ -139,28 +139,28 @@ fails the check; without the option nothing changes.
 
 #### Inspecting what is left
 
-`"mode": "inspect"` asks Yoetz to look at its own record instead of checking it. It is a read like
+`"mode": "inspect"` asks FinishUP to look at its own record instead of checking it. It is a read like
 `status`: nothing is recorded, no finding is returned or created, no AI-powered review runs and
 nothing leaves your machine, so a lost answer is fixed by asking again. Your agent host still sees
 a `check` call and approves it as it approves any check (host admission of `check` covers it); if
-the host holds or refuses an inspection, nothing is waiting in Yoetz and your agent reads `status`
+the host holds or refuses an inspection, nothing is waiting in FinishUP and your agent reads `status`
 instead. One call answers three questions:
 
 - **What is left to close, and whose move it is.** The same readiness, predicted receipt
-  conclusion and gap split `status` shows (your gaps beside the limits Yoetz itself carries), then
+  conclusion and gap split `status` shows (your gaps beside the limits FinishUP itself carries), then
   every unresolved obligation and finding with its class and reason. An open obligation names what
   it lacks: requested items with no recorded attempt (by position), no resolution evidence, an
   asserted command whose observed run differs, an unconfirmed blocker (yours), or an asserted
-  command run your host's hooks never linked (Yoetz's own observation gap).
+  command run your host's hooks never linked (FinishUP's own observation gap).
 - **What the hooks observed since the last check.** Each observed command or edit after the last
-  check, with its tool, outcome, exit status and write class. Yoetz's own calls and host
+  check, with its tool, outcome, exit status and write class. FinishUP's own calls and host
   bookkeeping are left out. Edits are recorded by write class, never by path.
 - **Whether the evidence matches what was declared.** For each obligation that cites resolution
   evidence: which recorded action each piece of evidence came from (observed by a hook, asserted by
   the agent, or untraceable), and whether that action names a declared deliverable or the
   requested command. `evidence_off_declared_items` means the evidence came from somewhere the
   obligation never declared, for example a benchmark run that bypassed the service's declared
-  supervisor. Yoetz compares only what it recorded; it reads no working directory, environment or
+  supervisor. FinishUP compares only what it recorded; it reads no working directory, environment or
   service configuration.
 
 Omit `scope`, `max_findings`, `policy_packs` and `final_review` (they are refused beside
@@ -175,18 +175,18 @@ no further agent action. The finding checklist describes findings only.
 #### Approved workspace checks
 
 `check` reads the ledger; it does not run your test suite. A project may declare fixed commands
-it is willing to have run on its behalf in `.yoetz/checks.toml` — an exact argv, a timeout, and
+it is willing to have run on its behalf in `.finishup/checks.toml` — an exact argv, a timeout, and
 whether network is requested. Those bytes grant nothing by themselves. Trust is given per
 workspace to one exact policy digest by a local human (first-run setup offers it for the policy
 present at that time), and revoked the same way; if the file changes afterwards, the old trust no
 longer matches and nothing runs until the new digest is trusted.
 
 ```text
-yoetz observe checks preview                          # policy digest and each proposed argv, without activating
-yoetz observe checks trust --policy-digest <digest>   # trust only the exact digest currently present
-yoetz observe checks status                           # trusted, untrusted, or not_configured, and which checks may run
-yoetz observe checks revoke                           # withdraw this workspace's check-policy trust
-yoetz observe checks run                              # run the trusted argv under the enforcing sandbox
+finishup observe checks preview                          # policy digest and each proposed argv, without activating
+finishup observe checks trust --policy-digest <digest>   # trust only the exact digest currently present
+finishup observe checks status                           # trusted, untrusted, or not_configured, and which checks may run
+finishup observe checks revoke                           # withdraw this workspace's check-policy trust
+finishup observe checks run                              # run the trusted argv under the enforcing sandbox
 ```
 
 `run` refuses an untrusted digest and records a coverage gap instead. A check that asks for
@@ -198,7 +198,7 @@ output digest and byte count, and whether it is current: a run is bound to the w
 diff state captured before and after it, so a result whose tree moved while it ran is marked not
 current rather than reusable. When no enforcing sandbox is available the outcome says so.
 
-Approved checks are optional. In a workspace without `.yoetz/checks.toml`, `status` reports
+Approved checks are optional. In a workspace without `.finishup/checks.toml`, `status` reports
 `state: not_configured` and exits successfully; `preview`, `trust`, and `run` stop with
 `policy_not_configured`. A file that exists but cannot be read or parsed reports `invalid_policy`.
 Other local faults (for example an unreadable workspace) report `unavailable`. Configuring or
@@ -224,12 +224,12 @@ or cannot do the work. It is not a one-way door: respond `reopened` with a reaso
 just do the work and run `check`, and a check that tests the work after your answer and finds the
 issue absent resolves the finding. When the reviewer asks you to state a limit (a requirement only
 a hidden evaluator or something you cannot obtain could settle), that finding is a limitation
-request, not work: one reasoned `acknowledged` (or a `yoetz-verification-limit:<obligation id>`
+request, not work: one reasoned `acknowledged` (or a `finishup-verification-limit:<obligation id>`
 decision) discloses it, with no repair attempt required, and the receipt lists the disclosed limit
-instead of reading clean. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that Yoetz still
+instead of reading clean. Never empty or withdraw a working deliverable over a finding. `self_verified` is for a finding you repaired that FinishUP still
 cannot prove after a later check because of its own limits: say how you verified the repair in
 `reason` and cite at least one recorded evidence or result id in `evidence_refs`. It is final, is
-not your work any more, and keeps the receipt at best `insufficient_coverage`; Yoetz refuses it
+not your work any more, and keeps the receipt at best `insufficient_coverage`; FinishUP refuses it
 with `finding_not_rechecked` before a later check, or `finding_not_proof_limited` while that check
 still sees the issue. A finding that is already `verified_resolved`, `acknowledged_not_done`,
 `self_verified`, `rejection_accepted` or `disputed_after_rebuttal` (the review repeated a finding
@@ -306,7 +306,7 @@ Local checks also report facts about the task's own work: a planned verification
 obligation's requested command) that was not matched to an observed run, failed on its latest
 run, or last ran before your latest edit; an edit to the work after your last test, lint,
 typecheck or build run stops you once at Stop. Edits under a temporary directory outside your workspace and a
-Yoetz receipt you saved never count as edits for these facts. A run matches when it is the planned command or
+FinishUP receipt you saved never count as edits for these facts. A run matches when it is the planned command or
 contains it as one part, such as `cd /app && pytest -q && git diff --check`, `pytest -q > log
 2>&1`, `time pytest -q`, or a line of a `bash <<'EOF'` script; when the run combined other
 commands, its outcome counts for the planned command only if an `&&` chain succeeded. A requested
@@ -318,9 +318,9 @@ unresolved finding, or one of those planned-verification or excluded-output fact
 the stop is continued once with the list. When something outside your control blocks an
 obligation (authority, consent, credentials, or a dependency you cannot obtain), record a
 `decision_recorded` naming it in `affected_obligation_ids` with the statement line
-`yoetz-blocker:<authority|consent|credential|dependency_unavailable>`. A Yoetz limit (something
-Yoetz cannot show or prove) is never a blocker: verify the work yourself and respond
-`self_verified` instead. Yoetz cannot verify a blocker either, so the first one is only claimed:
+`finishup-blocker:<authority|consent|credential|dependency_unavailable>`. A FinishUP limit (something
+FinishUP cannot show or prove) is never a blocker: verify the work yourself and respond
+`self_verified` instead. FinishUP cannot verify a blocker either, so the first one is only claimed:
 the `publish_work` result challenges it (data the task says is recoverable, a failing test, or a
 result that only looks infeasible is not a blocker, so continue the work instead), and the
 obligation stays open work (`obligation_blocker_unconfirmed`) until you answer that challenge
@@ -336,7 +336,7 @@ asked once, so `ready_with_limitations` is never followed by a surprise. Reading
 criteria costs one extra turn, once per set of resolved obligations: if your output does not meet
 them, publish that obligation again as `acknowledged_not_done` with the reason; if they can only be
 checked outside this environment (a hidden verifier, a withheld artifact) and you did the work, keep
-it resolved and record a decision with the line `yoetz-verification-limit:<obligation id>`. An
+it resolved and record a decision with the line `finishup-verification-limit:<obligation id>`. An
 acknowledgement you publish in answer to that question is not challenged again. A finding you
 rejected that waits for the reviewer's ruling (`finding_rejection_awaiting_ruling`) is answered by
 running `check` with `final_review: true`, never by acknowledging it. If you cannot finish a
@@ -396,7 +396,7 @@ On `OPERATION_PENDING`, read `status` with
 `view=operation` once and replay the same `request_id` once; if it is still pending, continue with
 a new local-only request and say the earlier operation never reached a terminal result.
 
-A check that Yoetz refused before admitting it is different: nothing was recorded under its
+A check that FinishUP refused before admitting it is different: nothing was recorded under its
 `request_id`, the error says so with the `check_admission_same_identity` continuation and a
 `retry_after_ms` wait, and `status view=operation` reads `absent` with an `admission` stage naming
 why (a capture handoff still being delivered, the same request already being admitted, a lost race,
@@ -404,5 +404,5 @@ or an import in progress). Wait that long and replay the exact same check, at mo
 is still refused, report the check as not admitted rather than switching mode or minting a new
 request.
 
-The agent-facing version of this loop, including when *not* to use Yoetz at all, is
+The agent-facing version of this loop, including when *not* to use FinishUP at all, is
 [`guidance/workflow.md`](../../guidance/workflow.md).

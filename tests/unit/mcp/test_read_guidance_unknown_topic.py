@@ -6,11 +6,11 @@ from typing import cast
 
 import pytest
 
-from yoetz.mcp import server as bridge
-from yoetz.mcp.summaries import summary_for_read_guidance
-from yoetz.protocol.guidance_uris import GUIDANCE_DOCUMENT_URIS, GUIDANCE_TOPIC_URIS
+from finishup.mcp import server as bridge
+from finishup.mcp.summaries import summary_for_read_guidance
+from finishup.protocol.guidance_uris import GUIDANCE_DOCUMENT_URIS, GUIDANCE_TOPIC_URIS
 
-_TEMPLATES = "yoetz://guidance/request-templates.md"
+_TEMPLATES = "finishup://guidance/request-templates.md"
 
 
 def _error(result: object) -> dict[str, object]:
@@ -71,7 +71,7 @@ async def test_unknown_document_lists_registered_documents_without_echo() -> Non
     runtime = bridge.build_bridge_runtime("policy")
     try:
         result = await bridge.dispatch_read_guidance(
-            {"uri": "yoetz://guidance/not-a-real-document.md"}, runtime
+            {"uri": "finishup://guidance/not-a-real-document.md"}, runtime
         )
     finally:
         await bridge.close_bridge_runtime(runtime)
@@ -86,7 +86,7 @@ async def test_registered_topic_still_reads() -> None:
     runtime = bridge.build_bridge_runtime("policy", host_profile="codex")
     try:
         result = await bridge.dispatch_read_guidance(
-            {"uri": "yoetz://guidance/workflow.md#start-and-resume"}, runtime
+            {"uri": "finishup://guidance/workflow.md#start-and-resume"}, runtime
         )
     finally:
         await bridge.close_bridge_runtime(runtime)
@@ -95,15 +95,15 @@ async def test_registered_topic_still_reads() -> None:
 
 def test_successful_topic_read_is_not_labelled_unavailable() -> None:
     text = summary_for_read_guidance(
-        {"ok": True, "uri": "yoetz://guidance/workflow.md#start-and-resume", "byte_count": 7}
+        {"ok": True, "uri": "finishup://guidance/workflow.md#start-and-resume", "byte_count": 7}
     )
     assert text == (
-        "Guidance yoetz://guidance/workflow.md#start-and-resume: 7 bytes; "
+        "Guidance finishup://guidance/workflow.md#start-and-resume: 7 bytes; "
         "full text in structuredContent.text."
     )
     # An unregistered anchor is still withheld rather than echoed.
     assert "unavailable" in summary_for_read_guidance(
-        {"ok": True, "uri": "yoetz://guidance/workflow.md#made-up", "byte_count": 7}
+        {"ok": True, "uri": "finishup://guidance/workflow.md#made-up", "byte_count": 7}
     )
 
 

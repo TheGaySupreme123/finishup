@@ -12,11 +12,11 @@ from typing import cast
 
 import pytest
 
-from yoetz.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
-from yoetz.ports.control import ControlCallRequest, ControlMethod
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import CheckRequest, public_model_to_wire
-from yoetz.service.daemon import ServiceDaemon
+from finishup.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
+from finishup.ports.control import ControlCallRequest, ControlMethod
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import CheckRequest, public_model_to_wire
+from finishup.service.daemon import ServiceDaemon
 
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-0000000000a1"
 _RPC_ID = "rpc_00000000-0000-4000-8000-0000000000a2"
@@ -25,7 +25,7 @@ _REQUEST_ID = "req_00000000-0000-4000-8000-0000000000a3"
 
 @pytest.fixture(autouse=True)
 def diagnostic_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     return tmp_path

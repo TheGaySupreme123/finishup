@@ -8,7 +8,7 @@ from typing import cast
 import pytest
 
 from builders.replay import replay_records
-from yoetz.domain.events import (
+from finishup.domain.events import (
     AcceptedEvent,
     CheckMode,
     CheckRecordedPayload,
@@ -16,23 +16,23 @@ from yoetz.domain.events import (
     _review_input_manifest_from_json,  # pyright: ignore[reportPrivateUsage]
     encode_payload,
 )
-from yoetz.domain.findings import SemanticDispatchKind, SemanticProvenance
-from yoetz.domain.values import JsonValue as DomainJsonValue
-from yoetz.domain.values import finding_id, obligation_id
-from yoetz.kernel.closure_readiness import (
+from finishup.domain.findings import SemanticDispatchKind, SemanticProvenance
+from finishup.domain.values import JsonValue as DomainJsonValue
+from finishup.domain.values import finding_id, obligation_id
+from finishup.kernel.closure_readiness import (
     ClosureReadinessFacts,
     _review_deferred,  # pyright: ignore[reportPrivateUsage]
     closure_readiness_facts,
     derive_closure_readiness,
     live_lineage_blockers,
 )
-from yoetz.kernel.projections import observation_limitation_finding_ids
-from yoetz.kernel.receipt_capacity import receipt_blocking_finding_count
-from yoetz.kernel.reducers import invalidates_recorded_check, replay
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.coverage import CheckType
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.kernel.projections import observation_limitation_finding_ids
+from finishup.kernel.receipt_capacity import receipt_blocking_finding_count
+from finishup.kernel.reducers import invalidates_recorded_check, replay
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import CheckType
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _FINDING = finding_id("fnd_91300000-0000-4000-8000-000000000001")
 _OTHER_FINDING = finding_id("fnd_91300000-0000-4000-8000-000000000002")
@@ -533,7 +533,7 @@ def test_a_review_round_stopped_for_an_insufficient_packet_is_not_asked_for_agai
             ),
         ),
     )
-    import yoetz.kernel.closure_readiness as readiness
+    import finishup.kernel.closure_readiness as readiness
 
     # The round is still stopped (two insufficient reviews, no edit since): see test_review_round.
     monkeypatch.setattr(readiness, "review_round_stopped", _always(True))

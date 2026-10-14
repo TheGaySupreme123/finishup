@@ -6,16 +6,10 @@ from dataclasses import replace
 
 import pytest
 
-from unit.privacy.test_local_enforcer import (
-    _DIGEST,  # pyright: ignore[reportPrivateUsage]
-    _REQUEST,  # pyright: ignore[reportPrivateUsage]
-    _effective,  # pyright: ignore[reportPrivateUsage]
-    _scope,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.adapters.privacy.provenance import LedgerAuthorshipProvenanceResolver
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.domain.privacy import (
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.adapters.privacy.provenance import LedgerAuthorshipProvenanceResolver
+from finishup.application.egress import PrivacyCoordinator
+from finishup.domain.privacy import (
     CandidateContext,
     CandidateContextItem,
     ClassifiedContext,
@@ -29,10 +23,16 @@ from yoetz.domain.privacy import (
     SourceAuthorship,
     authorship_provenance,
 )
-from yoetz.domain.values import Frontier
-from yoetz.protocol.coverage import PublicationChannel
-from yoetz.protocol.models import DataCategory
-from yoetz.service.ready_composition import build_local_privacy_enforcer
+from finishup.domain.values import Frontier
+from finishup.protocol.coverage import PublicationChannel
+from finishup.protocol.models import DataCategory
+from finishup.service.ready_composition import build_local_privacy_enforcer
+from unit.privacy.test_local_enforcer import (
+    _DIGEST,  # pyright: ignore[reportPrivateUsage]
+    _REQUEST,  # pyright: ignore[reportPrivateUsage]
+    _effective,  # pyright: ignore[reportPrivateUsage]
+    _scope,  # pyright: ignore[reportPrivateUsage]
+)
 
 _SESSION = "ses_20000000-0000-4000-8000-000000000001"
 _OTHER_SESSION = "ses_20000000-0000-4000-8000-000000000002"

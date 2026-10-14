@@ -18,19 +18,19 @@ from typing import Final
 
 import pytest
 
-from yoetz.mcp.descriptors import TOOL_DESCRIPTORS, McpRouteProfile, descriptor_for
+from finishup.mcp.descriptors import TOOL_DESCRIPTORS, McpRouteProfile, descriptor_for
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 _GUIDANCE: Final = _REPO_ROOT / "guidance"
 _SKILLS: Final = tuple(
-    _REPO_ROOT / "skills" / host / "yoetz" / "SKILL.md"
+    _REPO_ROOT / "skills" / host / "finishup" / "SKILL.md"
     for host in ("claude-code", "codex", "cursor", "portable")
 )
 _SHIPPED: Final = (
     *sorted(_GUIDANCE.glob("*.md")),
     *_SKILLS,
-    *sorted((_REPO_ROOT / "src" / "yoetz" / "resources" / "guidance").glob("*.md")),
-    *sorted((_REPO_ROOT / "src" / "yoetz" / "resources" / "skills").glob("*/yoetz/SKILL.md")),
+    *sorted((_REPO_ROOT / "src" / "finishup" / "resources" / "guidance").glob("*.md")),
+    *sorted((_REPO_ROOT / "src" / "finishup" / "resources" / "skills").glob("*/finishup/SKILL.md")),
 )
 _DISCOVER: Final = "## Discover evidence before authoring replacements"
 
@@ -95,8 +95,8 @@ def test_discovery_procedure_uses_published_ids_filters_and_structural_links(nam
 
 
 def test_codex_skill_routes_evidence_first_closure_to_the_workflow_topic() -> None:
-    text = _collapsed(_REPO_ROOT / "skills" / "codex" / "yoetz" / "SKILL.md")
-    assert "yoetz://guidance/workflow.md#start-and-resume" in text
+    text = _collapsed(_REPO_ROOT / "skills" / "codex" / "finishup" / "SKILL.md")
+    assert "finishup://guidance/workflow.md#start-and-resume" in text
     # Issue #1048: the core is the operating card; other pages are read on demand.
     assert "that core is the operating card" in text
     assert "other pages only when a result names them" in text

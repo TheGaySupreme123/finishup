@@ -9,16 +9,16 @@ from typing import cast
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as local_mod
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import (
+import finishup.adapters.integrations.observation_local as local_mod
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
     ObservationIngestDisposition,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 _dedup_key = cast(Callable[[str, ObservationEnvelope], str], getattr(local_mod, "_dedup_key"))
 _LOCAL_ENVELOPE_RETENTION_GAP = cast(str, getattr(local_mod, "_LOCAL_ENVELOPE_RETENTION_GAP"))

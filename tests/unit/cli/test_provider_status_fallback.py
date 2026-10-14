@@ -8,20 +8,20 @@ from typing import Any, Literal, cast
 
 import pytest
 
+from finishup.cli import provider_status as module
+from finishup.config.models import (
+    ExternalRuntimeProfileConfig,
+    FinishUpConfig,
+    SemanticFallbackConfig,
+    VerificationConfig,
+)
+from finishup.config.write import codex_subscription_runtime
 from unit.cli.test_provider_status import (
     _UNREAD_ROUTE,  # pyright: ignore[reportPrivateUsage]
     _Client,  # pyright: ignore[reportPrivateUsage]
     _policy,  # pyright: ignore[reportPrivateUsage]
     _provider,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.cli import provider_status as module
-from yoetz.config.models import (
-    ExternalRuntimeProfileConfig,
-    SemanticFallbackConfig,
-    VerificationConfig,
-    YoetzConfig,
-)
-from yoetz.config.write import codex_subscription_runtime
 
 pytestmark = pytest.mark.anyio
 
@@ -39,7 +39,7 @@ def _runtime() -> ExternalRuntimeProfileConfig:
         isolated_config_sha256=_DIGEST,
         capability_profile="codex-evaluator/0.150.1/v1",
         capability_evidence_expires_at="2026-11-30T00:00:00Z",
-        codex_home="/opt/Yoetz Tools/codex-home",
+        codex_home="/opt/FinishUP Tools/codex-home",
         model="gpt-5.6-sol",
         reasoning_effort="high",
     )
@@ -53,13 +53,13 @@ def _install(
     service_state: str = "ready",
 ) -> _Client:
     if primary is None:
-        config = YoetzConfig(
+        config = FinishUpConfig(
             profile="local-openai",
             verification=VerificationConfig(semantic=cast(Any, "optional")),
             provider=_provider(),
         )
     else:
-        config = YoetzConfig(
+        config = FinishUpConfig(
             profile="codex-subscription" if primary == "codex_subscription" else "local-openai",
             verification=VerificationConfig(semantic=cast(Any, "optional")),
             provider=_provider(),
@@ -68,14 +68,14 @@ def _install(
         )
     client = _Client(capabilities, _policy(llm_inference_enabled=True), state=service_state)
 
-    def _load(*_args: object) -> YoetzConfig:
+    def _load(*_args: object) -> FinishUpConfig:
         return config
 
     monkeypatch.setattr(module, "load_config", _load)
 
     # These cases pin role-scoped credential reporting; the synthetic runtime's paths are never
     # real executables, so its local structure is reported ready (#855 structure has its own cases).
-    def ready_fact(loaded: YoetzConfig) -> dict[str, object] | None:
+    def ready_fact(loaded: FinishUpConfig) -> dict[str, object] | None:
         if loaded.external_runtime is None:
             return None
         return {
@@ -140,7 +140,7 @@ async def test_an_api_primary_with_a_codex_fallback_reports_both_roles(
     endpoint = cast(dict[str, object], report["endpoint"])
     fallback = cast(dict[str, object], report["fallback_endpoint"])
     assert endpoint["role"] == "primary"
-    assert endpoint["credential_authority"] == "yoetz_vault_api_credential"
+    assert endpoint["credential_authority"] == "finishup_vault_api_credential"
     assert endpoint["provider_id"] == "openai"
     assert fallback["role"] == "fallback"
     assert fallback["provider_id"] == "openai-codex"
@@ -185,7 +185,7 @@ async def test_a_codex_primary_with_an_api_fallback_swaps_the_roles(
     fallback = cast(dict[str, object], report["fallback_endpoint"])
     assert (endpoint["role"], endpoint["provider_id"]) == ("primary", "openai-codex")
     assert (fallback["role"], fallback["provider_id"]) == ("fallback", "openai")
-    assert fallback["credential_authority"] == "yoetz_vault_api_credential"
+    assert fallback["credential_authority"] == "finishup_vault_api_credential"
     assert "runtime_version" not in fallback
 
 
@@ -203,7 +203,7 @@ async def test_a_missing_fallback_capability_is_a_blocker_of_the_fallback_only(
         {
             "condition": "fallback_provider_credential",
             "state": "not_connected",
-            "next_command": "yoetz provider codex-subscription status",
+            "next_command": "finishup provider codex-subscription status",
         }
     ]
     # The fallback's credential never gates the primary's readiness: the blocker is reported
@@ -223,7 +223,7 @@ async def test_the_fallback_next_command_names_the_api_credential_when_the_api_i
         {
             "condition": "fallback_provider_credential",
             "state": "not_connected",
-            "next_command": "yoetz provider credential set",
+            "next_command": "finishup provider credential set",
         }
     ]
 
@@ -241,7 +241,7 @@ async def test_a_primary_credential_gap_names_the_primary_command_under_a_pairin
         {
             "condition": "provider_credential",
             "state": "not_connected",
-            "next_command": "yoetz provider codex-subscription status",
+            "next_command": "finishup provider codex-subscription status",
         }
     ]
     assert _blockers(report, "fallback_provider_credential") == []

@@ -1,20 +1,20 @@
 # ADR-033 — Deterministic task facts, explicit blockers, and the Stop-time closure gate
 
-**Status:** Accepted for [issue #977](https://github.com/TheGaySupreme123/yoetz/issues/977). The
+**Status:** Accepted for [issue #977](https://github.com/TheGaySupreme123/finishup/issues/977). The
 owner requested this design-gated work explicitly in the 2026-10-06 session that reviewed TB4 run
 tb4f1; the issue records that acknowledgement. It covers host hook behaviour, the control-request
-structural fields, the work-integrity policy-pack version, and the change to "Yoetz is not an
+structural fields, the work-integrity policy-pack version, and the change to "FinishUP is not an
 enforcement system". It grants no runtime, credential, disclosure or destructive-action authority.
-**Implemented by:** `src/yoetz/kernel/task_facts.py`, `src/yoetz/kernel/closure_readiness.py`,
-`src/yoetz/kernel/policies/work_integrity.py`, `src/yoetz/kernel/deterministic_checks.py`,
-`src/yoetz/kernel/observed_failures.py`, `src/yoetz/application/check.py`,
-`src/yoetz/application/check_change.py`, `src/yoetz/adapters/git_change_capture.py`,
-`src/yoetz/adapters/memory/ledger.py`, `src/yoetz/application/observation_materialize.py`,
-`src/yoetz/cli/runtime_facts.py`, `src/yoetz/cli/closure_gate.py`, `src/yoetz/cli/observe_hooks.py`,
-`src/yoetz/kernel/policies/observation_advice.py`, `src/yoetz/service/ready_composition.py`,
-`src/yoetz/domain/observation.py`, `src/yoetz/domain/receipts.py` (`TASK_FACT_GAP_SENTENCES`),
-`src/yoetz/cli/hook_diagnostics.py`, `src/yoetz/mcp/summaries.py` (rejected-outcome hint),
-`src/yoetz/protocol/policy_packs.py`, `src/yoetz/kernel/finding_resolution.py`, the control-request
+**Implemented by:** `src/finishup/kernel/task_facts.py`, `src/finishup/kernel/closure_readiness.py`,
+`src/finishup/kernel/policies/work_integrity.py`, `src/finishup/kernel/deterministic_checks.py`,
+`src/finishup/kernel/observed_failures.py`, `src/finishup/application/check.py`,
+`src/finishup/application/check_change.py`, `src/finishup/adapters/git_change_capture.py`,
+`src/finishup/adapters/memory/ledger.py`, `src/finishup/application/observation_materialize.py`,
+`src/finishup/cli/runtime_facts.py`, `src/finishup/cli/closure_gate.py`, `src/finishup/cli/observe_hooks.py`,
+`src/finishup/kernel/policies/observation_advice.py`, `src/finishup/service/ready_composition.py`,
+`src/finishup/domain/observation.py`, `src/finishup/domain/receipts.py` (`TASK_FACT_GAP_SENTENCES`),
+`src/finishup/cli/hook_diagnostics.py`, `src/finishup/mcp/summaries.py` (rejected-outcome hint),
+`src/finishup/protocol/policy_packs.py`, `src/finishup/kernel/finding_resolution.py`, the control-request
 2.9.0 structural payload, and the work-integrity 0.3.0 pack identity.
 **Relates to:** ADR-019 (completion scope), ADR-022 (observation authorship), ADR-031 (check-time
 change capture), ADR-032 (closure readiness), and issues #909, #910, #913.
@@ -28,10 +28,10 @@ atrx-vep-crispr cleared it by publishing an attempt and never wrote its report. 
 an agent with work left: pretrain-shard-corruption stopped with three open obligations and
 `closure_readiness.state = action_required`, while guidance let it "record the blocker" and the
 result enum had no `blocked` outcome to record. Meanwhile the hooks already saw facts that matter
-for delivery: packages installed into Yoetz's own interpreter, files written outside the
+for delivery: packages installed into FinishUP's own interpreter, files written outside the
 workspace, verification run only as root.
 
-The owner's direction: deterministic Yoetz makes few judgments but must calculate and surface facts
+The owner's direction: deterministic FinishUP makes few judgments but must calculate and surface facts
 the agent can act on; self-generated evidence stays admissible (that is a deliberate difference
 from AI-powered review); blockers are acceptable only when outside the agent's control; and the
 agent must not be able to stop silently with known work left.
@@ -201,10 +201,10 @@ agent must not be able to stop silently with known work left.
    best-effort artifact and names the blocker form. These rule changes move the work-integrity pack
    to `0.3.0`; earlier versions stay decodable and form one lineage.
 4. **Blockers are explicit and closed.** A readable, unsuperseded `decision_recorded` whose
-   statement holds the exact line `yoetz-blocker:<kind>`, for a kind in `authority`, `consent`,
+   statement holds the exact line `finishup-blocker:<kind>`, for a kind in `authority`, `consent`,
    `credential`, `dependency_unavailable`, records that the obligations in its
    `affected_obligation_ids` are blocked by something outside the agent's control. No event schema
-   changes (the same marker pattern as `yoetz-no-material-work`). Yoetz cannot verify the claim:
+   changes (the same marker pattern as `finishup-no-material-work`). FinishUP cannot verify the claim:
    it honours it and discloses it. Readiness reports open obligations that are all so named as the
    standing `obligation_blocked_outside_agent_control` instead of `obligations_open`; their
    requested items raise no never-attempted or absent-output finding; the Stop gate does not list
@@ -239,7 +239,7 @@ agent must not be able to stop silently with known work left.
    `closure_gate_blocker_rechecked`, `closure_gate_memory_unwritten` (amendment),
    `closure_gate_not_required`, `closure_gate_repeat_suppressed`,
    `closure_gate_turn_end_after_continue` (first recorded as `closure_gate_loop_guard`, renamed by
-   the 2026-10-11 amendment), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) visible in `yoetz observe status`,
+   the 2026-10-11 amendment), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) visible in `finishup observe status`,
    beside the Stop drain's own `stop_drain_complete` / `stop_drain_incomplete` (#994).
 6. **Per-host delivery.** Codex: `decision: block` with `reason` (its only model-visible Stop
    channel). Claude Code: `hookSpecificOutput.additionalContext` at Stop, the documented non-error
@@ -251,8 +251,8 @@ agent must not be able to stop silently with known work left.
    `write_scope` (`outside_workspace`) and `effective_user` (`root`, `non_root`) to the structural
    payload; the control-request 2.9.0 schema and the domain envelope admit exactly these values.
    Interpreter resolution uses the hook process's `PATH` (the agent's); an interpreter under the
-   hook's own `sys.prefix` is Yoetz's runtime. Every other install is judged against the *task
-   interpreter*: Yoetz records none, so the hook resolves the first `python3` and `python` on that
+   hook's own `sys.prefix` is FinishUP's runtime. Every other install is judged against the *task
+   interpreter*: FinishUP records none, so the hook resolves the first `python3` and `python` on that
    `PATH` outside its own runtime. Environments compare by root (the executable's directory's
    parent, following directory links but never the executable's own link). The task's own
    environment is `system` (no fact); another virtual environment, or any interpreter outside a
@@ -281,7 +281,7 @@ agent must not be able to stop silently with known work left.
    them. Observation advice delivers `install_into_yoetz_runtime`, `install_into_private_env` and
    `write_outside_workspace` once each at the next advice-bearing event (advice only, never a
    ledger finding); observation-advice moves to `0.1.8`.
-8. **"Not an enforcement system" is narrowed, not reversed.** Yoetz still blocks no tool call and
+8. **"Not an enforcement system" is narrowed, not reversed.** FinishUP still blocks no tool call and
    gates no receipt; a check is still not correctness. The one active behaviour is the Stop
    continuation above, bounded to once per frontier and per host turn, honouring declared
    blockers, and never claiming work is incorrect.
@@ -338,7 +338,7 @@ agent must not be able to stop silently with known work left.
 ## Amendment (2026-10-06): a recorded blocker is re-asked once and checked once
 
 TB4 validation run tb4v1 found a loophole in decision 4. A deterministic agent on
-pretrain-shard-corruption recorded `yoetz-blocker:dependency_unavailable` for "no original snapshot
+pretrain-shard-corruption recorded `finishup-blocker:dependency_unavailable` for "no original snapshot
 found", although the task said the data was recoverable. Any well-formed line was honoured, the
 obligation became the standing `obligation_blocked_outside_agent_control`, and the Stop gate went
 quiet. The owner decided the following, with no prerequisite such as a prior failed attempt:
@@ -356,7 +356,7 @@ quiet. The owner decided the following, with no prerequisite such as a prior fai
    (`closure_gate_memory_unwritten` when the memory below cannot be written). Nothing judges the
    claim here.
 2. **"Re-confirmed" means the agent stopped again, with no new protocol field.** Once the gate
-   that named a pair is delivered, the hook remembers `<obligation id>:<kind>` for that Yoetz
+   that named a pair is delivered, the hook remembers `<obligation id>:<kind>` for that FinishUP
    session in a second owner-only file (`observation/closure-gate-blockers.json`, at most 64
    keys per session and 128 sessions). The pair is then honoured at every later Stop, whatever the
    frontier. A second Stop, or recording the same blocker again, is the re-confirmation. A
@@ -395,8 +395,8 @@ the hook recorded the loop guard (`closure_gate_loop_guard`, now
 `closure_gate_turn_end_after_continue`) without reading status and the re-check of decision 1
 above never ran. Codex honours repeated Stop blocks within one turn (codex-rs `turn.rs` sets
 `stop_hook_active` once per turn and keeps honouring blocks; its test
-`stop_hook_can_block_multiple_times_in_same_turn` asserts it); the limit was Yoetz's own. The gate
-also fired on receipt-blocking findings the agent could not clear because of Yoetz's own limits,
+`stop_hook_can_block_multiple_times_in_same_turn` asserts it); the limit was FinishUP's own. The gate
+also fired on receipt-blocking findings the agent could not clear because of FinishUP's own limits,
 and its text offered the blocker as the exit. The owner decided:
 
 1. **Active Stops re-ask new blockers, capped.** A Stop the host already continued this turn
@@ -414,22 +414,22 @@ and its text offered the blocker as the exit. The owner decided:
    when an active Stop emitted nothing. A blocker row readiness reports as `confirmation:
    confirmed` (the agent re-published the same line in a later decision) is never re-asked, and
    the readiness token `obligation_blocker_unconfirmed` is a gate item like `obligations_open`.
-   How to confirm a blocker (publish the same `yoetz-blocker` line again in a later decision) is
+   How to confirm a blocker (publish the same `finishup-blocker` line again in a later decision) is
    told only after the challenge: in the re-check, or in a later gate whose blocker was already
    re-asked. The offer that introduces the blocker line never says it, so publishing the line
    twice up front cannot skip the challenge (the kernel rule that a repeat confirms only after
-   the challenge is owned by the blockers change). The re-check tells the agent that a Yoetz
+   the challenge is owned by the blockers change). The re-check tells the agent that a FinishUP
    limit is never a blocker: finish the obligation and disclose any limit in the final answer
    (`self_verified` is for findings only).
-2. **Repair first; a Yoetz limit is never a blocker (#984).** For receipt-blocking findings the
-   text says: repair what you can; for a finding you repaired that Yoetz still cannot prove (its
-   resolution names a Yoetz limit such as redaction, observation loss or a review-packet limit),
+2. **Repair first; a FinishUP limit is never a blocker (#984).** For receipt-blocking findings the
+   text says: repair what you can; for a finding you repaired that FinishUP still cannot prove (its
+   resolution names a FinishUP limit such as redaction, observation loss or a review-packet limit),
    verify it yourself, record that evidence and respond `self_verified` with how you verified it
    and the evidence ids (ADR-034); respond `acknowledged_not_done` only if you truly cannot or will
-   not do it. Every gate says a Yoetz limit is never a `yoetz-blocker`. The blocker sentence, with
+   not do it. Every gate says a FinishUP limit is never a `finishup-blocker`. The blocker sentence, with
    "Data the task says is recoverable is not such a blocker" and the confirmation step, is offered
    only when open obligations (or an unconfirmed blocker) remain, never for a findings-only gate.
-   The text never exceeds Yoetz's 2,000-character bound (its own cap, not a documented host
+   The text never exceeds FinishUP's 2,000-character bound (its own cap, not a documented host
    limit): whole optional sentences are dropped (the drain note first, then the long obligation
    sentence, then the required limitation ids, then the premise ask) and the re-check sentence is
    always kept; it names at most three blocked obligations. A planned-verification hint is a
@@ -471,7 +471,7 @@ and its text offered the blocker as the exit. The owner decided:
 tb4n1 showed three more blocker defects. In the deterministic arm one blocker line on every open
 obligation turned readiness `ready_with_limitations` with nothing left to do although the main
 deliverable was undone (pretrain-shard-corruption, payments-pipeline-fix; both scored 0).
-Thirty-one of 38 blocker attempts named only finished obligations to excuse findings Yoetz could
+Thirty-one of 38 blocker attempts named only finished obligations to excuse findings FinishUP could
 not clear; such a blocker changed nothing yet read as a claim. And the closing review accepted
 every blocker it was shown, including one the task statement contradicted. The owner decisions for
 C2 (challenge a blocker when it is published) and C4/C5 apply:
@@ -480,7 +480,7 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    only *claims* it. It stays agent work: readiness lists the agent-actionable Stop-gate token
    `obligation_blocker_unconfirmed` instead of `obligations_open`, and a claimed blocker
    suppresses no task fact or `requested_item_never_attempted`. It becomes the standing
-   `obligation_blocked_outside_agent_control` only when the same `yoetz-blocker:<kind>` line for
+   `obligation_blocked_outside_agent_control` only when the same `finishup-blocker:<kind>` line for
    that obligation arrives in a later publish batch, which is necessarily after the publish-time
    challenge below (and, if the agent stopped, the Stop re-ask). A repeat in the same batch, two
    lines in one decision, or a dry run never confirms. A later decision of a different kind for
@@ -497,7 +497,7 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    `completion_plan_not_claimed` is disclosed as standing too (C9).
 2. **Publish-time challenge and no-effect notice.** A `publish_work` result, dry runs included,
    carries `blocker_notices` with fixed text per `(obligation, kind)`: `blocker_claimed` (repair
-   first; a Yoetz limit is never a blocker, respond `self_verified`; data the task says is
+   first; a FinishUP limit is never a blocker, respond `self_verified`; data the task says is
    recoverable is not a blocker; how to confirm), `blocker_confirmed`, or
    `blocker_without_effect` for a blocker naming no open obligation. The last is accepted (no
    protocol break) and changes no readiness, gap, finding or receipt section; it points to
@@ -507,14 +507,14 @@ C2 (challenge a blocker when it is published) and C4/C5 apply:
    tells the reviewer to quote the blocked obligation's own description and evidence expectation
    from its privacy-gated packet item and requires a challenge when the statement says the
    outcome is achievable or the data recoverable, the obvious prerequisite was not attempted, the
-   material contradicts the blocker, or it names a Yoetz or review limit. Being the task's main
+   material contradicts the blocker, or it names a FinishUP or review limit. Being the task's main
    deliverable calls for close scrutiny, not an automatic challenge: a genuine credential or
    authority blocker on it may stand. The question itself carries ids and fixed text only, never the obligation text,
    because questions are not privacy-scanned. A golden question pins the tb4n1 pretrain case.
 4. **Blocker texts agree (#984 F1).** The `requested_item_never_attempted` repair text, the MCP
    outcome hint, the approved-checks continuation, the guidance and the skills all say: repair
-   first; for a Yoetz limit, verify yourself and respond `self_verified`; `acknowledged_not_done`
-   is the last resort; `yoetz-blocker` only for an open obligation genuinely blocked outside your
+   first; for a FinishUP limit, verify yourself and respond `self_verified`; `acknowledged_not_done`
+   is the last resort; `finishup-blocker` only for an open obligation genuinely blocked outside your
    control. Only the `blocker_claimed` notice and the Stop re-check say how to confirm one.
 5. **One clean-compatible gap list (#986 E2).** `kernel.deterministic_scope.CLEAN_COMPATIBLE_GAPS`
    (standing in `GAP_CLASSIFICATION` and tolerated by the deterministic local absence proof,
@@ -541,8 +541,8 @@ Owner-approved 2026-10-07 (issue #995; L5 request D7a under #984).
 1. **Disclosure lines (#995).** tb4n1 agents declared blockers on finished work because a hidden
    verifier or a private trace was out of reach (ks-solver, lake-temp-glm, vpp-loss-divergence), or
    blocked repeatedly on a choice a best-effort assumption could make (cargo-flight-dispatch). A
-   `decision_recorded` statement line `yoetz-assumption:<obligation id>` or
-   `yoetz-verification-limit:<obligation id>` (exact line, well-formed id; the rationale carries
+   `decision_recorded` statement line `finishup-assumption:<obligation id>` or
+   `finishup-verification-limit:<obligation id>` (exact line, well-formed id; the rationale carries
    the text) now records that instead (`task_facts.disclosure_declarations`). It never blocks,
    resolves, or changes an obligation's status; the earliest unsuperseded decision records each
    `(obligation, kind)`, a decision superseded through `supersedes_event_id` withdraws it (as for
@@ -608,8 +608,8 @@ This replaces the earlier statement in this ADR that the receipt cannot apply th
 ## Amendment (2026-10-08): finer stale rule and a gate token for edits after verification (#1018)
 
 ADR-042 refines decisions here without replacing them. An observed edit whose every path is scratch
-(a temporary root outside the workspace) or Yoetz's own material (a saved receipt or export, Yoetz state,
-the packaged Yoetz trees) carries `write_scope` `scratch` or `yoetz_owned` and never advances the
+(a temporary root outside the workspace) or FinishUP's own material (a saved receipt or export, FinishUP state,
+the packaged FinishUP trees) carries `write_scope` `scratch` or `yoetz_owned` and never advances the
 latest edit, so it never makes `planned_verification_stale` or `edited_after_last_verification`
 fire and is not acting. `python -m pytest` and the other verification modules are verification
 runs; an interpreter-run script is never a build by its file name. `edited_after_last_verification`
@@ -649,7 +649,7 @@ impossibility research. The owner decided:
    awaiting a ruling, or beside a withdrawn deliverable, whether or not that Stop names the item (an
    already-continued Stop does not): it then stays unasked and is asked at a later Stop. Its sentence gains the verification-limit branch: when the criteria can only be
    checked outside this environment (a hidden verifier, a withheld artifact) and the agent did the
-   work, keep the obligation resolved and record `yoetz-verification-limit:<obligation id>`; "I
+   work, keep the obligation resolved and record `finishup-verification-limit:<obligation id>`; "I
    could not find it" never qualifies, so the pretrain S rescue is unchanged.
 3. **No invite-then-challenge.** An `acknowledgement` re-check whose `since_frontier` (the frontier
    of the agent's current acknowledgement) is later than the earliest acceptance invite this session
@@ -768,7 +768,7 @@ remediation PR.
    acknowledgement is not its exit), like a withdrawn deliverable.
 2. **The acceptance re-read asks only what the final message did not address (#1050).** tb4n4: the
    re-read fired in 60 of 60 deterministic attempts (61 of 65 continuations); 41 attempts then did
-   only Yoetz bookkeeping and none edited a deliverable (median cost 1.3 minutes, worst 12.9). Its
+   only FinishUP bookkeeping and none edited a deliverable (median cost 1.3 minutes, worst 12.9). Its
    one real value was five honest downgrades of overstated claims. The re-read stays, keyed and
    remembered as in the 2026-10-11 amendment, but where the host's Stop payload carries the agent's
    final message it is asked only for the resolved obligations that message does not address, and

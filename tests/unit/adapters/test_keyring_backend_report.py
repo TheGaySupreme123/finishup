@@ -10,8 +10,8 @@ from keyring.backends.fail import Keyring as FailKeyring
 from keyring.backends.null import Keyring as NullKeyring
 from keyring.backends.SecretService import Keyring as SecretServiceKeyring
 
-from yoetz.adapters.keys import os_keyring
-from yoetz.adapters.keys.os_keyring import describe_vault_keyring_backend
+from finishup.adapters.keys import os_keyring
+from finishup.adapters.keys.os_keyring import describe_vault_keyring_backend
 
 
 def test_fail_backend_reads_as_no_store_and_names_the_linux_requirement() -> None:

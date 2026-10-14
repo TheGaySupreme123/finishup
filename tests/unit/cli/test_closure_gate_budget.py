@@ -17,8 +17,8 @@ from typing import Any
 import pytest
 
 from builders.gate_readiness import ack_recheck, blocker_recheck, obligation_id, premise_recheck
-from yoetz.cli import closure_gate as gate
-from yoetz.cli.closure_gate import (
+from finishup.cli import closure_gate as gate
+from finishup.cli.closure_gate import (
     ACKNOWLEDGEMENT_RECHECK_ITEM,
     BLOCKER_RECHECK_ITEM,
     closure_gate_from_readiness,

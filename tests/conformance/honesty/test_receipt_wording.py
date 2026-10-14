@@ -16,8 +16,7 @@ from typing import cast
 
 import pytest
 
-from fixture_loader import FixtureLoader, JsonValue
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     ReceiptConclusion,
     ReceiptDocument,
     ReceiptSectionKey,
@@ -29,7 +28,8 @@ from yoetz.domain.receipts import (
     render_receipt_compact,
     render_receipt_human,
 )
-from yoetz.domain.values import freeze_json
+from finishup.domain.values import freeze_json
+from fixture_loader import FixtureLoader, JsonValue
 
 _RECEIPT_FIXTURE_PATHS = (
     "receipts/deterministic-current.case.json",

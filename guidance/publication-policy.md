@@ -110,7 +110,7 @@ with `subject=source_diff` instead.
 
 `captured` requires the mirrored `captured_object_id`; `digest_only` and `withheld` forbid one. A
 digest proves byte identity only. It does not prove that a command ran, that its exit status was
-successful, that Yoetz inspected the content, or that the evidence supports a claim. `description`
+successful, that FinishUP inspected the content, or that the evidence supports a claim. `description`
 is caller-authored narrative and is never treated as the bytes identified by `content_digest`.
 
 ### Making a change reviewable
@@ -124,10 +124,10 @@ that `description`.
 
 You may also publish the matching `content_digest` with its `digest_binding` for byte identity; the
 digest identity facts then travel alongside the excerpt as excerpt provenance. Ordinary publication
-records that binding as `caller_asserted` with `digest_only` availability: Yoetz did not capture or
+records that binding as `caller_asserted` with `digest_only` availability: FinishUP did not capture or
 verify those bytes. This is a disclosed provenance label, not a finding. It raises no local finding,
 and the receipt names once, with a count, the cited evidence items whose caller-asserted digests
-Yoetz did not verify. No response, recheck, or further publication changes that label, so do not
+FinishUP did not verify. No response, recheck, or further publication changes that label, so do not
 publish more excerpts or digests to clear it. A digest-bound record without a `description`
 contributes only its bounded provenance facts, so the reviewer sees identity but no content.
 
@@ -135,7 +135,7 @@ The excerpt is truncated to at most 4,096 UTF-8 bytes, silently and possibly mid
 slice within 4,096 UTF-8 bytes so the reviewer receives it intact; `description` itself accepts up
 to 8,192 characters, so the field limit does not protect against excerpt truncation.
 
-When the review recipe selects diff excerpts, Yoetz itself also reads the task's repository at
+When the review recipe selects diff excerpts, FinishUP itself also reads the task's repository at
 check time and gives the reviewer that **check-time change** first: committed and uncommitted
 changes from the commit the task started on, plus untracked files Git does not ignore, including
 edits made by scripts or commits that no hook captured. Untracked files already there when the task
@@ -143,7 +143,7 @@ started and unchanged since are left out, a nested repository's own change is in
 way (when the header says its untracked files are named but not shown, give the reviewer evidence
 for one it must read), and up to
 four files the task statement names that the task only reads (a specification, the source being
-ported) travel beside it, so they need no evidence of their own. Yoetz redacts secret-shaped content in that
+ported) travel beside it, so they need no evidence of their own. FinishUP redacts secret-shaped content in that
 check-time change, so no deliverable ever needs hiding: never git-ignore, exclude (including
 `.git/info/exclude`), stash, or move a requested output for privacy. Do not paste or digest the whole diff for the reviewer;
 use `description` for the problem-local hunk or test slice the claim depends on. The
@@ -229,7 +229,7 @@ operations and does not add a composer or a new protocol field:
    one current-state recheck still fails to qualify, stop repeating an unchanged check, continue any
    distinct authorized repair, and disclose the remaining blocker.
 
-The optional `yoetz closure-prepare --session-id <returned-session> --writer-id <returned-writer>`
+The optional `finishup closure-prepare --session-id <returned-session> --writer-id <returned-writer>`
 command is read-only preparation. It may inventory obligations, results, evidence, findings, and
 history and draft one explicit phase, but it never invents attempts, evidence, finding responses,
 obligation satisfaction, or completion. `--output <file>` saves the result for repeated reading;
@@ -269,7 +269,7 @@ preserves the original view, filter, frontier, and `limit`. Changing `limit` sta
 no cursor. A `respond` request carries `finding_id`, `finding_frontier`, `disposition`, and `reason`;
 a `receipt` request carries its own receipt fields. Never copy response fields into a receipt, and
 never invent a finding disposition when a host reports that the wrong operation template was used.
-The complete operation bodies remain in `yoetz://guidance/request-templates.md`.
+The complete operation bodies remain in `finishup://guidance/request-templates.md`.
 
 Newly minted caller IDs (`request_id`, event/object payload IDs, and claim IDs) use the required
 prefix plus a fresh lowercase UUID v4. Existing returned evidence, obligation, claim, and finding
@@ -293,10 +293,10 @@ declaration: include the current reason when the revised effective ref set is em
 clear an earlier reason. When a mid-task obligation requires a full append-only restatement rather
 than a change disposition, publish `plan_published` at exactly the current plan version plus one;
 its refs and optional empty-scope reason become the complete effective declaration. A duplicate
-root or version gap makes the chain unreadable. Yoetz never infers obligations from prompts, source
+root or version gap makes the chain unreadable. FinishUP never infers obligations from prompts, source
 code, workspace state, or plan prose.
 
-You decompose the request; Yoetz checks the link. When a task statement is recorded and the
+You decompose the request; FinishUP checks the link. When a task statement is recorded and the
 effective plan declares obligations, at least one of them must name the statement event in
 `source_refs`, or every whole-task check returns the agent-actionable `task_requirement_unmet`
 finding (subject: the statement event) and readiness lists `instruction_requirement_unmapped`.
@@ -310,7 +310,7 @@ coverage-incomplete: `completion_scope_undeclared` without a reason or
 `completion_scope_declared_none` with one. With a task statement recorded, that completion claim
 also returns `task_requirement_unmet` until you either publish statement-sourced obligations or
 record a `decision_recorded` whose statement holds the exact line
-`yoetz-no-material-work:<statement event id>` with a rationale. The decision counts only while the
+`finishup-no-material-work:<statement event id>` with a rationale. The decision counts only while the
 task records no edit action and the check sees no changed file in the workspace (shell writes
 count); a task that changed files must map the work to obligations.
 
@@ -335,7 +335,7 @@ longer holds may be reopened (`status: open`) or acknowledged as not done
 (`acknowledged_not_done` with its reason, on `1.1.0`), repeating every meaning field. The
 public error names the mismatched schema field names only — never their values. A worked open +
 resolution pair lives in the `publish_work` tool input schema `examples` entry. Complete request
-bodies remain available at `yoetz://guidance/request-templates.md` if a host drops schema examples.
+bodies remain available at `finishup://guidance/request-templates.md` if a host drops schema examples.
 
 ## Requested items and attempt accounting
 
@@ -368,11 +368,11 @@ replay once only for `absent`, use the stored `complete` outcome, and follow an 
 continuation before replaying a `pending` request. A read timeout gets a new read request ID with
 the same intent. Never manufacture a replacement event merely because a response was lost.
 
-A `status` read and a dry run before a publish are optional, not a ritual: the write is all or nothing. A rejected batch appends nothing and names what stopped it, not every error (for drafts, the first rejected draft and its field): fix it and resubmit, since another bad draft surfaces only on the next attempt, as it would in a dry run. An accepted write returns the new frontier and the accepted event ids. Use `dry_run: true` when you are unsure a batch will be accepted (a claim correction, a plan revision, a large batch); the preview is not evidential and must not be cited as a check, publication, or coverage source, and the real publish reuses the same `request_id` with `dry_run` omitted or false. Before resolving an obligation that names requested items, account for each exact value that has no attempt yet. When you need the picture, call `check` with `mode: inspect` instead of several status reads: it records nothing and returns what is left with whose move each gap is (requested items not attempted are named by index), what the hooks observed since the last check, and whether each obligation's resolution evidence links to its declared deliverables or commands. Your host approves it as it approves any `check` call; if the host holds or refuses it, nothing is pending in Yoetz, so read `status` instead. `status view=obligations` shows the exact `unattempted_items` values.
+A `status` read and a dry run before a publish are optional, not a ritual: the write is all or nothing. A rejected batch appends nothing and names what stopped it, not every error (for drafts, the first rejected draft and its field): fix it and resubmit, since another bad draft surfaces only on the next attempt, as it would in a dry run. An accepted write returns the new frontier and the accepted event ids. Use `dry_run: true` when you are unsure a batch will be accepted (a claim correction, a plan revision, a large batch); the preview is not evidential and must not be cited as a check, publication, or coverage source, and the real publish reuses the same `request_id` with `dry_run` omitted or false. Before resolving an obligation that names requested items, account for each exact value that has no attempt yet. When you need the picture, call `check` with `mode: inspect` instead of several status reads: it records nothing and returns what is left with whose move each gap is (requested items not attempted are named by index), what the hooks observed since the last check, and whether each obligation's resolution evidence links to its declared deliverables or commands. Your host approves it as it approves any `check` call; if the host holds or refuses it, nothing is pending in FinishUP, so read `status` instead. `status view=obligations` shows the exact `unattempted_items` values.
 
 Worked examples for each ordinary publishable family — and a cross-linked
 action/result/evidence/claim batch — live in the `publish_work` tool input schema `examples` entry
-and as complete fallback bodies at `yoetz://guidance/request-templates.md`. Example `occurred_at`
+and as complete fallback bodies at `finishup://guidance/request-templates.md`. Example `occurred_at`
 values are illustrative shape only; do not copy them into live drafts.
 
 ### Event draft skeleton

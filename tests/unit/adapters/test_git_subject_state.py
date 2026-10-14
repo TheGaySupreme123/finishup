@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters import git_subject_state as git_subject_state_module
-from yoetz.adapters.git_subject_state import GitSubjectStateAdapter, open_local_workspace
-from yoetz.ports.subject_state import (
+from finishup.adapters import git_subject_state as git_subject_state_module
+from finishup.adapters.git_subject_state import GitSubjectStateAdapter, open_local_workspace
+from finishup.ports.subject_state import (
     SubjectStateBound,
     SubjectStateCaptureCommand,
     SubjectStateCaptureResult,
@@ -19,7 +19,7 @@ from yoetz.ports.subject_state import (
     SubjectStateLimitDetail,
     SubjectStateStatus,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
 
 
 def test_limit_detail_requires_an_actual_overflow() -> None:
@@ -69,9 +69,9 @@ def _repository(tmp_path: Path, *, committed: bool = True) -> Path:
         _git(
             repository,
             "-c",
-            "user.name=Yoetz Test",
+            "user.name=FinishUP Test",
             "-c",
-            "user.email=yoetz@example.invalid",
+            "user.email=finishup@example.invalid",
             "commit",
             "--quiet",
             "-m",
@@ -137,9 +137,9 @@ def test_clean_dirty_staged_untracked_and_ignored_states_are_comparable(
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -314,9 +314,9 @@ def test_path_safety_malicious_config_and_capture_are_read_only(tmp_path: Path) 
     _git(
         filter_repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -433,9 +433,9 @@ def test_a_nested_git_inside_a_fully_ignored_subtree_is_deliberately_not_rejecte
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",

@@ -19,24 +19,24 @@ from builders.codex_rollout import (
     function_call_output,
     session_meta,
 )
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping, store_mapping
-from yoetz.adapters.integrations.codex_session_stream import (
+from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping, store_mapping
+from finishup.adapters.integrations.codex_session_stream import (
     CodexSessionStreamLocator,
     reconcile_session_stream,
 )
-from yoetz.adapters.integrations.observation_admission import (
+from finishup.adapters.integrations.observation_admission import (
     ROUTINE_SUMMARY_INVALID_GAP,
     AdmissionBuffer,
     build_routine_read_summary,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_drain import ObservationOutboxSweeper
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.cli import observe as observe_cli
-from yoetz.cli import observe_hooks
-from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
-from yoetz.cli.observe import _selection_preview_plan
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_drain import ObservationOutboxSweeper
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.cli import observe as observe_cli
+from finishup.cli import observe_hooks
+from finishup.cli.hook_diagnostics import hook_diagnostic_summary
+from finishup.cli.observe import _selection_preview_plan
+from finishup.domain.observation import (
     ObservationEnvelope,
     ObservationIngestDisposition,
     ObservationIngestRequest,
@@ -44,10 +44,10 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_budget import AdmissionLossCause, ObservationMode
-from yoetz.domain.observation_settings import ObservationSelection
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.canonical import JsonValue, canonical_encode
+from finishup.domain.observation_budget import AdmissionLossCause, ObservationMode
+from finishup.domain.observation_settings import ObservationSelection
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.canonical import JsonValue, canonical_encode
 
 TASK = "tsk_17607d01-2f55-4b28-82b6-8659242a1267"
 SESSION = "ses_6201a23d-a03a-46a5-bda9-d16a7a261ee0"
@@ -743,8 +743,8 @@ def test_pressure_that_withholds_detail_is_disclosed_on_check_coverage_and_spare
     """
 
     from builders.policy_cases import act, make_case
-    from yoetz.domain.observation_budget import PressureEvaluation
-    from yoetz.kernel.deterministic_checks import case_coverage
+    from finishup.domain.observation_budget import PressureEvaluation
+    from finishup.kernel.deterministic_checks import case_coverage
 
     store, root, workspace, commitment, session = setup_store(tmp_path)
     store.set_session_selection(

@@ -12,17 +12,17 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.observe_hooks import handle_claude_observe
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.observe_hooks import handle_claude_observe
+from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationIngestDisposition,
     ObservationIngestResult,
     ObservationStatusQuery,
     observation_ingest_result_to_json,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
 
 
 def test_native_content_reservation_beats_a_sweeper_started_during_advice(

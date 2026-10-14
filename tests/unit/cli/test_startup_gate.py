@@ -13,11 +13,11 @@ from typing import Literal
 
 import pytest
 
-from yoetz.adapters.integrations.startup_gate import GateScope, GateStore
-from yoetz.cli import startup_gate as startup_gate_module
-from yoetz.cli.startup_gate import bootstrap_tool, gate_output, handle_startup_gate
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.adapters.integrations.startup_gate import GateScope, GateStore
+from finishup.cli import startup_gate as startup_gate_module
+from finishup.cli.startup_gate import bootstrap_tool, gate_output, handle_startup_gate
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.ids import IdKind, new_id
 
 
 class Host:
@@ -72,16 +72,16 @@ class Host:
     def pre(self, tool: str, request: dict[str, JsonValue]) -> dict[str, JsonValue]:
         return self.call(
             "PreToolUse" if self.host == "claude" else "beforeMCPExecution",
-            tool_name=f"mcp__yoetz__{tool}" if self.host == "claude" else tool,
-            mcp_server_name="yoetz",
+            tool_name=f"mcp__finishup__{tool}" if self.host == "claude" else tool,
+            mcp_server_name="finishup",
             tool_input=request,
         )
 
     def post(self, tool: str, request: dict[str, JsonValue], result: dict[str, JsonValue]) -> None:
         self.call(
             "PostToolUse" if self.host == "claude" else "afterMCPExecution",
-            tool_name=f"mcp__yoetz__{tool}" if self.host == "claude" else tool,
-            mcp_server_name="yoetz",
+            tool_name=f"mcp__finishup__{tool}" if self.host == "claude" else tool,
+            mcp_server_name="finishup",
             tool_input=request,
             **(
                 {"tool_response": {"structuredContent": result}}
@@ -198,9 +198,9 @@ def test_probe_uses_an_isolated_child_import_path(
         calls.update(kwargs)
         return subprocess.CompletedProcess(command, 0, b'{"ready": true}', b"")
 
-    monkeypatch.setattr("yoetz.cli.startup_gate.subprocess.run", run)
+    monkeypatch.setattr("finishup.cli.startup_gate.subprocess.run", run)
     assert startup_gate_module._probe(GateScope.fresh(), str(tmp_path))  # pyright: ignore[reportPrivateUsage]
-    assert calls["command"] == [sys.executable, "-I", "-m", "yoetz.cli.startup_gate_probe"]
+    assert calls["command"] == [sys.executable, "-I", "-m", "finishup.cli.startup_gate_probe"]
     assert calls["cwd"] == os.path.sep
     environment = calls["env"]
     assert isinstance(environment, dict)
@@ -209,10 +209,10 @@ def test_probe_uses_an_isolated_child_import_path(
 
 
 def test_workflow_allowlist_tracks_the_canonical_registry() -> None:
-    from yoetz.ports.integrations import YOETZ_WORKFLOW_TOOL_NAMES
+    from finishup.ports.integrations import FINISHUP_WORKFLOW_TOOL_NAMES
 
     assert startup_gate_module._WORKFLOW == frozenset(  # pyright: ignore[reportPrivateUsage]
-        YOETZ_WORKFLOW_TOOL_NAMES
+        FINISHUP_WORKFLOW_TOOL_NAMES
     )
 
 
@@ -342,7 +342,7 @@ def test_pending_start_ticket_capacity_does_not_brick_bootstrap(host: Host) -> N
         assert isinstance(reason, str) and "pending_operation_capacity" in reason
     else:
         assert blocked["permission"] == "deny"
-        assert blocked["user_message"] == "Yoetz startup: pending_operation_capacity."
+        assert blocked["user_message"] == "FinishUP startup: pending_operation_capacity."
 
     # The exact request identity remains the supported recovery path at capacity.
     retry = host.pre("start", {"request_id": request_ids[0]})
@@ -406,7 +406,7 @@ def test_successful_reset_after_failure_preserves_pending_request_identity(
         assert isinstance(reason, str) and "scope_reset_required" in reason
     else:
         assert blocked["permission"] == "deny"
-        assert blocked["user_message"] == "Yoetz startup: scope_reset_required."
+        assert blocked["user_message"] == "FinishUP startup: scope_reset_required."
     with host.store.locked():
         preserved = host.store.read_for_reset()
     assert preserved is not None and request["request_id"] in preserved.pending
@@ -508,7 +508,7 @@ def test_mismatched_same_request_retry_preserves_original_ticket(host: Host) -> 
         assert isinstance(reason, str) and "request_identity_conflict" in reason
     else:
         assert blocked["permission"] == "deny"
-        assert blocked["user_message"] == "Yoetz startup: request_identity_conflict."
+        assert blocked["user_message"] == "FinishUP startup: request_identity_conflict."
 
     after_retry = host.store.read()
     assert after_retry is not None
@@ -536,8 +536,8 @@ def test_tracked_bootstrap_fails_closed_on_missing_identity_or_workspace(
 ) -> None:
     start_response = host.call(
         "PreToolUse" if host.host == "claude" else "beforeMCPExecution",
-        tool_name="mcp__yoetz__start" if host.host == "claude" else "start",
-        mcp_server_name="yoetz",
+        tool_name="mcp__finishup__start" if host.host == "claude" else "start",
+        mcp_server_name="finishup",
         tool_input={"request_id": new_id(IdKind.REQUEST)},
         **invalid_context,
     )
@@ -551,8 +551,8 @@ def test_tracked_bootstrap_fails_closed_on_missing_identity_or_workspace(
     guidance_response = host.call(
         "PreToolUse" if host.host == "claude" else "beforeMCPExecution",
         tool_name="ReadMcpResource",
-        mcp_server_name="yoetz",
-        tool_input={"uri": "yoetz://guidance/workflow.md"},
+        mcp_server_name="finishup",
+        tool_input={"uri": "finishup://guidance/workflow.md"},
         **invalid_context,
     )
     assert guidance_response == ({} if host.host == "claude" else {"permission": "ask"})
@@ -665,7 +665,7 @@ def test_native_permission_boundaries() -> None:
 
 
 def test_recovery_is_exact_launcher_and_never_a_compound_shell_command() -> None:
-    command = f"{sys.prefix}/bin/yoetz service restart"
+    command = f"{sys.prefix}/bin/finishup service restart"
     for suffix, allowed in (
         ("", True),
         ("; touch x", False),
@@ -681,7 +681,7 @@ def test_recovery_is_exact_launcher_and_never_a_compound_shell_command() -> None
             is allowed
         )
     assert not bootstrap_tool(
-        {"tool_name": "Bash", "tool_input": {"command": "/foreign/yoetz service restart"}},
+        {"tool_name": "Bash", "tool_input": {"command": "/foreign/finishup service restart"}},
         "claude",
         "PreToolUse",
     )

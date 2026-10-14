@@ -23,10 +23,10 @@ from builders.projection_workflow import (
     run_projection_workflow,
 )
 from builders.start_application import protocol_id
-from yoetz.application.status import StatusInternalResult
-from yoetz.domain.values import format_rfc3339_millis
-from yoetz.ports.control import ControlMethod
-from yoetz.ports.ledger import (
+from finishup.application.status import StatusInternalResult
+from finishup.domain.values import format_rfc3339_millis
+from finishup.ports.control import ControlMethod
+from finishup.ports.ledger import (
     CheckPhase,
     OperationKind,
     OperationRecord,
@@ -34,9 +34,9 @@ from yoetz.ports.ledger import (
     SemanticJobRecord,
     SemanticProgressRecord,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import SemanticProgressPhase, SemanticReason, StatusRequest
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import SemanticProgressPhase, SemanticReason, StatusRequest
 
 pytestmark = pytest.mark.anyio
 
@@ -220,11 +220,11 @@ def _seed_semantic_progress(
 async def test_semantic_progress_agrees_across_json_text_mcp_and_tui(terminal: bool) -> None:
     """Issue #571 A2: every rendering of one operation page states the same progress facts."""
 
-    from yoetz.cli.render import render_human_status
-    from yoetz.mcp.summaries import render_safe_compact_summary
-    from yoetz.protocol.canonical import canonical_encode
-    from yoetz.protocol.models import StatusResultModel, StatusSuccessModel
-    from yoetz.tui.app import _progress_lines  # pyright: ignore[reportPrivateUsage]
+    from finishup.cli.render import render_human_status
+    from finishup.mcp.summaries import render_safe_compact_summary
+    from finishup.protocol.canonical import canonical_encode
+    from finishup.protocol.models import StatusResultModel, StatusSuccessModel
+    from finishup.tui.app import _progress_lines  # pyright: ignore[reportPrivateUsage]
 
     workflow = await run_projection_workflow()
     app = workflow.app

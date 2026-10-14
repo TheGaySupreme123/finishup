@@ -1,7 +1,7 @@
 # Multi-agent conformance and native acceptance
 
-This is the scenario map for [issue #509](https://github.com/TheGaySupreme123/yoetz/issues/509),
-including its [2026-09-15 capture acceptance comment](https://github.com/TheGaySupreme123/yoetz/issues/509#issuecomment-5686714958).
+This is the scenario map for [issue #509](https://github.com/TheGaySupreme123/finishup/issues/509),
+including its [2026-09-15 capture acceptance comment](https://github.com/TheGaySupreme123/finishup/issues/509#issuecomment-5686714958).
 Use it when changing delegation, project grouping, observation, or source selection on `0.3`.
 Test names identify executable coverage; their presence is not a claim that a particular revision,
 host, operating system, or installed package passed. Record exact commands and results in the owning
@@ -143,9 +143,9 @@ a receipt. Linux and WSL stay `untested` for these rows; installation success in
 | --- | --- | --- | --- | --- | --- |
 | Cursor | macOS | Delegated-attach | Composed fixture named above | Parent `mode=delegate` minted an accepted `parent_minted` child. The child attached, published, checked with `semantic_required` (`succeeded` / `semantic_completed`), receipted, and published `work_closed`. That receipt's conclusion was `unresolved_findings_remain`, with capture gaps. Parent lineage later showed the child closed, `contact_lost`, rollup unavailable, and no host annotation. The parent had already recorded `work_abandoned`, so this session does not treat the child receipt as a parent rollup. | partial |
 | Cursor | macOS | Self-registration, acceptance, and rollup | Composed fixture named above | The start against the abandoned parent returned `SESSION_CONFLICT` / `lineage_parent_work_terminal` and created no child. On the successor, a child self-registered, was `child_accepted` with origin unchanged, published, checked (`succeeded` / `semantic_completed`), receipted with `unresolved_findings_remain`, and published `work_closed`. Parent lineage then showed that child closed, `contact_lost`, rollup unavailable, and no host annotation. | partial |
-| Cursor | macOS | Unregistered-helper and independent-root | Composed fixtures named above | One read-only helper was told not to call Yoetz and returned only the runbook title and the three evidence-level names. Lineage at sequence 36 had no annotation and no extra child. An independent-root native `mode=create` beside the parent was not launched. | partial |
+| Cursor | macOS | Unregistered-helper and independent-root | Composed fixtures named above | One read-only helper was told not to call FinishUP and returned only the runbook title and the three evidence-level names. Lineage at sequence 36 had no annotation and no extra child. An independent-root native `mode=create` beside the parent was not launched. | partial |
 | Codex | macOS | Delegated-attach; self-registration, acceptance, and rollup | Composed fixtures named above | Both registered children had distinct identities, accepted relationships, publications, successful bounded semantic review, receipts, and explicit `work_closed`. Child receipts retained two and one blockers; host correlation remained unproven. The parent receipt retained one blocker and one open obligation. Engine-written check records caused three final publication previews to conflict, so no parent `work_closed` was accepted. | partial |
-| Codex | macOS | Unregistered-helper and independent-root | Composed fixtures named above | The unregistered native helper returned without a Yoetz ledger or receipt. A separate native independent-root control was not run. | partial |
+| Codex | macOS | Unregistered-helper and independent-root | Composed fixtures named above | The unregistered native helper returned without a FinishUP ledger or receipt. A separate native independent-root control was not run. | partial |
 | Claude Code | macOS | Delegated-attach; self-registration, acceptance, and rollup | Composed fixtures named above | Both registered children published, checked, receipted, and explicitly closed. Self-registration changed from pending to accepted while preserving its origin. Child reviews reported insufficient coverage and limited receipts. Host correlation was unproven in the ordinary observation profile. The parent final review succeeded at high effort; its receipt retained four blockers with all seven obligations resolved. The parent had already recorded `work_abandoned`; later review and receipt did not reopen it. | partial |
 | Claude Code | macOS | Unregistered-helper and independent-root | Composed fixtures named above | Read-only and neutral-write helpers stayed off the ledger. A separate native independent-root control was not run. | partial |
 | Cursor, Codex, Claude Code | Linux and WSL | All three rows | None for native session qualification | Not executed | untested |
@@ -161,5 +161,5 @@ complete detection coverage. These five participating tasks do not qualify every
 All four detections were advisory, with no declared, addressed or resolved coordination
 obligation. Native display/consumption and the declaration-to-resolution workflow were not
 qualified. The operator's disjoint ownership prompts and shared coordination files are not
-Yoetz detection evidence. The bounded outcome and remaining cells are recorded in the
-[issue #509 qualification report](https://github.com/TheGaySupreme123/yoetz/issues/509#issuecomment-5855208779).
+FinishUP detection evidence. The bounded outcome and remaining cells are recorded in the
+[issue #509 qualification report](https://github.com/TheGaySupreme123/finishup/issues/509#issuecomment-5855208779).

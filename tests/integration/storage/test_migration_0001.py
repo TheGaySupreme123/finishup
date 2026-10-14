@@ -5,10 +5,10 @@ from pathlib import Path
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.connection import (  # pyright: ignore[reportPrivateUsage]
+from finishup.adapters.sqlite.connection import (  # pyright: ignore[reportPrivateUsage]
     _writer_authorizer,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     CATALOG_MIGRATIONS,
     _set_event_summary_rebuild_mode,  # pyright: ignore[reportPrivateUsage]
@@ -29,7 +29,7 @@ def test_root_and_installed_migration_resources_are_byte_identical() -> None:
         for version in versions:
             root = ROOT / "migrations" / family / f"{version}.sql"
             resource = (
-                ROOT / "src" / "yoetz" / "resources" / "migrations" / family / f"{version}.sql"
+                ROOT / "src" / "finishup" / "resources" / "migrations" / family / f"{version}.sql"
             )
             assert root.read_bytes() == resource.read_bytes()
 

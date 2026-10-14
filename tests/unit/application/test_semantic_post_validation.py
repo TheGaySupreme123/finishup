@@ -19,7 +19,7 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.application.check import (
+from finishup.application.check import (
     SEMANTIC_REJECTED_HIDDEN_SOURCE_CLAIM,
     SEMANTIC_REJECTED_REF_NOT_CARRIED,
     SEMANTIC_REJECTED_REF_OUTSIDE_CASE,
@@ -28,13 +28,13 @@ from yoetz.application.check import (
     SemanticJudgmentReview,
     validate_semantic_judgment,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ResponseDisposition,
     ResponseRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     FindingKind,
     FindingOrigin,
@@ -42,14 +42,14 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.ports.semantic import (
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.ports.semantic import (
     PriorFindingVerdict,
     ReviewerChallenge,
     SemanticJudgment,
     VerifiedReviewItem,
 )
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _DIGEST = "sha256:" + "a" * 64
 _INVENTED = "clm_20000000-0000-4000-8000-000000000099"
@@ -813,7 +813,7 @@ def _restatement_case(
     """numba shape: one AI-powered finding on an obligation, recorded at sequence 5."""
 
     from builders.policy_cases import obligation_record
-    from yoetz.domain.events import ObligationPublishedPayload, ObligationStatus
+    from finishup.domain.events import ObligationPublishedPayload, ObligationStatus
 
     obligation = obligation_record(
         ObligationPublishedPayload(
@@ -1023,7 +1023,7 @@ def test_a_narrower_challenge_is_its_own_item_not_a_restatement() -> None:
     """
 
     from builders.policy_cases import obligation_record
-    from yoetz.domain.events import ObligationPublishedPayload, ObligationStatus
+    from finishup.domain.events import ObligationPublishedPayload, ObligationStatus
 
     obligations = {
         obl(number): obligation_record(
@@ -1119,7 +1119,7 @@ def test_a_challenge_replying_to_an_answered_finding_is_a_returned_linked_findin
 #
 # The tb4v1 provider responses were not retained, so the regressions below rebuild the exact shape
 # the run recorded (cited refs advertised but not sent, quotes read from JSON rows, a quote across
-# Yoetz's redaction marker) with the task content replaced by neutral text.
+# FinishUP's redaction marker) with the task content replaced by neutral text.
 
 
 def _json_row(statement: str) -> str:
@@ -1269,7 +1269,7 @@ def test_tb4v1_atrx_routine_review_mints_both_concerns() -> None:
 
 
 def test_tb4v1_data_anon_quote_across_the_redaction_marker_is_proven() -> None:
-    """data-anon item 108: the reviewer quoted a line around Yoetz's own redaction marker."""
+    """data-anon item 108: the reviewer quoted a line around FinishUP's own redaction marker."""
 
     case = make_case(extra_refs=(clm(1),))
     sent = "token = [REDACTED] + ':' + subject_id"
@@ -1402,7 +1402,7 @@ def _cargo_case(
     """
 
     from builders.policy_cases import obligation_record
-    from yoetz.domain.events import ObligationPublishedPayload, ObligationStatus
+    from finishup.domain.events import ObligationPublishedPayload, ObligationStatus
 
     obligation = obligation_record(
         ObligationPublishedPayload(
@@ -1419,7 +1419,7 @@ def _cargo_case(
         )
         for number in range(1, 8)
     }
-    from yoetz.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
+    from finishup.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
 
     rejected = ResponseRecordedPayload(
         finding_id=fnd(1),
@@ -1649,13 +1649,13 @@ def _formal_crypto_case(
     *, reason: str | None = "Sixteen known blocks suffice under fixed benchmark parameters."
 ) -> DeterministicCase:
     from builders.policy_cases import claim_record, obligation_record
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ClaimKind,
         ClaimRecordedPayload,
         ObligationPublishedPayload,
         ObligationStatus,
     )
-    from yoetz.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
+    from finishup.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
 
     kind = FindingKind.TASK_REQUIREMENT_UNMET
     policy_id, policy_version = finding_policy_identity(kind)
@@ -1863,13 +1863,13 @@ def test_payments_claim_churn_folds_one_concern_into_one_finding() -> None:
     changed the subject set. The same kind over the same obligation is one concern."""
 
     from builders.policy_cases import claim_record, obligation_record
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ClaimKind,
         ClaimRecordedPayload,
         ObligationPublishedPayload,
         ObligationStatus,
     )
-    from yoetz.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
+    from finishup.domain.findings import FINDING_KIND_TRAITS, finding_policy_identity
 
     kind = FindingKind.TASK_REQUIREMENT_UNMET
     policy_id, policy_version = finding_policy_identity(kind)
@@ -1936,8 +1936,8 @@ def test_payments_claim_churn_folds_one_concern_into_one_finding() -> None:
 
 def test_pre_work_never_attempted_challenges_are_dropped_until_work_is_claimed() -> None:
     from builders.policy_cases import claim_record
-    from yoetz.application.check import SEMANTIC_REJECTED_ROUTINE_COMPLETENESS
-    from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
+    from finishup.application.check import SEMANTIC_REJECTED_ROUTINE_COMPLETENESS
+    from finishup.domain.events import ClaimKind, ClaimRecordedPayload
 
     never = replace(
         _challenge(str(obl(1)), summary="Requested solver never attempted"),
@@ -2033,7 +2033,7 @@ def test_citing_the_event_of_a_republished_claim_is_not_new_material() -> None:
     """Codex review round 2: a claim's own event id is the claim, not new evidence."""
 
     from builders.policy_cases import claim_record
-    from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
+    from finishup.domain.events import ClaimKind, ClaimRecordedPayload
 
     base = _formal_crypto_case()
     republished = claim_record(
@@ -2074,7 +2074,7 @@ def test_a_withdrawn_contradicted_by_a_stale_restatement_is_the_dispute() -> Non
 
 def _with_republished_claim(case: DeterministicCase) -> DeterministicCase:
     from builders.policy_cases import claim_record
-    from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
+    from finishup.domain.events import ClaimKind, ClaimRecordedPayload
 
     republished = claim_record(
         ClaimRecordedPayload(clm(2), ClaimKind.COMPLETION, "solve.sage works", ()), 11
@@ -2124,7 +2124,7 @@ def test_a_historical_obligation_publication_event_is_not_new_material() -> None
     """Codex review round 3: an obligation event the projection no longer holds is still
     bookkeeping when the frozen history names it."""
 
-    from yoetz.kernel.deterministic_checks import FrozenHistoryEvent
+    from finishup.kernel.deterministic_checks import FrozenHistoryEvent
 
     base = _formal_crypto_case()
     historical = FrozenHistoryEvent(

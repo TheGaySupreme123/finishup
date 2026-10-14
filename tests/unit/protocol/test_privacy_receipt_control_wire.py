@@ -27,15 +27,15 @@ from tests.builders.privacy_receipts import (
     network_receipt_view,
 )
 
-from yoetz.application.privacy_control import build_privacy_support_handlers
-from yoetz.domain.privacy import (
+from finishup.application.privacy_control import build_privacy_support_handlers
+from finishup.domain.privacy import (
     _PURPOSE,  # pyright: ignore[reportPrivateUsage]
     MAX_RECEIPT_FINAL_BYTES,
     ReceiptSecretScanStage,
 )
-from yoetz.domain.values import JsonObject, freeze_json
-from yoetz.ports.control import ControlError, ControlMethod, ControlResult
-from yoetz.ports.privacy import (
+from finishup.domain.values import JsonObject, freeze_json
+from finishup.ports.control import ControlError, ControlMethod, ControlResult
+from finishup.ports.privacy import (
     LocalDisclosureReceiptView,
     NetworkEgressReceiptView,
     PrivacyReceiptAudience,
@@ -43,16 +43,16 @@ from yoetz.ports.privacy import (
     PrivacyReceiptQuery,
     PrivacyReceiptView,
 )
-from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.service.client import (
+from finishup.protocol.errors import ProtocolValueError, PublicErrorCode
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.service.client import (
     ListPrivacyReceiptsRequest,
     PrivacyReceiptFound,
     _receipt_get_from_wire,  # pyright: ignore[reportPrivateUsage]
     _receipt_page_from_wire,  # pyright: ignore[reportPrivateUsage]
     _receipt_view_from_wire,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.service.control_protocol import (
+from finishup.service.control_protocol import (
     decode_control_frame,
     encode_control_frame,
     parse_control_result,
@@ -304,8 +304,8 @@ def test_the_wire_still_refuses_purposes_the_domain_refuses(purpose: str) -> Non
 
 
 def _plain(view: PrivacyReceiptView) -> dict[str, Any]:
-    from yoetz.application.privacy_control import encode_privacy_receipt_view
-    from yoetz.protocol.canonical import canonical_encode, strict_json_parse
+    from finishup.application.privacy_control import encode_privacy_receipt_view
+    from finishup.protocol.canonical import canonical_encode, strict_json_parse
 
     return cast(
         dict[str, Any], strict_json_parse(canonical_encode(encode_privacy_receipt_view(view)))

@@ -8,8 +8,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
-from yoetz.application.missing_for_assessment import check_change_binary_paths
+from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.application.missing_for_assessment import check_change_binary_paths
 
 
 def _git(repository: Path, *arguments: str) -> None:
@@ -17,9 +17,9 @@ def _git(repository: Path, *arguments: str) -> None:
         (
             "git",
             "-c",
-            "user.name=Yoetz Test",
+            "user.name=FinishUP Test",
             "-c",
-            "user.email=yoetz@example.invalid",
+            "user.email=finishup@example.invalid",
             *arguments,
         ),
         cwd=repository,
@@ -94,7 +94,7 @@ def test_git_quoted_non_ascii_binaries_are_decoded(tmp_path: Path) -> None:
     ],
 )
 def test_quoted_binary_line_operands(operands: str, expected: tuple[str, ...]) -> None:
-    from yoetz.application import missing_for_assessment
+    from finishup.application import missing_for_assessment
 
     parse = getattr(missing_for_assessment, "_binary_line_paths")
     assert parse(operands) == expected

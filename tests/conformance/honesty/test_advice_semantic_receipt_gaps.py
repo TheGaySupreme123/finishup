@@ -22,19 +22,19 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation_advice_semantic import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation_advice_semantic import (
     SqliteObservationAdviceSemanticRepository,
 )
-from yoetz.application.observation_advice import (
+from finishup.application.observation_advice import (
     ADVICE_SEMANTIC_PENDING_GAP,
     ADVICE_SEMANTIC_UNAVAILABLE_GAP,
     ObservationAdviceContextBuilder,
 )
-from yoetz.application.observation_advice_semantic import ObservationAdviceSemanticScheduler
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.domain.observation import (
+from finishup.application.observation_advice_semantic import ObservationAdviceSemanticScheduler
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationLifecycle,
@@ -42,12 +42,12 @@ from yoetz.domain.observation import (
     ObservationStatus,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.ledger import ProjectionView
-from yoetz.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import ReceiptRequest
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.ledger import ProjectionView
+from finishup.ports.runtime import BundleRuntimePort, RouteAccess, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import ReceiptRequest
 
 pytestmark = pytest.mark.anyio
 

@@ -1,6 +1,6 @@
 # ADR-032 — Closure readiness as a checklist, and material-dependency coverage
 
-**Status:** Proposed for [issue #913](https://github.com/TheGaySupreme123/yoetz/issues/913). The
+**Status:** Proposed for [issue #913](https://github.com/TheGaySupreme123/finishup/issues/913). The
 maintainer acknowledged the design-gated scope on 2026-09-30 and adopted option 2 of the issue (the
 agent-actionable / standing / acknowledged split with `ready_with_limitations`). The scoped local
 verdict in the amendment below is the narrow deterministic-only exception described by issue #971;
@@ -8,17 +8,17 @@ it does not change the receipt conclusion or suppress coverage. Decisions 1–5
 are implemented. Decisions 6 and 7 are recorded here as the direction the issue recommends; the
 single status coverage definition of decision 7 is implemented, and the rest of 6 and 7 is tracked
 on the issue.
-**Implemented by:** `src/yoetz/kernel/closure_readiness.py`, `src/yoetz/application/status.py`,
-`src/yoetz/adapters/memory/ledger.py`, `src/yoetz/protocol/models.py`,
-`src/yoetz/protocol/readiness_text.py`, `src/yoetz/mcp/summaries.py`, `src/yoetz/cli/render.py`,
-`src/yoetz/tui/`, the status-result 1.4.0 schema, and the shipped guidance and skills.
+**Implemented by:** `src/finishup/kernel/closure_readiness.py`, `src/finishup/application/status.py`,
+`src/finishup/adapters/memory/ledger.py`, `src/finishup/protocol/models.py`,
+`src/finishup/protocol/readiness_text.py`, `src/finishup/mcp/summaries.py`, `src/finishup/cli/render.py`,
+`src/finishup/tui/`, the status-result 1.4.0 schema, and the shipped guidance and skills.
 **Relates to:** ADR-019 (declared completion scope), ADR-020 (typed evidence digest provenance),
 ADR-027 (task lineage), ADR-030 (typed recovery directives), and issues #904, #905, #910, #911,
 #912, #917, #971.
 
 ## Context
 
-In all 58 Yoetz sessions of the DeepSWE v2 benchmark, `closure_readiness.blocking_conditions`
+In all 58 FinishUP sessions of the DeepSWE v2 benchmark, `closure_readiness.blocking_conditions`
 contained `coverage_gaps_declared`, and in 36 of them it was the only condition. The condition was
 appended whenever the page carried any gap. Every Codex session carries standing gaps
 (`host_outcome_unavailable`, `unpaired_event`), and a local-only check always adds
@@ -51,7 +51,7 @@ names what the receipt will disclose.
    `blocking_conditions` keeps naming everything that bounds the conclusion, so
    `coverage_gaps_declared` remains, now as disclosure; nothing is filtered or suppressed.
 
-2. **A closed, versioned classification table.** `yoetz.kernel.closure_readiness` assigns every gap
+2. **A closed, versioned classification table.** `finishup.kernel.closure_readiness` assigns every gap
    code the product emits exactly once to `agent_actionable` or `standing_limitation`, and
    `gap_classification_version` (currently `"2"`) names the table that classified a response. The
    classification test: a code is standing when no agent action available under the current host,
@@ -64,7 +64,7 @@ names what the receipt will disclose.
 3. **Build-time completeness, runtime conservatism.** A conformance test enumerates every gap-code
    producer — `ObservationGapCode`, `CoordinationGapCode`, the `*_GAP` constants,
    `semantic_coverage_gap_code` outputs, the channel baselines, the lineage manifest template, and a
-   syntax-tree scan of gap-sink literals across `src/yoetz` (deterministic-check, command-attempt,
+   syntax-tree scan of gap-sink literals across `src/finishup` (deterministic-check, command-attempt,
    receipt, lineage, observation and import producers) — and fails when one emits an unclassified
    code or the table names a code nothing emits. Prefixed forms (`coverage:<code>`,
    `check_coverage:<code>`, `retained_finding_coverage:<code>`, `semantic_outcome:<code>`,
@@ -99,7 +99,7 @@ names what the receipt will disclose.
    agent-actionable, because a receipt folds recorded lineage only.
    Classification never removes a code from `known_gaps`, never changes a check verdict or receipt
    conclusion, and never strengthens coverage. The frozen directive for each state lives in
-   `yoetz.protocol.readiness_text`; the `ready_with_limitations` sentence is the owner-approved
+   `finishup.protocol.readiness_text`; the `ready_with_limitations` sentence is the owner-approved
    "Nothing further to do. N standing limitation(s) and M acknowledged item(s) will be disclosed on
    the receipt. Request the receipt." MCP text, the CLI and the terminal interface render it from
    the state token and service counts, in ADR-030's directive style. No readiness state is rendered
@@ -172,10 +172,10 @@ completeness rules.
 
 ## Amendment — completion needs an answerable signal (2026-10-05, TB4 pilot)
 
-**Context.** In the Terminal-Bench 4 pilot (Yoetz `d925fe46`, Codex), an agent missed a stated
+**Context.** In the Terminal-Bench 4 pilot (FinishUP `d925fe46`, Codex), an agent missed a stated
 requirement, resolved three coarse self-written obligations with one shared bundle of its own
 evidence, and reached a receipt. The one relevant signal, `instruction_requirement_unmapped`, fired
-on all six Yoetz attempts but was a standing advisory, so nothing asked the agent to answer it. The
+on all six FinishUP attempts but was a standing advisory, so nothing asked the agent to answer it. The
 maintainer requested these changes on 2026-10-05 (design-gated: check outcomes and closure).
 
 **Decisions.** Both rules are structural: they read recorded relations and closed host-derived
@@ -263,7 +263,7 @@ maintainer approved these changes for the pilot (design-gated: check outcomes an
    statement recorded and a completion claim, no plan or an explicit empty scope raises the same
    `task_requirement_unmet` identity (fact `task_statement_scope_empty`). Its repair is
    statement-sourced obligations, or a `decision_recorded` whose statement holds the exact line
-   `yoetz-no-material-work:<statement event>` with a rationale. That decision is a structural answer
+   `finishup-no-material-work:<statement event>` with a rationale. That decision is a structural answer
    the next check reads; it is contradicted, and ignored, while any edit is recorded or while the
    check-time change capture shows any changed path. Hosts record shell writes (`sed -i`,
    redirections, scripts) as command actions, not edits, so the capture is the structural witness
@@ -304,7 +304,7 @@ a clean deterministic verdict unreachable on Codex.
 
 ADR-033 adds two readiness inputs without changing the table's existing assignments. Open
 effective obligations that a recorded `decision_recorded` names with the exact statement line
-`yoetz-blocker:<authority|consent|credential|dependency_unavailable>` read as the standing
+`finishup-blocker:<authority|consent|credential|dependency_unavailable>` read as the standing
 `obligation_blocked_outside_agent_control` instead of `obligations_open`, but only when every open
 obligation is so named; obligation-level acknowledgement as not done (decision 6) is still open.
 The task-fact gap codes of ADR-033 are classified once each in `GAP_CLASSIFICATION`, and the
@@ -314,7 +314,7 @@ an unacknowledged receipt-blocking finding, or one of the repairable task facts.
 ## Amendment — slice C: obligation-level `acknowledged_not_done` (2026-10-07, #997, #913)
 
 Owner-approved 2026-10-07 (issue #997). Decision 6's obligation form ships. tb4n1 showed why: an
-agent that would not finish one obligation had no honest exit except a `yoetz-blocker`, so 31 of
+agent that would not finish one obligation had no honest exit except a `finishup-blocker`, so 31 of
 38 blocker attempts named obligations.
 
 1. **Wire.** `obligation_published` 1.0.0 is released and frozen. `obligation_published` 1.1.0 is
@@ -430,7 +430,7 @@ checklist is now built from it.
    longer printed.
 5. **One state for the acknowledged obligation.** The check's next step reads the obligation
    closures (decision 7 of the 2026-10-07 amendment, now the single rule): an acknowledged
-   obligation is never open work, and a `yoetz-verification-limit` obligation is disclosed
+   obligation is never open work, and a `finishup-verification-limit` obligation is disclosed
    (`externally_evaluated`), not open.
 
 ## Amendment (2026-10-11): reviewer limitation requests and the language of settled items (#1026)
@@ -440,7 +440,7 @@ requirement-shaped finding asks the agent to say plainly what cannot be verified
 that repair can clear, so it is not counted as receipt-blocking (owner decision Q4): it stays
 `agent_work` with the single next action `acknowledge` until the agent answers it, and the answer
 decides what it means (owner decision 2026-10-12, ADR-046 amendment): a reasoned `acknowledged`, or a
-`yoetz-verification-limit:<obligation>` decision covering the obligation it concerns, settles it as
+`finishup-verification-limit:<obligation>` decision covering the obligation it concerns, settles it as
 `limitation_disclosed` (the requirement may be met but cannot be verified here), and the receipt
 then discloses it in "Verification limits" at `insufficient_coverage`; `acknowledged_not_done` says
 the requirement is not met, so it is `limitation_acknowledged_not_done`, an unmet requirement at

@@ -1,9 +1,9 @@
 # ADR-025 — Versioned append-only claim correction
 
 **Status:** Accepted (2026-08-29), acknowledged in
-[issue #432](https://github.com/TheGaySupreme123/yoetz/issues/432).
-**Implemented by:** `src/yoetz/domain/events.py`, `src/yoetz/kernel/claims.py`,
-`src/yoetz/kernel/observed_failures.py`, `src/yoetz/kernel/reducers.py`, the local policy packs,
+[issue #432](https://github.com/TheGaySupreme123/finishup/issues/432).
+**Implemented by:** `src/finishup/domain/events.py`, `src/finishup/kernel/claims.py`,
+`src/finishup/kernel/observed_failures.py`, `src/finishup/kernel/reducers.py`, the local policy packs,
 AI-powered review case and receipt builders, and the public claim schema, guidance, descriptors,
 and conformance suites.
 **Relates to:** ADR-002 (canonical protocol), ADR-019 (declared completion scope), and ADR-020
@@ -37,7 +37,7 @@ Append-only history must remain intact, so mutation or erasure is not an accepta
    it as an ordinary publication.
 
    Carrying that union costs host context, so two reviewed byte ceilings in
-   `src/yoetz/mcp/descriptors.py` move with it: the `publish-work-request` presentation budget from
+   `src/finishup/mcp/descriptors.py` move with it: the `publish-work-request` presentation budget from
    32,000 to 34,000 encoded bytes, and `ADVERTISED_SURFACE_BUDGET.max_encoded_bytes` from 200,000
    to 205,000. Both are deliberate one-time raises for the additive draft branches, not headroom
    for prose; the 20,000-byte instructions bound is unchanged, so guidance still pays for new text

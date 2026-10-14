@@ -1,23 +1,23 @@
-"""Provision, inspect, and dispose an independent Yoetz test instance (issue #604).
+"""Provision, inspect, and dispose an independent FinishUP test instance (issue #604).
 
 One instance is one directory tree beneath a short, owner-private base outside every repository:
 
     <base>/<tag>/dist/       the wheel built from the exact requested revision
     <base>/<tag>/runtime/    a virtual environment holding only that wheel (pinned to the root)
-    <base>/<tag>/state/      the YOETZ_ISOLATED_ROOT of that instance (config, data, state, run,
+    <base>/<tag>/state/      the FINISHUP_ISOLATED_ROOT of that instance (config, data, state, run,
                              cache, log) sealed by the instance-identity marker
     <base>/<tag>/provenance.json   digest-only record of what was built and from where
 
 ``create`` builds the wheel with ``uv build --no-sources`` from the exact revision (refusing a
 modified working tree unless ``--allow-dirty``), installs it into the runtime with ``uv``, and lets
-the snapshot's own ``yoetz instance create --bind-runtime`` seal the root. Because the runtime is
-pinned, ``<base>/<tag>/runtime/bin/yoetz`` resolves that root even when a host or shell drops the
+the snapshot's own ``finishup instance create --bind-runtime`` seal the root. Because the runtime is
+pinned, ``<base>/<tag>/runtime/bin/finishup`` resolves that root even when a host or shell drops the
 environment variable, and never the everyday installation. ``dispose`` stops only the service
-holding that root's singleton, removes the root through ``yoetz instance dispose``, then removes
+holding that root's singleton, removes the root through ``finishup instance dispose``, then removes
 the runtime and wheel. Repeating ``dispose`` is a no-op. Nothing here touches the everyday install,
 host configuration, or vaults.
 
-This is contributor tooling; the shipped product surface is ``yoetz instance``. Documented in
+This is contributor tooling; the shipped product surface is ``finishup instance``. Documented in
 ``docs/runbooks/test-instances.md``.
 """
 
@@ -64,9 +64,9 @@ def _run(
 
 
 def _clean_env(home: Path | None = None) -> dict[str, str]:
-    """The environment a snapshot command runs under: no YOETZ_ variables leak in."""
+    """The environment a snapshot command runs under: no FINISHUP_ variables leak in."""
 
-    env = {name: value for name, value in os.environ.items() if not name.startswith("YOETZ_")}
+    env = {name: value for name, value in os.environ.items() if not name.startswith("FINISHUP_")}
     if home is not None:
         env["HOME"] = str(home)
     return env
@@ -175,7 +175,7 @@ def _install_runtime(runtime: Path, wheel: Path, python: str, env: dict[str, str
     if installed.returncode != 0:
         sys.stderr.write(installed.stderr.decode("utf-8", errors="replace"))
         raise _fail("runtime_install_failed")
-    launcher = runtime / "bin" / "yoetz"
+    launcher = runtime / "bin" / "finishup"
     if not launcher.is_file():
         raise _fail("runtime_launcher_missing")
     return launcher
@@ -185,7 +185,9 @@ def _snapshot_command(launcher: Path, args: list[str], env: dict[str, str]) -> d
     result = _run([str(launcher), *args, "--json"], env=env)
     if result.returncode != 0:
         sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
-        raise _fail(f"snapshot_command_failed: yoetz {' '.join(args)} exited {result.returncode}")
+        raise _fail(
+            f"snapshot_command_failed: finishup {' '.join(args)} exited {result.returncode}"
+        )
     parsed = json.loads(result.stdout)
     if not isinstance(parsed, dict):
         raise _fail("snapshot_command_invalid_output")
@@ -213,7 +215,7 @@ def command_create(args: argparse.Namespace) -> dict[str, object]:
     tag = _validate_tag(args.tag)
     checkout = Path(args.checkout).expanduser().resolve()
     if not (checkout / "pyproject.toml").is_file():
-        raise _fail("checkout_invalid: --checkout must be a Yoetz source checkout")
+        raise _fail("checkout_invalid: --checkout must be a FinishUP source checkout")
     base.mkdir(mode=0o700, exist_ok=True)
     os.chmod(base, 0o700)
     layout = _layout(base, tag)
@@ -282,14 +284,14 @@ def command_create(args: argparse.Namespace) -> dict[str, object]:
         **provenance,
         "launcher": str(launcher),
         "isolated_root": str(layout["state"]),
-        "environment_export": f"YOETZ_ISOLATED_ROOT={layout['state']}",
+        "environment_export": f"FINISHUP_ISOLATED_ROOT={layout['state']}",
     }
 
 
 def command_status(args: argparse.Namespace) -> dict[str, object]:
     layout = _layout(_validate_base(Path(args.base).expanduser()), _validate_tag(args.tag))
     provenance = _read_provenance(layout["provenance"])
-    launcher = layout["runtime"] / "bin" / "yoetz"
+    launcher = layout["runtime"] / "bin" / "finishup"
     if provenance is None or not launcher.is_file():
         return {"tag": args.tag, "state": "absent"}
     status = _snapshot_command(launcher, ["instance", "status"], _clean_env())
@@ -300,8 +302,8 @@ def command_dispose(args: argparse.Namespace) -> dict[str, object]:
     layout = _layout(_validate_base(Path(args.base).expanduser()), _validate_tag(args.tag))
     if not layout["root"].exists():
         return {"tag": args.tag, "state": "absent", "disposed": False}
-    launcher = layout["runtime"] / "bin" / "yoetz"
-    disposer = [str(launcher)] if launcher.is_file() else [sys.executable, "-m", "yoetz"]
+    launcher = layout["runtime"] / "bin" / "finishup"
+    disposer = [str(launcher)] if launcher.is_file() else [sys.executable, "-m", "finishup"]
     dispose_args = [*disposer, "instance", "dispose", "--root", str(layout["state"]), "--json"]
     if args.retain_logs is not None:
         dispose_args += ["--retain-logs", str(Path(args.retain_logs).expanduser().resolve())]
@@ -320,7 +322,7 @@ def command_dispose(args: argparse.Namespace) -> dict[str, object]:
                 "-I",
                 "-c",
                 "import json,sys; from pathlib import Path; "
-                "from yoetz.adapters.release_runtime import prune_release_runtimes; "
+                "from finishup.adapters.release_runtime import prune_release_runtimes; "
                 "print(json.dumps(prune_release_runtimes(Path(sys.prefix), wait_seconds=5.0)))",
             ],
             env=_clean_env(),

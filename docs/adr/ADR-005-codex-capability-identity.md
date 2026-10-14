@@ -2,11 +2,11 @@
 
 **Status:** Working decision for spec drafting (2026-07-13). Ratification requires the pinned
 capability matrix run from an installed artifact.
-**Implemented by:** `src/yoetz/adapters/mcp_stdio.py`,
-`src/yoetz/adapters/importers/codex_jsonl.py`,
-`src/yoetz/adapters/importers/codex_rollout_jsonl.py`,
-`src/yoetz/adapters/integrations/codex_session_stream.py`,
-`src/yoetz/adapters/integrations/codex_capability_cells.py`, `src/yoetz/mcp/`, the Codex
+**Implemented by:** `src/finishup/adapters/mcp_stdio.py`,
+`src/finishup/adapters/importers/codex_jsonl.py`,
+`src/finishup/adapters/importers/codex_rollout_jsonl.py`,
+`src/finishup/adapters/integrations/codex_session_stream.py`,
+`src/finishup/adapters/integrations/codex_capability_cells.py`, `src/finishup/mcp/`, the Codex
 skill files under `skills/codex/`, and `tests/capability/`.
 
 ## Decisions
@@ -31,36 +31,36 @@ skill files under `skills/codex/`, and `tests/capability/`.
    observation store, cursor mapping `codex-obs-stream/1.3.0`); a pre-`1.3.0` cursor replays from
    its header instead of inheriting a default profile.
    Those fixtures are not an isolated installed-artifact capture and therefore do not populate
-   `CODEX_HARNESS_PROFILE`, the skill manifest's tested/supported bounds, or `yoetz version`
+   `CODEX_HARNESS_PROFILE`, the skill manifest's tested/supported bounds, or `finishup version`
    capability profiles; parser proof and host support are distinct facts. The dogfood parity gate
    may advertise `session_stream` only for a parser-proven exact version and still records it
    `pass` only on actual reconciliation evidence. Neighbors including `0.149.1` stay untested. The
    full skill/MCP/hook matrix in `runtime-support.json` and issue #413 remain unfrozen until those
    facets have independent installed-artifact evidence.
-2. **Integration posture:** Codex is the MCP client; Yoetz is a local stdio server registered via
-   `codex mcp add yoetz -- yoetz mcp serve --host codex`, default `required = false`. Yoetz first runs `codex mcp
-   get yoetz --json`; because a nonzero named lookup is ambiguous, only a successful strict parse
+2. **Integration posture:** Codex is the MCP client; FinishUP is a local stdio server registered via
+   `codex mcp add finishup -- finishup mcp serve --host codex`, default `required = false`. FinishUP first runs `codex mcp
+   get finishup --json`; because a nonzero named lookup is ambiguous, only a successful strict parse
    of `codex mcp list --json` with no matching name confirms absence. Duplicate keys/names,
    nonstandard constants, truncation, malformed output, and failed listing all fail closed. A
    same-name entry is never intentionally overwritten unless a separately reviewed flow proves it
-   is the exact Yoetz-owned entry. Codex exposes no compare-and-add token, so this check cannot
+   is the exact FinishUP-owned entry. Codex exposes no compare-and-add token, so this check cannot
    atomically exclude a non-cooperating global configuration writer inside the final subprocess
    window; operators must quiesce such writers during an accepted apply. Skill
-   installed explicitly to `.agents/skills/yoetz/` with preview/consent. Codex-readable
+   installed explicitly to `.agents/skills/finishup/` with preview/consent. Codex-readable
    `SKILL.md` frontmatter is limited to `name`, `description`, and optional
-   `metadata.short-description`; Yoetz protocol/version compatibility remains in its private
+   `metadata.short-description`; FinishUP protocol/version compatibility remains in its private
    manifest and is not represented as Codex-readable frontmatter. MCP registration remains a
    separate previewed step, so v0.1 declares no `agents/openai.yaml` MCP dependency.
 3. **MCP protocol/SDK:** protocol negotiated (latest published `2025-11-25`, never assumed); SDK
    pinned `mcp==1.28.1`, low-level `Server` surface, `validate_input=False`, direct
-   `CallToolResult`, Yoetz-side jsonschema Draft 2020-12 output validation, nested constant
+   `CallToolResult`, FinishUP-side jsonschema Draft 2020-12 output validation, nested constant
    fallback defined in the MCP error spec.
-4. **Transport:** Yoetz-owned `bounded_stdio_server`: 1 MiB payload cap excluding
+4. **Transport:** FinishUP-owned `bounded_stdio_server`: 1 MiB payload cap excluding
    LF, ≤64 KiB `os.read` chunks, strict UTF-8, BOM/NUL/duplicate-key rejection, sole stdout
    writer with partial-write loop, zero-capacity AnyIO streams for backpressure. Certified for
    macOS arm64 + glibc Linux x86_64 only; Windows needs a separate gate.
 5. **Parse-error ID decision:** when a frame is malformed and no
-   request ID is recoverable, Yoetz emits a **manually constructed JSON-RPC 2.0 error frame with
+   request ID is recoverable, FinishUP emits a **manually constructed JSON-RPC 2.0 error frame with
    `"id": null`** through the sole writer (bypassing the SDK's non-null-ID model), with the fixed
    transport error code. If the pinned Codex client is shown by transcript test to mishandle the
    null-ID frame, fallback is orderly transport termination. Never fabricate an ID.
@@ -82,7 +82,7 @@ User & trusted-project MCP config; same-name config preflight; six tool calls (i
 `codex exec`); optional-server failure disclosure; required-server startup failure per supported
 Codex surface; duplicate skill-name discovery across loaded roots; parent + subagents attribution; resume/
 reattach without duplicates; `--json` JSONL import with unknown-event quarantine; skill discovery
-(explicit `$yoetz` and implicit); E-013 trigger and observation arms for exact passing profiles
+(explicit `$finishup` and implicit); E-013 trigger and observation arms for exact passing profiles
 (manual recovery / cooperative-only coverage for absent profiles); observation consent,
 ingest/status/pause/resume/revoke, `hook_observed` only from real observation evidence, and
 AdviceSnapshot via hooks plus ordinary `status`; cancellation/timeout ambiguous-write retry; stdout purity
@@ -100,7 +100,7 @@ changes is admission:
   proven version selects its certified profile with provenance `exact`. Any other ASCII version
   selects the structural compatibility profile `codex-rollout-jsonl/compatible/v1` (cli_version
   token `compatible`, vocabulary = the union of the exact profiles) with provenance `structural`.
-  Routine compatible upgrades therefore keep observation working without a Yoetz release.
+  Routine compatible upgrades therefore keep observation working without a FinishUP release.
 - Refusal is structural. A header is refused (`unsupported_codex_profile` →
   `unsupported_format`, durable for the source generation, cursor kept) only when it is not
   `session_meta`, its payload is not an object, `cli_version` is not an ASCII string, or
@@ -128,17 +128,17 @@ changes is admission:
 - IMP-015 (`rollout-multi-agent-v2-0.153.4`, issue #754) adds those event families: its key shapes
   are transcribed from a real `0.153.4` multi-agent v2 run, with canary values only. Two policy
   consequences follow. `token_usage_record` joins the structural compatibility vocabulary as a
-  family Yoetz reads no structural field from — the compatible profile is now the union of the
+  family FinishUP reads no structural field from — the compatible profile is now the union of the
   exact profiles *plus* such proven ignored families, and no exact profile gains it. A fractional
   JSON leaf (`0.153.4` added `create_time` and `used_percent` to ordinary rows) is normalized to
   `null` in the mapped record instead of refusing its line as `json_profile_unsupported`: no
-  structural field Yoetz maps is ever a float, and the line's commitment is still taken over its
+  structural field FinishUP maps is ever a float, and the line's commitment is still taken over its
   raw bytes. IMP-015 is compatibility evidence, not certification: `0.153.4` still has no exact
   profile, no parser proof, and no `session_stream` facet, and its admission stays
   `partially_understood`.
 - Issue #1041 adds one proven ignored item family on the same terms: `HookPrompt`, the
   `event_msg.item_completed` item a Codex 0.159.3 rollout writes when a Stop hook continues the
-  turn with a prompt (Yoetz's own closure gate text). It names no tool call and pairs with
+  turn with a prompt (FinishUP's own closure gate text). It names no tool call and pairs with
   nothing; admitted on the compatibility profile only, it turns an `unsupported_event` gap on every
   gated attempt into a bookkeeping row. No exact profile gains it.
 

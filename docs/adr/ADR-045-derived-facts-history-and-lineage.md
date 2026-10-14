@@ -1,26 +1,26 @@
 # ADR-045 — Derived facts carry history and lineage
 
-**Status:** Accepted for [issue #1028](https://github.com/TheGaySupreme123/yoetz/issues/1028)
+**Status:** Accepted for [issue #1028](https://github.com/TheGaySupreme123/finishup/issues/1028)
 (tb4n3 core issue RC-5, lane LF: `declared_output_emptied` on files created empty, the
 formal-crypto S emptied solver, exact-string command identity, the dormant
 `edited_after_last_verification`, exact-value attempt matching and binary-by-suffix). Maintainer
 acknowledgement (TheGaySupreme123, 2026-10-11 owner decisions 7, 9 and 10): planned-command
 matching normalizes wrappers and may match by prefix, a prefix-only match counts but is disclosed,
-a `yoetz-assumption` naming the path clears an emptied deliverable, and "if we add facts or info it
+a `finishup-assumption` naming the path clears an emptied deliverable, and "if we add facts or info it
 has lineage and where from". It adds one optional field to the unreleased `check_recorded` 1.4.0 and
 two optional fields to the unreleased `status-result` / `check-result` 1.4.0, and edits the
 hook-observation structural payload in place (one enum value, one raised bound). It grants no
 runtime, credential, disclosure or destructive-action authority.
-**Implemented by:** `src/yoetz/kernel/delivered_set.py`, `src/yoetz/kernel/fact_lineage.py`,
-`src/yoetz/kernel/task_facts.py`, `src/yoetz/kernel/closure_readiness.py`
-(`current_fact_lineage`), `src/yoetz/kernel/command_attempts.py`,
-`src/yoetz/kernel/policies/work_integrity.py`, `src/yoetz/kernel/receipt_builder.py`,
-`src/yoetz/domain/command_segments.py`, `src/yoetz/domain/observation_selection.py`,
-`src/yoetz/domain/shell_writes.py`, `src/yoetz/domain/write_scope.py`,
-`src/yoetz/domain/events.py` (`DeliverableState`), `src/yoetz/application/check.py`,
-`src/yoetz/application/check_change.py`, `src/yoetz/application/missing_for_assessment.py`,
-`src/yoetz/application/status.py`, `src/yoetz/cli/closure_gate.py`, `src/yoetz/cli/render.py`,
-`src/yoetz/cli/runtime_facts.py`, `src/yoetz/mcp/summaries.py`, `src/yoetz/protocol/models.py`
+**Implemented by:** `src/finishup/kernel/delivered_set.py`, `src/finishup/kernel/fact_lineage.py`,
+`src/finishup/kernel/task_facts.py`, `src/finishup/kernel/closure_readiness.py`
+(`current_fact_lineage`), `src/finishup/kernel/command_attempts.py`,
+`src/finishup/kernel/policies/work_integrity.py`, `src/finishup/kernel/receipt_builder.py`,
+`src/finishup/domain/command_segments.py`, `src/finishup/domain/observation_selection.py`,
+`src/finishup/domain/shell_writes.py`, `src/finishup/domain/write_scope.py`,
+`src/finishup/domain/events.py` (`DeliverableState`), `src/finishup/application/check.py`,
+`src/finishup/application/check_change.py`, `src/finishup/application/missing_for_assessment.py`,
+`src/finishup/application/status.py`, `src/finishup/cli/closure_gate.py`, `src/finishup/cli/render.py`,
+`src/finishup/cli/runtime_facts.py`, `src/finishup/mcp/summaries.py`, `src/finishup/protocol/models.py`
 (`FactLineageModel`), `scripts/generate_schemas.py`.
 **Relates to:** ADR-033 (task facts and the Stop-time gate), ADR-035 (declared delivered set),
 ADR-041 (obligation status re-derived), ADR-042 (write classification and task-fact scope).
@@ -92,7 +92,7 @@ it. This is the formal-crypto S fix. The "withdrawn after passing verification" 
 proposed as a second code is this same code with `basis verified`/`delivered`; one code keeps the
 gate token, readiness classification and receipt aligned (`GAP_CLASSIFICATION_VERSION` 7).
 
-**The one exit** is a `yoetz-assumption:<obligation id>` decision of an obligation that declares
+**The one exit** is a `finishup-assumption:<obligation id>` decision of an obligation that declares
 the path, whose statement or rationale names that exact path (the declared value or the
 root-relative path, as a whole token): the task asked for this file to be empty. The check records
 the state with `accepted_by` and does not raise the fact; the receipt already discloses the
@@ -144,7 +144,7 @@ command only ever matches whole. A planned `cd`/`export` segment may be absent f
 makes the match a prefix one. `exact` and `normalized` are clean. A `prefix` or `flags` match
 **counts as run** (the planned verification is not reported unobserved, and the run's outcome and
 staleness apply as for any matched run) but raises the standing disclosure
-`planned_verification_matched_by_prefix` with lineage naming the observed run: Yoetz cannot tell
+`planned_verification_matched_by_prefix` with lineage naming the observed run: FinishUP cannot tell
 whether the run is what the plan meant. Like `planned_verification_agent_linked` it is disclosed and
 does not bound the conclusion. An older hook sends no canonical commitments and matches exactly, as
 before.
@@ -165,9 +165,9 @@ writes include a workspace path carries `write_scope: workspace` (a real outside
 carries `outside_workspace`); the kernel counts both as edits. The agent's own working notes
 (`NOTES.md`, `todo.txt`; `.log` is never named by extension) are the new non-counting `notes` scope,
 overridden by a declared output of that name. A command that writes only one non-counting class
-(notes, or Yoetz material) carries that same scope, so the declared-output override applies to a
+(notes, or FinishUP material) carries that same scope, so the declared-output override applies to a
 shell write as to an edit tool; a command that writes two non-counting classes
-(`: > NOTES.md; : > yoetz_receipt.md`) counts as an edit, as a mixed edit-tool call does, because
+(`: > NOTES.md; : > finishup_receipt.md`) counts as an edit, as a mixed edit-tool call does, because
 one token cannot carry both classes' overrides. A shell command that wrote counts as an edit
 whatever its exit status (`: > f; false` emptied `f`). The rule is one predicate,
 `kernel/observed_failures.observed_shell_write_counts`: a COMMAND whose runtime tokens carry
@@ -183,9 +183,9 @@ review). A Codex shell `apply_patch <<EOF` is always one: Codex applies the patc
 only the pre-event (#1041), so the hook names the files its patch headers name
 (`*** Update File: ...`), classified as the native `apply_patch` tool's paths are; the heredoc body
 is otherwise data. A command with no write token
-(unknown scope, or `none`) and Yoetz's own exploration runs stay as before. One classifier decides every path, in the
+(unknown scope, or `none`) and FinishUP's own exploration runs stay as before. One classifier decides every path, in the
 hook as in the Codex stream: the hook has no separate outside-workspace precheck, so
-`cp source.json /opt/yoetz_receipt.json` is `yoetz_owned` (Yoetz's own material), not
+`cp source.json /opt/finishup_receipt.json` is `yoetz_owned` (FinishUP's own material), not
 `outside_workspace`.
 
 **The parser prefers a missed write to a guessed one.** A false write tells the agent its
@@ -236,7 +236,7 @@ matter and a false write is worse, so `domain/shell_writes` names no write when 
   `||`, `&&` and parentheses are test syntax. An expansion is assumed to yield a word.
 - *A directory destination is classified by where it is.* `cp -t DIR`, `install -d DIR` and
   `dest/` write files named after something else, so a notes or receipt *file name* never exempts
-  the directory (`cp -t NOTES.md src.py` is a workspace write); a Yoetz tree or state directory
+  the directory (`cp -t NOTES.md src.py` is a workspace write); a FinishUP tree or state directory
   still does.
 - *Bounded.* The parser is linear: no pattern backtracks, no region is rescanned and
   `strip_wrappers` is handed a constant-size head of each command. The hook's other `shlex` pass

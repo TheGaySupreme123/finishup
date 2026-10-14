@@ -1,10 +1,10 @@
 # ADR-019 — Declared completion scope
 
 **Status:** Accepted (2026-08-04), acknowledged in
-[issue #130](https://github.com/TheGaySupreme123/yoetz/issues/130).
-**Implemented by:** `src/yoetz/domain/events.py`, `src/yoetz/kernel/plan_scope.py`,
-`src/yoetz/application/status.py`, `src/yoetz/kernel/deterministic_checks.py`,
-`src/yoetz/kernel/receipt_builder.py`, and the public event/status schemas and guidance.
+[issue #130](https://github.com/TheGaySupreme123/finishup/issues/130).
+**Implemented by:** `src/finishup/domain/events.py`, `src/finishup/kernel/plan_scope.py`,
+`src/finishup/application/status.py`, `src/finishup/kernel/deterministic_checks.py`,
+`src/finishup/kernel/receipt_builder.py`, and the public event/status schemas and guidance.
 **Relates to:** ADR-002 (canonical protocol), ADR-010 (harness integration port), ADR-011
 (structural subject-state capture), and ADR-032 (closure readiness classifies the completion-scope
 gaps: `completion_plan_not_claimed`, `completion_claim_outside_plan` and
@@ -13,7 +13,7 @@ disclosure).
 
 ## Context
 
-Yoetz checks only the durable facts participants publish. An empty effective plan previously looked
+FinishUP checks only the durable facts participants publish. An empty effective plan previously looked
 the same whether the author had not declared completion obligations, had deliberately determined
 that none applied, or had declared obligations and later resolved them. That ambiguity could make
 an obligation-free completion appear scoped even though the ledger never recorded a scope decision.
@@ -83,7 +83,7 @@ coverage limitation and readiness fact, not a new actionable policy finding.
 
 ## Completion claim consistency (issue #679)
 
-Maintainer acknowledgement: [issue #679](https://github.com/TheGaySupreme123/yoetz/issues/679#issuecomment-5761526859).
+Maintainer acknowledgement: [issue #679](https://github.com/TheGaySupreme123/finishup/issues/679#issuecomment-5761526859).
 Each readable effective completion claim is compared with the readable current plan. The shared
 pure comparison reports `completion_claim_outside_plan` for claim refs outside that plan and
 `completion_plan_not_claimed` for plan refs omitted by that claim. These are bounded coverage

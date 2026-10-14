@@ -15,11 +15,11 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from yoetz.cli.closure import PREPARATION_REMEDIATIONS, Selection, prepare_closure
-from yoetz.ports.control import ControlMethod
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import (
+from finishup.cli.closure import PREPARATION_REMEDIATIONS, Selection, prepare_closure
+from finishup.ports.control import ControlMethod
+from finishup.ports.ledger import CheckCommitResult
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,

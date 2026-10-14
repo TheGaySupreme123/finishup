@@ -8,11 +8,11 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.repository_identity import (
+from finishup.adapters.repository_identity import (
     RepositoryIdentityError,
     resolve_repository_privacy_context,
 )
-from yoetz.ports.control import WorkspaceLocator
+from finishup.ports.control import WorkspaceLocator
 
 
 class _MacKey:
@@ -23,7 +23,14 @@ class _MacKey:
 
 def _git(*arguments: str) -> None:
     subprocess.run(
-        ["git", "-c", "user.name=Yoetz Test", "-c", "user.email=test@yoetz.invalid", *arguments],
+        [
+            "git",
+            "-c",
+            "user.name=FinishUP Test",
+            "-c",
+            "user.email=test@finishup.invalid",
+            *arguments,
+        ],
         check=True,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,

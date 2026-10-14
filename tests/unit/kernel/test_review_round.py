@@ -8,14 +8,14 @@ from typing import cast
 
 from builders.policy_cases import act
 from builders.replay import replay_records
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     CheckRecordedPayload,
     LedgerRecord,
 )
-from yoetz.kernel.review_round import review_round_stopped
-from yoetz.protocol.models import SemanticStatus
+from finishup.kernel.review_round import review_round_stopped
+from finishup.protocol.models import SemanticStatus
 
 _CHECK = next(
     record.payload

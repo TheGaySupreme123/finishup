@@ -9,16 +9,16 @@ from __future__ import annotations
 import pytest
 
 from builders.policy_cases import fnd, obl
-from yoetz.domain.findings import CheckVerdict
-from yoetz.domain.values import Frontier
-from yoetz.kernel.closure_class import (
+from finishup.domain.findings import CheckVerdict
+from finishup.domain.values import Frontier
+from finishup.kernel.closure_class import (
     FINDING_BASES,
     OBLIGATION_BASES,
     FindingClosure,
     ObligationClosure,
 )
-from yoetz.kernel.gap_effect import GapContext, gap_effect
-from yoetz.kernel.receipt_prediction import (
+from finishup.kernel.gap_effect import GapContext, gap_effect
+from finishup.kernel.receipt_prediction import (
     AppliedCheck,
     ClosureBasis,
     LineageBasis,

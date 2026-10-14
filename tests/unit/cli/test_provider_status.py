@@ -16,11 +16,11 @@ from typing import Any, Literal, cast
 
 import pytest
 
-from yoetz.cli import provider_status as module
-from yoetz.cli import setup as cli_setup
-from yoetz.config.models import ProviderProfileConfig, VerificationConfig, YoetzConfig
-from yoetz.ports.control import ControlError
-from yoetz.ports.harness_mcp import McpRegistrationError, McpRegistrationReason
+from finishup.cli import provider_status as module
+from finishup.cli import setup as cli_setup
+from finishup.config.models import FinishUpConfig, ProviderProfileConfig, VerificationConfig
+from finishup.ports.control import ControlError
+from finishup.ports.harness_mcp import McpRegistrationError, McpRegistrationReason
 
 pytestmark = pytest.mark.anyio
 
@@ -111,7 +111,7 @@ def _install(
     service_state_reason: str = "none",
     mcp_route: dict[str, object] | None = None,
 ) -> _Client:
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="strict-local" if provider is None else "local-openai",
         verification=VerificationConfig(semantic=cast(Any, semantic)),
         provider=provider,
@@ -123,7 +123,7 @@ def _install(
         state_reason=service_state_reason,
     )
 
-    def _load(*_args: object) -> YoetzConfig:
+    def _load(*_args: object) -> FinishUpConfig:
         return config
 
     monkeypatch.setattr(module, "load_config", _load)
@@ -236,7 +236,7 @@ async def test_missing_repository_grant_keeps_external_review_off(
     assert {
         "condition": "repository_privacy_grant",
         "state": "missing",
-        "next_command": "yoetz --privacy",
+        "next_command": "finishup --privacy",
     } in blockers
 
 
@@ -262,7 +262,7 @@ async def test_llm_inference_channel_is_actually_read_from_canonical_policy(
     assert len(channel_blockers) == 1
     # "disabled" is a read answer; "unknown" would mean the policy was never inspected.
     assert channel_blockers[0]["state"] == "disabled"
-    assert channel_blockers[0]["next_command"] == "yoetz --privacy"
+    assert channel_blockers[0]["next_command"] == "finishup --privacy"
 
 
 async def test_credential_for_a_different_provider_is_not_counted(
@@ -281,7 +281,7 @@ async def test_credential_for_a_different_provider_is_not_counted(
     credential = [item for item in blockers if item.get("condition") == "provider_credential"]
     assert len(credential) == 1
     assert credential[0]["state"] == "not_connected"
-    assert credential[0]["next_command"] == "yoetz provider credential set"
+    assert credential[0]["next_command"] == "finishup provider credential set"
 
 
 async def test_unbound_endpoint_and_disabled_semantic_are_named_with_next_commands(
@@ -382,7 +382,7 @@ async def test_locked_service_reports_real_blocker_first_without_false_remediati
         "condition": "service_unlocked",
         "state": "locked",
         "reason": "passphrase_required",
-        "next_command": "yoetz service unlock",
+        "next_command": "finishup service unlock",
         "probed_lifecycle": "user_service_no_autostart",
         # A locked service is present, so MCP shares it rather than starting a new one.
         "mcp_local_composition": "shares_this_service",
@@ -394,7 +394,7 @@ async def test_locked_service_reports_real_blocker_first_without_false_remediati
         "repository_privacy_grant",
     }
     assert all("next_command" not in item for item in unknown)
-    assert report["next_commands"] == ("yoetz service unlock",)
+    assert report["next_commands"] == ("finishup service unlock",)
 
 
 async def test_absent_service_names_the_probed_lifecycle_and_the_mcp_path(
@@ -423,7 +423,7 @@ async def test_absent_service_names_the_probed_lifecycle_and_the_mcp_path(
     assert blockers[0]["probed_lifecycle"] == "user_service_no_autostart"
     assert blockers[0]["mcp_local_composition"] == "starts_on_demand"
     # The existing remediation for an operator who wants a persistent service is unchanged.
-    assert blockers[0]["next_command"] == "yoetz service run"
+    assert blockers[0]["next_command"] == "finishup service run"
     assert report["semantic_ready"] is False
 
 
@@ -441,8 +441,8 @@ async def test_stale_auto_unlock_points_to_repair_first(
     report = await module.provider_status_report()
 
     blockers = cast(tuple[dict[str, object], ...], report["blockers"])
-    assert blockers[0]["next_command"] == "yoetz service auto-unlock repair"
-    assert report["next_commands"] == ("yoetz service auto-unlock repair",)
+    assert blockers[0]["next_command"] == "finishup service auto-unlock repair"
+    assert report["next_commands"] == ("finishup service auto-unlock repair",)
 
 
 async def test_rejected_auto_unlock_points_to_repair_first(
@@ -459,8 +459,8 @@ async def test_rejected_auto_unlock_points_to_repair_first(
     report = await module.provider_status_report()
 
     blockers = cast(tuple[dict[str, object], ...], report["blockers"])
-    assert blockers[0]["next_command"] == "yoetz service auto-unlock repair"
-    assert report["next_commands"] == ("yoetz service auto-unlock repair",)
+    assert blockers[0]["next_command"] == "finishup service auto-unlock repair"
+    assert report["next_commands"] == ("finishup service auto-unlock repair",)
 
 
 async def test_strict_registered_route_is_not_ready_for_the_agent_but_leaves_the_install_ready(
@@ -486,7 +486,7 @@ async def test_strict_registered_route_is_not_ready_for_the_agent_but_leaves_the
     assert route[0]["state"] == "strict"
     # The scope marks this as an agent-route blocker, not an installation blocker.
     assert route[0]["scope"] == "agent_route"
-    assert route[0]["next_command"] == "yoetz integrate codex mcp preview"
+    assert route[0]["next_command"] == "finishup integrate codex mcp preview"
 
 
 async def test_strict_registered_route_does_not_change_the_exit_code(
@@ -598,7 +598,7 @@ async def test_route_probe_failure_degrades_instead_of_raising(
         raise McpRegistrationError(McpRegistrationReason.HARNESS_UNAVAILABLE, {})
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", _explode
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", _explode
     )
     monkeypatch.setattr(cli_setup, "_configured_mcp_route_profile", lambda: "policy")
 
@@ -625,23 +625,25 @@ async def test_route_probe_failure_degrades_instead_of_raising(
 async def test_multiple_codex_binaries_require_an_explicit_route_selector(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from yoetz.ports.harness_mcp import HarnessBinary
-    from yoetz.ports.integrations import HarnessId
+    from finishup.ports.harness_mcp import HarnessBinary
+    from finishup.ports.integrations import HarnessId
 
     _install(monkeypatch, tmp_path, provider=_provider())
     monkeypatch.setattr(module, "mcp_route_observation", _REAL_ROUTE_OBSERVATION)
     chosen_home = tmp_path / "selected-home"
     chosen_home.mkdir(mode=0o700)
-    from yoetz.cli import setup_readiness
+    from finishup.cli import setup_readiness
 
-    monkeypatch.setattr(setup_readiness, "invoking_launcher", lambda: ("/opt/yoetz/bin/yoetz",))
+    monkeypatch.setattr(
+        setup_readiness, "invoking_launcher", lambda: ("/opt/finishup/bin/finishup",)
+    )
     monkeypatch.setattr(setup_readiness, "isolated_root", lambda: tmp_path / "isolated-root")
     binaries = (
         HarnessBinary(HarnessId.CODEX, "/opt/codex-a", "0.150.1", "untested"),
         HarnessBinary(HarnessId.CODEX, "/opt/codex-b", "0.150.1", "untested"),
     )
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries",
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries",
         lambda: binaries,
     )
 
@@ -654,8 +656,8 @@ async def test_multiple_codex_binaries_require_an_explicit_route_selector(
     assert selection["state"] == "multiple"
     assert selection["scope"] == "agent_route"
     command = cast(str, selection["next_command"])
-    assert "/opt/yoetz/bin/yoetz" in command
-    assert "YOETZ_ISOLATED_ROOT=" + str(tmp_path / "isolated-root") in command
+    assert "/opt/finishup/bin/finishup" in command
+    assert "FINISHUP_ISOLATED_ROOT=" + str(tmp_path / "isolated-root") in command
     assert "--codex-path '<exact-executable>'" in command
     assert "--codex-home " + str(chosen_home) in command
     assert report["next_commands"] == (command,)
@@ -664,13 +666,13 @@ async def test_multiple_codex_binaries_require_an_explicit_route_selector(
 async def test_unresolvable_explicit_codex_path_has_a_bounded_selector_hint(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from yoetz.ports.harness_mcp import HarnessBinary
-    from yoetz.ports.integrations import HarnessId
+    from finishup.ports.harness_mcp import HarnessBinary
+    from finishup.ports.integrations import HarnessId
 
     _install(monkeypatch, tmp_path, provider=_provider())
     monkeypatch.setattr(module, "mcp_route_observation", _REAL_ROUTE_OBSERVATION)
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries",
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries",
         lambda: (HarnessBinary(HarnessId.CODEX, "/opt/codex", "0.150.1", "untested"),),
     )
 
@@ -737,14 +739,14 @@ async def test_uninitialized_vault_points_to_guided_setup(
     report = await module.provider_status_report()
 
     blockers = cast(tuple[dict[str, object], ...], report["blockers"])
-    assert blockers[0]["next_command"] == "yoetz setup"
-    assert report["next_commands"] == ("yoetz setup",)
+    assert blockers[0]["next_command"] == "finishup setup"
+    assert report["next_commands"] == ("finishup setup",)
 
 
 def _admit_claude(project: Path) -> None:
     (project / ".claude").mkdir(exist_ok=True)
     (project / ".claude" / "settings.local.json").write_text(
-        json.dumps({"permissions": {"allow": ["mcp__plugin_yoetz_yoetz__check"]}}),
+        json.dumps({"permissions": {"allow": ["mcp__plugin_finishup_finishup__check"]}}),
         encoding="utf-8",
     )
 
@@ -799,7 +801,7 @@ async def test_present_admission_without_a_permitting_grant_is_drift(
             "scope": "agent_route",
             "host": "claude",
             "next_command": (
-                "yoetz integrate claude admission preview --action revoke --project-root ."
+                "finishup integrate claude admission preview --action revoke --project-root ."
             ),
         }
     ]
@@ -814,7 +816,7 @@ async def test_strict_codex_route_with_a_codex_admission_is_drift_for_codex_only
     _admit_claude(project)
     (project / ".codex").mkdir()
     (project / ".codex" / "config.toml").write_text(
-        '[mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n', encoding="utf-8"
+        '[mcp_servers.finishup.tools.check]\napproval_mode = "approve"\n', encoding="utf-8"
     )
 
     report = await module.provider_status_report(workspace_locator=project)
@@ -928,12 +930,12 @@ def _stub_live_route(
 ) -> None:
     """Stub the live host resolution for drift-join tests (issue #537)."""
 
-    from yoetz.ports.harness_mcp import (
+    from finishup.ports.harness_mcp import (
         HarnessBinary,
         McpRegistrationObservation,
         McpRegistrationState,
     )
-    from yoetz.ports.integrations import HarnessId
+    from finishup.ports.integrations import HarnessId
 
     binary = HarnessBinary(
         harness_id=HarnessId.CODEX,
@@ -943,20 +945,20 @@ def _stub_live_route(
     )
     observation = McpRegistrationObservation(
         HarnessId.CODEX,
-        McpRegistrationState.YOETZ_OWNED if observed else McpRegistrationState.ABSENT,
+        McpRegistrationState.FINISHUP_OWNED if observed else McpRegistrationState.ABSENT,
         registered if observed else None,
         "ambient" if observed else None,
     )
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries",
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries",
         lambda: (binary,),
     )
 
     async def _fake_observe(self: object, _binary: object) -> McpRegistrationObservation:
         return observation
 
-    monkeypatch.setattr("yoetz.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
+    monkeypatch.setattr("finishup.application.harness_mcp.HarnessMcpService.observe", _fake_observe)
     monkeypatch.setattr(cli_setup, "configured_mcp_route_profile", lambda: "policy")
 
 
@@ -964,32 +966,35 @@ def _stub_live_route(
 async def test_proven_absolute_adapter_feeds_provider_readiness(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dual: bool
 ) -> None:
-    from yoetz.adapters.integrations.codex_mcp import CommandOutput
-    from yoetz.adapters.integrations.portable_plugin import PluginManagedMcpObservation
-    from yoetz.ports.harness_mcp import HarnessBinary
-    from yoetz.ports.integrations import HarnessId
-    from yoetz.ports.plugin_artifacts import McpOwnershipState
+    from finishup.adapters.integrations.codex_mcp import CommandOutput
+    from finishup.adapters.integrations.portable_plugin import PluginManagedMcpObservation
+    from finishup.ports.harness_mcp import HarnessBinary
+    from finishup.ports.integrations import HarnessId
+    from finishup.ports.plugin_artifacts import McpOwnershipState
 
     _install(monkeypatch, tmp_path, provider=_provider())
     monkeypatch.setattr(module, "mcp_route_observation", _REAL_ROUTE_OBSERVATION)
     binary = HarnessBinary(HarnessId.CODEX, "/test/codex", "0.150.1", "supported")
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: (binary,)
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: (binary,)
     )
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_mcp.isolated_root", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: None)
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_mcp.installed_launcher",
-        lambda: ("/test/runtime/bin/yoetz", "sha256:" + "a" * 64),
+        "finishup.adapters.integrations.codex_mcp.installed_launcher",
+        lambda: ("/test/runtime/bin/finishup", "sha256:" + "a" * 64),
     )
 
     def entry(_argv: tuple[str, ...], *, codex_home: Path | None = None) -> CommandOutput:
-        from yoetz.adapters.integrations.codex_session_stream import resolve_codex_home
+        from finishup.adapters.integrations.codex_session_stream import resolve_codex_home
 
         assert codex_home == resolve_codex_home().absolute()
         return CommandOutput(
             0,
             json.dumps(
-                {"command": "/test/runtime/bin/yoetz", "args": ["mcp", "serve", "--host", "codex"]}
+                {
+                    "command": "/test/runtime/bin/finishup",
+                    "args": ["mcp", "serve", "--host", "codex"],
+                }
             ).encode(),
         )
 
@@ -1000,9 +1005,9 @@ async def test_proven_absolute_adapter_feeds_provider_readiness(
             True,
         )
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_mcp._default_runner", entry)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp._default_runner", entry)
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.portable_plugin.observe_plugin_managed_mcp", plugin
+        "finishup.adapters.integrations.portable_plugin.observe_plugin_managed_mcp", plugin
     )
     report = await module.provider_status_report(workspace_locator=tmp_path)
     assert report["semantic_ready"] is True
@@ -1017,8 +1022,8 @@ async def test_applied_route_drift_true_when_serving_differs(
 ) -> None:
     """Applied policy but serving strict is drift (issue #537 slice B)."""
 
-    from yoetz.application.applied_mcp_route import record_applied_route
-    from yoetz.ports.harness_mcp import MCP_SERVE_COMMAND
+    from finishup.application.applied_mcp_route import record_applied_route
+    from finishup.ports.harness_mcp import MCP_SERVE_COMMAND
 
     _install(monkeypatch, tmp_path, provider=_provider())
     monkeypatch.setattr(module, "mcp_route_observation", _REAL_ROUTE_OBSERVATION)
@@ -1042,8 +1047,8 @@ async def test_applied_route_drift_true_when_serving_differs(
 async def test_applied_route_no_drift_when_profiles_match(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from yoetz.application.applied_mcp_route import record_applied_route
-    from yoetz.ports.harness_mcp import MCP_SERVE_COMMAND
+    from finishup.application.applied_mcp_route import record_applied_route
+    from finishup.ports.harness_mcp import MCP_SERVE_COMMAND
 
     _install(monkeypatch, tmp_path, provider=_provider())
     monkeypatch.setattr(module, "mcp_route_observation", _REAL_ROUTE_OBSERVATION)
@@ -1068,8 +1073,8 @@ async def test_applied_route_unread_never_reports_drift(
 ) -> None:
     """An unread observation degrades to drift False even with a record (slice B)."""
 
-    from yoetz.application.applied_mcp_route import record_applied_route
-    from yoetz.ports.harness_mcp import MCP_SERVE_COMMAND
+    from finishup.application.applied_mcp_route import record_applied_route
+    from finishup.ports.harness_mcp import MCP_SERVE_COMMAND
 
     _install(monkeypatch, tmp_path, provider=_provider())
     monkeypatch.setattr(module, "mcp_route_observation", _REAL_ROUTE_OBSERVATION)
@@ -1078,7 +1083,7 @@ async def test_applied_route_unread_never_reports_drift(
         raise McpRegistrationError(McpRegistrationReason.HARNESS_UNAVAILABLE, {})
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", _explode
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries", _explode
     )
     monkeypatch.setattr(cli_setup, "configured_mcp_route_profile", lambda: "policy")
     record_applied_route(
@@ -1101,8 +1106,8 @@ async def test_applied_route_absent_never_reports_drift(
 ) -> None:
     """ABSENT (registered None, observed True) with a policy record is not drift (B1)."""
 
-    from yoetz.application.applied_mcp_route import record_applied_route
-    from yoetz.ports.harness_mcp import MCP_SERVE_COMMAND
+    from finishup.application.applied_mcp_route import record_applied_route
+    from finishup.ports.harness_mcp import MCP_SERVE_COMMAND
 
     _install(monkeypatch, tmp_path, provider=_provider())
     monkeypatch.setattr(module, "mcp_route_observation", _REAL_ROUTE_OBSERVATION)
@@ -1130,21 +1135,21 @@ async def test_applied_route_dual_never_reports_drift(
 ) -> None:
     """DUAL (registered None, observed True) with a policy record is not drift (B1)."""
 
-    from yoetz.adapters.integrations.portable_plugin import PluginManagedMcpObservation
-    from yoetz.application.applied_mcp_route import record_applied_route
-    from yoetz.ports.harness_mcp import MCP_SERVE_COMMAND
-    from yoetz.ports.plugin_artifacts import McpOwnershipState
+    from finishup.adapters.integrations.portable_plugin import PluginManagedMcpObservation
+    from finishup.application.applied_mcp_route import record_applied_route
+    from finishup.ports.harness_mcp import MCP_SERVE_COMMAND
+    from finishup.ports.plugin_artifacts import McpOwnershipState
 
     _install(monkeypatch, tmp_path, provider=_provider())
     monkeypatch.setattr(module, "mcp_route_observation", _REAL_ROUTE_OBSERVATION)
-    # External YOETZ_OWNED strict + plugin PLUGIN policy joins to DUAL.
+    # External FINISHUP_OWNED strict + plugin PLUGIN policy joins to DUAL.
     _stub_live_route(monkeypatch, registered="strict")
 
     def _plugin_policy(_root: object) -> PluginManagedMcpObservation:
         return PluginManagedMcpObservation(McpOwnershipState.PLUGIN, "policy", True)
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.portable_plugin.observe_plugin_managed_mcp",
+        "finishup.adapters.integrations.portable_plugin.observe_plugin_managed_mcp",
         _plugin_policy,
     )
     record_applied_route(
@@ -1169,14 +1174,14 @@ async def test_applied_route_foreign_never_reports_drift(
 ) -> None:
     """FOREIGN (registered None, observed True) with a policy record is not drift (B1)."""
 
-    from yoetz.application.applied_mcp_route import record_applied_route
-    from yoetz.ports.harness_mcp import (
+    from finishup.application.applied_mcp_route import record_applied_route
+    from finishup.ports.harness_mcp import (
         MCP_SERVE_COMMAND,
         HarnessBinary,
         McpRegistrationObservation,
         McpRegistrationState,
     )
-    from yoetz.ports.integrations import HarnessId
+    from finishup.ports.integrations import HarnessId
 
     _install(monkeypatch, tmp_path, provider=_provider())
     monkeypatch.setattr(module, "mcp_route_observation", _REAL_ROUTE_OBSERVATION)
@@ -1191,7 +1196,7 @@ async def test_applied_route_foreign_never_reports_drift(
         HarnessId.CODEX, McpRegistrationState.FOREIGN_PRESENT, None
     )
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries",
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries",
         lambda: (binary,),
     )
 
@@ -1199,7 +1204,7 @@ async def test_applied_route_foreign_never_reports_drift(
         return foreign
 
     monkeypatch.setattr(
-        "yoetz.application.harness_mcp.HarnessMcpService.observe", _fake_foreign_observe
+        "finishup.application.harness_mcp.HarnessMcpService.observe", _fake_foreign_observe
     )
     monkeypatch.setattr(cli_setup, "configured_mcp_route_profile", lambda: "policy")
     record_applied_route(
@@ -1239,17 +1244,17 @@ async def test_background_advice_reports_the_effective_switch_and_its_reason(
 ) -> None:
     """Issue #888: status names whether background advice is on and why, in fixed words."""
 
-    from yoetz.config.models import ObservationConfig
+    from finishup.config.models import ObservationConfig
 
     _install(monkeypatch, tmp_path, semantic=semantic, provider=_provider())
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="local-openai",
         provider=_provider(),
         verification=VerificationConfig(semantic=cast(Any, semantic)),
         observation=ObservationConfig(semantic_advice_enabled=chosen),
     )
 
-    def _load(*_args: object) -> YoetzConfig:
+    def _load(*_args: object) -> FinishUpConfig:
         return config
 
     monkeypatch.setattr(module, "load_config", _load)

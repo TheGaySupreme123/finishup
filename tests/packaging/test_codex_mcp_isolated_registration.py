@@ -1,8 +1,8 @@
 """Installed Codex 0.150.1 propagation regression for issue #561.
 
-The test uses a fresh Codex home and a test-owned executable named ``yoetz``.  Product code
+The test uses a fresh Codex home and a test-owned executable named ``finishup``.  Product code
 registers the exact allowlisted isolation binding, then the real Codex app-server launches that
-registered child while its own parent environment deliberately lacks ``YOETZ_ISOLATED_ROOT``.
+registered child while its own parent environment deliberately lacks ``FINISHUP_ISOLATED_ROOT``.
 The child records the value it actually received and completes the MCP handshake.  This proves
 the reviewed registration, not ambient parent inheritance, supplied the exact isolated root.
 """
@@ -22,11 +22,11 @@ from typing import Final, cast
 import anyio
 import pytest
 
-from yoetz.adapters.integrations.codex_mcp import CodexMcpAdapter
-from yoetz.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
-from yoetz.config.paths import ISOLATED_ROOT_ENV
-from yoetz.ports.harness_mcp import HarnessBinary, McpRegistrationState
-from yoetz.ports.integrations import HarnessId
+from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter
+from finishup.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
+from finishup.config.paths import ISOLATED_ROOT_ENV
+from finishup.ports.harness_mcp import HarnessBinary, McpRegistrationState
+from finishup.ports.integrations import HarnessId
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 _EXPECTED_CODEX_VERSION: Final = "codex-cli 0.150.1"
@@ -37,7 +37,7 @@ import os
 import pathlib
 import sys
 
-root = os.environ.get("YOETZ_ISOLATED_ROOT")
+root = os.environ.get("FINISHUP_ISOLATED_ROOT")
 if not root:
     raise SystemExit(73)
 pathlib.Path(root, "codex-child-isolated-root.txt").write_text(root, encoding="utf-8")
@@ -56,7 +56,7 @@ for raw in sys.stdin.buffer:
         result = {
             "protocolVersion": params.get("protocolVersion", "2024-11-05"),
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "yoetz-isolation-probe", "version": "0.1.0"},
+            "serverInfo": {"name": "finishup-isolation-probe", "version": "0.1.0"},
         }
     elif method == "tools/list":
         result = {"tools": []}
@@ -143,7 +143,7 @@ def test_installed_codex_child_receives_only_the_reviewed_isolated_root(
         isolated_root.mkdir(mode=0o700)
         codex_home.mkdir(mode=0o700)
         probe_bin.mkdir(mode=0o700)
-        probe = probe_bin / "yoetz"
+        probe = probe_bin / "finishup"
         probe.write_text(_PROBE_SCRIPT, encoding="utf-8")
         probe.chmod(0o700)
 
@@ -155,7 +155,7 @@ def test_installed_codex_child_receives_only_the_reviewed_isolated_root(
         # This existing compatibility cell intentionally exercises the legacy PATH registration
         # with a synthetic child; issue #654's test below exercises a proven installed launcher.
         monkeypatch.setattr(
-            "yoetz.adapters.integrations.codex_mcp.installed_launcher", lambda: None
+            "finishup.adapters.integrations.codex_mcp.installed_launcher", lambda: None
         )
 
         binary = HarnessBinary(HarnessId.CODEX, str(codex), "0.150.1", "supported")
@@ -173,7 +173,7 @@ def test_installed_codex_child_receives_only_the_reviewed_isolated_root(
                 _state=root / "applied-route",
             )
         )
-        assert result.state_after is McpRegistrationState.YOETZ_OWNED
+        assert result.state_after is McpRegistrationState.FINISHUP_OWNED
 
         observed = anyio.run(lambda: service.observe(binary))
         assert observed.isolation_binding == "isolated_exact"
@@ -206,7 +206,7 @@ def test_installed_codex_child_receives_only_the_reviewed_isolated_root(
         assert entries[0]["serverInfo"] == {
             "description": None,
             "icons": None,
-            "name": "yoetz-isolation-probe",
+            "name": "finishup-isolation-probe",
             "title": None,
             "version": "0.1.0",
             "websiteUrl": None,
@@ -245,20 +245,20 @@ from pathlib import Path
 import anyio
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-from yoetz.adapters.integrations.codex_mcp import CodexMcpAdapter
-from yoetz.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
-from yoetz.application.applied_mcp_route import read_applied_route
-from yoetz.cli.provider_status import mcp_route_observation
-from yoetz.config.paths import isolated_root
-from yoetz.ports.harness_mcp import HarnessBinary
-from yoetz.ports.integrations import HarnessId
+from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter
+from finishup.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
+from finishup.application.applied_mcp_route import read_applied_route
+from finishup.cli.provider_status import mcp_route_observation
+from finishup.config.paths import isolated_root
+from finishup.ports.harness_mcp import HarnessBinary
+from finishup.ports.integrations import HarnessId
 
 async def main():
     codex, stage = sys.argv[1:]
     binary = HarnessBinary(HarnessId.CODEX, codex, "0.150.1", "supported")
     service = HarnessMcpService(CodexMcpAdapter(route_profile="strict" if stage == "strict" else "policy"))
     if stage == "probe":
-        registration = subprocess.run([codex, "mcp", "get", "yoetz", "--json"], capture_output=True, check=True)
+        registration = subprocess.run([codex, "mcp", "get", "finishup", "--json"], capture_output=True, check=True)
         entry = json.loads(registration.stdout)["transport"]
         child_env = {**os.environ, **entry["env"]}
         isolated = subprocess.run([entry["command"], "service", "isolation", "--json"], env=child_env, capture_output=True, check=True)
@@ -275,7 +275,7 @@ async def main():
                 await client.initialize()
                 tools = await client.list_tools()
                 assert len(tools.tools) == 8
-                result = await client.call_tool("read_guidance", {"uri":"yoetz://guidance/workflow.md"})
+                result = await client.call_tool("read_guidance", {"uri":"finishup://guidance/workflow.md"})
                 assert not result.isError
                 assert any("workflow" in getattr(item, "text", "") for item in result.content)
         print(json.dumps({"tools": len(tools.tools), "guidance": "success"}))
@@ -306,7 +306,7 @@ def test_packaged_absolute_launcher_with_real_codex() -> None:
     script = _REPO_ROOT / "scripts" / "provision_test_instance.py"
     base = root / "instances"
     base.mkdir(mode=0o700)
-    env = {name: value for name, value in os.environ.items() if not name.startswith("YOETZ_")}
+    env = {name: value for name, value in os.environ.items() if not name.startswith("FINISHUP_")}
     codex_home = root / "codex"
     codex_home.mkdir(mode=0o700)
     env.update(CODEX_HOME=str(codex_home), CODEX_TESTING_HOME=str(codex_home))
@@ -388,7 +388,7 @@ def test_packaged_absolute_launcher_with_real_codex() -> None:
         entries = json.loads(capture.read_bytes())["inventory"]["result"]["data"]
         assert len(entries) == 1
         assert len(entries[0]["tools"]) == 8
-        assert entries[0]["serverInfo"]["name"] == "yoetz"
+        assert entries[0]["serverInfo"]["name"] == "finishup"
         assert run("strict")["action"] == "reregister"
         assert run("status")["profile"] == "strict"
         assert run("remove")["after"] == "absent"

@@ -15,33 +15,33 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.adapters.providers.factory import (
+from finishup.adapters.providers.factory import (
     CHAT_COMPLETIONS_ENDPOINT_PROFILES,
     RESPONSES_ENDPOINT_PROFILE_IDS,
     chat_completions_profile_from_provider_config,
 )
-from yoetz.adapters.providers.openai_responses_factory import openai_profile_from_provider_config
-from yoetz.config.models import (
+from finishup.adapters.providers.openai_responses_factory import openai_profile_from_provider_config
+from finishup.config.models import (
     CODEX_SUBSCRIPTION_PROVIDER_ID,
     OWNER_DECLARED_ENDPOINT_PROFILE_ID,
     OWNER_DECLARED_PROVIDER_ID,
     ExternalRuntimeProfileConfig,
+    FinishUpConfig,
     LocalModelProfileConfig,
     OwnerDeclaredEndpointConfig,
     ProviderProfileConfig,
     SemanticFallbackConfig,
     VerificationConfig,
-    YoetzConfig,
 )
-from yoetz.config.write import PROVIDER_PRESETS, codex_subscription_runtime, fireworks_provider
-from yoetz.mcp import server as bridge
-from yoetz.mcp.descriptors import (
+from finishup.config.write import PROVIDER_PRESETS, codex_subscription_runtime, fireworks_provider
+from finishup.mcp import server as bridge
+from finishup.mcp.descriptors import (
     ADVERTISED_SURFACE_BUDGET,
     SERVER_INSTRUCTIONS_BUDGET,
     advertised_surface_metrics,
     server_instructions,
 )
-from yoetz.mcp.semantic_destination import (
+from finishup.mcp.semantic_destination import (
     BUNDLED_ENDPOINT_HOSTS,
     DISCLOSABLE_PROVIDER_IDS,
     DISCLOSURE_PREFIX,
@@ -60,7 +60,7 @@ _FORBIDDEN_CLAIMS = re.compile(
 )
 _NOW = datetime(2026, 9, 6, tzinfo=UTC)
 _EXECUTABLE = "/Applications/Codex.app/Contents/Resources/codex"
-_CODEX_HOME = "/opt/Yoetz Tools/codex-home"
+_CODEX_HOME = "/opt/FinishUP Tools/codex-home"
 # 63 + 1 + 63 + 1 + 63 + 1 + 61 = 253, the longest hostname the origin validator admits.
 _LONGEST_HOST = ".".join(("a" * 63, "b" * 63, "c" * 63, "d" * 61))
 
@@ -143,7 +143,7 @@ def test_disclosable_provider_ids_cover_every_bundled_binding() -> None:
 
 
 def test_api_provider_names_provider_endpoint_profile_and_catalog_host() -> None:
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="local-openai", provider=fireworks_provider(model="accounts/fireworks/models/m")
     )
     disclosure = disclose_semantic_destination(config)
@@ -165,7 +165,7 @@ def test_owner_declared_endpoint_renders_only_the_validated_host_and_port() -> N
         https_origin="https://LLM.Example.internal:8443/",
     )
     disclosure = disclose_semantic_destination(
-        YoetzConfig(profile="local-openai", provider=provider)
+        FinishUpConfig(profile="local-openai", provider=provider)
     )
     _assert_honest(disclosure)
     assert "owner-declared host llm.example.internal:8443)" in disclosure.sentence
@@ -175,14 +175,14 @@ def test_owner_declared_endpoint_renders_only_the_validated_host_and_port() -> N
         https_origin="https://llm.example.internal",
     )
     sentence = disclose_semantic_destination(
-        YoetzConfig(profile="local-openai", provider=default_port)
+        FinishUpConfig(profile="local-openai", provider=default_port)
     ).sentence
     assert "owner-declared host llm.example.internal)" in sentence
     assert ":443" not in sentence
 
 
 def test_codex_runtime_names_the_runtime_class_and_no_path() -> None:
-    config = YoetzConfig(profile="codex-subscription", external_runtime=_runtime())
+    config = FinishUpConfig(profile="codex-subscription", external_runtime=_runtime())
     disclosure = disclose_semantic_destination(config)
     _assert_honest(disclosure)
     assert disclosure.kind == "external"
@@ -190,7 +190,7 @@ def test_codex_runtime_names_the_runtime_class_and_no_path() -> None:
         "provider openai-codex (endpoint profile codex-chatgpt-subscription) through the locally "
         "installed Codex runtime under its own ChatGPT login"
     ) in disclosure.sentence
-    assert "Yoetz does not name" in disclosure.sentence
+    assert "FinishUP does not name" in disclosure.sentence
     assert _EXECUTABLE not in disclosure.sentence
     assert _CODEX_HOME not in disclosure.sentence
     assert "gpt-5.6-sol" not in disclosure.sentence
@@ -198,7 +198,7 @@ def test_codex_runtime_names_the_runtime_class_and_no_path() -> None:
 
 @pytest.mark.parametrize("primary", ["api_provider", "codex_subscription"])
 def test_fallback_endpoint_is_disclosed_beside_the_primary(primary: str) -> None:
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="codex-subscription" if primary == "codex_subscription" else "local-openai",
         provider=fireworks_provider(model="accounts/fireworks/models/m"),
         external_runtime=_runtime(),
@@ -221,14 +221,14 @@ def test_fallback_endpoint_is_disclosed_beside_the_primary(primary: str) -> None
 @pytest.mark.parametrize(
     ("config", "reason"),
     [
-        (YoetzConfig(), "no external endpoint is bound under the strict-local profile"),
-        (YoetzConfig(profile="test-fake"), "no external endpoint is bound under the test-fake"),
+        (FinishUpConfig(), "no external endpoint is bound under the strict-local profile"),
+        (FinishUpConfig(profile="test-fake"), "no external endpoint is bound under the test-fake"),
         (
-            YoetzConfig(local_model=_local_model()),
+            FinishUpConfig(local_model=_local_model()),
             "only a local model daemon on this machine is bound",
         ),
         (
-            YoetzConfig(
+            FinishUpConfig(
                 profile="codex-subscription",
                 external_runtime=_runtime(),
                 verification=VerificationConfig(semantic="disabled"),
@@ -238,7 +238,7 @@ def test_fallback_endpoint_is_disclosed_beside_the_primary(primary: str) -> None
     ],
 )
 def test_no_external_destination_is_stated_with_its_reason(
-    config: YoetzConfig, reason: str
+    config: FinishUpConfig, reason: str
 ) -> None:
     disclosure = disclose_semantic_destination(config)
     _assert_honest(disclosure)
@@ -264,9 +264,9 @@ def test_read_from_environment_renders_unknown_for_invalid_and_external_for_vali
 ) -> None:
     invalid = tmp_path / "invalid.toml"
     invalid.write_text('schema_version = "1"\nprofile = "not-a-profile"\n', encoding="utf-8")
-    assert read_semantic_destination_disclosure({"YOETZ_CONFIG": str(invalid)}).kind == "unknown"
+    assert read_semantic_destination_disclosure({"FINISHUP_CONFIG": str(invalid)}).kind == "unknown"
     absent = tmp_path / "absent.toml"
-    assert read_semantic_destination_disclosure({"YOETZ_CONFIG": str(absent)}).kind == "unknown"
+    assert read_semantic_destination_disclosure({"FINISHUP_CONFIG": str(absent)}).kind == "unknown"
     valid = tmp_path / "valid.toml"
     valid.write_text(
         "\n".join(
@@ -284,7 +284,7 @@ def test_read_from_environment_renders_unknown_for_invalid_and_external_for_vali
         ),
         encoding="utf-8",
     )
-    disclosure = read_semantic_destination_disclosure({"YOETZ_CONFIG": str(valid)})
+    disclosure = read_semantic_destination_disclosure({"FINISHUP_CONFIG": str(valid)})
     assert disclosure.kind == "external"
     assert "host api.fireworks.ai" in disclosure.sentence
     assert str(tmp_path) not in disclosure.sentence
@@ -314,9 +314,9 @@ def test_a_disclosure_that_cannot_render_within_its_bound_reads_unknown_not_a_br
         return real(None)
 
     monkeypatch.setattr(
-        "yoetz.mcp.semantic_destination.disclose_semantic_destination", refuse_a_real_config
+        "finishup.mcp.semantic_destination.disclose_semantic_destination", refuse_a_real_config
     )
-    disclosure = read_semantic_destination_disclosure({"YOETZ_CONFIG": str(valid)})
+    disclosure = read_semantic_destination_disclosure({"FINISHUP_CONFIG": str(valid)})
     assert disclosure.kind == "unknown"
     assert len(calls) == 2 and calls[-1] is None
 
@@ -324,7 +324,7 @@ def test_a_disclosure_that_cannot_render_within_its_bound_reads_unknown_not_a_br
 def test_hostile_identifiers_never_reach_the_text() -> None:
     hostile_provider = "x/../../etc/passwd"
     disclosure = disclose_semantic_destination(
-        YoetzConfig(
+        FinishUpConfig(
             profile="local-openai",
             provider=_provider("openai-responses", provider_id=hostile_provider),
         )
@@ -335,7 +335,7 @@ def test_hostile_identifiers_never_reach_the_text() -> None:
         disclosure.sentence
     )
     off_catalog = disclose_semantic_destination(
-        YoetzConfig(
+        FinishUpConfig(
             profile="local-openai",
             provider=_provider("proxy.example.com:8443/v1", provider_id="openai"),
         )
@@ -369,7 +369,7 @@ def _longest_disclosure() -> SemanticDestinationDisclosure:
         https_origin=f"https://{_LONGEST_HOST}:65535",
     )
     return disclose_semantic_destination(
-        YoetzConfig(
+        FinishUpConfig(
             profile="local-openai",
             provider=provider,
             external_runtime=_runtime(),
@@ -412,7 +412,7 @@ def test_longest_disclosure_fits_the_reviewed_instructions_budgets() -> None:
 
 def test_policy_instructions_append_the_disclosure_and_strict_ignores_it() -> None:
     disclosure = disclose_semantic_destination(
-        YoetzConfig(profile="codex-subscription", external_runtime=_runtime())
+        FinishUpConfig(profile="codex-subscription", external_runtime=_runtime())
     )
     policy = server_instructions("policy", semantic_destination=disclosure)
     assert policy == server_instructions("policy").rstrip("\n") + " " + disclosure.sentence + "\n"
@@ -445,7 +445,7 @@ def test_failed_config_read_never_promises_local_only(tmp_path: Path, contents: 
     config = tmp_path / "selected.toml"
     if contents is not None:
         config.write_text(contents, encoding="utf-8")
-    disclosure = read_semantic_destination_disclosure({"YOETZ_CONFIG": str(config)})
+    disclosure = read_semantic_destination_disclosure({"FINISHUP_CONFIG": str(config)})
     assert disclosure.kind == "unknown"
     assert "may reach an external reviewer" in disclosure.sentence
     assert "only the local ledger" not in disclosure.sentence

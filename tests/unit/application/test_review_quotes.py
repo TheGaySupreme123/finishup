@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from yoetz.application.review_quotes import REDACTION_MARKER, prove_quote
+from finishup.application.review_quotes import REDACTION_MARKER, prove_quote
 
 
 def test_exact_substring_is_returned_unchanged() -> None:
@@ -38,7 +38,7 @@ def test_quote_copied_with_json_escapes_matches() -> None:
 @pytest.mark.parametrize(
     "placeholder", ["[REDACTED]", "[redacted]", "<redacted>", "[redacted value]"]
 )
-def test_redaction_placeholder_matches_only_yoetz_marker(placeholder: str) -> None:
+def test_redaction_placeholder_matches_only_finishup_marker(placeholder: str) -> None:
     sent = f"token = {REDACTION_MARKER} + suffix"
     assert prove_quote(f"token = {placeholder} + suffix", (sent,)) == sent
 

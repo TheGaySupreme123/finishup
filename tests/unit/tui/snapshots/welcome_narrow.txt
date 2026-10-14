@@ -1,7 +1,7 @@
-Welcome to Yoetz, honest verification
+Welcome to FinishUP, honest verification
 for agent work
 
-Yoetz records important claims,
+FinishUP records important claims,
 evidence, checks, and open questions.
 It tells you what was verified and
 what remains uncertain.

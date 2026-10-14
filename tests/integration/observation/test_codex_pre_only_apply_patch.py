@@ -21,11 +21,11 @@ from builders.codex_replay import (
     session_start,
     sweep_all,
 )
-from yoetz.domain.observation import ObservationStatusQuery
-from yoetz.kernel.later_material import LaterMaterialClass, classify_later_material
-from yoetz.kernel.observed_failures import observed_event_ids_from_records
-from yoetz.kernel.reducers import replay as reduce_replay
-from yoetz.kernel.task_facts import cooperative_event_ids_from_records, material_edit_recorded
+from finishup.domain.observation import ObservationStatusQuery
+from finishup.kernel.later_material import LaterMaterialClass, classify_later_material
+from finishup.kernel.observed_failures import observed_event_ids_from_records
+from finishup.kernel.reducers import replay as reduce_replay
+from finishup.kernel.task_facts import cooperative_event_ids_from_records, material_edit_recorded
 
 _EXPIRED = "pending_attempt_expired"
 _PATCH = (

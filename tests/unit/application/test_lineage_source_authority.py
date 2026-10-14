@@ -7,26 +7,26 @@ from typing import cast
 
 import pytest
 
-from yoetz.application.lineage_coordinator import (
+from finishup.application.lineage_coordinator import (
     LINEAGE_CHANNELS,
     LineageSourceAuthorization,
     PrivacyLineageSourceGate,
     SourceGateDecision,
     authorize_recorded_lineage,
 )
-from yoetz.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
-from yoetz.domain.privacy import DataClass
-from yoetz.domain.values import Frontier, event_id, receipt_id, task_id
-from yoetz.kernel.lineage import (
+from finishup.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
+from finishup.domain.privacy import DataClass
+from finishup.domain.values import Frontier, event_id, receipt_id, task_id
+from finishup.kernel.lineage import (
     ChildDependencySnapshot,
     ChildRollup,
     LineageEvaluation,
     LineageRollupState,
 )
-from yoetz.ports.privacy import PrivacyPolicyStorePort
-from yoetz.ports.start_catalog import StartCatalogPort, TaskSourceProvenance
-from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
-from yoetz.protocol.models import DataCategory, LineageProvenanceRestriction
+from finishup.ports.privacy import PrivacyPolicyStorePort
+from finishup.ports.start_catalog import StartCatalogPort, TaskSourceProvenance
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
+from finishup.protocol.models import DataCategory, LineageProvenanceRestriction
 
 _PARENT = str(task_id("tsk_00000000-0000-4000-8000-000000000101"))
 _CHILD = str(task_id("tsk_00000000-0000-4000-8000-000000000102"))

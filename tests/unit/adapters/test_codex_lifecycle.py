@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations import codex_lifecycle as codex_lifecycle_module
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations import codex_lifecycle as codex_lifecycle_module
+from finishup.adapters.integrations.codex_lifecycle import (
     MAPPING_VERSION,
     LifecycleMapping,
     acquire_session_lock,
@@ -27,10 +27,10 @@ from yoetz.adapters.integrations.codex_lifecycle import (
     store_mapping,
     validate_codex_session_id,
 )
-from yoetz.config.paths import PathSafetyError
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.config.paths import PathSafetyError
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.ids import IdKind, new_id
 
 
 def _ids() -> tuple[str, str, str, str]:
@@ -384,7 +384,7 @@ def test_private_atomic_write_cleans_temporary_on_initial_failure(
 
 
 def test_load_latest_mapping_uses_valid_mapping_write_recency(tmp_path: Path) -> None:
-    first_session, first_task, first_yoetz_session, first_writer = _ids()
+    first_session, first_task, first_finishup_session, first_writer = _ids()
     second_session = "codex-session-def456"
     second = mapping_from_start_ids(
         codex_session_id=second_session,
@@ -396,7 +396,7 @@ def test_load_latest_mapping_uses_valid_mapping_write_recency(tmp_path: Path) ->
     first = mapping_from_start_ids(
         codex_session_id=first_session,
         yoetz_task_id=first_task,
-        yoetz_session_id=first_yoetz_session,
+        yoetz_session_id=first_finishup_session,
         yoetz_writer_id=first_writer,
         last_frontier=None,
     )

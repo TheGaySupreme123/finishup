@@ -1,14 +1,14 @@
 # Codex subscription AI-powered evaluator
 
 This runbook owns the exact `codex-chatgpt-subscription@1` cell. It is an external AI-powered
-evaluator behind the ordinary Yoetz privacy gateway, not the Codex host integration and not an
+evaluator behind the ordinary FinishUP privacy gateway, not the Codex host integration and not an
 OpenAI Platform API profile.
 
 ## Exact cells
 
 The evaluator has one cell per proven native runtime, and this release admits Codex npm
 `0.157.1` (issue #871). The Linux cell is a separate identity even though Codex 0.157.1 exposes
-the same app-server schema and Yoetz-owned configuration on both platforms. WSL2 is eligible for
+the same app-server schema and FinishUP-owned configuration on both platforms. WSL2 is eligible for
 the Linux userspace cell when the distribution is x86_64, but WSL-specific smoke evidence is still
 pending. This does not advertise a native Windows host cell. The superseded `0.150.1` cells are no
 longer admitted; see *Codex 0.157.1 admission* below for how an existing binding moves.
@@ -83,17 +83,17 @@ Evidence recorded for this admission:
   `codex app-server generate-json-schema --out <dir>` (no `--experimental`). The darwin binary
   (locally) and the Linux binary (disposable Modal sandbox) wrote identical bytes. The same recipe
   reproduces the pinned 0.150.1 digests.
-- **Unauthenticated probe.** Run with Yoetz's exact argv, `--strict-config` and isolated config.
+- **Unauthenticated probe.** Run with FinishUP's exact argv, `--strict-config` and isolated config.
   - The unchanged config is accepted.
   - `initialize` reports 0.157.1 and is followed by `remoteControl/status/changed` with
     `status: disabled`.
-  - `account/read` returns no account, plus a new `workspaceRouting` key that Yoetz does not read.
+  - `account/read` returns no account, plus a new `workspaceRouting` key that FinishUP does not read.
   - The bundled `model/list` includes `gpt-6-luna` (`high`, `medium`) and the earlier `gpt-5.6-*`
     models.
-  - On macOS, Yoetz's own adapter ran wrapper resolution, retention, `verify_local_binding`,
+  - On macOS, FinishUP's own adapter ran wrapper resolution, retention, `verify_local_binding`,
     `account/read` and a logout probe, each with `cleanup: terminated`.
 
-No authenticated Yoetz AI-powered review has run through either 0.157.1 cell yet. The packaged
+No authenticated FinishUP AI-powered review has run through either 0.157.1 cell yet. The packaged
 Linux smoke is pending, no macOS authenticated run is claimed, and release evidence stays
 `pending`.
 
@@ -118,7 +118,7 @@ Schema review, 0.150.1 to 0.157.1 v2, limited to what the evaluator reads:
 
 - With an everyday Codex 0.157.1 installed, `repair` discovers it. Otherwise run
   `runtime install --download` first.
-- `repair` retains Yoetz's own copy at
+- `repair` retains FinishUP's own copy at
   `external-runtimes/codex-evaluator/openai-codex-npm-<platform>-0.157.1/codex`.
 - It keeps the sign-in, model, efforts, budgets and dedicated home when Codex's own probe reports
   the home signed in with the exact model. 0.157.1 still lists `gpt-5.6-luna` and `gpt-5.6-sol`,
@@ -160,15 +160,15 @@ Profile `codex-evaluator/0.157.1/v2` makes the helper part of the cell:
   a substitute. On macOS 0.157.1 it only changes the warning to "code-mode host is disabled",
   which still fails closed.
 
-Local macOS arm64 evidence for v2, unauthenticated: Yoetz resolved the npm-prefix wrapper and
+Local macOS arm64 evidence for v2, unauthenticated: FinishUP resolved the npm-prefix wrapper and
 retained both files (`0500` in a `0700` store). An app-server turn from that retained pair, with
-the unchanged isolated config, emitted no Code Mode warning. Authenticated Yoetz evidence for v2
+the unchanged isolated config, emitted no Code Mode warning. Authenticated FinishUP evidence for v2
 is pending on both platforms.
 
 **Moving a v1 binding.** A v1 binding's store holds `codex` only. It reports
 `codex_runtime_executable_missing`, with a `code_mode_host` diagnosis of `missing` and capability
 `profile_outdated`; `runtime status` shows the store as `incomplete`. Run
-`yoetz provider codex-subscription repair`:
+`finishup provider codex-subscription repair`:
 
 - It needs an admitted source with the helper beside it: a discovered everyday Codex 0.157.1 npm
   install, `--executable <bin/codex.js>`, or a prior `runtime install --download`.
@@ -184,7 +184,7 @@ This evidence was recorded on the superseded 0.150.1 cells and does not transfer
 
 The 0.150.1 Linux cell was admitted on npm metadata, native executable bytes, the generated
 app-server v2 schema, and a plain Codex device-login/Luna-high run in an isolated Modal Linux
-x86_64 runtime. A fresh installed Yoetz wheel then ran in an independent Modal Linux x86_64 test
+x86_64 runtime. A fresh installed FinishUP wheel then ran in an independent Modal Linux x86_64 test
 instance:
 
 - the exact wrapper resolved to the pinned native digest;
@@ -200,7 +200,7 @@ SHA-256 matched that cell's pinned schema. Synthetic fixtures cover sparse rate-
 notifications, quota/429 errors, final answers, and terminal isolation violations. This does not
 refresh the binary/platform evidence or claim new live acceptance. The expiry is unchanged and
 release evidence remains pending. Existing v1 bindings fail the capability check with
-`codex_runtime_profile_outdated`; review and run `yoetz provider codex-subscription repair` (or the
+`codex_runtime_profile_outdated`; review and run `finishup provider codex-subscription repair` (or the
 explicit setup flow) to bind v2 before attempting review. Repair reuses the existing login and
 keeps every choice (see *Evaluator runtime retention and repair* below).
 
@@ -222,14 +222,14 @@ proof; it is not Luna acceptance and does not migrate.
 
 ## Luna acceptance boundary (2026-09-05)
 
-[Issue #513](https://github.com/TheGaySupreme123/yoetz/issues/513) records two fresh packaged
+[Issue #513](https://github.com/TheGaySupreme123/finishup/issues/513) records two fresh packaged
 `semantic_required` attempts on the exact macOS arm64 Codex `0.150.1` cell using Luna/high.
 Both returned schema-valid judgments, distinct one-use authorizations and terminal privacy
 receipts, finalized runtime provenance, and verified process cleanup. Their check results also
 validate against the policy and strict MCP output descriptors. This is evaluator acceptance on
 bounded cooperatively published records, not fresh Cursor activation or source-correctness proof.
 A `harness_controlled_model_catalog_unavailable` negative used the same native runtime and
-filtered only the Luna entry from its `model/list` response in memory. Yoetz returned
+filtered only the Luna entry from its `model/list` response in memory. FinishUP returned
 `model_unavailable` before `thread/start` or `turn/start`, with no case disclosure or provider
 request and terminated cleanup. This proves the refusal boundary under the controlled catalog;
 it does not claim that the upstream account lacks Luna. Historical Sol evidence stays unchanged;
@@ -238,11 +238,11 @@ its full negative-control checklist.
 
 ### Linux authenticated smoke evidence (2026-09-13)
 
-One installed Linux VM run used Yoetz wheel
+One installed Linux VM run used FinishUP wheel
 `sha256:252ca337e2f002450fc5ae0649de2dbec29b70c12f1a0a6f768024e7acb4d68d`, the superseded exact
 Linux x86_64 Codex 0.150.1 cell, and a fresh dedicated ChatGPT home. The VM had working user
 namespaces and bubblewrap. At `2026-09-13 17:22 UTC`, one approved synthetic `Luna/high`
-`semantic_required` check completed through the Yoetz privacy gateway with `case_disclosed=true`,
+`semantic_required` check completed through the FinishUP privacy gateway with `case_disclosed=true`,
 `turn_acknowledged=true`, and `process_cleanup=terminated`; a final task receipt was present. The
 receipt conclusion was `insufficient_coverage`, with `completion_scope_declared_none`,
 `evidence_content_digest_only`, and `semantic_challenges_rejected` recorded as coverage limits. The
@@ -262,15 +262,15 @@ Use a dedicated home; never point this route at a normal Codex home or copy auth
 one.
 
 ```text
-yoetz provider codex-subscription setup \
+finishup provider codex-subscription setup \
   --executable /absolute/path/to/codex \
   --model gpt-6-luna \
   --reasoning-effort high \
   --routine-reasoning-effort medium
 
-yoetz provider codex-subscription status --json
-yoetz provider codex-subscription disconnect --accept
-yoetz provider codex-subscription rollback
+finishup provider codex-subscription status --json
+finishup provider codex-subscription disconnect --accept
+finishup provider codex-subscription rollback
 ```
 
 ### Login lives once per dedicated home
@@ -290,7 +290,7 @@ probe that cannot complete at all — an unreachable or unanswering app-server, 
 capability cell — fails with its own bounded token rather than silently opening a login.
 `--switch-account` (the prompt-loop "switch ChatGPT account" confirmation and the `/provider`
 "Switch Codex ChatGPT account" choice) is the explicit override: it skips the probe, logs the home
-out through Codex, and signs in again. Yoetz never reads, copies, or moves `auth.json`; readiness
+out through Codex, and signs in again. FinishUP never reads, copies, or moves `auth.json`; readiness
 is only what Codex answers.
 
 The dedicated evaluator home may be reused across runs, including isolated dogfood runs, by
@@ -343,12 +343,12 @@ otherwise unallowlisted notifications still fail closed. This mirrors the offici
 login waiter/global-notification routing without introducing a broad ignore or carrying notification
 payload content across the adapter.
 
-No partial Yoetz binding is written. A timeout, denial, malformed completion, process exit,
-cancellation, or later configuration-write failure leaves a new or replacement Yoetz binding
+No partial FinishUP binding is written. A timeout, denial, malformed completion, process exit,
+cancellation, or later configuration-write failure leaves a new or replacement FinishUP binding
 uncommitted. If Codex completed its own login before the failure, its OAuth state may remain in the
 dedicated home because Codex owns authentication, refresh, `auth.json`, and logout. Use
-`disconnect` to request Codex logout and then remove the Yoetz binding; use `rollback` to remove
-only the Yoetz binding while preserving the home and installation. Guided setup, the prompt-loop
+`disconnect` to request Codex logout and then remove the FinishUP binding; use `rollback` to remove
+only the FinishUP binding while preserving the home and installation. Guided setup, the prompt-loop
 menu, and `/provider` can log out the dedicated home first when switching accounts. CLI, menu, and
 `/provider` recompose the local service after setup, disconnect, or rollback so a running daemon
 cannot keep dispatching the previous cell.
@@ -356,7 +356,7 @@ cannot keep dispatching the previous cell.
 Service READY composition does not spawn a Codex app-server to prove login. The READY credential
 fact is the exact binding, executable digest, isolated config, and dedicated home. `account/read`
 and `model/list` run inside the same `evaluate()` child that will disclose the case, or from
-`yoetz provider codex-subscription status`.
+`finishup provider codex-subscription status`.
 
 That structural fact is memoized per READY generation (#881). The exact binding, a stat
 fingerprint of the retained executable, its code-mode host, the dedicated home and its
@@ -391,11 +391,11 @@ a newly successful binding pointed at a missing runtime. Service readiness and s
 diagnostics both use the current service clock to reject expired capability evidence.
 
 ```text
-yoetz provider codex-subscription runtime status --json      # no Codex process, no sign-in check
-yoetz provider codex-subscription runtime install --from /absolute/path/to/codex
-yoetz provider codex-subscription runtime install --download # npm, after explicit consent
-yoetz provider codex-subscription repair                     # rebind; keeps sign-in and choices
-yoetz provider codex-subscription runtime remove             # refused while the binding uses it
+finishup provider codex-subscription runtime status --json      # no Codex process, no sign-in check
+finishup provider codex-subscription runtime install --from /absolute/path/to/codex
+finishup provider codex-subscription runtime install --download # npm, after explicit consent
+finishup provider codex-subscription repair                     # rebind; keeps sign-in and choices
+finishup provider codex-subscription runtime remove             # refused while the binding uses it
 ```
 
 - **Selection.** With no `--executable`, setup and repair take the retained copy, then the
@@ -403,7 +403,7 @@ yoetz provider codex-subscription runtime remove             # refused while the
   installation that resolves to the admitted cell. A discovered binary that is not the admitted cell
   is never offered. Guided setup (first run, the prompt menu, `/provider`) offers the same default.
   When nothing eligible exists, first-run setup and the prompt menu offer a consented download;
-  `/provider` shows `yoetz provider codex-subscription runtime install --download` and lets the
+  `/provider` shows `finishup provider codex-subscription runtime install --download` and lets the
   operator enter a local admitted path or return after installing.
 - **Download.** `runtime install --download` runs the operator's own `npm install --prefix
   <owner-private staging> --ignore-scripts --no-audit --no-fund --no-package-lock
@@ -417,7 +417,7 @@ yoetz provider codex-subscription runtime remove             # refused while the
   Codex's own `account/read` / `model/list` probe reports the home signed in with the exact model.
   Otherwise it fails `codex_subscription_login_required`, writes nothing, and never starts a
   sign-in, logs out, or switches accounts. A missing home, an unsafe home, or a modified
-  `config.toml` is refused for the owner to fix first. Only a missing Yoetz-owned `config.toml` is
+  `config.toml` is refused for the owner to fix first. Only a missing FinishUP-owned `config.toml` is
   restored. The write is checked against the exact preimage, then the service is recomposed.
 - **Rebinding keeps budgets.** Re-running setup keeps the existing binding's `timeout_seconds`,
   `max_retries`, and reasoning effort unless the owner passes a new value, so a repair never
@@ -438,13 +438,13 @@ owner diagnostic carrying the state.
 |---|---|---|
 | `codex_runtime_executable_changed` | The bound executable or its code-mode host now holds other bytes, usually a host update. | `repair` |
 | `codex_runtime_executable_missing` / `_invalid` | The bound executable or its code-mode host is gone or not an owner-executable file. | `repair` |
-| `codex_runtime_profile_outdated` | Same runtime, older Yoetz capability identity (for example v1). | `repair` |
+| `codex_runtime_profile_outdated` | Same runtime, older FinishUP capability identity (for example v1). | `repair` |
 | `codex_runtime_capability_unsupported` | The binding names a runtime this release does not admit. | `repair` (with an admitted runtime) |
-| `codex_runtime_config_missing` | The dedicated home's Yoetz-owned `config.toml` is absent. | `repair` restores it |
+| `codex_runtime_config_missing` | The dedicated home's FinishUP-owned `config.toml` is absent. | `repair` restores it |
 | `codex_runtime_config_changed` | That `config.toml` was modified. | Restore it or remove only that file, then `repair` |
 | `codex_home_unsafe` | The home is not owner-only, local, or symlink-free. | Fix permissions, then `repair` |
 | `codex_home_missing` | The home and its sign-in are gone. | `setup` |
-| `codex_runtime_capability_evidence_stale` | The reviewed evidence expired. | Upgrade Yoetz |
+| `codex_runtime_capability_evidence_stale` | The reviewed evidence expired. | Upgrade FinishUP |
 | `codex_runtime_platform_unsupported` | No reviewed cell exists for this platform. | `rollback` |
 | `codex_runtime_binding_invalid` / `codex_runtime_unavailable` | Malformed binding / unreadable state. | `setup` / `runtime status` |
 
@@ -478,13 +478,13 @@ digest-bound config, and repeated critical deny overrides. The environment allow
 the dedicated `CODEX_HOME`, fixed locale, fixed system `PATH`, and bounded Rust log level; API-key
 and proxy variables do not cross. Analytics and OTel are off.
 
-Before task bytes cross stdin, Yoetz initializes app-server v2, requires a ChatGPT account,
+Before task bytes cross stdin, FinishUP initializes app-server v2, requires a ChatGPT account,
 requires the exact model/reasoning cell from `model/list`, and starts an ephemeral thread in a new
 empty owner-private cwd. The returned cwd, model/provider, read-only/no-network sandbox posture,
 empty instruction-source list, and absence of a persisted thread path must match. The exact
 approved case then enters only as `turn/start` text with the digest-bound Codex projection of the
 frozen judgment schema. The exact runtime rejects JSON Schema's `uniqueItems` keyword, so that is
-the only omitted provider-side constraint; Yoetz's unchanged local normalizer still enforces every
+the only omitted provider-side constraint; FinishUP's unchanged local normalizer still enforces every
 uniqueness rule before accepting a judgment. Any child tool request, tool item, unknown event,
 invalid/truncated/refused completion, or configuration mismatch fails closed. Codex tags each
 agent message with a phase: `commentary` messages are interim narration and are discarded
@@ -511,7 +511,7 @@ unsupported cell produces zero task-content disclosure.
 
 `semantic_provenance.runtime_evidence` records only exact digests and bounded structural facts. It
 never retains email, token, credential path, raw account/workspace identity, prompt, reasoning,
-stderr, or event log. `disclosed_case_sha256` is the case Yoetz passed to Codex, not Codex's
+stderr, or event log. `disclosed_case_sha256` is the case FinishUP passed to Codex, not Codex's
 upstream request. The explicit `upstream_body_observability=unavailable` field is mandatory. When
 Codex emits `thread/tokenUsage/updated` for the active thread and turn, current runtime evidence
 retains one cumulative total snapshot with the non-overlapping input/output/total counters, cached
@@ -560,7 +560,7 @@ and it is never a `coordinator_failure`.
 
 ## Packaged live-evidence checklist
 
-Use an exact packaged Yoetz build and an isolated logged-in evaluator home. Record these as
+Use an exact packaged FinishUP build and an isolated logged-in evaluator home. Record these as
 separate claims:
 
 1. two `semantic_required` checks complete with distinct AI-powered review attempts, one-use
@@ -572,7 +572,7 @@ separate claims:
    project instructions, same-name binary, API/proxy environment, and attempted tool events fail
    before disclosure or record the exact bounded post-disclosure failure;
 5. browser and device login timeout, cancellation, malformed completion, process exit, and
-   configuration-write failure leave no partial Yoetz binding while process groups and pipes are
+   configuration-write failure leave no partial FinishUP binding while process groups and pipes are
    cleaned up within their bounds;
 6. disconnect and rollback leave unrelated Codex installations, homes, settings, and sessions
    byte-unchanged.
@@ -598,7 +598,7 @@ refs added) under the check's request ID.
 A host tool wait may finish before the review. Keep the same check request and request ID: while
 the service-owned check runs, replay reports pending; after completion it recovers the recorded
 result. A host disconnect does not cancel an admitted review. Explicit control cancellation while
-attached or `yoetz service stop` stops the owned execution; service stop affects the selected
+attached or `finishup service stop` stops the owned execution; service stop affects the selected
 installation, including its other active work. The maintenance gate can delay ordinary status
 reads during review; `status view=operation` for the running check is the one read admitted
 beside it. Parallel review scheduling remains separate work.
@@ -623,7 +623,7 @@ A launch or pre-sampling failure goes straight to `cleanup`, so `status` disting
 start from a long sampling turn. Token-usage, rate-limit, delta, plan, and commentary notifications
 do not produce phases and nothing from them is recorded. `overdue` means the frozen deadline passed
 without a terminal row; replay the same check request to reclaim and terminalize it. To diagnose a
-failed attempt, keep using `yoetz service diagnostics --request-id req_…` for failure stages;
+failed attempt, keep using `finishup service diagnostics --request-id req_…` for failure stages;
 progress is the live view, not the failure record.
 
 ## Routine and final review budgets (#571 item A1)
@@ -648,18 +648,18 @@ same effort and output limit.
   every configured effort; one attempt requires only its selected effort.
 - **Output limits** count output tokens (1–8192) and are edited in `[external_runtime]`.
   Re-running setup carries them over. The app-server protocol has no per-turn output ceiling,
-  so Yoetz compares each `thread/tokenUsage/updated` snapshot's visible output
+  so FinishUP compares each `thread/tokenUsage/updated` snapshot's visible output
   (`output_tokens − reasoning_output_tokens`) with the selected limit and interrupts the turn as
   `output_oversize` when it is exceeded. When Codex reports no usage, the limit is recorded but
   not measured.
 - **Provenance.** `runtime_evidence.reasoning_effort`, `sampling_params.max_output_tokens`, and
   `semantic_provenance.model` name the exact selection per check, and `selection_sha256`
-  commits to it together with the profile name. Receipts, `yoetz provider status`,
-  `yoetz provider codex-subscription status`, and `/provider` in the terminal interface show
+  commits to it together with the profile name. Receipts, `finishup provider status`,
+  `finishup provider codex-subscription status`, and `/provider` in the terminal interface show
   both profiles.
 - **Comparing final-review effort (issue #1051).** To run final reviews at a higher effort while
   routine checkpoints stay as they are, re-run
-  `yoetz provider codex-subscription setup --reasoning-effort xhigh` (the routine choice and
+  `finishup provider codex-subscription setup --reasoning-effort xhigh` (the routine choice and
   everything else are preserved; setup refuses an effort the model does not list). Each recorded
   check then carries what served it: `semantic_provenance.model`,
   `semantic_provenance.runtime_evidence.reasoning_effort`, and the phase in

@@ -1,8 +1,8 @@
-# Yoetz documentation
+# FinishUP documentation
 
 ## Start here
 
-- [Using Yoetz](usage/) — install, first run, the six operations, privacy, providers, receipts.
+- [Using FinishUP](usage/) — install, first run, the six operations, privacy, providers, receipts.
 - [Architecture](architecture.md) — how the system is put together and why.
 
 ## Authority

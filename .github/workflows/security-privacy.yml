@@ -1,7 +1,7 @@
 # .github/workflows/security-privacy.yml — dependency, code, artifact, and plaintext-boundary gate.
 #
 # Authority: ADR-003, ADR-004, ADR-005, ADR-007; scripts/scan_public_boundary.py;
-# src/yoetz/observability/privacy.py; tests/packaging/.
+# src/finishup/observability/privacy.py; tests/packaging/.
 #
 # Passing is bounded evidence for the tested threat model only — not a declaration of complete
 # security, formal verification, SOC 2, or absence of all vulnerabilities.
@@ -313,7 +313,7 @@ jobs:
           set -euo pipefail
           nc="${{ runner.temp }}/negative-control"
           mkdir -p "$nc"
-          canary="YOETZ_CANARY_$(uv run --locked python -c 'import uuid; print(uuid.uuid4().hex)')"
+          canary="FINISHUP_CANARY_$(uv run --locked python -c 'import uuid; print(uuid.uuid4().hex)')"
           canary_file="${{ runner.temp }}/negative-control.canary"
           printf '%s' "$canary" > "$canary_file"
           printf '%s' "$canary" > "$nc/${canary}.txt"
@@ -384,7 +384,7 @@ jobs:
 
       - name: Install candidate outside checkout, isolated HOME/XDG
         run: |
-          iso="${RUNNER_TEMP}/yoetz-home"
+          iso="${RUNNER_TEMP}/finishup-home"
           mkdir -p "$iso/.local/share" "$iso/.config" "$iso/.cache" "$iso/.runtime"
           echo "HOME=$iso" >> "$GITHUB_ENV"
           echo "XDG_DATA_HOME=$iso/.local/share" >> "$GITHUB_ENV"
@@ -395,18 +395,18 @@ jobs:
           candidate_version=$(uv run --locked python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
           uv venv "${{ runner.temp }}/runtime-venv"
           uv pip install --python "${{ runner.temp }}/runtime-venv/bin/python" \
-            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "yoetz==${candidate_version}"
-          uv pip install --python "${{ runner.temp }}/runtime-venv/bin/python" "yoetz==${candidate_version}"
-          echo "YOETZ_CANDIDATE_PYTHON=${{ runner.temp }}/runtime-venv/bin/python" >> "$GITHUB_ENV"
+            --no-index --no-deps --find-links "${{ runner.temp }}/dist" "finishup==${candidate_version}"
+          uv pip install --python "${{ runner.temp }}/runtime-venv/bin/python" "finishup==${candidate_version}"
+          echo "FINISHUP_CANDIDATE_PYTHON=${{ runner.temp }}/runtime-venv/bin/python" >> "$GITHUB_ENV"
 
       - name: Prepare one exact per-run privacy canary and retained runtime root
         run: |
           set -euo pipefail
           umask 077
           canary_file="${RUNNER_TEMP}/runtime-plaintext.canary"
-          uv run --locked python -c 'import secrets,sys; sys.stdout.write("YOETZ_RUNTIME_CANARY_" + secrets.token_hex(32))' > "$canary_file"
-          echo "YOETZ_RUNTIME_CANARY_FILE=$canary_file" >> "$GITHUB_ENV"
-          echo "YOETZ_RUNTIME_CANARY_ROOT=$XDG_DATA_HOME/yoetz-canary-sweep" >> "$GITHUB_ENV"
+          uv run --locked python -c 'import secrets,sys; sys.stdout.write("FINISHUP_RUNTIME_CANARY_" + secrets.token_hex(32))' > "$canary_file"
+          echo "FINISHUP_RUNTIME_CANARY_FILE=$canary_file" >> "$GITHUB_ENV"
+          echo "FINISHUP_RUNTIME_CANARY_ROOT=$XDG_DATA_HOME/finishup-canary-sweep" >> "$GITHUB_ENV"
 
       - name: Runtime plaintext-canary sweep (start/publish/check/respond/status/receipt/crash/backup/migration/CLI/MCP)
         run: |
@@ -427,16 +427,16 @@ jobs:
           negative="$XDG_CACHE_HOME/runtime-negative-control"
           mkdir -p "$evidence" "$negative"
           printf 'negative-control-prefix:' > "$negative/leak.bin"
-          cat "$YOETZ_RUNTIME_CANARY_FILE" >> "$negative/leak.bin"
+          cat "$FINISHUP_RUNTIME_CANARY_FILE" >> "$negative/leak.bin"
           if uv run --locked python scripts/scan_public_boundary.py \
               --runtime-tree "$negative" \
-              --canary-file "$YOETZ_RUNTIME_CANARY_FILE" \
+              --canary-file "$FINISHUP_RUNTIME_CANARY_FILE" \
               --json-out "$evidence/runtime-negative-control.json" \
               > "${RUNNER_TEMP}/runtime-negative-control.log" 2>&1; then
             echo "::error::runtime scanner failed to detect its planted canary"
             exit 1
           fi
-          if grep -Fq -f "$YOETZ_RUNTIME_CANARY_FILE" "${RUNNER_TEMP}/runtime-negative-control.log"; then
+          if grep -Fq -f "$FINISHUP_RUNTIME_CANARY_FILE" "${RUNNER_TEMP}/runtime-negative-control.log"; then
             echo "::error::runtime scanner leaked the canary into logs"
             exit 1
           fi
@@ -445,7 +445,7 @@ jobs:
             echo "::error::runtime scanner failure did not prove canary detection"
             exit 1
           fi
-          if grep -Fq -f "$YOETZ_RUNTIME_CANARY_FILE" "$evidence/runtime-negative-control.json"; then
+          if grep -Fq -f "$FINISHUP_RUNTIME_CANARY_FILE" "$evidence/runtime-negative-control.json"; then
             echo "::error::runtime scanner leaked the canary into its redacted report"
             exit 1
           fi
@@ -455,7 +455,7 @@ jobs:
             --runtime-tree "$XDG_CONFIG_HOME" \
             --runtime-tree "$XDG_CACHE_HOME" \
             --runtime-tree "$XDG_RUNTIME_DIR" \
-            --canary-file "$YOETZ_RUNTIME_CANARY_FILE" \
+            --canary-file "$FINISHUP_RUNTIME_CANARY_FILE" \
             --json-out "$evidence/runtime-clean-scan.json"
           test -s "$evidence/runtime-negative-control.json"
           test -s "$evidence/runtime-clean-scan.json"

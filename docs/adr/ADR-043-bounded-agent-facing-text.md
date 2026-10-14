@@ -1,23 +1,23 @@
 # ADR-043 — Bounded agent-facing text: one composer, and a committed operation never fails on its text
 
-**Status:** Accepted for [issue #1025](https://github.com/TheGaySupreme123/yoetz/issues/1025)
+**Status:** Accepted for [issue #1025](https://github.com/TheGaySupreme123/finishup/issues/1025)
 (tb4n3 core issue RC-2: N3-1 and family A). Maintainer acknowledgement (TheGaySupreme123,
 2026-10-11, tb4n3 remediation owner decisions 1 and 3): raise the MCP text cap from 512 B to
 4,096 B, add one never-failing composer, make a committed operation return its stored verdict plus
 a typed diagnostic instead of `INTERNAL_ERROR`, and drop the "retry the same request_id" advice
 that cannot work. It grants no runtime, credential, disclosure or destructive-action authority.
-**Implemented by:** `src/yoetz/domain/bounded_text.py`, `src/yoetz/mcp/summaries.py`,
-`src/yoetz/mcp/server.py` (`_result_text`, `_dispatch`, `dispatch_closure_prepare`),
-`src/yoetz/cli/closure_gate.py` (`_fallback_parts`), `src/yoetz/kernel/receipt_builder.py`
-(`_keep_by_rank`, `_finish_section`), `src/yoetz/domain/receipts.py` (`_bound_human_text`),
-`src/yoetz/cli/hook_io.py` (`_bounded_context`), `src/yoetz/domain/closure.py`
-(`scope_inventory_to_selection`), `src/yoetz/protocol/recovery.py` (`REASON_REMEDIES`).
+**Implemented by:** `src/finishup/domain/bounded_text.py`, `src/finishup/mcp/summaries.py`,
+`src/finishup/mcp/server.py` (`_result_text`, `_dispatch`, `dispatch_closure_prepare`),
+`src/finishup/cli/closure_gate.py` (`_fallback_parts`), `src/finishup/kernel/receipt_builder.py`
+(`_keep_by_rank`, `_finish_section`), `src/finishup/domain/receipts.py` (`_bound_human_text`),
+`src/finishup/cli/hook_io.py` (`_bounded_context`), `src/finishup/domain/closure.py`
+(`scope_inventory_to_selection`), `src/finishup/protocol/recovery.py` (`REASON_REMEDIES`).
 **Relates to:** ADR-030 (typed recovery directives and the text-channel budget priority), ADR-033
 (the Stop-time closure gate), ADR-009 (the privacy projection of MCP summaries).
 
 ## Context
 
-Every bounded text Yoetz hands an agent was built the same way: append the optional clauses with
+Every bounded text FinishUP hands an agent was built the same way: append the optional clauses with
 no budget, budget only the late list-shaped ones, then enforce the bound afterwards by raising,
 collapsing to a bare identity, or rejecting the artifact. In tb4n3 (28 real Codex runs) that shape
 cost the most important call of a run:
@@ -29,7 +29,7 @@ cost the most important call of a run:
 - A replay loads the stored result and re-runs the same deterministic builder, so it failed
   identically. Two agents obeyed the advice (sglang D twice, retro D once) and none of the three
   succeeded. The check had committed and resolved a finding on the service, but the agent never saw
-  a verdict: two runs claimed completion ("Yoetz checked the full scope at frontier 1092") from
+  a verdict: two runs claimed completion ("FinishUP checked the full scope at frontier 1092") from
   status counters alone.
 - The same pattern sat in the Stop-gate fallback (it kept `head[:2000]` and dropped every repair
   and close instruction, in 44 of 55 token sets with one blocker and one acknowledgement), the
@@ -46,7 +46,7 @@ become an error because of how its text was rendered.
 
 ### One composer
 
-`yoetz.domain.bounded_text` is the only way a bounded agent-facing text is assembled. Two forms:
+`finishup.domain.bounded_text` is the only way a bounded agent-facing text is assembled. Two forms:
 
 - `compose_bounded(required, optional, limit, *, sep, tail, marker, ascii_only)`: `required` parts
   are kept, each `optional` item is a list of progressively shorter variants (the longest that fits
@@ -73,7 +73,7 @@ token list as progressively shorter forms with an exact `+N more`.
 | Receipt section | 64 items, 32,768 body characters | the item remainder is counted; a body cut is marked |
 | Receipt `human_text` | 32,768 characters | shortened by section; every section keeps its heading; the marker names the shortened sections |
 
-The 2,000-character figure is Yoetz's own conservative cap. No host document available to this
+The 2,000-character figure is FinishUP's own conservative cap. No host document available to this
 repository states a limit for Codex, Claude Code or Cursor hook text, so it is not claimed as one.
 
 The 4,096-byte bound is on the compact summary, as the 512-byte bound was. The returned text
@@ -103,7 +103,7 @@ text; the first-granted optional clauses are the instructions and ids the next r
 `mcp/server._result_text` does not raise for a result it was handed. By the time it runs the
 operation is durable, so a clause or section that fails to render is omitted, named in the text
 (`summary_render_failed:<builder>.<clause>`) and recorded as a service diagnostic (operation
-`<builder>_summary_degraded`, phase `<builder>.<clause>`, exception class and `yoetz` origin); a
+`<builder>_summary_degraded`, phase `<builder>.<clause>`, exception class and `finishup` origin); a
 builder whose required core fails falls back to the verdict or state token, the frontier, the
 failing builder's name and "read status view=compact". The structured result is returned as the
 call's result either way. Only a structural failure (the result cannot be serialized, or fails its

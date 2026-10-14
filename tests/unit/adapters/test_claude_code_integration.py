@@ -10,7 +10,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.claude_code_integration import (
+from finishup.adapters.integrations.claude_code_integration import (
     CLAUDE_CODE_HARNESS_PROFILE,
     CLAUDE_CODE_HOOK_EVENTS,
     ClaudeCodeCapabilityIdentity,
@@ -28,8 +28,8 @@ from yoetz.adapters.integrations.claude_code_integration import (
     render_claude_code_plugin,
     status_claude_code_plugin,
 )
-from yoetz.domain.values import JsonObject, request_id
-from yoetz.ports.plugin_artifacts import (
+from finishup.domain.values import JsonObject, request_id
+from finishup.ports.plugin_artifacts import (
     ArtifactAuthority,
     McpOwnership,
     McpOwnershipState,
@@ -40,13 +40,13 @@ from yoetz.ports.plugin_artifacts import (
     PluginOperationState,
     PluginProofFacet,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
-from yoetz.version import read_verified_resource
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
+from finishup.version import read_verified_resource
 
 _REQUEST = request_id("req_10000000-0000-4000-8000-000000000001")
 _GUIDANCE_NAMES = tuple(
-    uri.removeprefix("yoetz://guidance/")
+    uri.removeprefix("finishup://guidance/")
     for uri in (*GUIDANCE_DOCUMENT_URIS, *FOCUSED_GUIDANCE_URIS)
 )
 
@@ -128,10 +128,12 @@ class _ClaudeFixture:
     def settings(self, target: ClaudeCodePluginTarget, registered: bool) -> None:
         path = Path(target.project_root) / ".claude" / "settings.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        value: dict[str, object] = {"enabledPlugins": {"yoetz@yoetz-local": self.enabled}}
+        value: dict[str, object] = {"enabledPlugins": {"finishup@finishup-local": self.enabled}}
         if registered:
             value["extraKnownMarketplaces"] = {
-                "yoetz-local": {"source": {"source": "directory", "path": target.marketplace_root}}
+                "finishup-local": {
+                    "source": {"source": "directory", "path": target.marketplace_root}
+                }
             }
         path.write_text(json.dumps(value), encoding="utf-8")
         known = Path(target.claude_config_root) / "plugins" / "known_marketplaces.json"
@@ -139,7 +141,7 @@ class _ClaudeFixture:
         known.write_text(
             json.dumps(
                 {
-                    "yoetz-local": {
+                    "finishup-local": {
                         "installLocation": target.marketplace_root,
                         "source": {
                             "source": "directory",
@@ -154,7 +156,7 @@ class _ClaudeFixture:
         )
 
     def _cache(self, target: ClaudeCodePluginTarget) -> Path:
-        return Path(target.cache_root) / "yoetz-local" / "yoetz" / self.artifact.plan.version
+        return Path(target.cache_root) / "finishup-local" / "finishup" / self.artifact.plan.version
 
     def run(
         self, target: ClaudeCodePluginTarget, arguments: Sequence[str]
@@ -167,7 +169,7 @@ class _ClaudeFixture:
                 rows.append(
                     {
                         "enabled": self.enabled,
-                        "id": "yoetz@yoetz-local",
+                        "id": "finishup@finishup-local",
                         "installPath": str(self._cache(target)),
                         "projectPath": target.project_root,
                         "scope": "project",
@@ -181,7 +183,7 @@ class _ClaudeFixture:
         if args[:2] == ("plugin", "install"):
             cache = self._cache(target)
             cache.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(Path(target.marketplace_root) / "plugins" / "yoetz", cache)
+            shutil.copytree(Path(target.marketplace_root) / "plugins" / "finishup", cache)
             self.installed = True
             self.enabled = False
             self.settings(target, True)
@@ -200,7 +202,7 @@ class _ClaudeFixture:
             cache = self._cache(target)
             if cache.exists():
                 shutil.rmtree(cache)
-            shutil.copytree(Path(target.marketplace_root) / "plugins" / "yoetz", cache)
+            shutil.copytree(Path(target.marketplace_root) / "plugins" / "finishup", cache)
             return ClaudeCodeCommandResult(0, b"ok", b"")
         if args[:2] == ("plugin", "uninstall"):
             cache = self._cache(target)
@@ -323,21 +325,23 @@ def test_native_projection_uses_claude_skill_and_shared_guidance_components() ->
     assert hook.observation_events == ()
     assert fixture["observation_evidence"] == "not_observed"
     assert managed.plan.format_profile is PluginFormatProfile.CLAUDE_CODE_PLUGIN_NATIVE
-    assert external.members["skills/yoetz/SKILL.md"] == managed.members["skills/yoetz/SKILL.md"]
-    assert external.members["skills/yoetz/SKILL.md"] == read_verified_resource(
-        "skills/claude-code/yoetz/SKILL.md"
+    assert (
+        external.members["skills/finishup/SKILL.md"] == managed.members["skills/finishup/SKILL.md"]
+    )
+    assert external.members["skills/finishup/SKILL.md"] == read_verified_resource(
+        "skills/claude-code/finishup/SKILL.md"
     )
     for name in _GUIDANCE_NAMES:
-        assert external.members[f"skills/yoetz/references/{name}"] == read_verified_resource(
+        assert external.members[f"skills/finishup/references/{name}"] == read_verified_resource(
             f"guidance/{name}"
         )
         assert f"guidance/{name}" in external.plan.source_refs
     assert ".mcp.json" not in external.members
     # The plugin-owned MCP entry and every hook launch the exact bound installation, never a
     # bare PATH lookup: the 2026-08-27 dogfood's bridge/service split-brain came from PATH.
-    launcher = managed.yoetz_launcher
+    launcher = managed.finishup_launcher
     assert len(launcher) == 1 and Path(launcher[0]).is_absolute()
-    assert json.loads(managed.members[".mcp.json"])["mcpServers"]["yoetz"] == {
+    assert json.loads(managed.members[".mcp.json"])["mcpServers"]["finishup"] == {
         "args": ["mcp", "serve", "--host", "claude", "--semantic", "off"],
         "command": launcher[0],
         "type": "stdio",
@@ -347,24 +351,26 @@ def test_native_projection_uses_claude_skill_and_shared_guidance_components() ->
         ".claude-plugin/plugin.json",
         ".mcp.json",
         "hooks/hooks.json",
-        "skills/yoetz/SKILL.md",
-        *{f"skills/yoetz/references/{name}" for name in _GUIDANCE_NAMES},
+        "skills/finishup/SKILL.md",
+        *{f"skills/finishup/references/{name}" for name in _GUIDANCE_NAMES},
     }
     manifest = json.loads(managed.members[".claude-plugin/plugin.json"])
     marketplace = json.loads(managed.marketplace_manifest)
     hooks = json.loads(managed.members["hooks/hooks.json"])["hooks"]
     assert manifest["defaultEnabled"] is False
-    assert manifest["name"] == "yoetz"
+    assert manifest["name"] == "finishup"
     assert marketplace["plugins"] == [
-        {"name": "yoetz", "source": "./plugins/yoetz", "strict": True}
+        {"name": "finishup", "source": "./plugins/finishup", "strict": True}
     ]
     assert tuple(sorted(hooks)) == CLAUDE_CODE_HOOK_EVENTS
     assert "PermissionRequest" not in hooks
     # The denial hook is scoped to the one tool a host reviewer holds (issue #467); it fires
     # after the denial and can allow nothing.
-    assert hooks["PermissionDenied"][0]["matcher"] == ("^mcp__(yoetz|plugin_yoetz_yoetz)__check$")
+    assert hooks["PermissionDenied"][0]["matcher"] == (
+        "^mcp__(finishup|plugin_finishup_finishup)__check$"
+    )
     assert hooks["PostToolUse"][0]["matcher"] == (
-        "^mcp__plugin_yoetz_yoetz__(start|publish_work|check|respond|status|receipt|read_guidance)$"
+        "^mcp__plugin_finishup_finishup__(start|publish_work|check|respond|status|receipt|read_guidance)$"
     )
     assert hooks["PostToolUseFailure"][0]["matcher"] == hooks["PostToolUse"][0]["matcher"]
     assert all("CLAUDE_PROJECT_DIR" in row[0]["hooks"][-1]["command"] for row in hooks.values())
@@ -424,18 +430,18 @@ def test_launcher_binding_uses_the_invoking_installation_and_marks_the_marker(
     artifact = render_claude_code_plugin(
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=(str(interpreter), "-m", "yoetz"),
+        finishup_launcher=(str(interpreter), "-m", "finishup"),
     )
-    assert artifact.yoetz_launcher == (str(interpreter.resolve()), "-m", "yoetz")
-    entry = json.loads(artifact.members[".mcp.json"])["mcpServers"]["yoetz"]
+    assert artifact.finishup_launcher == (str(interpreter.resolve()), "-m", "finishup")
+    entry = json.loads(artifact.members[".mcp.json"])["mcpServers"]["finishup"]
     assert entry == {
-        "args": ["-m", "yoetz", "mcp", "serve", "--host", "claude"],
+        "args": ["-m", "finishup", "mcp", "serve", "--host", "claude"],
         "command": str(interpreter.resolve()),
         "type": "stdio",
     }
     hook = json.loads(artifact.members["hooks/hooks.json"])["hooks"]["SessionStart"][0]
     assert hook["hooks"][-1]["command"].startswith(
-        f"{shlex.quote(str(interpreter.resolve()))} -m yoetz hooks claude-observe "
+        f"{shlex.quote(str(interpreter.resolve()))} -m finishup hooks claude-observe "
     )
     # Two installations render two distinct artifacts; the digest binds the launcher.
     other = tmp_path / "bin" / "other"
@@ -445,12 +451,12 @@ def test_launcher_binding_uses_the_invoking_installation_and_marks_the_marker(
         render_claude_code_plugin(
             mcp_ownership=McpOwnership.PLUGIN_MANAGED,
             route_profile="policy",
-            yoetz_launcher=other,
+            finishup_launcher=other,
         ).artifact_digest
         != artifact.artifact_digest
     )
-    with pytest.raises(ValueError, match="yoetz_executable_unavailable"):
-        render_claude_code_plugin(yoetz_launcher=tmp_path / "missing")
+    with pytest.raises(ValueError, match="finishup_executable_unavailable"):
+        render_claude_code_plugin(finishup_launcher=tmp_path / "missing")
 
     target = _target(tmp_path)
     commands = _ClaudeFixture(artifact)
@@ -471,11 +477,11 @@ def test_launcher_binding_uses_the_invoking_installation_and_marks_the_marker(
         (Path(target.marketplace_root) / ".yoetz-claude-marketplace-install.json").read_bytes()
     )
     assert marker["schema"] == "yoetz.claude-code-marketplace-install/2"
-    assert marker["yoetz_launcher"] == [str(interpreter.resolve()), "-m", "yoetz"]
+    assert marker["yoetz_launcher"] == [str(interpreter.resolve()), "-m", "finishup"]
     status = status_claude_code_plugin(target, artifact, commands=commands)
     assert status.state is PluginArtifactState.NATIVE_MANAGED
     assert status.marker_valid is True
-    # The launcher-bound plugin entry is still recognized as the one exact Yoetz route.
+    # The launcher-bound plugin entry is still recognized as the one exact FinishUP route.
     assert status.mcp_observation.ownership_state is McpOwnershipState.PLUGIN
     assert status.mcp_observation.route_profile == "policy"
 
@@ -504,7 +510,7 @@ def test_legacy_marker_without_launcher_stays_readable_but_is_never_written(
     body = {key: value for key, value in marker.items() if key != "marker_digest"}
     body["schema"] = "yoetz.claude-code-marketplace-install/1"
     del body["yoetz_launcher"]
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.protocol.canonical import canonical_digest
 
     marker_path.write_bytes(canonical_encode({**body, "marker_digest": canonical_digest(body)}))
     status = status_claude_code_plugin(target, artifact, commands=commands)
@@ -518,12 +524,12 @@ def test_legacy_marker_without_launcher_stays_readable_but_is_never_written(
 def test_mcp_route_detection_accepts_bare_and_exact_launcher_but_not_other_binaries(
     tmp_path: Path,
 ) -> None:
-    exe = tmp_path / "bin" / "yoetz"
+    exe = tmp_path / "bin" / "finishup"
     exe.parent.mkdir()
     exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     exe.chmod(0o700)
-    artifact = render_claude_code_plugin(yoetz_launcher=exe)
-    launcher = artifact.yoetz_launcher
+    artifact = render_claude_code_plugin(finishup_launcher=exe)
+    launcher = artifact.finishup_launcher
     project = tmp_path / "project"
     config = tmp_path / "config"
     plugin = tmp_path / "plugin"
@@ -535,18 +541,18 @@ def test_mcp_route_detection_accepts_bare_and_exact_launcher_but_not_other_binar
             plugin_root=plugin,
             project_root=project,
             claude_config_root=config,
-            yoetz_launcher=launcher,
+            finishup_launcher=launcher,
         ).ownership_state
 
     def write(command: str, args: list[str]) -> None:
         (project / ".mcp.json").write_text(
             json.dumps(
-                {"mcpServers": {"yoetz": {"args": args, "command": command, "type": "stdio"}}}
+                {"mcpServers": {"finishup": {"args": args, "command": command, "type": "stdio"}}}
             ),
             encoding="utf-8",
         )
 
-    write("yoetz", ["mcp", "serve"])
+    write("finishup", ["mcp", "serve"])
     assert observe() is McpOwnershipState.EXTERNAL
     write(launcher[0], ["mcp", "serve", "--semantic", "off"])
     assert observe() is McpOwnershipState.EXTERNAL
@@ -559,7 +565,7 @@ def test_mcp_route_detection_accepts_bare_and_exact_launcher_but_not_other_binar
 def test_export_writes_the_exact_development_root_and_preview_refuses_it(
     tmp_path: Path,
 ) -> None:
-    from yoetz.adapters.integrations.claude_code_integration import export_claude_code_plugin
+    from finishup.adapters.integrations.claude_code_integration import export_claude_code_plugin
 
     development = render_claude_code_plugin(
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
@@ -577,7 +583,7 @@ def test_export_writes_the_exact_development_root_and_preview_refuses_it(
         if name != ".claude-plugin/plugin.json":
             assert development.members[name] == production.members[name]
 
-    output = tmp_path / "exports" / "yoetz-dev"
+    output = tmp_path / "exports" / "finishup-dev"
     written = export_claude_code_plugin(development, output)
     assert ".yoetz-claude-plugin-export.json" in written
     assert set(written) == {*development.members, ".yoetz-claude-plugin-export.json"}
@@ -587,7 +593,7 @@ def test_export_writes_the_exact_development_root_and_preview_refuses_it(
     assert marker["schema"] == "yoetz.claude-code-plugin-export/1"
     assert marker["development"] is True
     assert marker["artifact_digest"] == development.artifact_digest
-    assert marker["yoetz_launcher"] == list(development.yoetz_launcher)
+    assert marker["yoetz_launcher"] == list(development.finishup_launcher)
     assert (output / ".claude-plugin" / "marketplace.json").exists() is False
     with pytest.raises(ClaudeCodeIntegrationError) as conflict:
         export_claude_code_plugin(development, output)
@@ -649,26 +655,26 @@ def test_project_marketplace_install_enable_disable_and_remove_are_separate_stat
     assert proof[PluginProofFacet.HOST_ACTIVATION] == "not_observed"
     assert proof[PluginProofFacet.MODEL_USE] == "not_observed"
 
-    plugin_root = Path(target.marketplace_root) / "plugins" / "yoetz"
+    plugin_root = Path(target.marketplace_root) / "plugins" / "finishup"
     session = observe_claude_code_session_init(
         JsonObject(
             {
                 "claude_code_version": "2.1.241",
                 "cwd": target.project_root,
-                "mcp_servers": [{"name": "plugin:yoetz:yoetz", "status": "connected"}],
+                "mcp_servers": [{"name": "plugin:finishup:finishup", "status": "connected"}],
                 "plugins": [
                     {
-                        "name": "yoetz",
+                        "name": "finishup",
                         "path": str(plugin_root),
-                        "source": "yoetz@yoetz-local",
+                        "source": "finishup@finishup-local",
                         "version": artifact.plan.version,
                     }
                 ],
                 "session_id": "session-activation-1",
-                "skills": ["yoetz:yoetz"],
+                "skills": ["finishup:finishup"],
                 "subtype": "init",
                 "tools": [
-                    f"mcp__plugin_yoetz_yoetz__{name}"
+                    f"mcp__plugin_finishup_finishup__{name}"
                     for name in (
                         "check",
                         "publish_work",
@@ -867,7 +873,7 @@ def test_update_replaces_only_marker_valid_source_and_rechecks_same_version_cach
     ).mcp_observation.route_profile == ("policy")
 
     source_skill = (
-        Path(target.marketplace_root) / "plugins" / "yoetz" / "skills" / "yoetz" / "SKILL.md"
+        Path(target.marketplace_root) / "plugins" / "finishup" / "skills" / "finishup" / "SKILL.md"
     )
     source_skill.write_text("modified\n", encoding="utf-8")
     with pytest.raises(ClaudeCodeIntegrationError) as modified:
@@ -968,9 +974,9 @@ def test_mcp_sources_preserve_precedence_and_report_dual_foreign_and_ambiguous(
     config.mkdir()
     exact = {
         "mcpServers": {
-            "yoetz": {
+            "finishup": {
                 "args": ["mcp", "serve"],
-                "command": "yoetz",
+                "command": "finishup",
                 "type": "stdio",
             }
         }
@@ -1014,7 +1020,7 @@ def test_mcp_sources_preserve_precedence_and_report_dual_foreign_and_ambiguous(
     assert ambiguous.observed is False
 
 
-def test_mcp_ownership_detects_an_exact_yoetz_route_under_an_alias(tmp_path: Path) -> None:
+def test_mcp_ownership_detects_an_exact_finishup_route_under_an_alias(tmp_path: Path) -> None:
     plugin = tmp_path / "plugin"
     project = tmp_path / "project"
     config = tmp_path / "config"
@@ -1027,7 +1033,7 @@ def test_mcp_ownership_detects_an_exact_yoetz_route_under_an_alias(tmp_path: Pat
                 "mcpServers": {
                     "team-ledger": {
                         "args": ["mcp", "serve", "--semantic", "off"],
-                        "command": "yoetz",
+                        "command": "finishup",
                         "type": "stdio",
                     }
                 }
@@ -1048,7 +1054,7 @@ def test_mcp_ownership_detects_an_exact_yoetz_route_under_an_alias(tmp_path: Pat
     assert observed.host_admission_supported is False
 
 
-def test_exact_yoetz_strict_route_stays_admission_supported(tmp_path: Path) -> None:
+def test_exact_finishup_strict_route_stays_admission_supported(tmp_path: Path) -> None:
     """Name-mappability is independent of profile: grant still refuses `route_not_policy`."""
 
     plugin = tmp_path / "plugin"
@@ -1061,9 +1067,9 @@ def test_exact_yoetz_strict_route_stays_admission_supported(tmp_path: Path) -> N
         json.dumps(
             {
                 "mcpServers": {
-                    "yoetz": {
+                    "finishup": {
                         "args": ["mcp", "serve", "--semantic", "off"],
-                        "command": "yoetz",
+                        "command": "finishup",
                         "type": "stdio",
                     }
                 }
@@ -1084,7 +1090,7 @@ def test_exact_yoetz_strict_route_stays_admission_supported(tmp_path: Path) -> N
 
 
 def test_recovery_material_surfaces_in_status_and_refuses_preview(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations import claude_code_integration as module
+    from finishup.adapters.integrations import claude_code_integration as module
 
     target = _target(tmp_path)
     artifact = render_claude_code_plugin()
@@ -1113,7 +1119,7 @@ def test_recovery_material_surfaces_in_status_and_refuses_preview(tmp_path: Path
 def test_destructive_paths_revalidate_the_displaced_tree_before_deleting(
     tmp_path: Path,
 ) -> None:
-    from yoetz.adapters.integrations import claude_code_integration as module
+    from finishup.adapters.integrations import claude_code_integration as module
 
     target = _target(tmp_path)
     artifact = render_claude_code_plugin()
@@ -1197,7 +1203,7 @@ def test_completed_host_command_with_missed_readback_is_outcome_unknown(
 
 
 def test_version_provenance_separates_certification_from_admission() -> None:
-    from yoetz.adapters.integrations.claude_code_integration import (
+    from finishup.adapters.integrations.claude_code_integration import (
         CLAUDE_CODE_MINIMUM_VERSION,
         claude_code_version_provenance,
     )
@@ -1274,7 +1280,7 @@ def test_refused_presence_surfaces_as_claude_error_before_any_mutation(tmp_path:
     artifact = render_claude_code_plugin(
         mcp_ownership=McpOwnership.PLUGIN_MANAGED,
         route_profile="policy",
-        yoetz_launcher=(str(interpreter), "-m", "yoetz"),
+        finishup_launcher=(str(interpreter), "-m", "finishup"),
     )
     target = _target(tmp_path)
     commands = _ClaudeFixture(artifact)

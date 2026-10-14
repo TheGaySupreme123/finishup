@@ -10,9 +10,9 @@ from pathlib import Path
 import pytest
 
 from builders.shell_write_vectors import VECTORS, ShellWriteVector
-from yoetz.cli import runtime_facts
-from yoetz.cli.runtime_facts import install_target_class, runtime_structural_facts
-from yoetz.protocol.canonical import JsonValue
+from finishup.cli import runtime_facts
+from finishup.cli.runtime_facts import install_target_class, runtime_structural_facts
+from finishup.protocol.canonical import JsonValue
 
 
 def _executable(path: Path) -> Path:
@@ -73,7 +73,7 @@ def test_interpreter_classes_by_location(env: dict[str, Path]) -> None:
     assert _target(f"{env['system'] / 'bin' / 'python3'} -m pip install x", env) == "system"
 
 
-def test_yoetz_runtime_via_path(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
+def test_finishup_runtime_via_path(env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PATH", str(env["runtime"] / "bin"))
     assert _target("pip install x", env) == "yoetz_runtime"
 
@@ -194,10 +194,10 @@ def test_install_location_inside_workspace_or_unknown(env: dict[str, Path]) -> N
     assert _target("pip install --target $DEPS x", env) == "unresolved"
 
 
-def test_yoetz_runtime_stays_flagged_and_is_never_the_task(
+def test_finishup_runtime_stays_flagged_and_is_never_the_task(
     env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The runtime first on PATH: bare pip is still Yoetz's runtime (``/opt/yr/bin/pip``).
+    # The runtime first on PATH: bare pip is still FinishUP's runtime (``/opt/yr/bin/pip``).
     monkeypatch.setenv(
         "PATH", os.pathsep.join([str(env["runtime"] / "bin"), str(env["system"] / "bin")])
     )
@@ -394,23 +394,23 @@ def test_the_hook_bounds_every_parse_of_a_huge_command(tmp_path: Path) -> None:
     assert elapsed < 2.0
 
 
-def test_a_yoetz_receipt_copied_outside_the_workspace_is_yoetz_owned_not_outside(
+def test_a_finishup_receipt_copied_outside_the_workspace_is_finishup_owned_not_outside(
     tmp_path: Path,
 ) -> None:
     """Review 3: the outside precheck returned before the ownership rule, so a saved receipt made
     a verification stale. One classifier decides, for a shell command as for an edit tool."""
 
     for command in (
-        "cp source.json /opt/yoetz_receipt.json",
-        "echo '{}' > /opt/yoetz_receipt.json",
-        "cat /app/r.json | tee /opt/out/yoetz_export.json",
+        "cp source.json /opt/finishup_receipt.json",
+        "echo '{}' > /opt/finishup_receipt.json",
+        "cat /app/r.json | tee /opt/out/finishup_export.json",
     ):
         assert _facts("Bash", {"command": command}, tmp_path)["write_scope"] == "yoetz_owned"
-    assert _facts("Write", {"file_path": "/opt/yoetz_receipt.json"}, tmp_path) == {
+    assert _facts("Write", {"file_path": "/opt/finishup_receipt.json"}, tmp_path) == {
         "write_scope": "yoetz_owned"
     }
-    # Any real outside write still wins over Yoetz's own material.
-    both = "cp a /opt/yoetz_receipt.json && cp b /opt/result.json"
+    # Any real outside write still wins over FinishUP's own material.
+    both = "cp a /opt/finishup_receipt.json && cp b /opt/result.json"
     assert _facts("Bash", {"command": both}, tmp_path)["write_scope"] == "outside_workspace"
 
 
@@ -425,12 +425,12 @@ def test_a_literal_dollar_or_star_in_an_outside_target_is_still_an_outside_write
         assert "write_scope" not in _facts("Bash", {"command": expansion}, tmp_path), expansion
 
 
-def test_a_system_interpreter_prefix_is_never_yoetz_runtime(
+def test_a_system_interpreter_prefix_is_never_finishup_runtime(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     import sys
 
-    from yoetz.cli import runtime_facts
+    from finishup.cli import runtime_facts
 
     monkeypatch.setattr(sys, "prefix", "/usr")
     monkeypatch.setattr(sys, "base_prefix", "/usr")

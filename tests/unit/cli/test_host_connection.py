@@ -3,11 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.host_discovery import HostInstallation
-from yoetz.application.host_connection import ConnectionPlan
-from yoetz.cli import host_connection as cli
-from yoetz.protocol.host_connection import HostConnectionReport
-from yoetz.service.elevated_bootstrap import ElevatedBootstrapError
+from finishup.adapters.integrations.host_discovery import HostInstallation
+from finishup.application.host_connection import ConnectionPlan
+from finishup.cli import host_connection as cli
+from finishup.protocol.host_connection import HostConnectionReport
+from finishup.service.elevated_bootstrap import ElevatedBootstrapError
 
 REQUEST = "req_cc8c2c7e-1246-4ed2-9e48-05a69fbb1d90"
 DIGEST = "sha256:" + "a" * 64
@@ -15,7 +15,7 @@ DIGEST = "sha256:" + "a" * 64
 
 @pytest.fixture
 def prepared(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ConnectionPlan:
-    launcher = tmp_path / "yoetz"
+    launcher = tmp_path / "finishup"
     launcher.write_text("#!/bin/sh\nexit 0\n")
     launcher.chmod(0o700)
     monkeypatch.setattr(cli, "invoking_launcher", lambda: (str(launcher),))
@@ -121,18 +121,18 @@ def test_status_never_consumes_approval(
     assert report["connection_observed"] is False
 
 
-def test_launch_preserves_the_selected_yoetz_runtime_on_path(
+def test_launch_preserves_the_selected_finishup_runtime_on_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.integrations.host_discovery import HostInstallation
-    from yoetz.cli import host_connection
+    from finishup.adapters.integrations.host_discovery import HostInstallation
+    from finishup.cli import host_connection
 
-    monkeypatch.setattr(host_connection, "invoking_launcher", lambda: "/opt/instance/bin/yoetz")
+    monkeypatch.setattr(host_connection, "invoking_launcher", lambda: "/opt/instance/bin/finishup")
 
     def resolve(_value: object) -> tuple[str, ...]:
-        return ("/opt/instance/bin/yoetz",)
+        return ("/opt/instance/bin/finishup",)
 
-    monkeypatch.setattr(host_connection, "resolve_yoetz_launcher", resolve)
+    monkeypatch.setattr(host_connection, "resolve_finishup_launcher", resolve)
     monkeypatch.setenv("PATH", "/usr/bin:/bin")
     selected = HostInstallation(
         "codex", Path("/opt/codex"), "0.153.4", Path("/workspace/profile"), "Codex"
@@ -151,7 +151,7 @@ def test_setup_keeps_os_password_ceremony_on_main_thread(
 
     import anyio
 
-    from yoetz.cli.setup import run_setup_wizard
+    from finishup.cli.setup import run_setup_wizard
 
     main_thread = threading.get_ident()
 

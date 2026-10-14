@@ -21,9 +21,9 @@ from typing import cast
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.adapters.providers import codex_app_server
-from yoetz.adapters.providers import codex_evaluator_runtime as runtime_store
-from yoetz.adapters.providers.codex_app_server import (
+from finishup.adapters.providers import codex_app_server
+from finishup.adapters.providers import codex_evaluator_runtime as runtime_store
+from finishup.adapters.providers.codex_app_server import (
     CODEX_EVALUATOR_CONFIG,
     CODEX_EVALUATOR_RUNTIME_VERSION,
     CodexAppServerProfile,
@@ -31,16 +31,16 @@ from yoetz.adapters.providers.codex_app_server import (
     CodexRuntimeStatus,
     codex_evaluator_cell_for_platform,
 )
-from yoetz.cli import codex_subscription as module
-from yoetz.config.models import (
+from finishup.cli import codex_subscription as module
+from finishup.config.models import (
     ExternalRuntimeProfileConfig,
+    FinishUpConfig,
     SemanticFallbackConfig,
     StorageConfig,
-    YoetzConfig,
 )
-from yoetz.config.write import codex_subscription_runtime, render_config_toml
-from yoetz.ports.harness_mcp import HarnessBinary
-from yoetz.ports.integrations import HarnessId
+from finishup.config.write import codex_subscription_runtime, render_config_toml
+from finishup.ports.harness_mcp import HarnessBinary
+from finishup.ports.integrations import HarnessId
 
 pytestmark = pytest.mark.anyio
 
@@ -147,10 +147,10 @@ class _Env:
         binding: ExternalRuntimeProfileConfig | None,
         *,
         fallback_behind_api: bool = False,
-    ) -> YoetzConfig:
+    ) -> FinishUpConfig:
         from unit.cli.test_provider_status import _provider  # pyright: ignore[reportPrivateUsage]
 
-        config = YoetzConfig(
+        config = FinishUpConfig(
             profile="strict-local" if binding is None else "codex-subscription",
             storage=StorageConfig(data_dir=self.tmp / "state"),
             external_runtime=binding,
@@ -166,17 +166,17 @@ class _Env:
         self.config_path.write_text(render_config_toml(config), encoding="utf-8")
         return config
 
-    def written(self) -> YoetzConfig:
+    def written(self) -> FinishUpConfig:
         return module._base_config(self.config_path)  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.fixture
 def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Env:
     for name in tuple(os.environ):
-        if name.startswith("YOETZ_"):
+        if name.startswith("FINISHUP_"):
             monkeypatch.delenv(name)
     config_path = tmp_path / "config.toml"
-    monkeypatch.setenv("YOETZ_CONFIG", str(config_path))
+    monkeypatch.setenv("FINISHUP_CONFIG", str(config_path))
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
     cell = codex_evaluator_cell_for_platform("linux", "x86_64")
@@ -206,7 +206,7 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Env:
     monkeypatch.setattr(codex_app_server, "verify_private_local_bundle", allow_private)
     bundle = tmp_path / "bundle"
 
-    def runtime_bundle(_config: YoetzConfig | None = None) -> Path:
+    def runtime_bundle(_config: FinishUpConfig | None = None) -> Path:
         return bundle
 
     monkeypatch.setattr(module, "runtime_bundle", runtime_bundle)
@@ -218,7 +218,7 @@ def env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> _Env:
 
     discovered: list[Path] = []
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries",
+        "finishup.adapters.integrations.codex_discovery.discover_codex_binaries",
         lambda: tuple(
             HarnessBinary(HarnessId.CODEX, str(path), None, "untested") for path in discovered
         ),
@@ -294,7 +294,7 @@ async def test_repair_rebinds_a_stranded_v1_binding_keeping_login_and_every_choi
     assert probe.executable_path == env.managed
     assert probe.codex_home == Path(stranded.codex_home)
     assert module.diagnose_bound_runtime(repaired).ready
-    # The host installation is untouched; the evaluator runs Yoetz's own verified copy.
+    # The host installation is untouched; the evaluator runs FinishUP's own verified copy.
     assert ordinary_npm.read_bytes() == _NEWER
     assert env.managed.read_bytes() == _ADMITTED
 
@@ -340,7 +340,9 @@ async def test_repair_moves_a_superseded_0_150_1_binding_onto_the_current_cell(
         "codex_runtime_capability_unsupported",
         "unsupported",
     )
-    assert module.binding_continuation(before.state) == "yoetz provider codex-subscription repair"
+    assert (
+        module.binding_continuation(before.state) == "finishup provider codex-subscription repair"
+    )
 
     result = await module.codex_subscription_repair(config_path=env.config_path)
 
@@ -357,7 +359,7 @@ async def test_repair_moves_a_superseded_0_150_1_binding_onto_the_current_cell(
         "capability_cell_sha256",
         "capability_profile",
     ]
-    # Yoetz's own verified copy, in a directory named for the admitted source identity.
+    # FinishUP's own verified copy, in a directory named for the admitted source identity.
     assert repaired.executable_path == str(env.managed)
     assert env.managed.parent.name == "openai-codex-npm-linux-x64-0.157.1"
     assert env.managed.read_bytes() == _ADMITTED
@@ -412,7 +414,9 @@ async def test_repair_upgrades_a_v1_binding_whose_store_lacks_the_code_mode_host
         "admitted",
         "missing",
     )
-    assert module.binding_continuation(before.state) == "yoetz provider codex-subscription repair"
+    assert (
+        module.binding_continuation(before.state) == "finishup provider codex-subscription repair"
+    )
     # The lone v1 copy cannot seed the repair: it has no host beside it.
     with pytest.raises(ValueError, match="codex_evaluator_runtime_unavailable"):
         module.codex_subscription_repair_plan(config_path=env.config_path)
@@ -816,7 +820,7 @@ def test_runtime_status_names_the_next_command_without_starting_codex(env: _Env)
     env.write_config(None)
     empty = module.codex_evaluator_runtime_status(config_path=env.config_path)
     assert empty["binding"] is None
-    assert empty["next_command"] == "yoetz provider codex-subscription runtime install"
+    assert empty["next_command"] == "finishup provider codex-subscription runtime install"
     assert empty["login_checked"] is False
 
     host = env.executable("npm-prefix/codex")
@@ -825,14 +829,14 @@ def test_runtime_status_names_the_next_command_without_starting_codex(env: _Env)
     binding = cast(Mapping[str, object], unmanaged["binding"])
     assert binding["state"] == "ready" and binding["uses_managed_runtime"] is False
     # Ready today, but a host update would strand it: repair moves it onto the retained copy.
-    assert unmanaged["next_command"] == "yoetz provider codex-subscription repair"
+    assert unmanaged["next_command"] == "finishup provider codex-subscription repair"
 
     host.write_bytes(_NEWER)
     stranded = module.codex_evaluator_runtime_status(config_path=env.config_path)
     assert cast(Mapping[str, object], stranded["binding"])["state"] == (
         "codex_runtime_executable_changed"
     )
-    assert stranded["next_command"] == "yoetz provider codex-subscription repair"
+    assert stranded["next_command"] == "finishup provider codex-subscription repair"
 
     runtime_store.retain_codex_runtime(
         env.executable("evaluator/codex"), bundle=env.bundle, cell=env.cell
@@ -863,7 +867,7 @@ def test_runtime_status_names_the_next_command_without_starting_codex(env: _Env)
     assert cast(Mapping[str, object], missing["binding"])["state"] == (
         "codex_runtime_executable_missing"
     )
-    assert missing["next_command"] == "yoetz provider codex-subscription repair"
+    assert missing["next_command"] == "finishup provider codex-subscription repair"
     assert env.codex.probes == []
 
 
@@ -895,7 +899,7 @@ def test_runtime_install_retains_local_bytes_or_downloads_only_when_authorized(
     assert installed["managed_runtime_path"] == str(env.managed)
     assert installed["managed_runtime_state"] == "verified"
     assert installed["binding_changed"] is False
-    assert installed["next_command"] == "yoetz provider codex-subscription setup"
+    assert installed["next_command"] == "finishup provider codex-subscription setup"
 
     # A verified copy now satisfies later installs locally; nothing is downloaded again.
     again = module.codex_evaluator_runtime_install(
@@ -931,14 +935,14 @@ def test_failure_lines_name_the_cause_and_next_step() -> None:
     assert "repair" in line
     for state, command in module.BINDING_CONTINUATIONS.items():
         assert module.subscription_remediation(state) is not None, state
-        assert command.startswith("yoetz "), state
+        assert command.startswith("finishup "), state
     assert module.binding_continuation("ready") is None
 
 
 def test_cli_repair_needs_explicit_acceptance_and_recomposes_after(
     env: _Env, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     env.write_config(env.binding(env.executable("npm-prefix/codex", _NEWER), **_V1))
     runtime_store.retain_codex_runtime(
@@ -950,7 +954,7 @@ def test_cli_repair_needs_explicit_acceptance_and_recomposes_after(
         restarts.append("restart")
         return {"reachable": True, "state": "ready", "vault_mode": None}
 
-    monkeypatch.setattr("yoetz.cli.setup.restart_service_for_semantic_composition", restart)
+    monkeypatch.setattr("finishup.cli.setup.restart_service_for_semantic_composition", restart)
     runner = CliRunner()
     preimage = env.config_path.read_bytes()
 
@@ -971,7 +975,7 @@ def test_cli_repair_needs_explicit_acceptance_and_recomposes_after(
 
 
 def test_cli_runtime_status_exit_code_follows_the_binding(env: _Env) -> None:
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     env.write_config(env.binding(env.executable("npm-prefix/codex", _NEWER)))
     runner = CliRunner()
@@ -985,14 +989,14 @@ def test_cli_runtime_status_exit_code_follows_the_binding(env: _Env) -> None:
 
 
 def test_cli_failure_renders_the_subscription_remediation(env: _Env) -> None:
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     env.write_config(env.binding(env.executable("npm-prefix/codex", _NEWER), **_V1))
     result = CliRunner().invoke(app, ["provider", "codex-subscription", "status"])
 
     assert result.exit_code == 20
     assert "codex_subscription: codex_runtime_executable_changed: " in result.stderr
-    assert "yoetz provider codex-subscription repair" in result.stderr
+    assert "finishup provider codex-subscription repair" in result.stderr
     assert str(env.tmp) not in result.stderr
 
 

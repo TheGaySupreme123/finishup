@@ -19,14 +19,14 @@ import pytest
 
 from builders.privacy_policies import INSTALLATION_ID, minimal_external_policy
 from builders.privacy_widenings import llm_channel, with_llm
-from yoetz.adapters.privacy.catalog import (
+from finishup.adapters.privacy.catalog import (
     _network_receipt_from_bytes,  # pyright: ignore[reportPrivateUsage]
     _receipt_bytes,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.application.egress import PrivacyCoordinator, SemanticEgressBlocked
-from yoetz.application.privacy_control import encode_privacy_receipt_view
-from yoetz.domain.privacy import (
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.application.egress import PrivacyCoordinator, SemanticEgressBlocked
+from finishup.application.privacy_control import encode_privacy_receipt_view
+from finishup.domain.privacy import (
     OBSERVATION_ADVICE_PACKET_ITEM_ID,
     REVIEW_PACKET_ITEM_ID,
     AuthorizationScope,
@@ -47,10 +47,10 @@ from yoetz.domain.privacy import (
     ReceiptTransformations,
     egress_origin_operation,
 )
-from yoetz.domain.values import JsonObject, freeze_json
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.privacy import (
+from finishup.domain.values import JsonObject, freeze_json
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     HumanAuthorityCapability,
     NetworkEgressReceiptView,
@@ -60,10 +60,10 @@ from yoetz.ports.privacy import (
     PrivacyClassifierPort,
     PrivacyPolicyStorePort,
 )
-from yoetz.ports.semantic import Deadline
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import DataCategory
-from yoetz.service.client import (
+from finishup.ports.semantic import Deadline
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import DataCategory
+from finishup.service.client import (
     PrivacyReceiptFound,
     _receipt_get_from_wire,  # pyright: ignore[reportPrivateUsage]
 )
@@ -146,7 +146,7 @@ def test_receipt_origin_round_trips_storage_wire_and_schema() -> None:
     assert decoded.receipt == view
 
     document = json.loads(
-        files("yoetz.resources")
+        files("finishup.resources")
         .joinpath("schemas/privacy/egress-receipt-1.1.0.schema.json")
         .read_bytes()
     )

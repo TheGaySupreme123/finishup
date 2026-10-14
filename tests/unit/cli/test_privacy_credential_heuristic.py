@@ -1,4 +1,4 @@
-"""``yoetz privacy credential-heuristic`` (issue #982 owner opt-out): the way in and the way out."""
+"""``finishup privacy credential-heuristic`` (issue #982 owner opt-out): the way in and the way out."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ from types import SimpleNamespace
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.privacy_setup as setup
-from yoetz.application.privacy_policy import privacy_policy_changes
-from yoetz.cli.app import app
-from yoetz.domain.privacy import (
+import finishup.cli.privacy_setup as setup
+from finishup.application.privacy_policy import privacy_policy_changes
+from finishup.cli.app import app
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
@@ -25,8 +25,8 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.protocol.models import DataCategory
+from finishup.domain.values import JsonObject
+from finishup.protocol.models import DataCategory
 
 _INSTALLATION = "ins_10000000-0000-4000-8000-000000000001"
 _DIGEST = f"sha256:{'2' * 64}"
@@ -303,8 +303,8 @@ def test_cli_command_is_registered_with_both_directions(monkeypatch: pytest.Monk
 
 
 def test_privacy_show_labels_the_installation_default() -> None:
-    from yoetz.adapters.privacy.catalog import encode_privacy_policy_json
-    from yoetz.cli.app import (
+    from finishup.adapters.privacy.catalog import encode_privacy_policy_json
+    from finishup.cli.app import (
         _effective_credential_heuristic_line,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -331,7 +331,7 @@ def test_privacy_show_labels_the_installation_default() -> None:
 def test_the_terminal_interface_shows_the_shared_pair(monkeypatch: pytest.MonkeyPatch) -> None:
     from contextlib import asynccontextmanager
 
-    from yoetz.tui.runtime import YoetzRuntime
+    from finishup.tui.runtime import FinishUpRuntime
 
     async def posture(response: object) -> object:
         class _Client:
@@ -339,13 +339,13 @@ def test_the_terminal_interface_shows_the_shared_pair(monkeypatch: pytest.Monkey
                 return response
 
         @asynccontextmanager
-        async def connect(_self: YoetzRuntime):  # noqa: ANN202
+        async def connect(_self: FinishUpRuntime):  # noqa: ANN202
             yield _Client()
 
-        monkeypatch.setattr(YoetzRuntime, "_client", connect)
-        return await YoetzRuntime().privacy_posture()
+        monkeypatch.setattr(FinishUpRuntime, "_client", connect)
+        return await FinishUpRuntime().privacy_posture()
 
-    from yoetz.adapters.privacy.catalog import encode_privacy_policy_json
+    from finishup.adapters.privacy.catalog import encode_privacy_policy_json
 
     composed = encode_privacy_policy_json(_policy(CredentialHeuristic.DISABLED))
     current = asyncio.run(

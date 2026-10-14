@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.application.package_update import PackageUpdateAdvisory, build_package_update_advisory
-from yoetz.application.recommendations import (
+from finishup.application.package_update import PackageUpdateAdvisory, build_package_update_advisory
+from finishup.application.recommendations import (
     RECOMMENDED_DEFAULTS,
     RecommendationContext,
     RecommendationStoreError,
@@ -580,7 +580,7 @@ async def test_context_resolution_reuses_package_update_advisory(
         return _newer()
 
     monkeypatch.setattr(
-        "yoetz.application.recommendations.resolve_package_update_advisory", fake_resolve
+        "finishup.application.recommendations.resolve_package_update_advisory", fake_resolve
     )
 
     context = await evaluate_recommendation_context(

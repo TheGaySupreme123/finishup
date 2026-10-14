@@ -29,31 +29,31 @@ from tests.integration.objects.test_envelope_and_encrypted_files import (
 )
 
 import integration.service.test_semantic_non_dispatch as semantic_non_dispatch
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     load_mapping,
     store_mapping,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
-from yoetz.adapters.sqlite import connection as sqlite_connection
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_materialize import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+from finishup.adapters.sqlite import connection as sqlite_connection
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_materialize import (
     materialize_observation_envelope,
     observation_content_identity,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     build_semantic_case,
     semantic_case_to_prepared_payload,
 )
-from yoetz.application.semantic_content import resolve_captured_semantic_content
-from yoetz.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
-from yoetz.domain.observation import (
+from finishup.application.semantic_content import resolve_captured_semantic_content
+from finishup.cli.observe_hooks import handle_claude_observe, handle_cursor_observe, handle_observe
+from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationCaptureTicket,
     ObservationContentKind,
@@ -68,27 +68,27 @@ from yoetz.domain.observation import (
     observation_ingest_request_from_json,
     observation_ingest_result_to_json,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.privacy import ProviderBinding, ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.values import JsonValue as DomainJsonValue
-from yoetz.domain.values import Timestamp, evidence_id
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.keys import BundleKeys
-from yoetz.ports.ledger import CheckPhase, FrozenCase
-from yoetz.ports.objects import (
+from finishup.domain.privacy import ProviderBinding, ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.values import JsonValue as DomainJsonValue
+from finishup.domain.values import Timestamp, evidence_id
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.importer import ImporterPort
+from finishup.ports.keys import BundleKeys
+from finishup.ports.ledger import CheckPhase, FrozenCase
+from finishup.ports.objects import (
     ObjectKind,
     ObjectMetadata,
     ObjectRootSnapshot,
     ObjectSource,
     ObjectStorePort,
 )
-from yoetz.ports.observation import TaskObservationPort
-from yoetz.ports.runtime import (
+from finishup.ports.observation import TaskObservationPort
+from finishup.ports.runtime import (
     BundleRuntimePort,
     OwnershipFence,
     RouteCommand,
@@ -96,17 +96,17 @@ from yoetz.ports.runtime import (
     StartCompletionEvidence,
     TaskRuntime,
 )
-from yoetz.ports.start_catalog import StartCatalogPort
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.ports.start_catalog import StartCatalogPort
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     EvidenceImmutability,
     PublicationChannel,
 )
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
-from yoetz.protocol.models import SemanticStatus
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.protocol.models import SemanticStatus
 
 _NOW = datetime(2026, 9, 5, 17, 0, tzinfo=UTC)
 _ZERO_DIGEST = "sha256:" + "0" * 64
@@ -1182,7 +1182,7 @@ async def test_ordinary_native_hook_content_reaches_prepared_semantic_packet(
         start_payload = {
             "conversation_id": pre_payload["conversation_id"],
             "tool_name": "start",
-            "mcp_server_name": "yoetz",
+            "mcp_server_name": "finishup",
             "result_json": canonical_encode(
                 {
                     "isError": False,
@@ -2176,10 +2176,10 @@ async def test_ready_composition_route_loss_after_resolution_blocks_native_dispa
             self.delegate = delegate
             self.lost = False
 
-        def workspace_for_yoetz_session(self, session_id: str) -> str | None:
+        def workspace_for_finishup_session(self, session_id: str) -> str | None:
             if self.lost:
                 return None
-            return self.delegate.workspace_for_yoetz_session(session_id)
+            return self.delegate.workspace_for_finishup_session(session_id)
 
         def observation_route_for_session(
             self, *, workspace: str, yoetz_session_id: str
@@ -2397,8 +2397,8 @@ async def test_service_recovers_unknown_inventory_without_a_fresh_native_event(
 ) -> None:
     """A rejected failed-command hook must not be the only path to inventory repair."""
 
-    from yoetz.application.observation_drain import ObservationOutboxSweeper
-    from yoetz.domain.observation import ObservationCaptureBacklog
+    from finishup.application.observation_drain import ObservationOutboxSweeper
+    from finishup.domain.observation import ObservationCaptureBacklog
 
     profile = CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
     (
@@ -2666,7 +2666,7 @@ async def test_early_planted_edit_outranks_many_captured_outputs_in_the_packet(
         start_payload = {
             "conversation_id": raw_session,
             "tool_name": "start",
-            "mcp_server_name": "yoetz",
+            "mcp_server_name": "finishup",
             "result_json": canonical_encode(
                 {
                     "isError": False,
@@ -2922,16 +2922,16 @@ async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) ->
     stream failure corrects that ``unknown`` result.
     """
 
-    from fixture_loader import load_fixture_json
-    from yoetz.adapters.integrations.codex_session_stream import SessionStreamReader
-    from yoetz.adapters.integrations.observation_local import (
+    from finishup.adapters.integrations.codex_session_stream import SessionStreamReader
+    from finishup.adapters.integrations.observation_local import (
         STREAM_MAPPING_VERSION,
         self_observation_deliverable,
     )
-    from yoetz.application.observation_drain import ObservationOutboxSweeper
-    from yoetz.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
-    from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
-    from yoetz.domain.observation import ObservationCursor, ObservationEnvelope
+    from finishup.application.observation_drain import ObservationOutboxSweeper
+    from finishup.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
+    from finishup.domain.events import ResultOutcome, ResultRecordedPayload
+    from finishup.domain.observation import ObservationCursor, ObservationEnvelope
+    from fixture_loader import load_fixture_json
 
     raw_session = "codex-outcomes"
     (
@@ -3073,7 +3073,7 @@ async def test_codex_recorded_outcome_shapes_reach_the_ledger(tmp_path: Path) ->
         call_id = cast(str, cast(dict[str, object], hook_inputs[variant]["payload"])["tool_use_id"])
         recorded = ledger_result(hook_posts[call_id])
         if not self_observation_deliverable("PostToolUse", hook_posts[call_id].structural_payload):
-            # A successful or outcome-less Yoetz read stays in the local store only (#564); the
+            # A successful or outcome-less FinishUP read stays in the local store only (#564); the
             # service already holds that call. A stated MCP failure is delivered.
             assert recorded is None, variant
             continue
@@ -3132,8 +3132,8 @@ async def test_codex_image_result_reaches_the_ledger_as_digest_only_evidence(
     import struct
     import zlib
 
-    from yoetz.application.observation_drain import ObservationOutboxSweeper
-    from yoetz.domain.events import (
+    from finishup.application.observation_drain import ObservationOutboxSweeper
+    from finishup.domain.events import (
         EvidenceContentAvailability,
         EvidenceDigestProvenance,
         EvidenceRecordedPayload,

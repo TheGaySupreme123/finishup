@@ -11,18 +11,18 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 
-from yoetz.application.status import (
+from finishup.application.status import (
     Application,
     _lineage_readiness_gaps,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.status_faults import StatusFault, StatusFaultStage, classify_status_fault
-from yoetz.application.task_views import lineage_status_page
-from yoetz.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
-from yoetz.domain.values import Frontier, Timestamp
-from yoetz.ports.host_lineage import HostLineageAnnotation, HostLineageRegistryPort
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.ports.start_catalog import SessionState, StartCatalogPort, TaskLineage
-from yoetz.protocol.errors import PublicErrorCode
+from finishup.application.status_faults import StatusFault, StatusFaultStage, classify_status_fault
+from finishup.application.task_views import lineage_status_page
+from finishup.domain.coordination import LineageAcceptance, LineageOrigin, SessionHealth, WorkState
+from finishup.domain.values import Frontier, Timestamp
+from finishup.ports.host_lineage import HostLineageAnnotation, HostLineageRegistryPort
+from finishup.ports.runtime import TaskRuntime
+from finishup.ports.start_catalog import SessionState, StartCatalogPort, TaskLineage
+from finishup.protocol.errors import PublicErrorCode
 
 pytestmark = pytest.mark.anyio
 _PARENT = "tsk_53000000-0000-4000-8000-000000000001"
@@ -178,8 +178,8 @@ async def test_readiness_reports_an_accepted_child_with_self_verified_findings(
 ) -> None:
     """Issue #984/#996 (S2): the lineage row's count drives the standing status note."""
 
-    from yoetz.application import task_views
-    from yoetz.protocol.models import StatusLineageChildModel
+    from finishup.application import task_views
+    from finishup.protocol.models import StatusLineageChildModel
 
     child = StatusLineageChildModel.model_validate(
         {

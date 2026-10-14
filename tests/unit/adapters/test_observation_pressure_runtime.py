@@ -9,15 +9,15 @@ from typing import cast
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as local_mod
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import (
+import finishup.adapters.integrations.observation_local as local_mod
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_budget import (
+from finishup.domain.observation_budget import (
     LARGEST_CAPACITY,
     STANDARD_CAPACITY,
     ObservationCapacity,
@@ -25,11 +25,11 @@ from yoetz.domain.observation_budget import (
     PressureState,
     no_cap_support,
 )
-from yoetz.domain.observation_settings import (
+from finishup.domain.observation_settings import (
     ObservationDetailProfile,
     ObservationSelection,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 _NOW = Timestamp("2026-09-10T00:01:00.000Z")
 _OLD = Timestamp("2026-09-10T00:00:00.000Z")
@@ -254,7 +254,7 @@ def test_current_hard_pressure_blocks_new_input_but_allows_recovery(
         receipt_time=_NOW,
         cursor=replace(old.cursor, event_position=2),
     )
-    from yoetz.adapters.integrations.observation_admission import AdmissionBuffer, AdmissionPlan
+    from finishup.adapters.integrations.observation_admission import AdmissionBuffer, AdmissionPlan
 
     plan = AdmissionPlan(buffer=AdmissionBuffer(), deliveries=(("session", fresh),), deferred=False)
     assert not store.commit_selected_admission(workspace, plan, incoming=fresh, newly_observed=True)
@@ -294,7 +294,7 @@ def test_session_end_clears_pressure_only_at_current_generation(tmp_path: Path) 
 
 
 def test_accepted_buffer_transfer_drains_under_hard_pressure(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.observation_admission import (
+    from finishup.adapters.integrations.observation_admission import (
         AdmissionBuffer,
         AdmissionPlan,
         BufferedInput,
@@ -321,7 +321,7 @@ def test_accepted_buffer_transfer_drains_under_hard_pressure(tmp_path: Path) -> 
 def test_buffer_only_plan_checks_aggregate_bytes_before_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.adapters.integrations.observation_admission import (
+    from finishup.adapters.integrations.observation_admission import (
         AdmissionBuffer,
         AdmissionPlan,
         BufferedInput,
@@ -559,7 +559,7 @@ def test_small_session_capacity_does_not_shrink_sibling_admission(tmp_path: Path
 def test_aged_backlog_retains_new_inputs_across_restart(
     tmp_path: Path, source: ObservationSource
 ) -> None:
-    from yoetz.adapters.integrations.observation_admission import AdmissionBuffer, AdmissionPlan
+    from finishup.adapters.integrations.observation_admission import AdmissionBuffer, AdmissionPlan
 
     monotonic = [0.0]
     store, workspace = _store(tmp_path, monotonic)
@@ -617,7 +617,7 @@ def test_admission_pressure_sampling_does_not_reencode_retained_rows(
     admission check then samples every pending row, so its encoder calls must not scale with it.
     """
 
-    from yoetz.adapters.integrations.observation_admission import AdmissionBuffer, AdmissionPlan
+    from finishup.adapters.integrations.observation_admission import AdmissionBuffer, AdmissionPlan
 
     monotonic = [0.0]
     store, workspace = _store(tmp_path, monotonic)

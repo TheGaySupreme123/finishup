@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.adapters.integrations.observation_local as local_mod
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import ObservationCaptureBacklog
-from yoetz.domain.values import Timestamp
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+import finishup.adapters.integrations.observation_local as local_mod
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import ObservationCaptureBacklog
+from finishup.domain.values import Timestamp
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 
 @pytest.mark.parametrize("dimension", ["count", "bytes"])

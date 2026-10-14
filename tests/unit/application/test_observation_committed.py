@@ -6,22 +6,22 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.application.observation_committed import (
+from finishup.application.observation_committed import (
     action_event_committed,
     committed_event_ids,
     observation_already_committed,
 )
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     materialize_observation_envelope,
     observation_event_ids_call_keyed,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 _SESSION = f"hmac-sha256:{'ef' * 32}"
 

@@ -1,15 +1,15 @@
 # Linux and WSL host facts
 
-Operator reference for what Yoetz needs, refuses, and claims on Linux and on Windows through
+Operator reference for what FinishUP needs, refuses, and claims on Linux and on Windows through
 WSL 2 (Windows Subsystem for Linux). Product wording for users lives on
 [the install page](../usage/install-and-first-run.md#linux); this page records the decisions and
 their evidence state. Filed from the Linux/WSL parity sweep (issues #716, #720–#725).
 
 ## Shared desktop installation
 
-`yoetz setup run` discovers installed Codex, Claude Code, Cursor IDE and Cursor Agent CLI.
+`finishup setup run` discovers installed Codex, Claude Code, Cursor IDE and Cursor Agent CLI.
 The selected host uses the common preview, status, disconnect and reconnect flow. Installing the
-Yoetz integration does not require signing in to a model provider. Host account sign-in is a
+FinishUP integration does not require signing in to a model provider. Host account sign-in is a
 separate prerequisite for model use.
 
 Claude and Cursor plugin changes retain the exact-plan operating-system identity check. On
@@ -23,16 +23,16 @@ Issue #767 owns installation verification; it does not certify full model/observ
 ADR-007 advertises exactly two cells: macOS 11.0+ arm64 (`macosx_11_0_arm64`) and glibc 2.28+
 Linux x86-64 (`manylinux_2_28_x86_64`). The dependency lock resolves `apsw` wheels for Linux
 aarch64 too, so `uv tool install` succeeds on WSL 2 under Windows-on-ARM (Snapdragon X), Graviton,
-Raspberry Pi, and Asahi. Those installs are **untested, not presumed compatible**: `yoetz version
---json` lists `platform_cell_untested` under `limitations`, `yoetz setup status --json` reports the
+Raspberry Pi, and Asahi. Those installs are **untested, not presumed compatible**: `finishup version
+--json` lists `platform_cell_untested` under `limitations`, `finishup setup status --json` reports the
 cell under `platform.cell`, and `/doctor` shows the platform line as *not proven*. Nothing is
 refused; nothing is claimed. musl, macOS x86-64, and native Windows remain outside the matrix
 (native Windows refuses with `unsupported_platform`, issue #709).
 
 | Reported by | Field | Certified cell | Untested cell |
 |---|---|---|---|
-| `yoetz version --json` | `limitations` | no platform token | `platform_cell_untested` |
-| `yoetz setup status --json` | `platform.cell` | `certified: true`, `cell: <tag>` | `certified: false`, `cell: null` |
+| `finishup version --json` | `limitations` | no platform token | `platform_cell_untested` |
+| `finishup setup status --json` | `platform.cell` | `certified: true`, `cell: <tag>` | `certified: false`, `cell: null` |
 | `/doctor` | Platform | ok | not proven, with the certified cells named |
 
 Certifying Linux aarch64 needs a real `ubuntu-24.04-arm` release runner and release evidence in
@@ -40,7 +40,7 @@ Certifying Linux aarch64 needs a real `ubuntu-24.04-arm` release runner and rele
 
 ## Service startup on glibc before 2.32
 
-Issue #1040: on `condaforge/miniforge3:24.9.2-0` every `yoetz service run` exited 70 with only
+Issue #1040: on `condaforge/miniforge3:24.9.2-0` every `finishup service run` exited 70 with only
 `internal_error: the command could not be completed`. That image is Ubuntu 20.04 with glibc 2.31.
 glibc before 2.32 has no no-follow `fchmodat`, so CPython raises `NotImplementedError` for
 `os.chmod(..., follow_symlinks=False)`, which is how the service set the mode of each endpoint it
@@ -62,17 +62,17 @@ with the glibc 2.31 `chmod` behaviour on every platform.
 ## Reading a service startup failure
 
 Every startup failure is recorded once, with the stage that failed, the reviewed exception-class
-token, the innermost `yoetz` source location and one correlation id (never exception text or
+token, the innermost `finishup` source location and one correlation id (never exception text or
 paths). Each surface shows the same facts:
 
 | Surface | What it shows |
 |---|---|
-| `yoetz service run` stderr (a harness's `service.log`) | for example `internal_error: the service could not start (stage: activation; exception_not_implemented_error; at yoetz.adapters.control.unix_socket:434); correlation_id err_…`, exit 70; `stopped unexpectedly` when it failed after serving |
+| `finishup service run` stderr (a harness's `service.log`) | for example `internal_error: the service could not start (stage: activation; exception_not_implemented_error; at finishup.adapters.control.unix_socket:434); correlation_id err_…`, exit 70; `stopped unexpectedly` when it failed after serving |
 | The structural stderr line before it | `{"component":"service.daemon","operation":"service_startup_failed","phase":…,"reason":…,"origin":…}` |
-| `yoetz service diagnostics --correlation-id err_… --json` | the durable record (`phase`, `reason`, `origin`, and `reason_code` for a typed refusal) |
+| `finishup service diagnostics --correlation-id err_… --json` | the durable record (`phase`, `reason`, `origin`, and `reason_code` for a typed refusal) |
 | MCP `start`, or any tool call that started the service on demand | `SERVICE_UNAVAILABLE`, `retryable: false`, `safe_details.reason_code: service_start_failed`, `safe_details.phase: <stage>`, the spawned service's correlation id; text `Reason: service_start_failed (stage: <stage>).` |
-| A CLI command that started the service on demand (`yoetz service restart`) | `service_unavailable: the local service exited while starting (stage: …; …); correlation_id err_…`, exit 20 |
-| Setup and drain commands that start it on demand (`yoetz setup vault`, `yoetz setup llm --set`, the interactive `yoetz setup`, the restart after a provider or Codex-subscription change, `yoetz observe drain`) | the same `service_unavailable: … exited while starting …` line on stderr, then the command's own unchanged result and exit code (for example `provider_setup_failed: service_unavailable`, exit 20); the restart stops at the first such failure instead of spawning again. The full-screen window does not print it; `yoetz setup status --next` leads to `yoetz service restart`, which does |
+| A CLI command that started the service on demand (`finishup service restart`) | `service_unavailable: the local service exited while starting (stage: …; …); correlation_id err_…`, exit 20 |
+| Setup and drain commands that start it on demand (`finishup setup vault`, `finishup setup llm --set`, the interactive `finishup setup`, the restart after a provider or Codex-subscription change, `finishup observe drain`) | the same `service_unavailable: … exited while starting …` line on stderr, then the command's own unchanged result and exit code (for example `provider_setup_failed: service_unavailable`, exit 20); the restart stops at the first such failure instead of spawning again. The full-screen window does not print it; `finishup setup status --next` leads to `finishup service restart`, which does |
 
 Stages: `import` (a service module or native extension could not load, for example a wheel built
 for a newer C library), `configuration` (configuration or the log sink), `composition` (instance
@@ -96,8 +96,8 @@ since issue #720 the dependency is named once instead of per run:
 
 | Surface | Field / line |
 |---|---|
-| `yoetz observe checks status --json` | `sandbox: {status, mechanism, reason, remediation}` (also when `state: not_configured`) |
-| `yoetz setup status --json` | `platform.check_sandbox` (same shape) |
+| `finishup observe checks status --json` | `sandbox: {status, mechanism, reason, remediation}` (also when `state: not_configured`) |
+| `finishup setup status --json` | `platform.check_sandbox` (same shape) |
 | `/doctor` | Approved-check sandbox: ok / not configured, with the remediation |
 
 Reason tokens: `ready`, `bwrap_missing`, `bwrap_unusable`, `sandbox_exec_missing`,
@@ -111,8 +111,8 @@ AppArmor profile that permits it; a still-blocked host can relax
 prefix plus `--chdir <workspace>`: the whole host filesystem is bound read-write and only the
 network namespace is unshared, mirroring the macOS profile `(allow default) (deny network*)`.
 
-**`yoetz service status` does not report sandbox availability, and is not going to.** Issue #720
-asked for the fact to be named once in setup diagnostics *and* in `yoetz service status`; the
+**`finishup service status` does not report sandbox availability, and is not going to.** Issue #720
+asked for the fact to be named once in setup diagnostics *and* in `finishup service status`; the
 second half is deliberately declined here, and those three surfaces are the whole supported set.
 `service status` answers a versioned wire contract (`service-status-1.0.0`, closed to unknown
 fields and a member of the schema manifest whose digest the control handshake pins on both sides)
@@ -155,8 +155,8 @@ auto-unlock-only until a release cell reviews their locked-session behaviour for
 
 What the user sees when the store is unusable (issue #721): the interface's storage step disables
 **Use system secure storage** with the reason (no store loaded, or the loaded backend is not
-approved, naming its id) and what Yoetz needs on that platform; `yoetz setup run` prints the same
-in its "Platform credential store unavailable" line; `yoetz setup status --json` reports
+approved, naming its id) and what FinishUP needs on that platform; `finishup setup run` prints the same
+in its "Platform credential store unavailable" line; `finishup setup status --json` reports
 `platform.secure_storage: {approved, backend_id, reason, requirement}`; `/doctor` shows a System
 secure storage line. Reason tokens: `approved`, `keyring_unavailable`, `backend_not_approved`.
 For Secret Service, approval also requires a successful ten-second bounded D-Bus/service
@@ -164,7 +164,7 @@ availability probe. The probe reads no credential and never unlocks or creates a
 it does not prove that a later credential operation will succeed.
 
 Headless Linux sessions and WSL 2 normally have no session D-Bus and no Secret Service daemon, so
-the vault passphrase is the supported route there; `yoetz service auto-unlock enable` remains
+the vault passphrase is the supported route there; `finishup service auto-unlock enable` remains
 available only where an accepted backend is loaded. Capability CI runs `platform-key-matrix` on
 `ubuntu-24.04` with a desktop Secret Service; headless Linux and WSL 2 keyring evidence is
 **outstanding**.
@@ -175,28 +175,28 @@ available only where an accepted backend is loaded. Capability CI runs `platform
 `path_on_network_filesystem` (`STORAGE_UNSAFE`). On Linux the denylist includes `9p` (how WSL 2
 mounts Windows drives by default), `drvfs` (WSL 1), and `virtiofs` (WSL and VM shared folders
 generally), alongside NFS, SMB, sshfs, and the rest. These transports
-cross a host/guest boundary whose locking and crash durability Yoetz has not certified; the
+cross a host/guest boundary whose locking and crash durability FinishUP has not certified; the
 refusal is a conservative support decision recorded in ADR-003 (issue #723), not a claim that
 all such implementations lack locks. For example,
 [virtiofsd supports configurable POSIX locks](https://virtio-fs.gitlab.io/qemu/tools/virtiofsd.html).
-Inside WSL, Yoetz state must stay on the distribution's own ext4 disk — the WSL home is the default — never under `/mnt/<letter>`. The refusal's remediation says so, and it applies to
-`YOETZ_ISOLATED_ROOT`, `yoetz instance create --root`, and `storage.data_dir` alike.
+Inside WSL, FinishUP state must stay on the distribution's own ext4 disk — the WSL home is the default — never under `/mnt/<letter>`. The refusal's remediation says so, and it applies to
+`FINISHUP_ISOLATED_ROOT`, `finishup instance create --root`, and `storage.data_dir` alike.
 
 Evidence state: in the 2026-09-19 WSL 2 run recorded in #786, the installed candidate initialized
-and restarted/unlocked on the Linux filesystem. `yoetz instance create` with a `/mnt/c` root
+and restarted/unlocked on the Linux filesystem. `finishup instance create` with a `/mnt/c` root
 refused with `path_on_network_filesystem` and exit 20. A full `wsl --terminate` followed by
 distribution startup preserved the installed instance: the service started locked and returned
 ready after passphrase unlock. Native agent acceptance remains a separate, incomplete cell.
 
 ## Host integrations on Linux and WSL
 
-Codex CLI on Linux uses the same first-run and `yoetz integrate codex` flow as macOS; OpenAI
+Codex CLI on Linux uses the same first-run and `finishup integrate codex` flow as macOS; OpenAI
 publishes no Linux Codex App, so the interface labels every Linux Codex as a command-line
 installation by definition. Claude Code and Cursor plugin mutation requires a supported
 presence mechanism, reported by the installed preview's `authorization.human_presence`. The
 Linux PAM ceremony is tracked separately in #719; builds without it refuse
 `human_authority_unavailable` on Linux and WSL 2. That ceremony alone does not prove a Linux
-native host cell. Both hosts can use a hand-added `yoetz mcp serve` entry. The per-host decisions
+native host cell. Both hosts can use a hand-added `finishup mcp serve` entry. The per-host decisions
 are recorded in
 [`claude-code-integration.md`](claude-code-integration.md#linux-and-wsl) and
 [`cursor-integration.md`](cursor-integration.md#linux-and-wsl); the Linux x86-64 evidence cases
@@ -218,7 +218,7 @@ Use `setup status --next --operation local|review|connection` to identify the ne
 for the selected installation. The common host flow and the terminal interface retain the same
 storage capability diagnosis and human-secret boundary. No Windows credential bridge is added.
 
-The [0.2.4 installation evidence](https://github.com/TheGaySupreme123/yoetz/issues/767#issuecomment-5750168131)
+The [0.2.4 installation evidence](https://github.com/TheGaySupreme123/finishup/issues/767#issuecomment-5750168131)
 records preview, connect, status, no-op, disconnect and reconnect on macOS, Ubuntu 24.04, and actual
 WSL 2 for Codex CLI, Claude Code and Cursor Agent CLI. It excludes provider login and model tasks.
 The prior 0.2.3 WSL run recorded above tested passphrase unlock after distribution restart. These

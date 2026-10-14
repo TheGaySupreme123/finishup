@@ -1,7 +1,7 @@
-"""In-check follow-up: Yoetz answers the reviewer's own request from its records (issue #1047).
+"""In-check follow-up: FinishUP answers the reviewer's own request from its records (issue #1047).
 
-The reviewer named content it needed (``missing_for_assessment``) that Yoetz holds but the packet
-did not carry. The planner decides what Yoetz may add, the case builder ranks those excerpts first
+The reviewer named content it needed (``missing_for_assessment``) that FinishUP holds but the packet
+did not carry. The planner decides what FinishUP may add, the case builder ranks those excerpts first
 within a bounded share, and the input manifest says, on every surface, which round this is and
 what was added. Without a follow-up nothing about the packet changes.
 """
@@ -24,13 +24,13 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.application.missing_for_assessment import (
+from finishup.application.missing_for_assessment import (
     ReviewFollowUp,
     ReviewFollowUpItem,
     plan_review_follow_up,
     review_missing_for_assessment,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     CapturedContentScope,
     CapturedSemanticContent,
     assemble_filtered_review_packet,
@@ -44,7 +44,7 @@ from yoetz.application.semantic_case import (
     sent_excerpt_content_refs,
     withheld_excerpt_content_refs,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -55,18 +55,18 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.review_input_render import (
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.review_input_render import (
     render_review_input_manifest_compact,
     render_review_input_manifest_lines,
 )
-from yoetz.domain.values import EvidenceId, freeze_json, object_id, timestamp_from_string
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.projections import EvidenceProjectionRecord
-from yoetz.ports.semantic import MissingForAssessment, SemanticCase, SemanticJudgment
-from yoetz.protocol.canonical import JsonValue, strict_json_parse
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
+from finishup.domain.values import EvidenceId, freeze_json, object_id, timestamp_from_string
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.ports.semantic import MissingForAssessment, SemanticCase, SemanticJudgment
+from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS
 
 _WHEN = timestamp_from_string("2026-10-12T00:00:00.000Z")
 
@@ -197,7 +197,7 @@ def _requested(kind: str, *targets: str, availability: str = "yoetz_limit_packet
     return MissingForAssessmentItem(kind=kind, target_refs=targets, availability=availability)
 
 
-# --- The planner: what Yoetz may answer, and when it stops -------------------------------------
+# --- The planner: what FinishUP may answer, and when it stops -------------------------------------
 
 
 def test_a_run_request_resolves_to_the_run_its_output_and_its_command() -> None:
@@ -240,7 +240,7 @@ def test_an_event_target_names_the_rows_it_recorded() -> None:
 @pytest.mark.parametrize(
     "item",
     [
-        # Kinds Yoetz never answers itself: they stay the agent's, exactly as before.
+        # Kinds FinishUP never answers itself: they stay the agent's, exactly as before.
         _requested("task_statement", str(clm(1)), availability="agent_suppliable"),
         _requested("plan_or_claim_text", str(clm(1)), availability="agent_suppliable"),
         _requested("other", str(res(1)), availability="agent_suppliable"),
@@ -255,7 +255,7 @@ def test_an_event_target_names_the_rows_it_recorded() -> None:
         _requested("verification_output", availability="agent_suppliable"),
     ],
 )
-def test_requests_yoetz_cannot_answer_leave_the_check_unchanged(
+def test_requests_finishup_cannot_answer_leave_the_check_unchanged(
     item: MissingForAssessmentItem,
 ) -> None:
     case, _refs = _verification_case(20)
@@ -702,7 +702,7 @@ def test_a_ref_a_sent_packet_withheld_under_a_privacy_rule_never_justifies_a_rou
         )
         is None
     )
-    # Withheld for room (no privacy rule), the output is still Yoetz's to send.
+    # Withheld for room (no privacy rule), the output is still FinishUP's to send.
     room = plan_review_follow_up(case.projection, allowed, request, previous=None, shown_refs=shown)
     assert room is not None and room.added_refs == frozenset()
     # A later round's packet withheld it under a privacy rule: no further round is sent for it.
@@ -821,7 +821,7 @@ def test_the_recorded_check_event_admits_only_a_bounded_round() -> None:
     follow_up = _follow_up(case, _excerpt_refs(first))
     manifest = _build(case, follow_up=follow_up).packet.input_manifest
     assert manifest is not None
-    from yoetz.domain import events as events_module
+    from finishup.domain import events as events_module
 
     decode = events_module._review_input_manifest_from_json  # pyright: ignore[reportPrivateUsage]
     body = review_input_manifest_to_json(manifest)

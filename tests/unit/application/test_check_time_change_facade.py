@@ -11,8 +11,25 @@ from typing import Literal, cast
 
 import pytest
 
-import yoetz.application.check as check_module
+import finishup.application.check as check_module
 from builders.ledger_adapters import FixedClock, MemoryObjects, append_command, memory_adapter
+from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.application.service import Application
+from finishup.application.start import StartInternalResult
+from finishup.ports.change_capture import (
+    TASK_CHANGE_BASE_MEDIA_TYPE,
+    CheckWorkspaceSource,
+    current_check_workspace_source,
+    decode_task_change_base,
+)
+from finishup.ports.control import RepositoryPrivacyContext, WorkspaceLocator
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort
+from finishup.ports.objects import ObjectKind, ObjectStorePort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import CheckRequest
 from unit.application.test_service_facade import (
     _SESSION,  # pyright: ignore[reportPrivateUsage]
     _TASK,  # pyright: ignore[reportPrivateUsage]
@@ -21,23 +38,6 @@ from unit.application.test_service_facade import (
     _Catalog,  # pyright: ignore[reportPrivateUsage]
     _route,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.application.service import Application
-from yoetz.application.start import StartInternalResult
-from yoetz.ports.change_capture import (
-    TASK_CHANGE_BASE_MEDIA_TYPE,
-    CheckWorkspaceSource,
-    current_check_workspace_source,
-    decode_task_change_base,
-)
-from yoetz.ports.control import RepositoryPrivacyContext, WorkspaceLocator
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.objects import ObjectKind, ObjectStorePort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import CheckRequest
 
 _COMMITMENT = "hmac-sha256:" + "a" * 64
 

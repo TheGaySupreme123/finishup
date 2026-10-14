@@ -9,7 +9,7 @@ from typing import cast
 import pytest
 
 import unit.kernel.test_claim_correction_replay as claim_replay
-from yoetz.domain.events import (
+from finishup.domain.events import (
     CheckMode,
     CheckRecordedPayload,
     EventSchema,
@@ -19,12 +19,12 @@ from yoetz.domain.events import (
     decode_payload,
     encode_payload,
 )
-from yoetz.domain.findings import CheckVerdict, SemanticDispatchKind, SemanticProvenance
-from yoetz.domain.values import Frontier
-from yoetz.kernel.projections import projection_from_snapshot, projection_snapshot
-from yoetz.kernel.reducers import replay
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.coverage import (
+from finishup.domain.findings import CheckVerdict, SemanticDispatchKind, SemanticProvenance
+from finishup.domain.values import Frontier
+from finishup.kernel.projections import projection_from_snapshot, projection_snapshot
+from finishup.kernel.reducers import replay
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -33,8 +33,8 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import (
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     SemanticReason,

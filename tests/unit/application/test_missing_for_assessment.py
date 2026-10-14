@@ -25,7 +25,7 @@ from builders.policy_cases import (
     res,
 )
 from builders.privacy_policies import local_only_policy, minimal_external_policy
-from yoetz.application.missing_for_assessment import (
+from finishup.application.missing_for_assessment import (
     check_change_binary_paths,
     check_change_text_paths,
     review_missing_for_assessment,
@@ -33,7 +33,7 @@ from yoetz.application.missing_for_assessment import (
     unsuppliable_missing_kinds,
     unsupported_data_type,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -55,13 +55,13 @@ from yoetz.domain.events import (
     RuntimeProfile,
     SessionOpenedPayload,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     EgressChannel,
     PrivacyPolicy,
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     ActionId,
     ClaimId,
     EvidenceId,
@@ -71,26 +71,26 @@ from yoetz.domain.values import (
     object_id,
     timestamp_from_string,
 )
-from yoetz.kernel.deterministic_checks import DeterministicCase, FindingBasisRef
-from yoetz.kernel.projections import (
+from finishup.kernel.deterministic_checks import DeterministicCase, FindingBasisRef
+from finishup.kernel.projections import (
     ClaimProjectionRecord,
     EvidenceProjectionRecord,
     ObligationProjectionRecord,
     PendingMissingForAssessment,
     ProjectionRecord,
 )
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check
-from yoetz.ports.change_capture import CheckChangeCapture
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.ports.semantic import (
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check
+from finishup.ports.change_capture import CheckChangeCapture
+from finishup.ports.runtime import TaskRuntime
+from finishup.ports.semantic import (
     MissingForAssessment,
     MissingForAssessmentKind,
     PriorFindingVerdict,
     SemanticJudgment,
 )
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.service import ready_composition
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.service import ready_composition
 
 _CLAIM = "clm_10000000-0000-4000-8000-000000000001"
 
@@ -526,7 +526,7 @@ def test_a_claim_is_answered_only_by_material_its_correction_cites() -> None:
 
 
 def test_hook_command_placeholders_never_make_two_runs_the_same_command() -> None:
-    """``omitted:structural`` stands in for text Yoetz did not keep; it identifies no command."""
+    """``omitted:structural`` stands in for text FinishUP did not keep; it identifies no command."""
 
     case = _pending(
         make_case(
@@ -1065,9 +1065,9 @@ async def test_the_review_reads_the_workspace_root_the_session_opened_with() -> 
 def test_a_composed_run_keys_on_its_leading_identity() -> None:
     """Adversarial review of E3 (#988): the segment suffix must not split one command in two."""
 
-    from yoetz.application import missing_for_assessment
-    from yoetz.domain.events import ActionRecordedPayload as _Action
-    from yoetz.domain.values import action_id as _action_id
+    from finishup.application import missing_for_assessment
+    from finishup.domain.events import ActionRecordedPayload as _Action
+    from finishup.domain.values import action_id as _action_id
 
     identity = "hmac-sha256:" + "a" * 64
     segment = "hmac-sha256:" + "b" * 64
@@ -1110,11 +1110,11 @@ def test_an_image_or_binary_target_is_an_unsupported_data_type_never_agent_work(
 
 
 def test_content_the_packet_named_but_could_not_carry_is_packet_room_not_agent_work() -> None:
-    """tb4n1 D1 (interleaved-vigenere S): a clipped deliverable diff is Yoetz's limit.
+    """tb4n1 D1 (interleaved-vigenere S): a clipped deliverable diff is FinishUP's limit.
 
     The reviewer said "current cracker.py implementation is not available for review" while
-    the check-time change was clipped; Yoetz asked the agent to supply it, and the agent moved
-    the deliverable's data table into an undelivered file. The same request is now Yoetz's
+    the check-time change was clipped; FinishUP asked the agent to supply it, and the agent moved
+    the deliverable's data table into an undelivered file. The same request is now FinishUP's
     packet-room limit, so no ``supply_missing_input`` follows.
     """
 
@@ -1150,11 +1150,11 @@ def test_content_the_packet_named_but_could_not_carry_is_packet_room_not_agent_w
 
 def test_only_a_clipped_or_redacted_change_text_makes_a_diff_request_packet_room() -> None:
     """Review of #1045: ``check_time_change_redacted`` also reports a redacted task input file,
-    which leaves every diff whole; that alone must not turn a diff request into Yoetz's limit."""
+    which leaves every diff whole; that alone must not turn a diff request into FinishUP's limit."""
 
-    import yoetz.application.check as check_module
-    from yoetz.domain.events import CheckChangePartialFile, CheckChangeShownFiles
-    from yoetz.domain.receipts import (
+    import finishup.application.check as check_module
+    from finishup.domain.events import CheckChangePartialFile, CheckChangeShownFiles
+    from finishup.domain.receipts import (
         CHECK_TIME_CHANGE_REDACTED_GAP,
         CHECK_TIME_CHANGE_TRUNCATED_GAP,
     )
@@ -1265,7 +1265,7 @@ def test_agent_rendered_text_of_a_binary_answers_a_request_for_it() -> None:
 
 
 def _requesting(number: int, *files: str) -> ObligationPublishedPayload:
-    from yoetz.domain.events import RequestedItem, RequestedItemKind
+    from finishup.domain.events import RequestedItem, RequestedItemKind
 
     return ObligationPublishedPayload(
         obl(number),
@@ -1276,7 +1276,7 @@ def _requesting(number: int, *files: str) -> ObligationPublishedPayload:
     )
 
 
-def test_an_other_item_is_a_yoetz_limit_only_when_every_requested_output_is_binary() -> None:
+def test_an_other_item_is_a_finishup_limit_only_when_every_requested_output_is_binary() -> None:
     """tb4n1 review: cad-model's unseen schematic is a limit; satb's unwritten score is work.
 
     tb4n3 (ADR-045): ISO 10303-21 ``.step`` is ASCII, so a request in scope of a ``.step`` file
@@ -1368,7 +1368,7 @@ def _named_file_review(
 
 @pytest.mark.parametrize("suffix", _A11_SUFFIXES)
 def test_every_listed_binary_kind_is_an_unsupported_data_type(suffix: str) -> None:
-    """tb4n2 A11: content the packet cannot carry is Yoetz's limit, whatever its case."""
+    """tb4n2 A11: content the packet cannot carry is FinishUP's limit, whatever its case."""
 
     assert unsupported_data_type(f"out/deliverable{suffix}")
     assert unsupported_data_type(f"out/DELIVERABLE{suffix.upper()}")
@@ -1384,7 +1384,7 @@ def test_text_and_suffix_less_names_stay_agent_work_without_a_binary_mark(name: 
 
 
 _BINARY_CHANGE = (
-    b"Yoetz check-time change: captured by the Yoetz service when this check ran; "
+    b"FinishUP check-time change: captured by the FinishUP service when this check ran; "
     b"the agent did not supply it.\n"
     b"Base: the commit HEAD named when this task started.\n"
     b"Scope: committed and uncommitted changes.\n"
@@ -1437,7 +1437,7 @@ def test_the_check_time_change_names_its_binary_files() -> None:
 
 
 def test_a_suffix_less_binary_the_change_marks_is_an_unsupported_data_type() -> None:
-    """tb4n2 A11: a compiled ``solver`` or ELF harness reads as Yoetz's limit, never agent work."""
+    """tb4n2 A11: a compiled ``solver`` or ELF harness reads as FinishUP's limit, never agent work."""
 
     binary = check_change_binary_paths(_binary_capture())
     for name in (
@@ -1464,7 +1464,7 @@ def test_a_suffix_less_binary_the_change_marks_is_an_unsupported_data_type() -> 
         assert _named_file_review(name, binary_paths=binary) == ["agent_suppliable"], name
 
 
-def test_an_other_item_whose_requested_outputs_are_marked_binary_is_a_yoetz_limit() -> None:
+def test_an_other_item_whose_requested_outputs_are_marked_binary_is_a_finishup_limit() -> None:
     case = make_case(
         obligations={obl(3): obligation_record(_requesting(3, "/work/repo/solver"), 3)},
         extra_refs=(obl(3),),
@@ -1512,7 +1512,7 @@ def test_a_claim_target_with_only_text_evidence_stays_agent_work() -> None:
 
 
 _TEXT_CHANGE = (
-    b"Yoetz check-time change: captured by the Yoetz service when this check ran.\n"
+    b"FinishUP check-time change: captured by the FinishUP service when this check ran.\n"
     b"Changed files: 2 tracked, 4 untracked. Not shown: 0.\n"
     b"Files:\n"
     b"  ? part.step (+120 -0) untracked\n"
@@ -1543,7 +1543,7 @@ def test_the_content_sniff_decides_before_the_suffix() -> None:
     # ``.step`` and ``.stp`` are not on the suffix list at all any more.
     assert not unsupported_data_type("out/part.step") and not unsupported_data_type("part.stp")
     # A text file that does carry a listed binary suffix (``.key`` holding a PEM key) is text when
-    # the change listed it as text, and still a Yoetz limit when the change did not list it.
+    # the change listed it as text, and still a FinishUP limit when the change did not list it.
     listed_text = frozenset({"notes.key"})
     assert _named_file_review("notes.key", text_paths=listed_text) == ["agent_suppliable"]
     assert _named_file_review("notes.key") == ["yoetz_limit_unsupported_data_type"]

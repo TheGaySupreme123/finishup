@@ -25,19 +25,18 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import MemoryStartRuntime, protocol_id, start_request
-from fixture_loader import load_fixture_json
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.memory.privacy import MemoryPrivacyAudit
-from yoetz.application.observation_materialize import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.memory.privacy import MemoryPrivacyAudit
+from finishup.application.observation_materialize import (
     materialize_observation_envelope,
     observation_author,
     observation_writer_id,
 )
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import Application
-from yoetz.application.start import StartInternalResult
-from yoetz.application.status import StatusInternalResult
-from yoetz.domain.events import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import Application
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.domain.events import (
     EventDraft,
     EventSchema,
     EvidenceKind,
@@ -48,19 +47,19 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationContentKind,
     ObservationContentManifest,
     ObservationCursor,
     ObservationEnvelope,
     ObservationSource,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AgentProjectionAuditSubject,
     DataCategory,
     DisclosureProvenance,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     Frontier,
@@ -72,20 +71,21 @@ from yoetz.domain.values import (
     object_id,
     timestamp_from_datetime,
 )
-from yoetz.ports.control import ControlMethod
-from yoetz.ports.ledger import AppendCommand, AppendEntry, OperationKind
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
-from yoetz.ports.privacy import PrivacyReceiptAudience
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.ports.control import ControlMethod
+from finishup.ports.ledger import AppendCommand, AppendEntry, OperationKind
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource
+from finishup.ports.privacy import PrivacyReceiptAudience
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     Coverage,
     EvidenceImmutability,
     PublicationChannel,
     coverage_for_channel,
 )
-from yoetz.protocol.errors import PublicOperationError
-from yoetz.protocol.models import FrontierModel, PublishWorkRequest, StatusRequest
+from finishup.protocol.errors import PublicOperationError
+from finishup.protocol.models import FrontierModel, PublishWorkRequest, StatusRequest
+from fixture_loader import load_fixture_json
 
 pytestmark = pytest.mark.anyio
 
@@ -824,13 +824,13 @@ async def test_evidence_pages_build_only_the_requested_window(
     materialization (``load_projection``), which builds every readable row.
     """
 
-    from yoetz.ports.ledger import (
+    from finishup.ports.ledger import (
         EvidenceProjectionFilter,
         IdProjectionPosition,
         ProjectionQuery,
         ProjectionView,
     )
-    from yoetz.protocol.models import StatusEvidenceItemModel
+    from finishup.protocol.models import StatusEvidenceItemModel
 
     app, _policy = await build_projection_application(seed=9700)
     started = await _start(app, 9701)
@@ -900,7 +900,7 @@ async def test_evidence_pages_build_only_the_requested_window(
     ]
 
     # A prefix whose ``source_frontier`` indexes miss falls back to one scan with the same rows.
-    from yoetz.adapters.memory import ledger as ledger_module
+    from finishup.adapters.memory import ledger as ledger_module
 
     state = ledger._state  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     evidence_rows = ledger_module._evidence_rows  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001

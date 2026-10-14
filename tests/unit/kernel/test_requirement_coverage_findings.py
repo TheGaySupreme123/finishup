@@ -28,7 +28,7 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -46,31 +46,31 @@ from yoetz.domain.events import (
     ResultRecordedPayload,
     encode_payload,
 )
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.task_statement import (
+from finishup.domain.findings import FindingKind
+from finishup.domain.task_statement import (
     TASK_STATEMENT_SCOPE_EMPTY_SUMMARY,
     RecordedTaskStatement,
 )
-from yoetz.domain.values import ResultId, actor_id, object_id, timestamp_from_string
-from yoetz.kernel.closure_readiness import GapClass, classify_gap
-from yoetz.kernel.deterministic_checks import (
+from finishup.domain.values import ResultId, actor_id, object_id, timestamp_from_string
+from finishup.kernel.closure_readiness import GapClass, classify_gap
+from finishup.kernel.deterministic_checks import (
     DeterministicCase,
     FindingBasisRef,
     build_task_statement_unmapped_assessment,
 )
-from yoetz.kernel.plan_drift import (
+from finishup.kernel.plan_drift import (
     INSTRUCTION_REQUIREMENT_UNMAPPED_GAP,
     OBLIGATION_EVIDENCE_STALE_AFTER_SCOPE_EDIT_GAP,
     PLAN_DRIFT_ADVISORY_GAPS,
     PLAN_UNREFINED_BEFORE_FIRST_EDIT_GAP,
 )
-from yoetz.kernel.policies.work_integrity import (
+from finishup.kernel.policies.work_integrity import (
     reportable_absent_outputs,
     work_integrity_findings,
 )
-from yoetz.kernel.projections import DecisionProjectionRecord, ProjectionRecord
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.coverage import Coverage, EvidenceImmutability, PublicationChannel
+from finishup.kernel.projections import DecisionProjectionRecord, ProjectionRecord
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import Coverage, EvidenceImmutability, PublicationChannel
 
 _STATEMENT_EVENT = evt(1)
 
@@ -213,23 +213,23 @@ def test_completion_on_an_empty_or_undeclared_scope_raises_an_answerable_finding
     assert candidate.subject_refs == (_STATEMENT_EVENT,)
     assert candidate.summary == TASK_STATEMENT_SCOPE_EMPTY_SUMMARY
     assert f"source_refs [{_STATEMENT_EVENT}]" in candidate.detail
-    assert f"yoetz-no-material-work:{_STATEMENT_EVENT}" in candidate.detail
+    assert f"finishup-no-material-work:{_STATEMENT_EVENT}" in candidate.detail
     assert "over-limit" not in candidate.detail
 
 
 def test_a_no_material_work_decision_answers_the_empty_scope_unless_work_was_edited() -> None:
-    marker = f"No material work.\nyoetz-no-material-work:{_STATEMENT_EVENT}"
+    marker = f"No material work.\nfinishup-no-material-work:{_STATEMENT_EVENT}"
     decided = _with_decision(_with_completion(_statement_case(empty_reason=True)), marker)
     contradicted = _with_decision(
         _with_completion(_statement_case(empty_reason=True), edit=True), marker
     )
     wrong_event = _with_decision(
         _with_completion(_statement_case(empty_reason=True)),
-        f"yoetz-no-material-work:{evt(2)}",
+        f"finishup-no-material-work:{evt(2)}",
     )
     prose_only = _with_decision(
         _with_completion(_statement_case(empty_reason=True)),
-        f"The request needs no material work (yoetz-no-material-work:{_STATEMENT_EVENT}).",
+        f"The request needs no material work (finishup-no-material-work:{_STATEMENT_EVENT}).",
     )
 
     unchanged = {"workspace_changed": False}
@@ -243,7 +243,7 @@ def test_a_no_material_work_decision_answers_the_empty_scope_unless_work_was_edi
 def test_a_no_material_work_decision_does_not_survive_shell_only_file_changes() -> None:
     """Shell writes are command actions, so the check-time capture must witness no change."""
 
-    marker = f"No material work.\nyoetz-no-material-work:{_STATEMENT_EVENT}"
+    marker = f"No material work.\nfinishup-no-material-work:{_STATEMENT_EVENT}"
     decided = _with_decision(_with_completion(_statement_case(empty_reason=True)), marker)
     assert not any(
         row.payload is not None and row.payload.action_kind is ActionKind.EDIT

@@ -10,15 +10,15 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.adapters.keys.installation_recovery import (
+from finishup.adapters.keys.installation_recovery import (
     InstallationRecoveryArtifact,
     InstallationRecoveryMode,
     InstallationRecoverySecretKind,
     create_installation_recovery_artifact,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.control import ServiceState
-from yoetz.ports.secret_memory import (
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.control import ServiceState
+from finishup.ports.secret_memory import (
     HumanAuthorizationProof,
     SecretConsumer,
     SecretHandle,
@@ -27,8 +27,8 @@ from yoetz.ports.secret_memory import (
     UserPresenceCapability,
     UserPresenceChallenge,
 )
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.service.confidential_protocol import (
+from finishup.protocol.canonical import canonical_digest
+from finishup.service.confidential_protocol import (
     AuthorizationRequiredPhase,
     ClientActionEnvelope,
     ClientOpenEnvelope,
@@ -61,8 +61,8 @@ from yoetz.service.confidential_protocol import (
     VaultStateResult,
     VaultUnlockPreview,
 )
-from yoetz.service.human_control import HumanControlError, HumanControlService
-from yoetz.service.unlock import UnlockCoordinator, UnlockThrottleStore
+from finishup.service.human_control import HumanControlError, HumanControlService
+from finishup.service.unlock import UnlockCoordinator, UnlockThrottleStore
 
 INSTALLATION_ID = "ins_20000000-0000-4000-8000-000000000001"
 SERVICE_ID = "svc_20000000-0000-4000-8000-000000000002"

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from yoetz.adapters.providers.data_use_catalog import (
+from finishup.adapters.providers.data_use_catalog import (
     data_use_record_for_endpoint,
     endpoint_profile_data_use_recommendation_eligible,
 )
-from yoetz.protocol.canonical import canonical_digest
+from finishup.protocol.canonical import canonical_digest
 
 
 def test_openai_record_is_route_specific_and_has_fixed_evidence_lifetime() -> None:

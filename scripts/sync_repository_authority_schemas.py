@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Final, cast
 
-from yoetz.protocol.canonical import canonical_encode
+from finishup.protocol.canonical import canonical_encode
 
 _ROOT: Final = Path(__file__).resolve().parents[1]
 _SERVICE: Final = _ROOT / "schemas" / "service"

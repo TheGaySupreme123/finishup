@@ -22,11 +22,11 @@ from builders.codex_rollout import (
     session_meta,
 )
 from builders.shell_write_vectors import VECTORS, ShellWriteVector
-from yoetz.adapters.importers.codex_jsonl import CodexParsedRecord
-from yoetz.adapters.importers.codex_rollout_jsonl import ROLLOUT_MAX_LINE_BYTES
-from yoetz.adapters.integrations import codex_session_stream as stream_module
-from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
-from yoetz.adapters.integrations.codex_session_stream import (
+from finishup.adapters.importers.codex_jsonl import CodexParsedRecord
+from finishup.adapters.importers.codex_rollout_jsonl import ROLLOUT_MAX_LINE_BYTES
+from finishup.adapters.integrations import codex_session_stream as stream_module
+from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.codex_session_stream import (
     CodexSessionStreamLocator,
     SessionStreamReader,
     default_stream_profile,
@@ -35,15 +35,15 @@ from yoetz.adapters.integrations.codex_session_stream import (
     should_trigger_stream_reconcile,
     stream_profile_from_id,
 )
-from yoetz.adapters.integrations.observation_admission import AdmissionPlan
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_admission import AdmissionPlan
+from finishup.adapters.integrations.observation_local import (
     STREAM_MAPPING_VERSION,
     LocalObservationStore,
 )
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
-from yoetz.domain.host_lineage import host_lineage_from_envelope
-from yoetz.domain.observation import (
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.domain.events import ResultOutcome, ResultRecordedPayload
+from finishup.domain.host_lineage import host_lineage_from_envelope
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
@@ -52,8 +52,8 @@ from yoetz.domain.observation import (
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_budget import AdmissionLossCause, ObservationMode
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.observation_budget import AdmissionLossCause, ObservationMode
+from finishup.domain.values import JsonObject, Timestamp
 
 
 def test_source_file_identity_bounds_large_filesystem_integers() -> None:
@@ -1374,15 +1374,15 @@ def _rollout_command_envelope(command: str) -> ObservationEnvelope:
     ("command", "scope"),
     [
         ("cat > solve.py <<'EOF'\nx\nEOF", "workspace"),
-        # The agent's notes and Yoetz's own material keep their closed non-counting scope, so a
+        # The agent's notes and FinishUP's own material keep their closed non-counting scope, so a
         # declared output of that kind can still override the exemption (ADR-045, Codex review).
         ("echo x > NOTES.md", "notes"),
-        ("echo x > yoetz_receipt.md", "yoetz_owned"),
+        ("echo x > finishup_receipt.md", "yoetz_owned"),
         ("echo done", None),
         # An absolute path says nothing without a workspace root; the hook claims those.
         ("echo x > /app/solve.py", None),
         # Two non-counting classes in one command keep counting (one token cannot carry both).
-        (": > NOTES.md; : > yoetz_receipt.md", "workspace"),
+        (": > NOTES.md; : > finishup_receipt.md", "workspace"),
     ],
 )
 def test_a_rollout_command_that_writes_carries_the_hooks_closed_write_scope(
@@ -1525,7 +1525,7 @@ def test_function_call_output_rejects_out_of_profile_exit_status(exit_code: obje
     assert batch.skip_reason == "unsupported_or_gap"
 
 
-def test_reconcile_retains_yoetz_self_observation_locally_and_advances_past_it(
+def test_reconcile_retains_finishup_self_observation_locally_and_advances_past_it(
     tmp_path: Path,
 ) -> None:
     """#564: the stream copy of a ``status`` call is the same self-observation the hook saw."""
@@ -1538,13 +1538,13 @@ def test_reconcile_retains_yoetz_self_observation_locally_and_advances_past_it(
     target.write_bytes(
         encode_lines(
             session_meta(),
-            function_call(name="mcp__yoetz__status", call_id="y1", arguments="{}"),
+            function_call(name="mcp__finishup__status", call_id="y1", arguments="{}"),
             function_call_output(call_id="y1", output="private projection", exit_code=None),
             function_call(name="shell", call_id="s1", arguments='{"command":"pytest"}'),
             function_call_output(call_id="s1", output="ok", exit_code=0),
-            function_call(name="mcp__yoetz__respond", call_id="y2", arguments="{}"),
+            function_call(name="mcp__finishup__respond", call_id="y2", arguments="{}"),
             function_call_output(call_id="y2", output="recorded", exit_code=None),
-            function_call(name="mcp__yoetz__status", call_id="y3", arguments="{}"),
+            function_call(name="mcp__finishup__status", call_id="y3", arguments="{}"),
             function_call_output(call_id="y3", output="error", exit_code=1),
         )
     )
@@ -1575,8 +1575,8 @@ def test_reconcile_retains_yoetz_self_observation_locally_and_advances_past_it(
         (None, None),
         ("function_call", "shell"),
         ("function_call_output", "shell"),
-        ("function_call_output", "mcp__yoetz__respond"),
-        ("function_call_output", "mcp__yoetz__status"),
+        ("function_call_output", "mcp__finishup__respond"),
+        ("function_call_output", "mcp__finishup__status"),
     ]
     # Every record was ingested locally and the cursor moved past all of them: a second
     # reconcile finds nothing new rather than re-reading the retained calls.
@@ -1683,7 +1683,7 @@ def test_0_150_1_stream_admits_from_header_and_envelopes_carry_no_content(
         if envelope.structural_payload.get("action")
         in {"function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output"}
     }
-    assert call_ids["function_call"] == call_ids["function_call_output"] == "call_yoetz_1"
+    assert call_ids["function_call"] == call_ids["function_call_output"] == "call_finishup_1"
     assert call_ids["custom_tool_call"] == call_ids["custom_tool_call_output"] == "call_shell_1"
     dumped = json.dumps(
         [
@@ -1781,7 +1781,7 @@ def test_subagent_stream_accepts_explicit_parent_alias_but_ignores_item_id() -> 
 def test_subagent_stream_invalid_parent_alias_cannot_weaken_identity(
     kind: str, parent_aliases: dict[str, Any]
 ) -> None:
-    from yoetz.domain.host_lineage import host_lineage_from_envelope
+    from finishup.domain.host_lineage import host_lineage_from_envelope
 
     record = CodexParsedRecord(
         1,
@@ -3169,7 +3169,7 @@ def test_0_159_3_calls_pair_with_outputs_on_call_id_not_their_row_ids(tmp_path: 
                     "arguments": {},
                     "id": "exec-1038-mcp",
                     "result": {"content": []},
-                    "server": "yoetz",
+                    "server": "finishup",
                     "status": "completed",
                     "tool": "status",
                     "type": "McpToolCall",
@@ -3206,28 +3206,36 @@ def test_0_159_3_calls_pair_with_outputs_on_call_id_not_their_row_ids(tmp_path: 
     # an MCP item keeps its server, as its hook spells it.
     mcp = rows["McpToolCall"]
     assert mcp.structural_payload["tool_call_id"] == "exec-1038-mcp"
-    assert mcp.structural_payload["tool_name"] == "mcp__yoetz__status"
+    assert mcp.structural_payload["tool_name"] == "mcp__finishup__status"
 
 
 @pytest.mark.parametrize(
     ("server", "tool", "expected"),
     [
         (None, "status", "status"),
-        ("yoetz", "status", "mcp__yoetz__status"),
+        ("finishup", "status", "mcp__finishup__status"),
         ("github", "status", "mcp__github__status"),
-        # A named server the reader cannot fold into ``mcp__<server>__<tool>``: a Yoetz tool name
+        # A named server the reader cannot fold into ``mcp__<server>__<tool>``: a FinishUP tool name
         # under it is not attributable, any other name keeps its name rules.
         ("ci__bot", "status", None),
         ("_priv", "check", None),
         ("x" * 130, "receipt", None),
         ("ci__bot", "edit_file", "edit_file"),
     ],
-    ids=["no-server", "yoetz", "github", "double-underscore", "leading-underscore", "long", "edit"],
+    ids=[
+        "no-server",
+        "finishup",
+        "github",
+        "double-underscore",
+        "leading-underscore",
+        "long",
+        "edit",
+    ],
 )
 def test_mcp_item_is_named_by_its_server(
     server: str | None, tool: str, expected: str | None
 ) -> None:
-    """#1038: only an ``McpToolCall`` naming no server keeps a Yoetz tool's bare name."""
+    """#1038: only an ``McpToolCall`` naming no server keeps a FinishUP tool's bare name."""
 
     item: dict[str, Any] = {"id": "exec-1038-mcp", "status": "completed", "tool": tool}
     if server is not None:

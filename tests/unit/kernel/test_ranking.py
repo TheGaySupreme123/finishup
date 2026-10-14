@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
@@ -16,9 +16,9 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.values import Frontier, finding_id, obligation_id
-from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
-from yoetz.protocol.coverage import (
+from finishup.domain.values import Frontier, finding_id, obligation_id
+from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -27,8 +27,8 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _DIGEST = "sha256:" + "1" * 64
 _COMMITMENT = "hmac-sha256:" + "2" * 64

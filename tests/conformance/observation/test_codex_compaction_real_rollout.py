@@ -3,7 +3,7 @@
 ``tests/fixtures/codex/rollout-compaction-0.159.3.jsonl`` is a trimmed slice of a real tb4n3
 Codex 0.159.3 rollout (sglang S): four commands, a ``compacted`` record with its
 ``ContextCompaction`` item, then eleven more commands, the last a failing ``pytest`` (exit 1),
-with code-mode cells and Yoetz MCP calls in between. Output bodies, diffs, instructions and MCP
+with code-mode cells and FinishUP MCP calls in between. Output bodies, diffs, instructions and MCP
 arguments are stripped; ids, command argv, exit codes, record types, order and timestamps are the
 recorded ones. ``builders.codex_rollout_replay`` rebuilds the hooks Codex fired around each nested
 item and drives them, the rollout and the outbox through the real coordinator into a task ledger,
@@ -25,7 +25,7 @@ import pytest
 from builders.codex_replay import Replay
 from builders.codex_replay import replay_cell as replay_cell  # noqa: F401  (registers ``replay``)
 from builders.codex_rollout_replay import command_items, drive_rollout, summarize, tool_item
-from yoetz.domain.events import AcceptedEvent
+from finishup.domain.events import AcceptedEvent
 
 _ROLLOUT = (
     Path(__file__).resolve().parents[2] / "fixtures" / "codex" / "rollout-compaction-0.159.3.jsonl"

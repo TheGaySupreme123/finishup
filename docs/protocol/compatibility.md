@@ -1,6 +1,6 @@
-# Yoetz compatibility
+# FinishUP compatibility
 
-"Compatible" is not one number. Yoetz tracks many independent version axes, and a claim on one axis
+"Compatible" is not one number. FinishUP tracks many independent version axes, and a claim on one axis
 never implies a claim on another. This page names each axis, its authoritative discovery source,
 and the exact rules that govern reading and writing across versions. Successfully importing one
 transcript, or one successful `check`, is never grounds for a blanket compatibility claim.
@@ -18,7 +18,7 @@ transcript, or one successful `check`, is never grounds for a blanket compatibil
 | Object envelope / encryption / key / recovery artifact formats | `version --json` (object format `yoetz-object/1`) |
 | Projection engine/generation and local policy/config digest | `version --json` (projection `yoetz/0.1.0`) |
 | Receipt schema and render version | `schemas/receipts/receipt-document-1.0.0.schema.json` |
-| Installed resource set / skill / reference compatibility | `version --json --resources`, `skills/codex/yoetz/manifest.json` |
+| Installed resource set / skill / reference compatibility | `version --json --resources`, `skills/codex/finishup/manifest.json` |
 | CLI contract / MCP SDK / MCP protocol | `version --json` (MCP SDK `mcp==1.28.1`, protocol negotiated against the latest published revision) |
 | Codex exact tested executable set and JSONL importer format profiles | `version --json`, `fixtures/imports/codex/` |
 | Optional provider adapter / profile / model / SDK | `version --json`, provider capability fixtures |
@@ -172,13 +172,13 @@ MCP compatibility names the exact SDK and protocol-revision pair tested against 
 artifact (`mcp==1.28.1`, protocol negotiated). Codex support is an explicit tested executable set
 per platform (target/maximum-tested `0.144.5`) — a version newer than maximum-tested is
 `untested`, never inferred `supported`. Skill compatibility combines the skill schema version, the
-Yoetz protocol range it declares, and exact-tested Codex evidence; installing the skill files alone
+FinishUP protocol range it declares, and exact-tested Codex evidence; installing the skill files alone
 is not itself a support claim. The Codex JSONL importer records exact format observations per
 tested profile; unknown lines are quarantined as an explicit import gap, never silently dropped.
 
 Provider compatibility (for example the OpenAI Responses adapter) names an exact
 adapter/SDK/endpoint/model profile and is optional and advisory; the strict-local base support
-Yoetz ships with is independent of any provider profile. New `codex-chatgpt-subscription@1`
+FinishUP ships with is independent of any provider profile. New `codex-chatgpt-subscription@1`
 setups recommend `gpt-6-luna` with independent default reasoning `high`; that recommendation
 is not a live packaged Luna cell and does not rewrite historical Sol exact-cell evidence or
 existing bindings. It runs only on the exact Codex `0.157.1` evaluator cells (#871), because the
@@ -208,13 +208,13 @@ Claude Code compatibility starts with one independent native cell:
 
 | Cell | Exact profile | Required proof boundary |
 |---|---|---|
-| CLI/local/project | Claude Code `2.1.241`, exact executable digest, macOS arm64, private marketplace `yoetz-local`, native format | strict validation, source/render/cache byte identity, project registration, disabled install, discovery, explicit enablement, new-session/reload activation, `/yoetz:yoetz` delivery, exclusive MCP owner/runtime, scoped model call, consented hook evidence |
+| CLI/local/project | Claude Code `2.1.241`, exact executable digest, macOS arm64, private marketplace `finishup-local`, native format | strict validation, source/render/cache byte identity, project registration, disabled install, discovery, explicit enablement, new-session/reload activation, `/finishup:finishup` delivery, exclusive MCP owner/runtime, scoped model call, consented hook evidence |
 
 The committed fixture proves strict validation, project installation into an exact cache, disabled
 default, discovery/component inventory, hook declaration, fresh-session plugin/skill/tool
 registration, and connected plugin-owned strict MCP. A correlated model call was blocked by absent
 authentication in the isolated Claude config; only SessionStart/SessionEnd hook delivery was seen,
-and the separately installed older Yoetz lacked the new hook command. Model use, accepted
+and the separately installed older FinishUP lacked the new hook command. Model use, accepted
 observation, AI-powered review dispatch, privacy receipt, and workflow receipt therefore remain
 unobserved
 for that `2.1.241` cell. A later live capture (2026-09-04) on Claude Code `2.1.251` observed
@@ -235,7 +235,7 @@ change moves that digest, an upgraded installation cannot talk to the previous i
 still-running service, and an older CLI cannot talk to a newer still-running service: a
 decodable hello with a foreign digest is answered with this installation's hello-result and then
 refused as `service_incompatible`, and on-demand startup
-(the MCP bridge) or the explicit `yoetz service restart` replaces an older stale holder with a
+(the MCP bridge) or the explicit `finishup service restart` replaces an older stale holder with a
 service of the current installation through its ordinary bounded shutdown. On-demand startup never
 replaces a holder stamped with a newer package; only an explicit restart may. Stale bridges are
 then refused in turn until their host session is reopened. A package-version change that leaves the

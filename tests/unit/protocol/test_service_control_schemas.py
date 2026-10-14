@@ -12,13 +12,13 @@ from urllib.parse import urlparse
 
 import pytest
 
-from yoetz.domain.observation import _STRUCTURAL_KEYS  # pyright: ignore[reportPrivateUsage]
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import ControlCallRequest
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import load_schema_catalog, validate_schema_instance
-from yoetz.service.control_protocol import (
+from finishup.domain.observation import _STRUCTURAL_KEYS  # pyright: ignore[reportPrivateUsage]
+from finishup.domain.values import JsonObject
+from finishup.ports.control import ControlCallRequest
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import load_schema_catalog, validate_schema_instance
+from finishup.service.control_protocol import (
     decode_control_frame,
     encode_control_frame,
     parse_control_request,
@@ -26,7 +26,7 @@ from yoetz.service.control_protocol import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _ROOT = _REPO_ROOT / "schemas" / "service"
-_PACKAGE_ROOT = resources.files("yoetz").joinpath("resources", "schemas", "service")
+_PACKAGE_ROOT = resources.files("finishup").joinpath("resources", "schemas", "service")
 _VERSION = "1.0.0"
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000001"
 _RPC_ID = "rpc_00000000-0000-4000-8000-000000000002"
@@ -906,7 +906,7 @@ def test_v24_pairing_structural_fields_round_trip_and_are_rejected_by_v23() -> N
     with pytest.raises(ProtocolValueError):
         validate_schema_instance("control-request", "2.3.0", cast(JsonValue, frame))
 
-    from yoetz.service.control_protocol import decode_control_frame, encode_control_frame
+    from finishup.service.control_protocol import decode_control_frame, encode_control_frame
 
     encoded = encode_control_frame(cast(JsonValue, frame))
     decoded = decode_control_frame(encoded)
@@ -1135,7 +1135,7 @@ def test_v28_native_child_start_bridge_round_trip_preserves_frozen_v27() -> None
         codex_session_id="native-child-lane",
         structural={
             "hook_name": "PostToolUse",
-            "tool_name": "mcp__yoetz__start",
+            "tool_name": "mcp__finishup__start",
             "subagent_id": "native-worker",
             "parent_tool_call_id": "spawn-call",
             "lineage_child_task_id": "tsk_00000000-0000-4000-8000-000000000001",
@@ -1409,7 +1409,7 @@ def _assert_v29_request_adds_only_command_commitment(
         "enum": ["private_env", "system", "unresolved", "workspace_env", "yoetz_runtime"],
         "type": "string",
     }
-    # ADR-042 (tb4n2 R4): an edit whose every path is scratch or Yoetz-owned is named so; ADR-045
+    # ADR-042 (tb4n2 R4): an edit whose every path is scratch or FinishUP-owned is named so; ADR-045
     # adds the agent's notes and a shell command that writes the workspace (#1039).
     assert v29_fields["write_scope"] == {
         "enum": ["notes", "outside_workspace", "scratch", "workspace", "yoetz_owned"],

@@ -5,7 +5,7 @@ from types import MappingProxyType
 import apsw
 import pytest
 
-from yoetz.version import (
+from finishup.version import (
     PROJECTION_VERSION,
     UNAVAILABLE_RUNTIME_FACT,
     build_status_version_slice_facts,
@@ -46,7 +46,7 @@ def test_status_slice_uses_probed_runtime_not_historical_literals(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "yoetz.version._runtime_components",
+        "finishup.version._runtime_components",
         lambda: (
             MappingProxyType({"status": "present", "version": "9.9.9.9"}),
             MappingProxyType({"status": "present", "version": "9.9.9"}),
@@ -67,7 +67,7 @@ def test_absent_runtime_components_serialize_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "yoetz.version._runtime_components",
+        "finishup.version._runtime_components",
         lambda: (_ABSENT, _ABSENT, _ABSENT, _ABSENT),
     )
     facts = build_status_version_slice_facts()

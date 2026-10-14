@@ -17,11 +17,11 @@ from collections.abc import Callable
 
 import pytest
 
-from yoetz.protocol.canonical import (
+from finishup.protocol.canonical import (
     _encode_string,  # pyright: ignore[reportPrivateUsage]
     _validate_string,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
 
 
 def _reference_validate_string(value: str) -> None:
@@ -121,6 +121,7 @@ def test_every_bmp_codepoint_encodes_identically() -> None:
         "\U0010ffff",
         "\U00010000",
         "  ﻿￿",
+        "x" * 4_096,
         "x" * 4_096,
         "x" * 4_096 + '"',
         '"' + "x" * 4_096,

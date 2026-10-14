@@ -3,7 +3,7 @@
 The real application, ledger and check commit with a hermetic reviewer that builds the real review
 case: the first packet has room for one excerpt and carries the newer of two recorded test
 outputs, the reviewer concludes ``insufficient_packet`` naming the older one, and inside the same
-check Yoetz sends the case again with that output ranked first. The check records the reviewer's
+check FinishUP sends the case again with that output ranked first. The check records the reviewer's
 answer on the follow-up packet, and its manifest, the check summary and the receipt say which
 round ran and what was added.
 """
@@ -21,28 +21,28 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from yoetz.application.check import FinalSemanticEvaluation, check_internal_json
-from yoetz.application.missing_for_assessment import ReviewFollowUp
-from yoetz.application.semantic_case import (
+from finishup.application.check import FinalSemanticEvaluation, check_internal_json
+from finishup.application.missing_for_assessment import ReviewFollowUp
+from finishup.application.semantic_case import (
     assemble_filtered_review_packet,
     bounded_case_envelope,
     build_semantic_case,
     semantic_case_packet_view,
 )
-from yoetz.domain.findings import Finding, SemanticDispatchKind, SemanticProvenance
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.review_input_render import render_review_input_manifest_lines
-from yoetz.domain.values import JsonObject, freeze_json
-from yoetz.mcp.summaries import summary_for_check
-from yoetz.ports.ledger import CheckCommitResult, FrozenCase
-from yoetz.ports.semantic import (
+from finishup.domain.findings import Finding, SemanticDispatchKind, SemanticProvenance
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.review_input_render import render_review_input_manifest_lines
+from finishup.domain.values import JsonObject, freeze_json
+from finishup.mcp.summaries import summary_for_check
+from finishup.ports.ledger import CheckCommitResult, FrozenCase
+from finishup.ports.semantic import (
     MissingForAssessment,
     SamplingParams,
     SemanticCase,
     SemanticJudgment,
 )
-from yoetz.protocol.canonical import canonical_encode, strict_json_parse
-from yoetz.protocol.models import (
+from finishup.protocol.canonical import canonical_encode, strict_json_parse
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,

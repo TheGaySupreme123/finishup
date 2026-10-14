@@ -1,10 +1,10 @@
 ✓ Python runtime           ok — 3.14.6
-✓ Yoetz version            ok — 0.1.0
+✓ FinishUP version            ok — 0.1.0
 ■ Local service reachable  problem — not running
 ○ Provider binding saved   not configured
 
 Suggested next steps
-  · start the service with 'yoetz service run'
+  · start the service with 'finishup service run'
   · run /provider to choose a provider and model
 
 Nothing above was changed. Diagnosis never repairs on its own.

@@ -3,29 +3,29 @@
 **Status:** Working decision (2026-07-22), founder-authorized amendment of ADR-007 decisions 3, 7,
 and 9. Release ratification still requires the packaging evidence gates those decisions already
 carry; nothing here manufactures platform or capability evidence.
-**Implemented by:** `src/yoetz/ports/harness_mcp.py`,
-`src/yoetz/application/harness_mcp.py`,
-`src/yoetz/adapters/integrations/codex_discovery.py`,
-`src/yoetz/adapters/integrations/codex_mcp.py`,
-`src/yoetz/adapters/integrations/codex_marketplace.py`, `src/yoetz/cli/setup.py`,
-`support/npm-launcher/package.json`, `support/npm-launcher/bin/yoetz.js`,
-`support/npm-launcher/README.md`, plus the amended `src/yoetz/cli/app.py`,
-`src/yoetz/config/paths.py`, and `docs/runbooks/codex-integration.md`.
+**Implemented by:** `src/finishup/ports/harness_mcp.py`,
+`src/finishup/application/harness_mcp.py`,
+`src/finishup/adapters/integrations/codex_discovery.py`,
+`src/finishup/adapters/integrations/codex_mcp.py`,
+`src/finishup/adapters/integrations/codex_marketplace.py`, `src/finishup/cli/setup.py`,
+`support/npm-launcher/package.json`, `support/npm-launcher/bin/finishup.js`,
+`support/npm-launcher/README.md`, plus the amended `src/finishup/cli/app.py`,
+`src/finishup/config/paths.py`, and `docs/runbooks/codex-integration.md`.
 **Relates to:** ADR-005 (Codex capability identity), ADR-007 (packaging/release), ADR-009
 (privacy/egress), ADR-010 (harness integration port).
 
 ## Context
 
-A fresh `uvx yoetz` landed a new user in front of a help screen and a runbook: find Codex, run
+A fresh `uvx finishup` landed a new user in front of a help screen and a runbook: find Codex, run
 `codex mcp get`/`codex mcp add` by hand, start the service, run privacy setup, then the
 credential ceremony. Every one of those steps was correct and deliberately manual, but nothing
-connected them, and the npm ecosystem had no path at all — ADR-007 deferred `npx yoetz` until it
+connected them, and the npm ecosystem had no path at all — ADR-007 deferred `npx finishup` until it
 had "its own provenance, Python/uv delegation, upgrade, and platform contract". This ADR supplies
 exactly those contracts and connects the steps without weakening any existing trust boundary.
 
 ## Decisions
 
-1. **`yoetz setup` is a new top-level support sub-app** with `run` (the wizard) and `status`
+1. **`finishup setup` is a new top-level support sub-app** with `run` (the wizard) and `status`
    (read-only posture). The wizard orchestrates only operations a local human could already run by
    hand: Codex discovery, the runbook's check-then-add MCP registration behind
    preview→confirm→execute, a service reachability check, and the existing privacy and
@@ -55,11 +55,11 @@ exactly those contracts and connects the steps without weakening any existing tr
    after its trusted policy commit. Unknown, stale, broad, or account-unqualified evidence never
    earns the recommendation and remains an informed explicit choice only. It is a starting draft,
    not consent. `private` remains the fail-safe no-egress choice, while Metadata only, expanded, and
-   custom policies remain explicit. `yoetz --privacy` enters the same short recommended-first
+   custom policies remain explicit. `finishup --privacy` enters the same short recommended-first
    ceremony at any later time. **Amendment (issue #164, 2026-08-09):** when a user asks a capable
    first-party agent for help finishing exact provider credential or repository privacy setup, the
-   agent may relay an explicit current-chat instruction through `yoetz consent authorize` after one
-   warning without requiring a second local-terminal ceremony. Yoetz binds the exact action but
+   agent may relay an explicit current-chat instruction through `finishup consent authorize` after one
+   warning without requiring a second local-terminal ceremony. FinishUP binds the exact action but
    cannot independently authenticate the chat provenance; the trusted CLI/TUI remains recommended
    and always available. The setup update advisory's version parser is a declared, exactly pinned
    core dependency; a clean installed-artifact gate imports and enters `setup run` so
@@ -88,20 +88,20 @@ exactly those contracts and connects the steps without weakening any existing tr
    `no_args_is_help=True`; the root callback reproduces the historical help output for every bare
    invocation except one case: stdin and stdout are both real TTYs **and** the completion marker
    (`state_dir()/setup-wizard.json`, schema `yoetz.setup-wizard-marker/1`) is absent. Only then
-   does bare `yoetz` launch the interactive wizard. Non-TTY, CI, piped, `--help`, and every named
+   does bare `finishup` launch the interactive wizard. Non-TTY, CI, piped, `--help`, and every named
    subcommand invocation are byte-for-byte unchanged. The marker is permanent once a mutating
    wizard run completes — a decline counts as completion; re-runs happen only via explicit
-   `yoetz setup run`. An unsafe or unreadable state directory never triggers the wizard.
+   `finishup setup run`. An unsafe or unreadable state directory never triggers the wizard.
 
-3. **MCP registration becomes a first-class preview-gated operation** (`yoetz integrate <harness>
+3. **MCP registration becomes a first-class preview-gated operation** (`finishup integrate <harness>
    mcp status|preview|preview-remove|install|remove`), automating the exact two-command sequence the
-   Codex runbook already mandates: `codex mcp get yoetz --json` first. A nonzero named lookup is
+   Codex runbook already mandates: `codex mcp get finishup --json` first. A nonzero named lookup is
    not absence by itself: the adapter runs a bounded `codex mcp list --json` fallback and accepts
-   absence only when that successful structural listing contains no `yoetz` name. A failed or
+   absence only when that successful structural listing contains no `finishup` name. A failed or
    malformed listing fails closed; a single matching entry is classified normally; duplicate
    matching names are ambiguous and fail closed. In ambient mode it runs the exact `codex mcp add
-   yoetz -- yoetz mcp serve --host codex` command; under ADR-026 isolation it runs `codex mcp add yoetz --env
-   YOETZ_ISOLATED_ROOT=<validated-root> -- yoetz mcp serve --host codex`. It does so only after that positive
+   finishup -- finishup mcp serve --host codex` command; under ADR-026 isolation it runs `codex mcp add finishup --env
+   FINISHUP_ISOLATED_ROOT=<validated-root> -- finishup mcp serve --host codex`. It does so only after that positive
    absence observation; a foreign same-name entry is
    preserved and refused with `foreign_entry_present` — there is no force path. The structural
    JSON parser rejects duplicate keys, nonstandard constants, and truncated output. Codex exposes
@@ -113,7 +113,7 @@ exactly those contracts and connects the steps without weakening any existing tr
    "registered" never implies "Codex will successfully connect".
 
    **Amended 2026-09-04 — isolated external registration (issue #561).** The environment shape is
-   closed: ambient has none; isolated has only the exact `YOETZ_ISOLATED_ROOT` pair. Preview binds
+   closed: ambient has none; isolated has only the exact `FINISHUP_ISOLATED_ROOT` pair. Preview binds
    and displays that root, apply passes it through Codex's native `--env`, and observation verifies
    the stored value. Missing/different known roots request re-registration; arbitrary keys,
    inherited-variable names, and malformed environment shapes remain foreign with no force path.
@@ -121,8 +121,8 @@ exactly those contracts and connects the steps without weakening any existing tr
    additive `/2` tokens so the new root field cannot alter the older digest contract silently.
 
    **Founder-authorized Codex activation repair (2026-08-03).** An accepted setup now also installs
-   the packaged project skill at `.agents/skills/yoetz` before it installs the structural plugin
-   sources and registers MCP. A directory at `.agents/plugins/yoetz` is not reported as Codex
+   the packaged project skill at `.agents/skills/finishup` before it installs the structural plugin
+   sources and registers MCP. A directory at `.agents/plugins/finishup` is not reported as Codex
    plugin activation: current Codex requires marketplace registration plus an explicit plugin add,
    and setup does not silently mutate that global trust/configuration surface. The plugin directory
    remains a managed source bundle for guidance and hook definitions; the project skill is the
@@ -150,8 +150,8 @@ exactly those contracts and connects the steps without weakening any existing tr
    exact repository marketplace before/after bytes, exact config presence/preimage and append-only
    after bytes, managed source-tree digest, versioned cache target and preimage, intended cache
    digest, temporary-private-home probe environment, forced selected-home activation environment,
-   and the exact post-consent `plugin list --marketplace yoetz --json` and
-   `plugin add yoetz@yoetz --json` commands. Setup displays the bounded targets, environments,
+   and the exact post-consent `plugin list --marketplace finishup --json` and
+   `plugin add finishup@finishup --json` commands. Setup displays the bounded targets, environments,
    commands, digests, resulting blocks, possible scratch/cache/config/marketplace effects, and
    standing-trust warning before asking for explicit approval.
 
@@ -163,7 +163,7 @@ exactly those contracts and connects the steps without weakening any existing tr
    honest retry. It performs no pathname rollback: a verify-then-delete or overwrite could race a
    concurrent replacement. Post-apply inspection calls the canonical inventory and reports
    `active` only when the managed source is installed, repository marketplace and selected-home
-   configuration are exact, inventory says `yoetz@yoetz` is installed and enabled from this
+   configuration are exact, inventory says `finishup@finishup` is installed and enabled from this
    repository, and the inventory's versioned cache is byte-identical to the managed plugin tree.
    Otherwise the closed state is
    `installed_not_activated`, `not_installed`, or `foreign`; installed bytes, configuration, cache,
@@ -217,7 +217,7 @@ exactly those contracts and connects the steps without weakening any existing tr
 
    **Amended 2026-08-21 — explicit route input and honest activation reporting (issues #389 and
    #390).** `setup run` and `integrate <harness> mcp preview|install` accept an explicit
-   `--route-profile strict|policy`. Without that input, an existing yoetz-owned registration keeps
+   `--route-profile strict|policy`. Without that input, an existing finishup-owned registration keeps
    its observed route — the structural configuration derivation (including its fail-closed
    exception fallback) applies only to a fresh registration, and non-interactive `--accept` alone
    never changes an existing route. The interactive wizard still derives the route from the
@@ -230,14 +230,14 @@ exactly those contracts and connects the steps without weakening any existing tr
 
    **Amended 2026-08-25 — consent-gated Codex marketplace and MCP removal (issue #419).** Setup
    writes remain reversible through the same digest-bound `--accept` lane as activation and MCP
-   install, not through `plugin_artifact_apply`. `yoetz integrate codex plugin
+   install, not through `plugin_artifact_apply`. `finishup integrate codex plugin
    preview|status|remove` classifies ownership with `inspect_activation`, then runs
-   `codex plugin remove yoetz@yoetz --json` and, when the `[marketplaces.yoetz]` table
-   byte-matches the yoetz render, `codex plugin marketplace remove yoetz --json`. It deletes
+   `codex plugin remove finishup@finishup --json` and, when the `[marketplaces.finishup]` table
+   byte-matches the finishup render, `codex plugin marketplace remove finishup --json`. It deletes
    repository `.agents/plugins/marketplace.json` only when a retained no-follow descriptor still
    byte- and inode-matches through a private quarantine rename, and it deletes
    only digest-matched versioned cache trees. `--purge-cache` is required to delete other
-   yoetz-managed version directories; it is default-off. Foreign, modified, dual, or otherwise
+   finishup-managed version directories; it is default-off. Foreign, modified, dual, or otherwise
    conflicting entries refuse with `remove_refused` and name the conflicting surface. The removal
    preview binds the exact trusted project root as well as the selected executable, Codex
    home, configuration/cache preimages, planned host commands, and cache-purge choice. A second
@@ -255,9 +255,9 @@ exactly those contracts and connects the steps without weakening any existing tr
    files still expose a final non-CAS write/unlink window to a non-cooperating same-UID writer, so
    owners must quiesce concurrent cache/config/marketplace writers during accepted removal and no atomic content
    exclusion is claimed. The skill tree, consent records, and observation store are
-   intentionally left in place. `yoetz integrate <harness> mcp preview-remove` exposes the exact
+   intentionally left in place. `finishup integrate <harness> mcp preview-remove` exposes the exact
    unregistration digest; noninteractive `remove` requires that digest plus `--accept` before it
-   unregisters an owned external `yoetz` MCP entry with `codex mcp remove yoetz`. Apply immediately
+   unregisters an owned external `finishup` MCP entry with `codex mcp remove finishup`. Apply immediately
    re-reads the entry and refuses a foreign replacement or changed owned route observed before the
    name-based remove. Codex exposes no compare-and-remove token, so the preview warns
    `host_remove_not_compare_and_swap`; the owner must quiesce concurrent MCP config writers and no
@@ -290,7 +290,7 @@ exactly those contracts and connects the steps without weakening any existing tr
    still re-previews, prints the exact digest and bounded preimages, requires the post-preview
    confirmation, durably records that authority before host mutation, and refuses stale state.
 
-The short `yoetz --set --fireworks --model MODEL` and `yoetz --set --grok --model MODEL` paths are
+The short `finishup --set --fireworks --model MODEL` and `finishup --set --grok --model MODEL` paths are
 provider-only entries into the same setup ceremonies. They derive internal provider bindings and
 always collect the API key through hidden TTY
 input. Credential-valued command arguments are not accepted, so noninteractive setup cannot bypass
@@ -299,7 +299,7 @@ credential through generation-CAS.
 
 **Amended 2026-07-28 — deterministic model suggestions.** Every reviewed provider preset carries a
 repository-owned, default-first model suggestion tuple capped at ten entries. Interactive
-`yoetz provider endpoint` selectors, the endpoint menu, and the provider-only `yoetz --set` paths
+`finishup provider endpoint` selectors, the endpoint menu, and the provider-only `finishup --set` paths
 use the same numbered picker and always show a custom model-ID entry. An explicit `--model` bypasses
 the picker unchanged. Owner-declared endpoints remain manual because the repository cannot know
 their model namespace. The picker performs no provider request: CLI/setup code owns no outbound
@@ -325,8 +325,8 @@ availability, structured-output interoperability, provider data use, or E-007 ca
    a version string is not support evidence). Interactive setup first presents the automatically
    detected supported harnesses — exactly **Codex** in v0.1 — as a numbered choice, then presents a
    separate numbered installation choice when several Codex executables exist. Human-facing copy
-   uses the brand names **Yoetz** and **Codex**; the executable, command, and MCP server identifiers
-   remain the protocol-owned lowercase `yoetz`/`codex` tokens. Non-interactive runs fail closed on
+   uses the brand names **FinishUP** and **Codex**; the executable, command, and MCP server identifiers
+   remain the protocol-owned lowercase `finishup`/`codex` tokens. Non-interactive runs fail closed on
    multiple installations and require `--codex-path`. Every registration preview requires an
    explicit `Y` or `N` answer with no implicit default; `--accept` remains the explicit automation
    path. Discovery never widens to `codex-*`: in particular, `codex-testing-update` is not executed
@@ -335,10 +335,10 @@ availability, structured-output interoperability, provider data use, or E-007 ca
 
 6. **The npm launcher is a protected public distribution surface (amends ADR-007 decision 7).**
    `support/npm-launcher/` contains a dependency-free `package.json` (registry name
-   `yoetz`, version locked to the PyPI version) and `bin/yoetz.js`, which requires `uv` on PATH
+   `finishup`, version locked to the PyPI version) and `bin/finishup.js`, which requires `uv` on PATH
    (printing install guidance and exiting nonzero otherwise), makes the exact version a
-   persistent tool with `uv tool install --quiet --python 3.14 yoetz==<version>` (a no-op once
-   present), and delegates to a versionless `uvx --python 3.14 yoetz`, which runs that installed
+   persistent tool with `uv tool install --quiet --python 3.14 finishup==<version>` (a no-op once
+   present), and delegates to a versionless `uvx --python 3.14 finishup`, which runs that installed
    tool environment rather than a cache-backed one, with untouched arguments and the child's
    exact exit code. It bundles no Python, downloads nothing itself, and duplicates no
    wizard logic — first-run behavior lives once, in the Python CLI. The persistent install was
@@ -366,7 +366,7 @@ availability, structured-output interoperability, provider data use, or E-007 ca
 8. **Founder-authorized on-demand service start (2026-07-22 amendment).** A mutating interactive
    setup run and the MCP bridge may invoke the shared fixed-command service launcher when the
    authenticated endpoint is absent. The launcher executes only the current installed
-   `python -m yoetz service run`, supplies no caller path/config/provider/secret argument, strips
+   `python -m finishup service run`, supplies no caller path/config/provider/secret argument, strips
    secret-shaped inherited environment names, detaches using the reviewed platform process flags,
    and reconnects to the singleton winner. The service stops after 7,200 seconds of true
    quiescence; a later MCP tool call may start a generation-fenced successor. A locked successor
@@ -387,7 +387,7 @@ availability, structured-output interoperability, provider data use, or E-007 ca
    ends with one exact replay of the original `start` request identity, which is idempotent by
    construction because the failed call reserved nothing. Hard locks, recovery states, probe
    failures, and every initialized-vault outcome keep their existing answers; the Cursor host
-   profile omits `authorize_command`. `yoetz setup run` remains the human-first path this ADR
+   profile omits `authorize_command`. `finishup setup run` remains the human-first path this ADR
    defined; the continuation is the agent-flow bridge to the same ceremonies, never a new
    authority.
 
@@ -428,7 +428,7 @@ match. Foreign/modified configuration and unrelated pending approvals are preser
 
 Codex reuses its existing setup authority and skill/activation/MCP checks. Disconnect removes its
 activation, owned MCP entry and exact owned project skill, retaining inactive plugin sources and
-Yoetz data. Cursor disconnect removes the user plugin and the selected project's owned MCP entry;
+FinishUP data. Cursor disconnect removes the user plugin and the selected project's owned MCP entry;
 other projects are not swept. Its user-wide plugin scope is shown as a consequential choice.
 Claude disconnect uses its project-scoped uninstall/marketplace removal lifecycle.
 
@@ -456,13 +456,13 @@ supported cell. A future design-gated amendment may restore a separate explicit 
 operational proof. Observation consent remains a later independent decision and is not implied by
 plugin installation.
 
-A new user's path is now: `npx yoetz` or `uvx yoetz` → interactive wizard → detected-harness
+A new user's path is now: `npx finishup` or `uvx finishup` → interactive wizard → detected-harness
 selection (Codex in v0.1) → installation selection when needed → explicit `Y`/`N` confirmation →
 local-only or AI-powered review choice → discoverable project skill → structural plugin/hook sources
 → route-matched Codex MCP registration → on-demand local service → trusted repository binding →
 local vault/provider ceremonies when AI-powered review was chosen → recommendation-first privacy
 review → separately reauthenticated privacy decision. Each mutating step is previewed, digest-bound,
-and individually declinable; `yoetz setup status` reports the same posture read-only at any time.
+and individually declinable; `finishup setup status` reports the same posture read-only at any time.
 The CLI support-command matrix grows by one (`setup`), recorded in the conformance contract test in
 the same change.
 
@@ -478,7 +478,7 @@ path. Artifact preview/apply, host activation, MCP registration, and observation
 separately reported facts, and setup status additionally reports the closed `McpOwnershipState`
 (`absent|external|plugin|dual|foreign|ambiguous`): dual, foreign, and ambiguous ownership are
 explicit reported states that setup never silently resolves or overwrites. For Codex the plugin
-root stays `.agents/plugins/yoetz`; a format migration there is a whole-directory,
+root stays `.agents/plugins/finishup`; a format migration there is a whole-directory,
 marker-identified, digest-bound replacement under this ADR's existing preview/apply and activation
 ceremony, and the bespoke layout remains the shipping control until a portable projection is
 capability-proven and explicitly approved. This amendment grants no new authority: the wizard's
@@ -498,7 +498,7 @@ must select `external_registration` or `plugin_managed`, and for the latter sele
 exact route argv, schema/renderer version, and complete bytes. `dual`, `foreign`, `ambiguous`, or a
 changed owner refuses apply without overwrite. Activation follows artifact apply and never counts
 as privacy/provider consent. Rollback removes only exact managed bytes (restoring the retained exact
-native tree when present); it preserves foreign host config and all Yoetz durable state. PATH or
+native tree when present); it preserves foreign host config and all FinishUP durable state. PATH or
 executable failure is a capability diagnostic after activation, never permission to inject shell
 configuration, environment values, or credentials.
 
@@ -517,13 +517,13 @@ npm launcher version to the Python package version.
 file-inventory fields would be dead or misleading for a global registration, and overloading them
 would weaken the ADR-010 fork guarantee.
 
-**Trigger the wizard from the npm bootstrap script.** Rejected: it cannot serve `uvx yoetz`
+**Trigger the wizard from the npm bootstrap script.** Rejected: it cannot serve `uvx finishup`
 users and would duplicate first-run logic in two languages with drift risk.
 
 **Offer a force-replace for foreign MCP entries.** Rejected for v0.1: the runbook's
 preserve-and-review rule stands; a foreign entry is reported with a manual follow-up instead.
 
-**A `YOETZ_SKIP_SETUP_WIZARD` environment opt-out.** Rejected: the non-TTY guard already covers
+**A `FINISHUP_SKIP_SETUP_WIZARD` environment opt-out.** Rejected: the non-TTY guard already covers
 automation, and the marker covers humans; an ambient env escape would make first-run silently
 skippable by inherited shell configuration.
 

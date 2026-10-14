@@ -17,21 +17,21 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from yoetz.domain.findings import CheckVerdict
-from yoetz.mcp import summaries
-from yoetz.mcp.summaries import (
+from finishup.domain.findings import CheckVerdict
+from finishup.mcp import summaries
+from finishup.mcp.summaries import (
     MAX_SUMMARY_BYTES,
     render_safe_compact_summary,
     render_safe_compact_summary_detailed,
 )
-from yoetz.protocol.errors import (
+from finishup.protocol.errors import (
     PROTOCOL_REASON_CODES,
     SAFE_DETAIL_KEYS,
     PublicErrorCode,
 )
-from yoetz.protocol.models import SemanticReason, SemanticStatus
-from yoetz.protocol.readiness_text import READINESS_STATES
-from yoetz.protocol.recovery import CONTINUATION_TOKENS
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.readiness_text import READINESS_STATES
+from finishup.protocol.recovery import CONTINUATION_TOKENS
 
 _HEAD = st.one_of(
     st.just("genesis"), st.binary(min_size=32, max_size=32).map(lambda b: "sha256:" + b.hex())

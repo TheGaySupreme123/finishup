@@ -4,15 +4,15 @@
 and 2, and of the "alternatives considered" rejection of a TUI framework in that same ADR.
 ADR-013's decisions 3 and 4 — the menu adds no authority, and bounded failures stay bounded —
 are not amended; they are restated here and carried forward unchanged.
-**Implemented by:** `src/yoetz/tui/` (new package), plus the amended `src/yoetz/cli/app.py`,
-`src/yoetz/cli/setup.py`, and `support/npm-launcher/bin/yoetz.js`.
+**Implemented by:** `src/finishup/tui/` (new package), plus the amended `src/finishup/cli/app.py`,
+`src/finishup/cli/setup.py`, and `support/npm-launcher/bin/finishup.js`.
 **Relates to:** ADR-008 (local service/vault trust boundary), ADR-009 (privacy/egress),
 ADR-010 (harness integration port), ADR-012 (first-run setup wizard), ADR-013 (interactive
 control menu), ADR-016 (human review for non-default actions).
 
 ## Context
 
-ADR-012 gave a fresh install one guided moment; ADR-013 turned every later bare `yoetz` into a
+ADR-012 gave a fresh install one guided moment; ADR-013 turned every later bare `finishup` into a
 numbered prompt loop over the same operations. Both were correct and neither was usable by the
 person this product is for.
 
@@ -38,11 +38,11 @@ authority at all.
 
 ## Decisions
 
-1. **Bare `yoetz` on a real terminal opens a full-screen interface (amends ADR-013 decision 1).**
+1. **Bare `finishup` on a real terminal opens a full-screen interface (amends ADR-013 decision 1).**
    The gate is stricter than ADR-013's, not looser: stdin *and* stdout must both be TTYs, `TERM`
    must be neither empty nor `dumb`, no CI marker (`CI`, `CONTINUOUS_INTEGRATION`,
    `BUILD_NUMBER`, `GITHUB_ACTIONS`, `GITLAB_CI`, `TEAMCITY_VERSION`) may be set, and
-   `YOETZ_TUI=0` is an explicit opt-out. Every non-TTY, piped, redirected, CI, `--help`,
+   `FINISHUP_TUI=0` is an explicit opt-out. Every non-TTY, piped, redirected, CI, `--help`,
    JSON-output, named-subcommand, and MCP-server invocation keeps its exact previous bytes,
    including the help text for a bare non-TTY invocation.
 
@@ -62,17 +62,17 @@ authority at all.
    root; independent clones do not. The interface never derives privacy scope from public
    `workspace_ref` and never retains the raw locator after handing it to trusted control.
 
-3. **`yoetz menu` opens the same interface (amends ADR-013 decision 2).** The command name is
+3. **`finishup menu` opens the same interface (amends ADR-013 decision 2).** The command name is
    kept for compatibility. On a non-TTY it still fails closed with a usage error (exit 2) and
    never prompts.
 
 4. **The interface degrades to the ADR-013 prompt loop, and never fails.** If the rendering
    dependency is unavailable in an installation for any reason, `run_tui` reports that rather
-   than raising, and the caller falls back to `src/yoetz/cli/menu.py`. The prompt loop remains a
+   than raising, and the caller falls back to `src/finishup/cli/menu.py`. The prompt loop remains a
    complete, supported interface over the same operations; it is not deprecated by this ADR.
 
 5. **The interface is a presentation layer and adds no authority (restates ADR-013 decision 3).**
-   `src/yoetz/tui/runtime.py` is the only module that speaks to application services, and it
+   `src/finishup/tui/runtime.py` is the only module that speaks to application services, and it
    originates no decision. MCP registration keeps preview → digest-bound confirm → verify;
    plugin installation keeps its own verification; observation consent is still granted only
    after both are verified; privacy policy mutation stays in the explicit
@@ -85,7 +85,7 @@ authority at all.
    Repository commitment, grant state, migration state, composed policy, and the authority digest
    all come from the trusted service; the interface originates none of them.
 
-   Connection display is true when any discovered installation is Yoetz-owned. Discovery order
+   Connection display is true when any discovered installation is FinishUP-owned. Discovery order
    has no authority: a different first binary cannot make an owned `codex-testing` registration
    render as disconnected.
 
@@ -98,18 +98,18 @@ authority at all.
 
 7. **No secret ever reaches a widget.** When a credential or passphrase is required, the
    interface asks for explicit consent, then *suspends itself* and hands the controlling terminal
-   to the existing ceremony in `src/yoetz/cli/unlock.py`, which opens `/dev/tty`, verifies it is
+   to the existing ceremony in `src/finishup/cli/unlock.py`, which opens `/dev/tty`, verifies it is
    the controlling terminal, and disables echo itself. No secret byte can enter the widget tree,
    the transcript, a log line, a config file, an event payload, MCP context, or a test snapshot.
    Where the environment cannot suspend, the interface says so and names the command that runs
    the same ceremony directly; it does not fall back to typing a secret into the window.
 
-8. **Rendering is pure, and the vocabulary is fixed.** `src/yoetz/tui/render.py` is a function
+8. **Rendering is pure, and the vocabulary is fixed.** `src/finishup/tui/render.py` is a function
    from value objects to lines of text with no rendering-framework import, so safety-relevant
    wording is snapshot-tested byte for byte and narrow-terminal behaviour is asserted at any
    width without a terminal. The six status symbols (`›` selected, `•` active, `✓` verified,
    `!` unproven or limited, `■` blocked, `○` not configured) and their colours are defined once
-   in `src/yoetz/tui/symbols.py`. `✓` is reachable only from a layer the owning service reported
+   in `src/finishup/tui/symbols.py`. `✓` is reachable only from a layer the owning service reported
    as verified.
 
 9. **Readiness layers are never collapsed.** Harness detected, MCP registered, MCP verified,
@@ -152,17 +152,17 @@ stack, scroll, or resize behaviour, and its testing story would not have let thi
 rules be tested at the keystroke level. urwid is maintained but has a weaker style and testing
 surface for no dependency saving.
 
-The dependency is required rather than optional because bare `yoetz` is the default human entry
+The dependency is required rather than optional because bare `finishup` is the default human entry
 point; decision 4 keeps a missing renderer from being fatal.
 
-The stylesheet is a Python string in `src/yoetz/tui/styles.py` rather than a `.tcss` file: the
+The stylesheet is a Python string in `src/finishup/tui/styles.py` rather than a `.tcss` file: the
 wheel contract in `tests/packaging/test_wheel_and_sdist_contents.py` allows package Python and
-reviewed resources under `yoetz/resources/` only, and a stylesheet is not worth the resource
+reviewed resources under `finishup/resources/` only, and a stylesheet is not worth the resource
 manifest machinery that would make it one.
 
 ## Consequences
 
-A nontechnical user can run `npx yoetz` and finish setup without meeting the words MCP, hook,
+A nontechnical user can run `npx finishup` and finish setup without meeting the words MCP, hook,
 digest, vault, or binding. The honesty model gets *stronger* rather than weaker: readiness that
 used to be prose is now fifteen independently falsifiable lines, the approval preview can no
 longer scroll away from the question it belongs to, and the wording of every safety-relevant
@@ -216,7 +216,7 @@ system does not have.
 context section are structural. Layered readiness, a preview that stays adjacent to its approval,
 and a fixed certainty vocabulary all need a surface that can hold two regions at once.
 
-**Ship the interface as an optional extra (`yoetz[tui]`).** Rejected: bare `yoetz` on a terminal
+**Ship the interface as an optional extra (`finishup[tui]`).** Rejected: bare `finishup` on a terminal
 is the default human entry point, and an install whose default experience depends on an extra the
 user did not know to ask for is worse than the four packages. Decision 4 covers the case the
 extra was meant to cover.

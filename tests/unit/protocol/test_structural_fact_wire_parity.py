@@ -20,20 +20,20 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.domain.command_segments import MAX_COMMAND_COMMITMENTS
-from yoetz.domain.observation import (
+from finishup.domain.command_segments import MAX_COMMAND_COMMITMENTS
+from finishup.domain.observation import (
     _RUNNER_CLASSES,
     _RUNTIME_FACT_VALUES,
     ObservationIngestRequest,
     observation_ingest_request_from_json,
     observation_ingest_request_to_json,
 )
-from yoetz.domain.values import JsonObject, freeze_json
-from yoetz.domain.write_scope import WRITE_SCOPES
-from yoetz.ports.control import ControlCallRequest, ControlMethod
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import schema_document_for
-from yoetz.service.control_protocol import (
+from finishup.domain.values import JsonObject, freeze_json
+from finishup.domain.write_scope import WRITE_SCOPES
+from finishup.ports.control import ControlCallRequest, ControlMethod
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import schema_document_for
+from finishup.service.control_protocol import (
     ControlProtocolError,
     decode_control_frame,
     encode_control_frame,

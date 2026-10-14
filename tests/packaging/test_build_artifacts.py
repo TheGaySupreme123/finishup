@@ -117,7 +117,7 @@ class BuildResult:
 def _build_once(
     export_root: Path, out_root: Path, *, label: str, source_date_epoch: str, hash_seed: str = "0"
 ) -> BuildResult:
-    source_dir = export_root / f"yoetz-canary-{label}"
+    source_dir = export_root / f"finishup-canary-{label}"
     out_dir = out_root / f"out-{label}"
     _export_clean_source(source_dir)
     _run_uv_build(source_dir, out_dir, source_date_epoch=source_date_epoch, hash_seed=hash_seed)
@@ -268,7 +268,7 @@ def test_unreachable_package_index_does_not_change_artifact_identity(
     export_root = tmp_path_factory.mktemp("export")
     out_root = tmp_path_factory.mktemp("out")
     epoch = _git("log", "-1", "--format=%ct")
-    source_dir = export_root / "yoetz-canary-private-index"
+    source_dir = export_root / "finishup-canary-private-index"
     out_dir = out_root / "out-private-index"
     _export_clean_source(source_dir)
 

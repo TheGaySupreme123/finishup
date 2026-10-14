@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from yoetz.cli.closure_gate import closure_gate_from_readiness
-from yoetz.domain.values import event_id, obligation_id
-from yoetz.kernel.fact_lineage import (
+from finishup.cli.closure_gate import closure_gate_from_readiness
+from finishup.domain.values import event_id, obligation_id
+from finishup.kernel.fact_lineage import (
     FACT_LINEAGE_BASES,
     FACT_LINEAGE_PROOFS,
     FACT_LINEAGE_RULES,
@@ -20,7 +20,7 @@ from yoetz.kernel.fact_lineage import (
     lineage_texts,
     lineage_to_wire,
 )
-from yoetz.protocol.models import FactLineageModel
+from finishup.protocol.models import FactLineageModel
 
 _OBL = obligation_id("obl_00000000-0000-4000-8000-0000000000f1")
 _CHECK = event_id("evt_00000000-0000-4000-8000-0000000000f2")
@@ -179,7 +179,7 @@ def test_the_gate_text_says_why_beside_the_token_it_explains() -> None:
     assert gate is not None
     assert lineage_text(_emptied()) in gate.text
     assert "Acknowledging or republishing the obligation does not clear this" in gate.text
-    assert "yoetz-assumption:<obligation id>" in gate.text
+    assert "finishup-assumption:<obligation id>" in gate.text
     assert len(gate.text) <= 2_000
     # Provenance for a fact the gate is not naming is not shown.
     quiet = SimpleNamespace(

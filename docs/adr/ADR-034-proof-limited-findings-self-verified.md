@@ -1,17 +1,17 @@
 # ADR-034 — Proof-limited findings: the `self_verified` respond disposition
 
-**Status:** Accepted for [issue #984](https://github.com/TheGaySupreme123/yoetz/issues/984). The
-owner chose this design on 2026-10-07 while reviewing TB4 run tb4n1: "I prefer this even if yoetz
+**Status:** Accepted for [issue #984](https://github.com/TheGaySupreme123/finishup/issues/984). The
+owner chose this design on 2026-10-07 while reviewing TB4 run tb4n1: "I prefer this even if finishup
 can't find, let the agent respond and populate it." This counts as the maintainer
 acknowledgement for this design-gated protocol change. It grants no runtime, credential,
 disclosure or destructive-action authority.
-**Implemented by:** `src/yoetz/kernel/self_verification.py`, `src/yoetz/kernel/finding_resolution.py`
+**Implemented by:** `src/finishup/kernel/self_verification.py`, `src/finishup/kernel/finding_resolution.py`
 (`finding_resolution_attempt`, `UNRESOLVED_FINDING_NEXT_STEPS`, `finding_is_resolved`),
-`src/yoetz/kernel/finding_todo.py`, `src/yoetz/kernel/closure_readiness.py`
-(`finding_self_verified`), `src/yoetz/application/respond.py`, `src/yoetz/domain/findings.py`,
-`src/yoetz/domain/events.py`, `src/yoetz/domain/receipts.py`, `src/yoetz/kernel/receipt_builder.py`,
-`src/yoetz/protocol/models.py`, `src/yoetz/cli/render.py`, `src/yoetz/mcp/descriptors.py`,
-`src/yoetz/mcp/summaries.py`, `scripts/generate_schemas.py`, and
+`src/finishup/kernel/finding_todo.py`, `src/finishup/kernel/closure_readiness.py`
+(`finding_self_verified`), `src/finishup/application/respond.py`, `src/finishup/domain/findings.py`,
+`src/finishup/domain/events.py`, `src/finishup/domain/receipts.py`, `src/finishup/kernel/receipt_builder.py`,
+`src/finishup/protocol/models.py`, `src/finishup/cli/render.py`, `src/finishup/mcp/descriptors.py`,
+`src/finishup/mcp/summaries.py`, `scripts/generate_schemas.py`, and
 `fixtures/canonical/review-dialogue-1.3.0.case.json`.
 **Relates to:** ADR-032 (closure readiness), ADR-033 (Stop-time closure gate and blockers), and
 issue #905 (`acknowledged_not_done` and terminal to-do states).
@@ -19,7 +19,7 @@ issue #905 (`acknowledged_not_done` and terminal to-do states).
 ## Context
 
 A finding is resolved only when a later qualifying check proves it absent
-(`kernel/finding_resolution.py`). Yoetz's own limits can keep that proof out of reach for good:
+(`kernel/finding_resolution.py`). FinishUP's own limits can keep that proof out of reach for good:
 
 - capture and observation loss (`command_attempt_uncorroborated`, `content_redacted`,
   `observation_input_loss`);
@@ -27,11 +27,11 @@ A finding is resolved only when a later qualifying check proves it absent
   diffs, content types the reviewer cannot see).
 
 In tb4n1, readiness kept `receipt_findings_unresolved` agent-actionable in every case. The
-Stop-time gate (ADR-033) then gave the agent two exits: repair, or stop for a `yoetz-blocker`. The
-agent could not repair a Yoetz limit, so it filed a blocker on finished work:
+Stop-time gate (ADR-033) then gave the agent two exits: repair, or stop for a `finishup-blocker`. The
+agent could not repair a FinishUP limit, so it filed a blocker on finished work:
 
 - 38 attempts declared a blocker, and every one of them had been gated first.
-- 27 to 30 attempts blamed Yoetz for work they had already finished.
+- 27 to 30 attempts blamed FinishUP for work they had already finished.
 - Those blockers claimed "authority", "consent" or "dependency unavailable".
 - The time spent after the work was done was a median of 4.8 minutes in D and 10.4 in S, against
   0.4 minutes in V.
@@ -45,7 +45,7 @@ is finished.
 `respond` gains a terminal disposition, `self_verified`. The agent states three things:
 
 - it repaired the finding;
-- Yoetz cannot prove the repair because of a Yoetz limit;
+- FinishUP cannot prove the repair because of a FinishUP limit;
 - it verified the repair itself.
 
 **Required fields.**
@@ -62,7 +62,7 @@ deliverable gets. Only the field rules are schema-enforced. Admission refuses wi
 - `response_fields_invalid`: the reason is blank or there is no evidence;
 - `finding_terminal`: the item is already final;
 - `finding_not_rechecked`: no later check has tested the finding;
-- `finding_not_proof_limited`: Yoetz still sees the issue, or names work the agent can do.
+- `finding_not_proof_limited`: FinishUP still sees the issue, or names work the agent can do.
 
 **Wire.** These versions change in place; all are unreleased on 0.3:
 
@@ -80,13 +80,13 @@ deliverable gets. Only the field rules are schema-enforced. Admission refuses wi
 - **To-do state.** The terminal state is `self_verified`. `finding_is_resolved` never reports such
   a finding as resolved, even after a later absence proof. This is the same invariant
   `acknowledged_not_done` has: the item stays the agent's own verification and never becomes a
-  Yoetz-proven row afterwards.
+  FinishUP-proven row afterwards.
 - **Agent work.** It is not agent work. `finding_blocks_receipt` is false for it, so it leaves
   `receipt_blocking_finding_count` and `receipt_findings_unresolved`. The Stop gate does not fire
   on it.
 - **Readiness.** Readiness discloses the standing code `finding_self_verified`, which is new in
   gap classification version 3.
-- **Receipt.** The receipt lists the ids in their own section, "Self-verified by the agent; Yoetz
+- **Receipt.** The receipt lists the ids in their own section, "Self-verified by the agent; FinishUP
   could not prove the repair", in JSON, markdown and text. Its conclusion is at best
   `insufficient_coverage`. This is a separate early-return in `receipt_builder._conclusion`.
 - **Review.** The item is not reviewed again. A reviewer restatement folds onto it, as it does
@@ -126,7 +126,7 @@ does not change any proof rule.
      saw the repair and still sees the issue.
 3. `respond` also requires at least one cited evidence or result id recorded after the finding:
    evidence from before the repair cannot show that the repair was verified.
-4. Every other reason is a Yoetz limit, so the finding is eligible. Because a standing code counts
+4. Every other reason is a FinishUP limit, so the finding is eligible. Because a standing code counts
    as a limit, a new gap code becomes self-verifiable as soon as `closure_readiness` classifies it
    standing.
 
@@ -135,25 +135,25 @@ does not change any proof rule.
 Every text that tells the agent what to do with an unresolved finding uses the same order:
 
 1. Repair it, then check.
-2. If you repaired it and Yoetz cannot prove it, verify it yourself, record that evidence, and
+2. If you repaired it and FinishUP cannot prove it, verify it yourself, record that evidence, and
    respond `self_verified`.
 3. Respond `acknowledged_not_done` only if you truly will not or cannot do it.
 
 These texts are the finding explanation suffix (`UNRESOLVED_FINDING_NEXT_STEPS`), the CLI
 budget hint and the `respond` descriptor. The shared sentence is
-`domain.findings.SELF_VERIFIED_GUIDANCE`, and it says that a Yoetz limit is never a
-`yoetz-blocker`.
+`domain.findings.SELF_VERIFIED_GUIDANCE`, and it says that a FinishUP limit is never a
+`finishup-blocker`.
 
 ## Consequences
 
-- **Gate and blockers.** A repaired finding blocked by a Yoetz limit no longer keeps readiness
+- **Gate and blockers.** A repaired finding blocked by a FinishUP limit no longer keeps readiness
   `action_required`. The gate stops pushing agents toward false blockers.
 - **Receipts.** A receipt never reads clean on the agent's word alone. It discloses each
   self-verified id and stays at best `insufficient_coverage`.
 - **Older artifacts.** A receipt artifact older than 1.3.0 has no terminal sections. There a
   self-verified item still counts as unresolved, as `rejection_accepted` does.
 - **Lineage (owner decision, 2026-10-07: "carry it as self-verified").** A child task's
-  self-verified finding rolls up to the parent as "self-verified by the child agent; Yoetz could
+  self-verified finding rolls up to the parent as "self-verified by the child agent; FinishUP could
   not prove it". The frozen `child-dependencies-recorded` row keeps `actionable` and `resolved`
   honest (actionable by kind, never resolved) and adds `self_verified: true`, emitted only when
   true so every other manifest keeps its bytes. The parent evaluator keeps such a row out of its
@@ -166,7 +166,7 @@ budget hint and the `respond` descriptor. The shared sentence is
   unresolved in the snapshot.
 - **Agent misuse.** An agent can still call a repair verified when it is not. The answer is
   attributable, carries the agent's own evidence ids, and is listed by id. The eligibility rule
-  limits it to cases where Yoetz's newest check no longer positively sees the issue.
+  limits it to cases where FinishUP's newest check no longer positively sees the issue.
 
 ## Reverse path
 
@@ -202,7 +202,7 @@ deterministic duplicates, and restatements of a terminal item.
   that is the same finding (`duplicate_target_same_finding`), unknown or unreadable
   (`duplicate_target_unknown`), recorded after this finding (`duplicate_target_not_earlier`), of a
   different origin or kind (`duplicate_target_different_issue`: a different kind is a different
-  issue), or itself linked as a duplicate (`duplicate_target_is_duplicate`; Yoetz refuses rather
+  issue), or itself linked as a duplicate (`duplicate_target_is_duplicate`; FinishUP refuses rather
   than re-pointing, and the refusal names the finding to link to). A finding other findings
   already link to cannot become a duplicate itself (`duplicate_has_duplicates`), so no chain forms
   through a later link. A finding whose link a check broke cannot be re-linked
@@ -249,7 +249,7 @@ row carries `self_verified_finding_count`, so status agrees with the parent rece
 
 [ADR-040](ADR-040-reviewer-disagreement-and-route-derived-review.md) adds a sixth to-do state,
 `disputed_after_rebuttal`: the reviewer kept an AI-powered finding open after the agent's reasoned
-`rejected` answer and cited nothing recorded after it. Yoetz records it, not the agent. Like
+`rejected` answer and cited nothing recorded after it. FinishUP records it, not the agent. Like
 `self_verified` it is final, not agent work and never clean (readiness standing code
 `finding_disputed_after_rebuttal`; receipt `disputed_after_rebuttal_finding_ids`); like
 `rejection_accepted` it is latched by a check and cleared when that check is redacted.
@@ -267,7 +267,7 @@ every task fact task-wide. tb4n2 interleaved S: two review findings were refused
 ## Amendment (2026-10-11, issue #1030, tb4n3 RC-7): the answers are not one-way doors
 
 `acknowledged_not_done` and `self_verified` were final: an agent that gave up (or verified a repair
-Yoetz could not prove) and then did the work, or whose work a later check proved, stayed
+FinishUP could not prove) and then did the work, or whose work a later check proved, stayed
 receipt-blocking or stayed "disclosed" forever (pretrain S, N3-5). The reverse edges:
 
 - **Absence proof after the answer.** `FindingProjectionRecord.resolution_frontier` is the tested

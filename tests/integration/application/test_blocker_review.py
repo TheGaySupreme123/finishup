@@ -1,8 +1,8 @@
 """A recorded blocker is disclosed, named in status, and verified once by the closing review.
 
 Issues #976 and #977 (TB4 validation, pretrain-shard-corruption): an agent recorded
-``yoetz-blocker:dependency_unavailable`` for "no original snapshot found" although the task said
-the data was recoverable. Yoetz honoured it silently. These cases run the real ready composition
+``finishup-blocker:dependency_unavailable`` for "no original snapshot found" although the task said
+the data was recoverable. FinishUP honoured it silently. These cases run the real ready composition
 with a hermetic reviewer:
 
 * status names the blocked obligation, its claimed kind and the decision (ids and the closed kind
@@ -32,23 +32,23 @@ from builders.projection_workflow import (
 )
 from builders.review_manifests import provider_bound_manifest
 from builders.start_application import protocol_id, start_request
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.semantic_case import (
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.semantic_case import (
     build_semantic_case,
     semantic_case_packet_view,
     semantic_case_to_candidate_context,
 )
-from yoetz.application.service import Application
-from yoetz.cli.closure_gate import BLOCKER_RECHECK_ITEM, closure_gate_from_readiness
-from yoetz.domain.findings import (
+from finishup.application.service import Application
+from finishup.cli.closure_gate import BLOCKER_RECHECK_ITEM, closure_gate_from_readiness
+from finishup.domain.findings import (
     Finding,
     FindingKind,
     FindingOrigin,
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
@@ -62,18 +62,18 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.kernel.task_facts import OBLIGATION_BLOCKED_GAP
-from yoetz.ports.control import ControlMethod
-from yoetz.ports.ledger import CheckCommitResult, FrozenCase
-from yoetz.ports.privacy import EffectivePrivacyPolicy
-from yoetz.ports.semantic import (
+from finishup.kernel.task_facts import OBLIGATION_BLOCKED_GAP
+from finishup.ports.control import ControlMethod
+from finishup.ports.ledger import CheckCommitResult, FrozenCase
+from finishup.ports.privacy import EffectivePrivacyPolicy
+from finishup.ports.semantic import (
     ReviewerChallenge,
     SamplingParams,
     SemanticCase,
     SemanticJudgment,
 )
-from yoetz.protocol.canonical import JsonValue, strict_json_parse
-from yoetz.protocol.models import (
+from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.models import (
     CheckRequest,
     DataCategory,
     PublishWorkRequest,
@@ -221,7 +221,7 @@ async def _session(reviewer: _Reviewer, seed: int) -> tuple[_Session, JsonValue]
                         "decision_recorded",
                         {
                             "statement": "Stop: the original data is gone.\n"
-                            "yoetz-blocker:dependency_unavailable",
+                            "finishup-blocker:dependency_unavailable",
                             "rationale": _RATIONALE,
                             "authority": "harness:codex",
                             "affected_obligation_ids": [obligation],
@@ -238,7 +238,7 @@ async def _session(reviewer: _Reviewer, seed: int) -> tuple[_Session, JsonValue]
 async def _confirm(
     session: _Session, frontier: JsonValue, seed: int, *, dry_run: bool = False
 ) -> Any:
-    """Publish the same yoetz-blocker line again in a later decision (#985)."""
+    """Publish the same finishup-blocker line again in a later decision (#985)."""
 
     return await session.app.publish_work(
         PublishWorkRequest.model_validate(
@@ -254,7 +254,7 @@ async def _confirm(
                         "decision_recorded",
                         {
                             "statement": "Still blocked after the challenge.\n"
-                            "yoetz-blocker:dependency_unavailable",
+                            "finishup-blocker:dependency_unavailable",
                             "rationale": "Reconsidered: the source is outside the workspace.",
                             "authority": "harness:codex",
                             "affected_obligation_ids": [session.obligation_id],
@@ -374,7 +374,7 @@ async def test_a_first_blocker_is_claimed_and_challenged_until_confirmed() -> No
 
 
 async def test_publish_challenges_a_first_blocker_and_flags_one_on_finished_work() -> None:
-    from yoetz.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
+    from finishup.protocol.models import PUBLISH_BLOCKER_NOTICE_TEXTS
 
     seed = 9070
     reviewer = _Reviewer([])
@@ -386,7 +386,7 @@ async def test_publish_challenges_a_first_blocker_and_flags_one_on_finished_work
         protocol_id("evt_", seed + 4),
         "decision_recorded",
         {
-            "statement": "yoetz-blocker:dependency_unavailable",
+            "statement": "finishup-blocker:dependency_unavailable",
             "rationale": "dependency_unavailable: authoritative historical source",
             "authority": "harness:codex",
             "affected_obligation_ids": [open_obligation],
@@ -446,9 +446,9 @@ async def test_publish_challenges_a_first_blocker_and_flags_one_on_finished_work
     text = _body(published)["blocker_notices"][0]["text"]
     assert text == PUBLISH_BLOCKER_NOTICE_TEXTS["blocker_claimed"]
     assert "Repair the obligation first" in text
-    assert "A Yoetz limit" in text and "never a" in text and "respond self_verified" in text
+    assert "A FinishUP limit" in text and "never a" in text and "respond self_verified" in text
     assert "recoverable" in text
-    assert "publish the same yoetz-blocker line for it again in a later" in text
+    assert "publish the same finishup-blocker line for it again in a later" in text
     # The MCP bridge projection keeps the notices: closed codes, ids and fixed text only.
     request_wire = {**request_base(protocol_id("req_", seed + 6)), **base}
     projected = await project_case(
@@ -582,7 +582,7 @@ async def test_closing_review_challenges_a_contradicted_blocker_and_the_agent_an
     blocker_question = case.question_set[-1]
     assert blocker_question.startswith("Recorded blockers: ")
     assert (
-        f"decision {session.decision_event_id} declares yoetz-blocker:dependency_unavailable"
+        f"decision {session.decision_event_id} declares finishup-blocker:dependency_unavailable"
         f" for {session.obligation_id}"
     ) in blocker_question
     assert "recoverable" in blocker_question
@@ -626,10 +626,10 @@ async def test_closing_review_challenges_a_contradicted_blocker_and_the_agent_an
     ]
     assert len(decision_rows) == 1
     content = str(decision_rows[0].get("content"))
-    assert "yoetz-blocker:dependency_unavailable" in content
+    assert "finishup-blocker:dependency_unavailable" in content
     assert "No original snapshot was found" in content
     # Egress replaces only the credential-like value, in place (issue #982).
-    from yoetz.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
+    from finishup.observability.privacy import EGRESS_CREDENTIAL_PLACEHOLDER
 
     assert EGRESS_CREDENTIAL_PLACEHOLDER.decode() in content
     assert any(
@@ -740,7 +740,7 @@ _PRETRAIN_GOLDEN = (
 
 
 async def test_pretrain_blocker_question_requires_a_challenge_on_the_main_deliverable() -> None:
-    from yoetz.application.semantic_case import BLOCKER_REVIEW_INSTRUCTION
+    from finishup.application.semantic_case import BLOCKER_REVIEW_INSTRUCTION
 
     seed = 9300
     reviewer = _Reviewer([_no_challenges])
@@ -790,7 +790,7 @@ async def test_pretrain_blocker_question_requires_a_challenge_on_the_main_delive
                         decision,
                         "decision_recorded",
                         {
-                            "statement": "yoetz-blocker:dependency_unavailable",
+                            "statement": "finishup-blocker:dependency_unavailable",
                             "rationale": "dependency_unavailable: authoritative historical source",
                             "authority": "harness:codex",
                             "affected_obligation_ids": [obligation],

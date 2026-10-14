@@ -9,10 +9,10 @@ from typing import Any
 
 import pytest
 
-import yoetz.adapters.git_change_capture as capture_module
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
-from yoetz.kernel.test_edit_visibility import check_change_header_entries, preexisting_test_edits
-from yoetz.ports.change_capture import (
+import finishup.adapters.git_change_capture as capture_module
+from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.kernel.test_edit_visibility import check_change_header_entries, preexisting_test_edits
+from finishup.ports.change_capture import (
     ChangeCaptureUnavailable,
     CheckChangeCapture,
     CheckChangeMetadata,
@@ -50,9 +50,9 @@ def _commit(repository: Path, message: str) -> None:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-am",
@@ -73,9 +73,9 @@ def _repository(tmp_path: Path) -> Path:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -123,7 +123,7 @@ def test_script_rewrite_without_any_edit_tool_is_captured_against_the_task_base(
     assert (capture.tracked_files, capture.untracked_files, capture.omitted_files) == (1, 1, 0)
     assert not capture.truncated
     text = _text(capture)
-    assert text.startswith("Yoetz check-time change: captured by the Yoetz service")
+    assert text.startswith("FinishUP check-time change: captured by the FinishUP service")
     assert "Base: the commit HEAD named when this task started." in text
     assert "-  return String(value);" in text
     assert "+  return typeof value + ':' + String(value);" in text
@@ -1007,9 +1007,9 @@ def test_pack_hard_linked_from_another_repository_is_shown_once_every_blob_verif
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -1247,9 +1247,9 @@ def _nested_repository(parent: Path, name: str = "api") -> Path:
     _git(
         nested,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -1317,7 +1317,7 @@ def test_a_base_without_a_snapshot_keeps_every_untracked_file_as_before(tmp_path
 
 
 def test_first_check_base_cannot_carry_a_task_start_snapshot() -> None:
-    from yoetz.ports.change_capture import UntrackedBaselineFile
+    from finishup.ports.change_capture import UntrackedBaselineFile
 
     with pytest.raises(ValueError):
         TaskChangeBase(
@@ -1342,9 +1342,9 @@ def test_nested_repository_change_is_captured_under_its_directory(tmp_path: Path
     _git(
         nested,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-am",
@@ -1540,7 +1540,7 @@ def test_a_snapshot_the_base_refuses_keeps_the_commit_base_and_is_recorded(
 
     def refused(self: object, pinned: object, deadline: float) -> object:
         # A listing for a repository without a recorded HEAD: the base object refuses it.
-        from yoetz.ports.change_capture import NestedUntrackedBaseline
+        from finishup.ports.change_capture import NestedUntrackedBaseline
 
         return (), True, (), (NestedUntrackedBaseline("api", True),)
 
@@ -1597,7 +1597,7 @@ def test_a_nested_listing_past_the_snapshot_bound_names_its_untracked_files_only
 
 
 def test_nested_untracked_listings_decode_strictly(tmp_path: Path) -> None:
-    from yoetz.ports.change_capture import NestedUntrackedBaseline, UntrackedBaselineFile
+    from finishup.ports.change_capture import NestedUntrackedBaseline, UntrackedBaselineFile
 
     state = "sha256:" + "0" * 64
     note = UntrackedBaselineFile("notes.md", state)
@@ -1927,9 +1927,9 @@ def _nested_commit(nested: Path, content: str, message: str) -> None:
     _git(
         nested,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-am",

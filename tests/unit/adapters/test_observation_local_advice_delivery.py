@@ -18,21 +18,21 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import AdviceDelivery, LocalObservationStore
-from yoetz.application.observation_advice import (
+from finishup.adapters.integrations.observation_local import AdviceDelivery, LocalObservationStore
+from finishup.application.observation_advice import (
     ObservationAdviceBuildInput,
     build_observation_advice_snapshot,
 )
-from yoetz.cli.observe_hooks import handle_claude_observe, handle_observe
-from yoetz.domain.observation import (
+from finishup.cli.observe_hooks import handle_claude_observe, handle_observe
+from finishup.domain.observation import (
     AdviceSnapshot,
     ObservationCursor,
     ObservationEnvelope,
     ObservationLifecycle,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.kernel.policies.observation_advice import ObservationCompositionFact
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.kernel.policies.observation_advice import ObservationCompositionFact
 
 _TIME = Timestamp("2026-08-13T14:00:00.000Z")
 _STANDING = ObservationCompositionFact(
@@ -660,24 +660,24 @@ def test_a_then_b_then_a_redelivers_a(tmp_path: Path) -> None:
 
 
 def _map_session(tmp_path: Path, codex_session: str) -> str:
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         mapping_from_start_ids,
         store_mapping,
     )
-    from yoetz.protocol.ids import IdKind, new_id
+    from finishup.protocol.ids import IdKind, new_id
 
-    yoetz_session = new_id(IdKind.SESSION)
+    finishup_session = new_id(IdKind.SESSION)
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=codex_session,
             yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=yoetz_session,
+            yoetz_session_id=finishup_session,
             yoetz_writer_id=new_id(IdKind.WRITER),
             last_frontier=None,
         ),
         _state=tmp_path,
     )
-    return yoetz_session
+    return finishup_session
 
 
 def test_workspace_snapshot_is_not_a_task_scoped_fallback(tmp_path: Path) -> None:
@@ -755,13 +755,13 @@ def test_mapped_session_snapshot_still_delivers_its_own_failed_command(
     tmp_path: Path,
 ) -> None:
     store, workspace = _consented(tmp_path)
-    yoetz_session = _map_session(tmp_path, "mapped-own")
+    finishup_session = _map_session(tmp_path, "mapped-own")
     own = _snapshot(
         workspace,
         envelopes=1,
         payload={"tool_name": "shell", "exit_status": 1, "correlation_id": "own"},
     )
-    store.set_session_advice_snapshot(workspace, yoetz_session_id=yoetz_session, snapshot=own)
+    store.set_session_advice_snapshot(workspace, yoetz_session_id=finishup_session, snapshot=own)
 
     delivered = _run(tmp_path, "PostToolUse", "mapped-own", tool_name="shell", exit_status=0)
     assert "resolve_failed_command" in delivered

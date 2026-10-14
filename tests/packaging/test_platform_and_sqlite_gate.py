@@ -1,6 +1,6 @@
 """Artifact/runtime/SQLite support enforcement gate.
 
-Installs the real built wheel and proves that ``yoetz version --json`` reports the exact certified
+Installs the real built wheel and proves that ``finishup version --json`` reports the exact certified
 Python/APSW/SQLite identity frozen by ADR-007's implementation lock, that the shipped APSW/SQLite
 build actually performs real WAL writes/checkpoints/backups/reopens, and that a corrupted installed
 resource is refused rather than silently accepted.
@@ -56,7 +56,7 @@ def _is_advertised_host() -> bool:
 @dataclass(frozen=True, slots=True)
 class _Installed:
     python: Path
-    yoetz: Path
+    finishup: Path
 
 
 @pytest.fixture(scope="module")
@@ -91,24 +91,24 @@ def installed(tmp_path_factory: pytest.TempPathFactory) -> _Installed:
             str(python_path),
             "--find-links",
             str(dist_dir),
-            f"yoetz=={_wheel_version(wheels[0])}",
+            f"finishup=={_wheel_version(wheels[0])}",
         ],
         capture_output=True,
         timeout=180,
         check=False,
     )
     assert install.returncode == 0, install.stderr.decode("utf-8", errors="replace")
-    return _Installed(python=python_path, yoetz=venv_dir / "bin" / "yoetz")
+    return _Installed(python=python_path, finishup=venv_dir / "bin" / "finishup")
 
 
 def _wheel_version(wheel: Path) -> str:
-    # yoetz-0.1.0-py3-none-any.whl -> "0.1.0"
+    # finishup-0.1.0-py3-none-any.whl -> "0.1.0"
     return wheel.name.split("-")[1]
 
 
 def _version_json(installed: _Installed) -> Mapping[str, object]:
     result = subprocess.run(
-        [str(installed.yoetz), "version", "--json"],
+        [str(installed.finishup), "version", "--json"],
         capture_output=True,
         timeout=30,
         check=False,
@@ -240,9 +240,9 @@ def test_shared_network_filesystem_style_path_is_rejected_by_bundle_safety(
     # process's own TMPDIR is refused as an unsafe bundle location, proving unsafe/unknown
     # locations fail before durable mutation rather than silently writing there.
     probe = (
-        "from yoetz.config.paths import verify_private_local_bundle, PathSafetyError\n"
+        "from finishup.config.paths import verify_private_local_bundle, PathSafetyError\n"
         "import pathlib, os, sys\n"
-        "shared = pathlib.Path(os.environ['TMPDIR']) / 'yoetz-unsafe-probe'\n"
+        "shared = pathlib.Path(os.environ['TMPDIR']) / 'finishup-unsafe-probe'\n"
         "shared.mkdir(parents=True, exist_ok=True)\n"
         "try:\n"
         "    verify_private_local_bundle(shared)\n"
@@ -275,7 +275,7 @@ def test_one_byte_resource_corruption_fails_deep_resource_verification(
 ) -> None:
     # version --json itself only re-validates the resource *manifest's* own self-consistency
     # (cheap, every invocation); the deep per-resource digest re-check that startup diagnostics
-    # run is yoetz.version.verify_resource_manifest / read_verified_resource. Prove that path
+    # run is finishup.version.verify_resource_manifest / read_verified_resource. Prove that path
     # fails closed on a real one-byte corruption of a real installed resource, using a throwaway
     # copy of the already-installed venv so other tests are unaffected.
     corrupt_root = tmp_path_factory.mktemp("sqlite-gate-corrupt")
@@ -284,7 +284,12 @@ def test_one_byte_resource_corruption_fails_deep_resource_verification(
 
     site_packages = next((corrupt_venv / "lib").glob("python3.14/site-packages"))
     target = (
-        site_packages / "yoetz" / "resources" / "schemas" / "common" / "frontier-1.0.0.schema.json"
+        site_packages
+        / "finishup"
+        / "resources"
+        / "schemas"
+        / "common"
+        / "frontier-1.0.0.schema.json"
     )
     assert target.is_file()
     original = target.read_bytes()
@@ -293,7 +298,7 @@ def test_one_byte_resource_corruption_fails_deep_resource_verification(
     target.write_bytes(bytes(mutated))
 
     probe = (
-        "from yoetz.version import build_version_manifest, verify_resource_manifest\n"
+        "from finishup.version import build_version_manifest, verify_resource_manifest\n"
         "manifest = build_version_manifest()\n"
         "results = verify_resource_manifest(manifest)\n"
         "outcomes = {r.outcome.value for r in results}\n"
@@ -310,7 +315,7 @@ def test_one_byte_resource_corruption_fails_deep_resource_verification(
 
     # And the same corrupted resource, read through the verified accessor directly, raises.
     direct_probe = (
-        "from yoetz.version import read_verified_resource, ResourceIntegrityError\n"
+        "from finishup.version import read_verified_resource, ResourceIntegrityError\n"
         "try:\n"
         "    read_verified_resource('schemas/common/frontier-1.0.0.schema.json')\n"
         "except ResourceIntegrityError as exc:\n"

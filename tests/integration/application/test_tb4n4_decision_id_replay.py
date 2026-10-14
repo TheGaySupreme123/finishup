@@ -19,10 +19,10 @@ from builders.projection_workflow import (
     request_base,
 )
 from builders.start_application import protocol_id, start_request
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.domain.events import DecisionRecordedPayload, LedgerRecord, encode_payload
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import PublishWorkRequest
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.domain.events import DecisionRecordedPayload, LedgerRecord, encode_payload
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import PublishWorkRequest
 
 pytestmark = pytest.mark.anyio
 

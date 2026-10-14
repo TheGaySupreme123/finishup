@@ -1,7 +1,7 @@
 """Synchronize and prove packaged resource parity between public sources and the installed wheel.
 
 This is the sole repository tool allowed to copy canonical resources into
-``src/yoetz/resources/`` and regenerate ``src/yoetz/resources/manifest.json``. Its default
+``src/finishup/resources/`` and regenerate ``src/finishup/resources/manifest.json``. Its default
 ``--check`` mode is strictly read-only; ``--sync`` stages a complete tree, atomically replaces
 current inventory-owned destination files, and retires destinations from the prior inventory.
 """
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, cast
 
-from yoetz.protocol.canonical import (
+from finishup.protocol.canonical import (
     JsonValue,
     canonical_digest,
     canonical_encode,
@@ -99,10 +99,10 @@ class ResourceManifestError(Exception):
 # Constants
 # --------------------------------------------------------------------------
 
-_PACKAGE_NAME: Final = "yoetz"
+_PACKAGE_NAME: Final = "finishup"
 _RESOURCE_SET_VERSION: Final = "0.1.0"
 _MANIFEST_SCHEMA: Final = "yoetz.resource-manifest/1"
-_PACKAGE_RESOURCE_ROOT: Final = "src/yoetz/resources"
+_PACKAGE_RESOURCE_ROOT: Final = "src/finishup/resources"
 _ALLOWED_SOURCE_ROOTS: Final = (
     "schemas/",
     "migrations/",
@@ -113,9 +113,9 @@ _ALLOWED_SOURCE_ROOTS: Final = (
 )
 _MAX_TEXT_BYTES: Final = 2_000_000
 _MAX_BINARY_BYTES: Final = 20_000_000
-_CODEX_SKILL_MANIFEST = "skills/codex/yoetz/manifest.json"
+_CODEX_SKILL_MANIFEST = "skills/codex/finishup/manifest.json"
 _CODEX_SKILL_MEMBERS: Final = (
-    ("SKILL.md", "harness_owned", "skill", "skills/codex/yoetz/SKILL.md"),
+    ("SKILL.md", "harness_owned", "skill", "skills/codex/finishup/SKILL.md"),
     (
         "references/agent-instructions.md",
         "shared_guidance",
@@ -1716,11 +1716,11 @@ _INVENTORY_ENTRIES: Final[tuple[tuple[str, str, str, bool], ...]] = (
         "application/schema+json",
         True,
     ),
-    ("skills/claude-code/yoetz/SKILL.md", "skill", "text/markdown", True),
-    ("skills/codex/yoetz/SKILL.md", "skill", "text/markdown", True),
-    ("skills/codex/yoetz/manifest.json", "compatibility_manifest", "application/json", True),
-    ("skills/cursor/yoetz/SKILL.md", "skill", "text/markdown", True),
-    ("skills/portable/yoetz/SKILL.md", "skill", "text/markdown", True),
+    ("skills/claude-code/finishup/SKILL.md", "skill", "text/markdown", True),
+    ("skills/codex/finishup/SKILL.md", "skill", "text/markdown", True),
+    ("skills/codex/finishup/manifest.json", "compatibility_manifest", "application/json", True),
+    ("skills/cursor/finishup/SKILL.md", "skill", "text/markdown", True),
+    ("skills/portable/finishup/SKILL.md", "skill", "text/markdown", True),
     (
         "support/agent-plugins/1.0.0/mcp.schema.json",
         "json_schema",
@@ -1870,7 +1870,7 @@ def build_codex_skill_manifest(*, repo_root: Path) -> bytes:
     source = cast(Mapping[str, JsonValue], parsed)
     if (
         source.get("schema") != "yoetz.codex-skill-manifest/1"
-        or source.get("skill") != "yoetz"
+        or source.get("skill") != "finishup"
         or source.get("harness") != "codex"
     ):
         raise ResourceManifestError("codex_skill_manifest_invalid", detail=str(path))

@@ -12,15 +12,16 @@ from collections.abc import Callable, Sequence
 import pytest
 
 import builders.tui as build
-from yoetz.tui.models import (
+from finishup.tui.models import (
     PRIVACY_RECIPES,
     LayerState,
     PrivacyChoice,
     ProviderPosture,
     ReadinessLayer,
 )
-from yoetz.tui.render import (
+from finishup.tui.render import (
     MIN_ASCII_WIDTH,
+    finishup_mark,
     render_detection,
     render_doctor,
     render_finish,
@@ -37,7 +38,6 @@ from yoetz.tui.render import (
     render_status,
     render_welcome,
     render_work_detail,
-    yoetz_mark,
 )
 
 Snapshot = Callable[[str, Sequence[str]], None]
@@ -52,9 +52,9 @@ NARROW = 40
 
 
 def test_welcome_shows_the_wordmark_only_when_the_terminal_can_hold_it() -> None:
-    assert yoetz_mark(MIN_ASCII_WIDTH) != ()
-    assert yoetz_mark(MIN_ASCII_WIDTH - 1) == ()
-    assert "Welcome to Yoetz" in "\n".join(render_welcome(NARROW))
+    assert finishup_mark(MIN_ASCII_WIDTH) != ()
+    assert finishup_mark(MIN_ASCII_WIDTH - 1) == ()
+    assert "Welcome to FinishUP" in "\n".join(render_welcome(NARROW))
 
 
 def test_welcome_renders_at_wide_and_narrow_widths(assert_snapshot: Snapshot) -> None:
@@ -69,14 +69,14 @@ def test_detection_distinguishes_found_from_not_yet_connected(
     assert_snapshot("detection", lines)
     # Being detected is never rendered as being connected.
     assert any(line.startswith("✓ Codex Desktop") for line in lines)
-    assert "○ Yoetz is not connected yet" in lines
+    assert "○ FinishUP is not connected yet" in lines
 
 
 def test_detection_names_why_secure_storage_is_unavailable() -> None:
     lines = render_detection(
         build.detection(
             secure_storage_available=False,
-            secure_storage_reason="no credential store is loaded; Yoetz needs macOS Keychain",
+            secure_storage_reason="no credential store is loaded; FinishUP needs macOS Keychain",
         ),
         WIDE,
     )
@@ -101,7 +101,7 @@ def test_project_trust_names_the_repository_root_it_applies_to() -> None:
 
 def test_launching_from_a_subdirectory_explains_that_trust_covers_the_root() -> None:
     lines = render_project_trust(
-        build.detection(launched_from_subdirectory=True, cwd="/srv/yoetz/src"),
+        build.detection(launched_from_subdirectory=True, cwd="/srv/finishup/src"),
         WIDE,
     )
     joined = " ".join(lines)
@@ -122,7 +122,7 @@ def test_integration_preview_states_every_change_and_every_safety_boundary(
         "A foreign MCP entry will never be replaced",
     ):
         assert promise in joined
-    assert "Register MCP server: yoetz mcp serve" in joined
+    assert "Register MCP server: finishup mcp serve" in joined
     assert "7f8a92bd" in joined
 
 
@@ -188,23 +188,23 @@ def test_activation_approval_discloses_every_digest_command_and_cache_effect() -
 
 def test_activation_bytes_render_preserves_trailing_newline_as_blank_line() -> None:
     plan = build.plan(
-        activation_marketplace_text='{"name":"yoetz"}\n',
-        activation_config_block='[plugins."yoetz@yoetz"]\nenabled = true\n',
+        activation_marketplace_text='{"name":"finishup"}\n',
+        activation_config_block='[plugins."finishup@finishup"]\nenabled = true\n',
     )
     lines = render_integration_technical_details(plan, 240)
     tail = lines[lines.index("Exact activation bytes") + 1 :]
-    assert tail[0] == '  {"name":"yoetz"}'
+    assert tail[0] == '  {"name":"finishup"}'
     assert tail[1] == "  "
-    assert tail[2] == '  [plugins."yoetz@yoetz"]'
+    assert tail[2] == '  [plugins."finishup@finishup"]'
     assert tail[3] == "  enabled = true"
     assert tail[4] == "  "
 
 
 def test_activation_bytes_render_preserves_final_blank_line() -> None:
-    plan = build.plan(activation_config_block='[plugins."yoetz@yoetz"]\nenabled = true\n\n')
+    plan = build.plan(activation_config_block='[plugins."finishup@finishup"]\nenabled = true\n\n')
     lines = render_integration_technical_details(plan, 240)
     tail = lines[lines.index("Exact activation bytes") + 1 :]
-    config_start = tail.index('  [plugins."yoetz@yoetz"]')
+    config_start = tail.index('  [plugins."finishup@finishup"]')
     assert tail[config_start + 1] == "  enabled = true"
     assert tail[config_start + 2] == "  "
     assert tail[config_start + 3] == "  "
@@ -296,7 +296,7 @@ def test_status_reports_unreadable_work_as_unavailable_not_as_zero() -> None:
 
 
 def test_status_makes_no_privacy_claim_when_the_policy_cannot_be_read() -> None:
-    from yoetz.tui.models import PrivacyPosture
+    from finishup.tui.models import PrivacyPosture
 
     unreadable = PrivacyPosture(profile=None, llm_inference_enabled=None, readable=False)
     lines = render_status(build.snapshot(privacy=unreadable), WIDE)
@@ -349,7 +349,7 @@ def test_a_provider_failure_does_not_downgrade_local_readiness() -> None:
     lines = render_provider_failure("Authentication failed", WIDE)
     joined = "\n".join(lines)
     assert lines[0].startswith("■")
-    assert "Local Yoetz verification is still ready." in lines
+    assert "Local FinishUP verification is still ready." in lines
     assert "Your API key remains stored securely." in lines
     assert "Authentication failed" in joined
 
@@ -426,7 +426,7 @@ def test_receipt_foregrounds_the_verdict_and_what_was_not_verified(
 
 
 def test_receipt_keeps_the_service_child_section_and_coverage_wording() -> None:
-    from yoetz.tui.models import ReceiptSummary
+    from finishup.tui.models import ReceiptSummary
 
     summary = ReceiptSummary(
         subject_id="tsk_53000000-0000-4000-8000-000000000001",
@@ -482,12 +482,12 @@ def test_no_renderer_ever_overflows_the_width_it_was_given(width: int) -> None:
 def test_the_session_header_middle_truncates_a_long_project_path() -> None:
     lines = render_session_header(
         version="0.1.0",
-        project_root="/srv/projects/deeply/nested/workspace/yoetz",
+        project_root="/srv/projects/deeply/nested/workspace/finishup",
         harness_state="connected",
         privacy_summary="local only",
         width=48,
     )
     joined = "\n".join(lines)
-    assert ">_ Yoetz (v0.1.0)" in joined
+    assert ">_ FinishUP (v0.1.0)" in joined
     assert "…" in joined
     assert "/privacy to change" in joined

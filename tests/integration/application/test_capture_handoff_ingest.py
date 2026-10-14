@@ -16,24 +16,24 @@ from typing import Any, cast
 
 import pytest
 
-from integration.application.test_native_capture_pipeline import (
-    _capture_claude_post_requests,  # pyright: ignore[reportPrivateUsage]
-    _claude_hook_runner,  # pyright: ignore[reportPrivateUsage]
-    _pipeline,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_materialize import observation_content_identity
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_materialize import observation_content_identity
+from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationCaptureTicket,
     ObservationGapCode,
     ObservationIngestDisposition,
     ObservationIngestRequest,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from integration.application.test_native_capture_pipeline import (
+    _capture_claude_post_requests,  # pyright: ignore[reportPrivateUsage]
+    _claude_hook_runner,  # pyright: ignore[reportPrivateUsage]
+    _pipeline,  # pyright: ignore[reportPrivateUsage]
+)
 
 _PROFILE = CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
 _HOST_SESSION = "claude:handoff-ingest"
@@ -288,13 +288,13 @@ async def test_capture_staged_while_its_row_is_in_flight_is_retired_at_commit(
 
 
 async def _case_gaps(lane: _Lane, seed: int) -> tuple[str, ...]:
+    from finishup.kernel.deterministic_checks import case_coverage
+    from finishup.ports.ledger import FrozenCase
+    from finishup.protocol.ids import IdKind
     from integration.application.test_native_capture_pipeline import (
         _ZERO_DIGEST,  # pyright: ignore[reportPrivateUsage]
         _ids,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.kernel.deterministic_checks import case_coverage
-    from yoetz.ports.ledger import FrozenCase
-    from yoetz.protocol.ids import IdKind
 
     frontier = await lane.ledger.load_frontier()
     frozen = await lane.ledger.freeze_case(
@@ -319,7 +319,7 @@ async def test_a_retired_handoff_puts_its_disclosure_on_its_own_task(
     runtime never receives it.
     """
 
-    from yoetz.domain.observation import CaptureHandoffRetirementReason
+    from finishup.domain.observation import CaptureHandoffRetirementReason
 
     lane = await _lane(tmp_path, monkeypatch)
     ticket = await lane.stage()
@@ -377,7 +377,7 @@ async def test_an_interrupted_retirement_disclosure_is_retried_not_lost(
     reconciliation pass publishes the marker and only then retires the ticket.
     """
 
-    from yoetz.application import observation_coordinator as coordinator_module
+    from finishup.application import observation_coordinator as coordinator_module
 
     lane = await _lane(tmp_path, monkeypatch)
     await lane.stage()
@@ -434,8 +434,8 @@ async def test_a_terminal_store_refusal_still_discloses_the_retired_handoff(
     """#1019 review: a ``cursor_stale`` refusal tombstones the staged ticket only after the
     task-ledger marker is durable; the refused call's record is not claimed anywhere."""
 
-    from yoetz.domain.observation import ObservationIngestResult
-    from yoetz.domain.receipts import (
+    from finishup.domain.observation import ObservationIngestResult
+    from finishup.domain.receipts import (
         CAPTURE_HANDOFF_RETIRED_GAP,
         check_time_change_gap_sentence,
     )

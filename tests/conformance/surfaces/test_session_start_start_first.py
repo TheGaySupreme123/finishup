@@ -13,17 +13,17 @@ from typing import Final
 
 import pytest
 
-from yoetz.cli.hooks import INACTIVE_CONTEXT
-from yoetz.mcp.descriptors import descriptor_for
+from finishup.cli.hooks import INACTIVE_CONTEXT
+from finishup.mcp.descriptors import descriptor_for
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
-_PACKAGED_ROOT: Final = _REPO_ROOT / "src" / "yoetz" / "resources"
+_PACKAGED_ROOT: Final = _REPO_ROOT / "src" / "finishup" / "resources"
 
 _HOST_SKILLS: Final = (
-    ("codex", "skills/codex/yoetz/SKILL.md"),
-    ("claude-code", "skills/claude-code/yoetz/SKILL.md"),
-    ("cursor", "skills/cursor/yoetz/SKILL.md"),
-    ("portable", "skills/portable/yoetz/SKILL.md"),
+    ("codex", "skills/codex/finishup/SKILL.md"),
+    ("claude-code", "skills/claude-code/finishup/SKILL.md"),
+    ("cursor", "skills/cursor/finishup/SKILL.md"),
+    ("portable", "skills/portable/finishup/SKILL.md"),
 )
 
 _START_FIRST = "read guidance and discover schemas, then call start before substantive work"
@@ -96,5 +96,5 @@ def test_startup_recovery_keeps_unknown_writes_and_denied_consent_out_of_fallbac
     assert "Retain and report any remaining pending, quarantined, or unknown outcome" in rules
     assert "denied/expired initialization decision" in rules
     assert "One bounded diagnostic read does not satisfy the repair exception" in rules
-    assert "then continue without Yoetz" not in rules
-    assert "state the boundary and continue without Yoetz" not in rules
+    assert "then continue without FinishUP" not in rules
+    assert "state the boundary and continue without FinishUP" not in rules

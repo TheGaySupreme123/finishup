@@ -28,10 +28,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Final
 
-from yoetz.domain.values import format_rfc3339_millis, validate_sha256_digest
-from yoetz.observability.privacy import PrivacyFenceError, assert_plaintext_safe
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.domain.values import format_rfc3339_millis, validate_sha256_digest
+from finishup.observability.privacy import PrivacyFenceError, assert_plaintext_safe
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
 
 __all__ = [
     "CAPABILITY_EVIDENCE_SCHEMA",
@@ -668,19 +668,19 @@ def bytes_digest(data: bytes) -> str:
 def live_codex_authorized() -> bool:
     """Return True only when the release/capability job explicitly opts into live Codex."""
 
-    return os.environ.get("YOETZ_LIVE_CODEX") == "1"
+    return os.environ.get("FINISHUP_LIVE_CODEX") == "1"
 
 
 def live_provider_authorized() -> bool:
     """Return True only when the approved live-provider capability job opts in."""
 
-    return os.environ.get("YOETZ_LIVE_PROVIDER", "").strip().lower() in {"1", "true", "yes"}
+    return os.environ.get("FINISHUP_LIVE_PROVIDER", "").strip().lower() in {"1", "true", "yes"}
 
 
 def live_keyring_authorized() -> bool:
     """Return True only when the approved live OS-keyring capability job opts in."""
 
-    return os.environ.get("YOETZ_LIVE_KEYRING", "").strip().lower() in {"1", "true", "yes"}
+    return os.environ.get("FINISHUP_LIVE_KEYRING", "").strip().lower() in {"1", "true", "yes"}
 
 
 def codex_profiles_frozen() -> bool:
@@ -688,8 +688,8 @@ def codex_profiles_frozen() -> bool:
 
     from typing import cast
 
-    from yoetz.protocol.canonical import strict_json_parse
-    from yoetz.version import read_verified_resource
+    from finishup.protocol.canonical import strict_json_parse
+    from finishup.version import read_verified_resource
 
     support = strict_json_parse(read_verified_resource("support/runtime-support.json"))
     if type(support) is not dict:
@@ -701,11 +701,11 @@ def codex_profiles_frozen() -> bool:
 def capability_evidence_output_root(tmp_path: Path) -> Path:
     """Return the directory that should receive public capability evidence for this run.
 
-    When ``YOETZ_CAPABILITY_EVIDENCE_DIR`` is set (capability CI), write durable evidence there so
+    When ``FINISHUP_CAPABILITY_EVIDENCE_DIR`` is set (capability CI), write durable evidence there so
     ``generate_capability_matrix.py`` can aggregate it. Otherwise use an isolated temp directory.
     """
 
-    configured = os.environ.get("YOETZ_CAPABILITY_EVIDENCE_DIR", "").strip()
+    configured = os.environ.get("FINISHUP_CAPABILITY_EVIDENCE_DIR", "").strip()
     if configured:
         root = Path(configured)
         if root.is_symlink():
@@ -737,13 +737,13 @@ def runtime_capability_context(
     freeform ``--version`` paste. Development builds bind ``artifact_digest`` to the package and
     resource identity rather than a release wheel digest.
 
-    When ``YOETZ_CANDIDATE_ARTIFACT_DIGEST`` is set (capability CI), that exact candidate digest
+    When ``FINISHUP_CANDIDATE_ARTIFACT_DIGEST`` is set (capability CI), that exact candidate digest
     replaces the development package identity so matrix aggregation can bind evidence to the
     prepared candidate without inventing support.
     """
 
-    from yoetz.protocol.canonical import canonical_digest
-    from yoetz.version import build_version_manifest
+    from finishup.protocol.canonical import canonical_digest
+    from finishup.version import build_version_manifest
 
     manifest = build_version_manifest()
     apsw = manifest.apsw_version
@@ -763,7 +763,7 @@ def runtime_capability_context(
     ):
         raise _invalid("runtime_identity_invalid")
 
-    candidate_override = os.environ.get("YOETZ_CANDIDATE_ARTIFACT_DIGEST", "").strip()
+    candidate_override = os.environ.get("FINISHUP_CANDIDATE_ARTIFACT_DIGEST", "").strip()
     if candidate_override:
         artifact_digest = _digest(candidate_override, "artifact_digest_invalid")
     else:

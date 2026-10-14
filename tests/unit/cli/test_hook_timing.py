@@ -15,17 +15,17 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.cli import hook_timing, observe_hooks
-from yoetz.cli.hook_diagnostics import hook_diagnostic_summary, record_hook_diagnostic
-from yoetz.cli.hook_timing import (
+from finishup.cli import hook_timing, observe_hooks
+from finishup.cli.hook_diagnostics import hook_diagnostic_summary, record_hook_diagnostic
+from finishup.cli.hook_timing import (
     BUCKET_UPPER_BOUNDS_MS,
     HookPassTiming,
     hook_pass_timing_summary,
     hook_pass_timing_text,
     record_hook_pass_timing,
 )
-from yoetz.config.paths import PathSafetyError
-from yoetz.domain.values import JsonObject
+from finishup.config.paths import PathSafetyError
+from finishup.domain.values import JsonObject
 
 _NOW = datetime(2026, 9, 29, 16, 52, 45, 737000, tzinfo=UTC)
 

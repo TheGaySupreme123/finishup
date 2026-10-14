@@ -21,15 +21,15 @@ from tests.capability.evidence import (
     runtime_capability_context,
 )
 
-from yoetz.adapters.session_events import (
+from finishup.adapters.session_events import (
     LinuxLogin1Backend,
     MacOSSessionBackend,
     SessionEventMonitor,
     SessionMonitorError,
     SessionMonitorReason,
 )
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.service.lifecycle import SessionSecurityEvent
+from finishup.protocol.canonical import canonical_digest
+from finishup.service.lifecycle import SessionSecurityEvent
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 

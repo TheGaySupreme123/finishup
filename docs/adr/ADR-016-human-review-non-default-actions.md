@@ -9,20 +9,20 @@ digest-bound `--accept` lane rather than `plugin_artifact_apply` (issue #419); a
 for exact bounded Codex JSONL import publication (issue #301).
 Amended 2026-09-03 for user-controlled conversational setup and exact expanded-review grants
 (issues #532 and #533).
-**Implemented by:** `src/yoetz/service/elevated_bootstrap.py`,
-`src/yoetz/cli/elevated.py`, `src/yoetz/cli/trusted_console.py`,
-`src/yoetz/protocol/consent.py`, `src/yoetz/protocol/chat_user_authority.py`, and
+**Implemented by:** `src/finishup/service/elevated_bootstrap.py`,
+`src/finishup/cli/elevated.py`, `src/finishup/cli/trusted_console.py`,
+`src/finishup/protocol/consent.py`, `src/finishup/protocol/chat_user_authority.py`, and
 `guidance/agent-instructions.md`.
 **Relates to:** ADR-015 (bootstrap path), ADR-008 (vault/console), ADR-009
 (egress/privacy).
 
 ## Context
 
-Yoetz needs one understandable rule for actions outside the ordinary cooperative workflow while
+FinishUP needs one understandable rule for actions outside the ordinary cooperative workflow while
 keeping the stronger trusted-console authority and secret entry boundaries clear. Human review is
 per-operation and digest-bound; host sandboxing and egress policy remain separate containment
 controls. The optional agent-chat lane deliberately delegates authority to an agent assertion and
-documents that Yoetz cannot independently authenticate its chat provenance.
+documents that FinishUP cannot independently authenticate its chat provenance.
 
 ## Risk classes
 
@@ -36,7 +36,7 @@ documents that Yoetz cannot independently authenticate its chat provenance.
 
 ## Decisions
 
-1. **Catalog authority.** `yoetz consent catalog` and `status` list every non-default operation,
+1. **Catalog authority.** `finishup consent catalog` and `status` list every non-default operation,
    risk class, prepare hint, binding requirements, and `implemented` flag. Operations marked
    `implemented=false` cannot be prepared.
 
@@ -58,7 +58,7 @@ documents that Yoetz cannot independently authenticate its chat provenance.
    is the ownership transition; only the winner cleans up the public pending name, while concurrent
    losers are read-only. Every terminal decision and every post-claim failure is single-shot.
 
-4. **Verified presence before console review.** The fixed `yoetz consent review` command takes no
+4. **Verified presence before console review.** The fixed `finishup consent review` command takes no
    authority-bearing arguments. An independently authenticated, action-bound, one-use
    `UserPresencePort` attestation must succeed before the helper opens a foreground console or
    claims pending state. The current runtime has no production adapter and therefore returns
@@ -67,7 +67,7 @@ documents that Yoetz cannot independently authenticate its chat provenance.
 
 5. **Agent-attested current-chat authorize (issue #164).** When the user explicitly asks the agent
    in the current chat for help
-   with an exact prepared setup action, `yoetz consent authorize` may complete
+   with an exact prepared setup action, `finishup consent authorize` may complete
    `provider_credential_set`, `provider_credential_rotate`, `repository_privacy_grant`, or one
    importer-prepared `import_publication` under a
    `yoetz.chat-user-attestation/1` envelope. The envelope is an agent assertion, not independent
@@ -171,7 +171,7 @@ documents that Yoetz cannot independently authenticate its chat provenance.
    removal (`preview_removal` / `apply_removal`) and external MCP unregistration
    (`preview_unregistration` / `apply_unregistration`) use that same lane: exact preview digest
    plus explicit `--accept` or the interactive confirmation already used by
-   `yoetz integrate codex mcp install`. They do not prepare or consume `plugin_artifact_apply`,
+   `finishup integrate codex mcp install`. They do not prepare or consume `plugin_artifact_apply`,
    because that cell is the macOS Cursor portable-artifact presence path and would fail closed
    here. Cache purge is default-off (`--purge-cache`). Agent-chat authorize is not extended to
    these commands. Cursor standalone activation apply is unchanged.
@@ -199,7 +199,7 @@ refused before launching the worker.
 ## Consequences
 
 Agents guide choices in ordinary conversation, prepare and inspect one combined request, then
-either complete it via agent-attested `yoetz consent authorize` on a capable first-party host or
+either complete it via agent-attested `finishup consent authorize` on a capable first-party host or
 give the shortest exact trusted-local continuation when that authority capability is absent. Until an approved
 OS-presence adapter is installed, console review fails closed; chat-user authorize remains available
 for the operations that advertise it. Approval of one operation does not grant another operation,

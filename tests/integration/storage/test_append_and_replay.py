@@ -15,8 +15,8 @@ from pathlib import Path
 import apsw
 import pytest
 
-import yoetz.adapters.memory.ledger as memory_ledger_module
-import yoetz.adapters.sqlite.repository as sqlite_repository
+import finishup.adapters.memory.ledger as memory_ledger_module
+import finishup.adapters.sqlite.repository as sqlite_repository
 from builders.ledger_adapters import (
     FixedClock,
     FixedIds,
@@ -24,12 +24,12 @@ from builders.ledger_adapters import (
     ownership_fence,
 )
 from builders.replay import replay_records
-from yoetz.adapters.memory.importer import MemoryImportState
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.domain.events import EventDraft, LedgerRecord, UnknownEvent, encode_payload
-from yoetz.domain.values import (
+from finishup.adapters.memory.importer import MemoryImportState
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.domain.events import EventDraft, LedgerRecord, UnknownEvent, encode_payload
+from finishup.domain.values import (
     Actor,
     ActorType,
     Frontier,
@@ -39,9 +39,9 @@ from yoetz.domain.values import (
     object_id,
     parse_rfc3339_millis,
 )
-from yoetz.kernel.projections import ProjectionState, projection_digest
-from yoetz.kernel.reducers import ReplayIndex, replay
-from yoetz.ports.ledger import (
+from finishup.kernel.projections import ProjectionState, projection_digest
+from finishup.kernel.reducers import ReplayIndex, replay
+from finishup.ports.ledger import (
     AppendCommand,
     AppendEntry,
     CheckPhase,
@@ -51,10 +51,10 @@ from yoetz.ports.ledger import (
     OperationState,
     ProjectionView,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef, ObjectSource
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.coverage import AuthorshipAssurance, PublicationChannel, coverage_for_channel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 
 @pytest.fixture

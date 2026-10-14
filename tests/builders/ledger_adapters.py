@@ -12,14 +12,14 @@ from typing import cast
 import apsw
 
 from builders.replay import replay_records
-from yoetz.adapters.memory.importer import MemoryImportState
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.domain.events import EventDraft, EventPayload
-from yoetz.domain.values import parse_rfc3339_millis
-from yoetz.ports.ledger import AppendCommand, AppendEntry, OperationKind
-from yoetz.ports.objects import (
+from finishup.adapters.memory.importer import MemoryImportState
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.domain.events import EventDraft, EventPayload
+from finishup.domain.values import parse_rfc3339_millis
+from finishup.ports.ledger import AppendCommand, AppendEntry, OperationKind
+from finishup.ports.objects import (
     ObjectKind,
     ObjectMetadata,
     ObjectRef,
@@ -27,8 +27,8 @@ from yoetz.ports.objects import (
     ObjectSource,
     StagedObject,
 )
-from yoetz.ports.runtime import OwnershipFence
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.ports.runtime import OwnershipFence
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 
 class FixedClock:

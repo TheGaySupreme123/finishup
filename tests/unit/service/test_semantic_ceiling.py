@@ -16,30 +16,32 @@ from builders.policy_cases import (
     plan_record,
 )
 from builders.privacy_policies import machine_scope, minimal_external_policy
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.application.check import (
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.application.check import (
     CheckScope,
     allocate_findings,
     prior_finding_ids,
     run_deterministic_policies,
 )
-from yoetz.application.egress import _within_excerpt_limits  # pyright: ignore[reportPrivateUsage]
-from yoetz.application.semantic_case import (
+from finishup.application.egress import (
+    _within_excerpt_limits,  # pyright: ignore[reportPrivateUsage]
+)
+from finishup.application.semantic_case import (
     LineageSemanticCapacityExceeded,
     SemanticCaseCapacityExceeded,
     build_semantic_case,
     semantic_case_to_candidate_context,
     semantic_case_to_prepared_payload,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceKind,
     EvidenceRecordedPayload,
     PlanPublishedPayload,
 )
-from yoetz.domain.findings import Finding, FindingKind
-from yoetz.domain.privacy import (
+from finishup.domain.findings import Finding, FindingKind
+from finishup.domain.privacy import (
     EgressChannel,
     PrivacyDecision,
     PrivacyOutcome,
@@ -47,15 +49,15 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.values import ClaimId, EvidenceId, timestamp_from_string
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.projections import ClaimProjectionRecord, EvidenceProjectionRecord
-from yoetz.ports.privacy import EffectivePrivacyPolicy
-from yoetz.ports.semantic import SemanticCase
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import MAX_SEMANTIC_CASE_BYTES, DataCategory
-from yoetz.service.semantic_ceiling import (
+from finishup.domain.values import ClaimId, EvidenceId, timestamp_from_string
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.projections import ClaimProjectionRecord, EvidenceProjectionRecord
+from finishup.ports.privacy import EffectivePrivacyPolicy
+from finishup.ports.semantic import SemanticCase
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import MAX_SEMANTIC_CASE_BYTES, DataCategory
+from finishup.service.semantic_ceiling import (
     CEILING_PLANNING_GAP,
     MAX_CEILING_PLANNING_ROUNDS,
     channel_admission,

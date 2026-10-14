@@ -12,8 +12,8 @@ from typing import Any, cast
 
 import pytest
 
-import yoetz.application.check as check_module
-import yoetz.observability.diagnostics as diagnostics_module
+import finishup.application.check as check_module
+import finishup.observability.diagnostics as diagnostics_module
 from builders.ledger_adapters import FixedClock, MemoryObjects
 from builders.policy_cases import (
     FRONTIER,
@@ -30,11 +30,11 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.application.check import FinalSemanticEvaluation, check_internal_json
-from yoetz.application.check import execute_check as _execute_check
-from yoetz.application.check import execute_check_commit as _execute_check_commit
-from yoetz.application.service import VerificationPolicy
-from yoetz.domain.events import (
+from finishup.application.check import FinalSemanticEvaluation, check_internal_json
+from finishup.application.check import execute_check as _execute_check
+from finishup.application.check import execute_check_commit as _execute_check_commit
+from finishup.application.service import VerificationPolicy
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     CheckChangeShownFiles,
@@ -55,19 +55,19 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     FindingKind,
     RankedFindings,
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
     SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     ClaimId,
     EvidenceId,
     Frontier,
@@ -76,22 +76,22 @@ from yoetz.domain.values import (
     object_id,
     timestamp_from_string,
 )
-from yoetz.kernel import deterministic_checks as deterministic_checks_module
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.projections import (
+from finishup.kernel import deterministic_checks as deterministic_checks_module
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.projections import (
     ClaimProjectionRecord,
     EvidenceProjectionRecord,
     PendingMissingForAssessment,
 )
-from yoetz.ports.change_capture import (
+from finishup.ports.change_capture import (
     ChangeMetadataEntry,
     CheckChangeCapture,
     CheckChangeMetadata,
     CheckWorkspaceSource,
 )
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.ids import IdPort
-from yoetz.ports.ledger import (
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.ids import IdPort
+from finishup.ports.ledger import (
     CheckAwaitingHuman,
     CheckCommitResult,
     CheckPhase,
@@ -103,19 +103,19 @@ from yoetz.ports.ledger import (
     OperationRecord,
     OperationState,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.ports.runtime import BundleRuntimePort, OwnershipFence, RouteCommand, TaskRuntime
-from yoetz.ports.semantic import (
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.ports.runtime import BundleRuntimePort, OwnershipFence, RouteCommand, TaskRuntime
+from finishup.ports.semantic import (
     MissingForAssessment,
     ReviewerChallenge,
     SamplingParams,
     SemanticJudgment,
 )
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind
-from yoetz.protocol.models import CheckRequest, CheckScopeModel, SemanticReason, SemanticStatus
-from yoetz.protocol.redacted_values import SemanticRedactedValue
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind
+from finishup.protocol.models import CheckRequest, CheckScopeModel, SemanticReason, SemanticStatus
+from finishup.protocol.redacted_values import SemanticRedactedValue
 
 _TASK = "tsk_30000000-0000-4000-8000-000000000001"
 _SESSION = "ses_30000000-0000-4000-8000-000000000001"
@@ -537,7 +537,7 @@ async def test_checks_account_for_preexisting_test_edits_without_provider_delive
 ) -> None:
     capture = CheckChangeCapture(
         base="task_start",
-        text=b"""Yoetz check-time change
+        text=b"""FinishUP check-time change
 Files:
   M tests/test_existing.py (+1 -1)
 End of header. The unified diff follows.
@@ -613,7 +613,7 @@ async def test_post_admission_protocol_failure_is_internal_and_terminalizes_oper
 async def test_unmapped_task_statement_is_an_actionable_check_finding(mapped: bool) -> None:
     """TB4 pilot: an unmapped request must reach the agent as a finding, not an advisory gap."""
 
-    from yoetz.domain.task_statement import RecordedTaskStatement
+    from finishup.domain.task_statement import RecordedTaskStatement
 
     statement_event = evt(1)
     obligation = ObligationPublishedPayload(
@@ -648,7 +648,7 @@ async def test_unmapped_task_statement_is_an_actionable_check_finding(mapped: bo
 
 
 def _unmapped_statement_case() -> DeterministicCase:
-    from yoetz.domain.task_statement import RecordedTaskStatement
+    from finishup.domain.task_statement import RecordedTaskStatement
 
     statement_event = evt(1)
     obligation = ObligationPublishedPayload(
@@ -699,8 +699,8 @@ async def test_requirement_findings_follow_the_research_pack_execution(
 async def test_completion_on_an_empty_scope_with_a_statement_is_an_actionable_finding() -> None:
     """Pilot blocker D3: a completion claim never stands on an undecomposed request."""
 
-    from yoetz.domain.events import ClaimKind, ClaimRecordedPayloadV1_1
-    from yoetz.domain.task_statement import (
+    from finishup.domain.events import ClaimKind, ClaimRecordedPayloadV1_1
+    from finishup.domain.task_statement import (
         TASK_STATEMENT_SCOPE_EMPTY_SUMMARY,
         RecordedTaskStatement,
     )
@@ -733,7 +733,7 @@ async def test_completion_on_an_empty_scope_with_a_statement_is_an_actionable_fi
     unmet = [item for item in checked.findings if item.kind is FindingKind.TASK_REQUIREMENT_UNMET]
     assert [item.summary for item in unmet] == [TASK_STATEMENT_SCOPE_EMPTY_SUMMARY]
     assert unmet[0].subject_refs == (statement_event,)
-    assert "yoetz-no-material-work:" + statement_event in unmet[0].detail
+    assert "finishup-no-material-work:" + statement_event in unmet[0].detail
     assert checked.verdict.value == "action_required"
 
 
@@ -769,19 +769,19 @@ async def test_no_material_work_decision_needs_a_capture_showing_no_changed_path
     honours the decision; a missing capture fails closed.
     """
 
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ClaimKind,
         ClaimRecordedPayloadV1_1,
         DecisionRecordedPayload,
         encode_payload,
     )
-    from yoetz.domain.task_statement import (
+    from finishup.domain.task_statement import (
         TASK_STATEMENT_SCOPE_EMPTY_SUMMARY,
         RecordedTaskStatement,
     )
-    from yoetz.domain.values import actor_id
-    from yoetz.kernel.projections import DecisionProjectionRecord
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.domain.values import actor_id
+    from finishup.kernel.projections import DecisionProjectionRecord
+    from finishup.protocol.canonical import canonical_digest
 
     statement_event = evt(1)
     plan = PlanPublishedPayload(1, "Plan", (), (), NoObligationsReason.NO_MATERIAL_CHANGE)
@@ -798,7 +798,7 @@ async def test_no_material_work_decision_needs_a_capture_showing_no_changed_path
         act(1), ActionKind.COMMAND, "Ran a shell command", command="sed -i s/a/b/ calc.py"
     )
     decision = DecisionRecordedPayload(
-        f"The request asks only for an explanation.\nyoetz-no-material-work:{statement_event}",
+        f"The request asks only for an explanation.\nfinishup-no-material-work:{statement_event}",
         "The user asked a question; no file needs to change.",
         actor_id("agent:1"),
     )
@@ -1126,12 +1126,12 @@ async def test_strict_route_ceiling_never_requests_or_dispatches_semantic_capabi
 async def test_strict_ceiling_with_applied_policy_carries_drift_gap(tmp_path: Path) -> None:
     """Issue #537 slice C: strict serving + applied policy names the drift structurally."""
 
-    from yoetz.application.applied_mcp_route import record_applied_route
-    from yoetz.domain.receipts import (
+    from finishup.application.applied_mcp_route import record_applied_route
+    from finishup.domain.receipts import (
         OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
         OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     )
-    from yoetz.ports.harness_mcp import MCP_SERVE_COMMAND
+    from finishup.ports.harness_mcp import MCP_SERVE_COMMAND
 
     record_applied_route(
         "policy",
@@ -1168,8 +1168,8 @@ async def test_strict_ceiling_does_not_apply_codex_record_to_other_hosts(
 ) -> None:
     """A Codex applied route cannot identify a generic, Claude, or Cursor serving process."""
 
-    from yoetz.application.applied_mcp_route import record_applied_route
-    from yoetz.ports.harness_mcp import MCP_SERVE_COMMAND
+    from finishup.application.applied_mcp_route import record_applied_route
+    from finishup.ports.harness_mcp import MCP_SERVE_COMMAND
 
     record_applied_route(
         "policy",
@@ -1197,8 +1197,8 @@ async def test_strict_ceiling_with_applied_strict_keeps_terminal_wording(
 ) -> None:
     """A genuinely applied strict route carries no drift gap and today's wording exactly."""
 
-    from yoetz.application.applied_mcp_route import record_applied_route
-    from yoetz.ports.harness_mcp import MCP_STRICT_SERVE_COMMAND
+    from finishup.application.applied_mcp_route import record_applied_route
+    from finishup.ports.harness_mcp import MCP_STRICT_SERVE_COMMAND
 
     record_applied_route(
         "strict",
@@ -1255,15 +1255,15 @@ async def test_drift_gap_is_reread_live_never_carried_after_remove(tmp_path: Pat
     local-only successor of the drift check carries only the ceiling gap.
     """
 
-    from yoetz.application.applied_mcp_route import clear_applied_route, record_applied_route
-    from yoetz.application.check import carried_semantic_attempt_gaps
-    from yoetz.domain.receipts import (
+    from finishup.application.applied_mcp_route import clear_applied_route, record_applied_route
+    from finishup.application.check import carried_semantic_attempt_gaps
+    from finishup.domain.receipts import (
         OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
         OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     )
-    from yoetz.domain.values import EventId
-    from yoetz.kernel.projections import LatestTestedState
-    from yoetz.ports.harness_mcp import MCP_SERVE_COMMAND
+    from finishup.domain.values import EventId
+    from finishup.kernel.projections import LatestTestedState
+    from finishup.ports.harness_mcp import MCP_SERVE_COMMAND
 
     record_applied_route(
         "policy",
@@ -1322,7 +1322,7 @@ async def test_semantic_evaluator_crash_degrades_to_not_run_without_false_clean(
 ) -> None:
     """Requirement: evaluator crash/timeout degrades to not-run disclosure, never false clean."""
 
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
         SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
     )
@@ -1479,7 +1479,7 @@ async def test_succeeded_review_with_withheld_context_is_not_reported_as_full_co
     carry the difference, or the receipt inherits the same false impression.
     """
 
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP
+    from finishup.domain.receipts import SEMANTIC_REVIEW_CONTEXT_WITHHELD_GAP
 
     app = _App(semantic=True)
     digest = "sha256:" + "a" * 64
@@ -1530,7 +1530,7 @@ async def test_withheld_review_item_is_a_review_scoped_gap_not_content_redacted(
     records only the review-scoped ``semantic_review_item_withheld``.
     """
 
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
+    from finishup.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
 
     app = _App(semantic=True)
     app.semantic_result = replace(
@@ -1717,7 +1717,7 @@ async def test_partial_rejection_keeps_accepted_challenges_and_declares_the_gap(
 ) -> None:
     """One unusable challenge costs itself; the others become findings and the loss is declared."""
 
-    from yoetz.domain.receipts import SEMANTIC_CHALLENGES_REJECTED_GAP
+    from finishup.domain.receipts import SEMANTIC_CHALLENGES_REJECTED_GAP
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
     app = _App(semantic=True)
@@ -1780,7 +1780,7 @@ async def test_challenge_citing_an_omitted_ref_is_kept_on_the_sent_ref(
     advisory concern in the review summary, under its own rejection reason.
     """
 
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         SEMANTIC_CHALLENGES_REJECTED_GAP,
         SEMANTIC_REVIEW_REFS_REDUCED_GAP,
         SEMANTIC_REVIEW_SNIPPET_INVALID_GAP,
@@ -1857,7 +1857,7 @@ async def test_challenge_citing_an_omitted_ref_is_kept_on_the_sent_ref(
 
 @pytest.mark.anyio
 async def test_capacity_failure_preserves_deterministic_result_and_precise_receipt_gap() -> None:
-    from yoetz.domain.receipts import semantic_coverage_gap_code
+    from finishup.domain.receipts import semantic_coverage_gap_code
 
     app = _App(semantic=True)
     app.semantic_result = FinalSemanticEvaluation(
@@ -2016,7 +2016,7 @@ def _missing_case(*, pending: bool = False, supplied: bool = False) -> Determini
 
 @pytest.mark.anyio
 async def test_insufficient_packet_names_each_missing_item_as_a_check_limitation() -> None:
-    """Issue #907: the reviewer's named items reach the agent, fenced and classified by Yoetz."""
+    """Issue #907: the reviewer's named items reach the agent, fenced and classified by FinishUP."""
 
     app = _App(semantic=True)
     app.ledger.frozen = replace(app.ledger.frozen, case=_missing_case())
@@ -2326,8 +2326,8 @@ def test_withheld_item_becomes_the_capture_baseline_of_raised_ai_findings() -> N
     set the check stamps on every AI-powered finding the review raises.
     """
 
-    from yoetz.application.check import semantic_capture_baseline_gaps
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
+    from finishup.application.check import semantic_capture_baseline_gaps
+    from finishup.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
 
     result = replace(
         _succeeded(SemanticJudgment("no_material_discrepancy", ())),
@@ -2342,9 +2342,9 @@ def test_withheld_item_becomes_the_capture_baseline_of_raised_ai_findings() -> N
 
 @pytest.mark.anyio
 async def test_await_observations_absent_keeps_digest_and_result_bytes() -> None:
-    from yoetz.application.check import _request_digest  # pyright: ignore[reportPrivateUsage]
-    from yoetz.ports.ledger import CheckObservationsAwaited
-    from yoetz.protocol.canonical import canonical_digest, canonical_encode
+    from finishup.application.check import _request_digest  # pyright: ignore[reportPrivateUsage]
+    from finishup.ports.ledger import CheckObservationsAwaited
+    from finishup.protocol.canonical import canonical_digest, canonical_encode
 
     plain = _request()
     flagged = CheckRequest.model_validate(
@@ -2383,8 +2383,8 @@ async def test_await_observations_absent_keeps_digest_and_result_bytes() -> None
 async def test_application_check_attaches_only_a_supplied_wait_outcome(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.application.service import Application
-    from yoetz.ports.ledger import CheckObservationsAwaited
+    from finishup.application.service import Application
+    from finishup.ports.ledger import CheckObservationsAwaited
 
     canned = await execute_check(_App(), _request())
 
@@ -2430,12 +2430,12 @@ async def test_a_skipped_line_break_path_is_disclosed_by_code_only(
 ) -> None:
     """#1019: the capture stays usable; the check names the skipped path's class, never it."""
 
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         CHECK_TIME_CHANGE_PATH_UNREPRESENTABLE_GAP,
         CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
         check_time_change_gap_sentence,
     )
-    from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+    from finishup.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
 
     app = _App()
     app.change_capture = _UnrepresentablePathCapturePort(

@@ -6,16 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.integrations.observation_task_pending import (
+from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.integrations.observation_task_pending import (
     session_pending_row_identities,
     task_pending_outbox_count,
 )
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-from yoetz.domain.observation import ObservationSource
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+from finishup.domain.observation import ObservationSource
+from finishup.protocol.ids import IdKind, new_id
 
 
 def _enqueue(store: LocalObservationStore, workspace: str, session: str, ordinal: int) -> None:
@@ -37,12 +37,12 @@ def _enqueue(store: LocalObservationStore, workspace: str, session: str, ordinal
     store.enqueue_outbox(workspace, session, envelope)
 
 
-def _map(state: Path, host_session: str, yoetz_session: str) -> None:
+def _map(state: Path, host_session: str, finishup_session: str) -> None:
     store_mapping(
         mapping_from_start_ids(
             codex_session_id=host_session,
             yoetz_task_id=new_id(IdKind.TASK),
-            yoetz_session_id=yoetz_session,
+            yoetz_session_id=finishup_session,
             yoetz_writer_id=new_id(IdKind.WRITER),
             last_frontier="0:genesis",
         ),

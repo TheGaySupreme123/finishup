@@ -16,16 +16,16 @@ from typing import Any, Final, cast
 import pytest
 from pydantic import ValidationError
 
-from yoetz.cli.render import render_human_awaiting_human
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import (
+from finishup.cli.render import render_human_awaiting_human
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import (
     CheckAwaitingHumanModel,
     CheckResultModel,
     CheckSuccessModel,
     StatusOperationPageModel,
 )
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.schemas import validate_schema_instance
 
 _PENDING: Final = f"ppr_{uuid.uuid4()}"
 _REQUEST: Final = f"req_{uuid.uuid4()}"
@@ -57,7 +57,7 @@ def _continuation(**overrides: Any) -> dict[str, Any]:
         "kind": "privacy_disclosure_decision",
         "pending_id": _PENDING,
         "expires_at": "2026-08-05T13:00:00.000Z",
-        "command": ["yoetz", "privacy", "decide-disclosure", _PENDING],
+        "command": ["finishup", "privacy", "decide-disclosure", _PENDING],
         "replay_request_id": _REQUEST,
         "instruction": _INSTRUCTION,
     }
@@ -68,7 +68,7 @@ def _continuation(**overrides: Any) -> dict[str, Any]:
 def _repository_grant_continuation(**overrides: Any) -> dict[str, Any]:
     body: dict[str, Any] = {
         "kind": "repository_privacy_setup",
-        "command": ["yoetz", "--privacy"],
+        "command": ["finishup", "--privacy"],
         "replay_request_id": _REQUEST,
         "instruction": (
             "Use the trusted local privacy ceremony, then replay this exact request id."
@@ -121,7 +121,7 @@ def test_the_awaiting_input_branch_validates_and_discriminates_on_state() -> Non
             semantic_reason="review_input_required",
             continuation={
                 "kind": "review_input_required",
-                "command": ["yoetz", "publish-work", "--input", "PATH"],
+                "command": ["finishup", "publish-work", "--input", "PATH"],
                 "replay_request_id": _REQUEST,
                 "instruction": "Supply the statement, then replay this exact request.",
             },
@@ -136,7 +136,7 @@ def test_the_awaiting_input_branch_validates_and_discriminates_on_state() -> Non
     rendered = render_human_awaiting_human(result.root)
     assert "awaiting_input (review_input_required)" in rendered
     assert "complete review input" in rendered
-    assert "yoetz publish-work --input PATH" in rendered
+    assert "finishup publish-work --input PATH" in rendered
     assert "awaiting_human (human_approval_required)" not in rendered
 
 
@@ -145,7 +145,7 @@ def test_the_branch_carries_the_exact_command_the_user_must_run() -> None:
     assert type(result.root) is CheckAwaitingHumanModel
 
     assert result.root.continuation.command == (
-        "yoetz",
+        "finishup",
         "privacy",
         "decide-disclosure",
         _PENDING,
@@ -190,7 +190,7 @@ def test_missing_repository_grant_carries_standing_setup_without_one_use_fields(
 
     continuation = result.root.continuation
     assert continuation.kind == "repository_privacy_setup"
-    assert continuation.command == ("yoetz", "--privacy")
+    assert continuation.command == ("finishup", "--privacy")
     assert continuation.pending_id is None
     assert continuation.expires_at is None
 
@@ -246,7 +246,7 @@ def test_a_command_that_does_not_match_the_pending_id_is_rejected() -> None:
     other = f"ppr_{uuid.uuid4()}"
     body = _awaiting(
         continuation=_continuation(
-            command=["yoetz", "privacy", "decide-disclosure", other],
+            command=["finishup", "privacy", "decide-disclosure", other],
         )
     )
 
@@ -257,8 +257,8 @@ def test_a_command_that_does_not_match_the_pending_id_is_rejected() -> None:
 @pytest.mark.parametrize(
     "command",
     (
-        ["yoetz", "privacy", "decide-disclosure"],
-        ["yoetz", "privacy", "decide-policy", _PENDING],
+        ["finishup", "privacy", "decide-disclosure"],
+        ["finishup", "privacy", "decide-policy", _PENDING],
         ["sh", "-c", "decide-disclosure", _PENDING],
     ),
 )

@@ -1,7 +1,7 @@
 """Cross-lane contracts of the tb4n1 remediation that no single lane could test alone.
 
-- PL2-2 (L2 #982 -> L4 #984): the egress privacy gaps are standing Yoetz limits, so a finding the
-  reviewer still sees only because Yoetz withheld or redacted packet content is answerable with
+- PL2-2 (L2 #982 -> L4 #984): the egress privacy gaps are standing FinishUP limits, so a finding the
+  reviewer still sees only because FinishUP withheld or redacted packet content is answerable with
   ``respond self_verified``.
 - Status-result 1.4.0 (L2 credential heuristic, L4 limitation refs and acknowledged count, L6
   obligation acknowledgement reason and directory/role items) carries every lane's addition in one
@@ -17,12 +17,12 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.domain.findings import FindingOrigin
-from yoetz.domain.receipts import (
+from finishup.domain.findings import FindingOrigin
+from finishup.domain.receipts import (
     SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
 )
-from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
-from yoetz.kernel.self_verification import reasons_proof_limited
+from finishup.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+from finishup.kernel.self_verification import reasons_proof_limited
 
 _PRIVACY_GAPS = (
     SEMANTIC_REVIEW_ITEM_WITHHELD_GAP,
@@ -41,7 +41,7 @@ def test_a_privacy_limited_review_finding_is_self_verifiable(code: str) -> None:
     # The reviewer still raises it, but its packet lacked the withheld item or value.
     reasons = ("reviewer_verdict_still_present", f"coverage:{code}")
     assert reasons_proof_limited(reasons, FindingOrigin.SEMANTIC_MODEL_DERIVED) is True
-    # Without the privacy limit the same ruling is agent work, not a Yoetz limit.
+    # Without the privacy limit the same ruling is agent work, not a FinishUP limit.
     assert (
         reasons_proof_limited(
             ("reviewer_verdict_still_present",), FindingOrigin.SEMANTIC_MODEL_DERIVED
@@ -54,7 +54,7 @@ def _status_schema() -> dict[str, Any]:
     root = Path(__file__).resolve().parents[3]
     source = (root / "schemas/operations/status-result-1.4.0.schema.json").read_bytes()
     packaged = (
-        resources.files("yoetz")
+        resources.files("finishup")
         .joinpath("resources", "schemas", "operations", "status-result-1.4.0.schema.json")
         .read_bytes()
     )

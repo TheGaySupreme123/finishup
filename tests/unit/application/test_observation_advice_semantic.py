@@ -15,17 +15,17 @@ from typing import cast
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation_advice_semantic import (
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation_advice_semantic import (
     SqliteObservationAdviceSemanticRepository,
 )
-from yoetz.application.observation_advice import (
+from finishup.application.observation_advice import (
     ADVICE_SEMANTIC_DEFERRED_GAP,
     ADVICE_SEMANTIC_PENDING_GAP,
     ADVICE_SEMANTIC_UNAVAILABLE_GAP,
     ObservationAdviceContextBuilder,
 )
-from yoetz.application.observation_advice_semantic import (
+from finishup.application.observation_advice_semantic import (
     ADVICE_SEMANTIC_FAILURE_REASONS,
     AdviceSemanticDrainHandle,
     ObservationAdviceSemanticAttempt,
@@ -37,8 +37,8 @@ from yoetz.application.observation_advice_semantic import (
     advice_candidate_identity,
     advice_semantic_retry_delay_seconds,
 )
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.domain.observation import (
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.domain.observation import (
     AdviceSnapshot,
     ObservationCursor,
     ObservationEnvelope,
@@ -48,14 +48,14 @@ from yoetz.domain.observation import (
     ObservationStatus,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.ports.semantic_budget import (
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.ports.runtime import TaskRuntime
+from finishup.ports.semantic_budget import (
     current_semantic_background,
     current_semantic_budget_profile,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
-from yoetz.protocol.coverage import CheckType
+from finishup.protocol.canonical import JsonValue, canonical_digest, strict_json_parse
+from finishup.protocol.coverage import CheckType
 
 _COMMITMENT = "hmac-sha256:" + "a" * 64
 _TIME = Timestamp("2026-09-08T21:00:00.000Z")
@@ -1592,8 +1592,8 @@ def test_completed_review_stays_visible_after_the_provider_goes_away() -> None:
 def test_cancelled_request_reconciliation_marks_unknown_usage_unless_proven_unsent() -> None:
     """A cancelled advisory call names its provider whenever it may have started (#923)."""
 
-    from yoetz.application.egress import SemanticEgressAttemptUnknown
-    from yoetz.application.observation_advice_semantic import (
+    from finishup.application.egress import SemanticEgressAttemptUnknown
+    from finishup.application.observation_advice_semantic import (
         ADVICE_SEMANTIC_CANCEL_RECOVERY_SECONDS,
         DEFAULT_ADVICE_SEMANTIC_RECONCILE_TIMEOUT_SECONDS,
         reconcile_cancelled_advice_request,
@@ -1660,7 +1660,7 @@ def test_cancelled_request_reconciliation_marks_unknown_usage_unless_proven_unse
 def test_cancelled_call_row_records_usage_unknown_when_the_lookup_is_blocked() -> None:
     """The stored row keeps the provider identity even when the audit lock is held (#923)."""
 
-    from yoetz.application.observation_advice_semantic import reconcile_cancelled_advice_request
+    from finishup.application.observation_advice_semantic import reconcile_cancelled_advice_request
 
     _db, repository = _repository()
     basis = "sha256:" + "9" * 64

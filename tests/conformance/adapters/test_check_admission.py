@@ -26,17 +26,17 @@ from conformance.adapters.test_ledger_port import (
     _Objects,  # pyright: ignore[reportPrivateUsage]
     ledger_command,
 )
-from yoetz.adapters.memory.importer import MemoryImportState
-from yoetz.adapters.memory.ledger import (
+from finishup.adapters.memory.importer import MemoryImportState
+from finishup.adapters.memory.ledger import (
     MemoryLedgerAdapter,
     MemoryLedgerState,
     check_admission_record,
     note_check_admission_refusal,
 )
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.domain.findings import CheckVerdict, RankedFindings
-from yoetz.ports.ledger import (
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.domain.findings import CheckVerdict, RankedFindings
+from finishup.ports.ledger import (
     CHECK_ADMISSION_REASON_CODES,
     CHECK_ADMISSION_RETRY_AFTER_MS,
     AppendCommand,
@@ -47,10 +47,10 @@ from yoetz.ports.ledger import (
     check_admission_refused,
     check_admission_stage,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource, StagedObject
-from yoetz.ports.runtime import OwnershipFence
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource, StagedObject
+from finishup.ports.runtime import OwnershipFence
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 type _Adapter = MemoryLedgerAdapter | SqliteLedger
 type _Kind = Literal["memory", "sqlite"]
@@ -500,7 +500,7 @@ def test_admission_record_yields_to_an_admitted_operation() -> None:
 
 
 def test_refusal_count_zero_is_only_valid_while_acquiring() -> None:
-    from yoetz.ports.ledger import CheckAdmissionRecord
+    from finishup.ports.ledger import CheckAdmissionRecord
 
     now = datetime(2026, 7, 19, 12, 0, tzinfo=UTC)
     base = CheckAdmissionRecord(

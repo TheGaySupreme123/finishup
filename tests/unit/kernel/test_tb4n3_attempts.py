@@ -14,7 +14,7 @@ from collections.abc import Iterator
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     EventSchema,
@@ -25,13 +25,13 @@ from yoetz.domain.events import (
     RequestedItemKind,
     RequestedItemRole,
 )
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.values import action_id, obligation_id
-from yoetz.kernel.command_attempts import same_requested_path, value_in_attempted
-from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
-from yoetz.kernel.policies.work_integrity import work_integrity_findings
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import register_command_identity_key
+from finishup.domain.findings import FindingKind
+from finishup.domain.values import action_id, obligation_id
+from finishup.kernel.command_attempts import same_requested_path, value_in_attempted
+from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
+from finishup.kernel.policies.work_integrity import work_integrity_findings
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import register_command_identity_key
 
 _OBL = obligation_id("obl_00000000-0000-4000-8000-0000000000a1")
 
@@ -150,7 +150,7 @@ def test_an_untargeted_action_no_longer_marks_every_obligation_acted_on() -> Non
     _publish(ledger, 1)  # no obligation_refs, names nothing
     records = ledger.prefix
     case = build_deterministic_case(replay(records), records, CaseAvailabilityFacts())
-    from yoetz.kernel.policies.work_integrity import reportable_absent_outputs
+    from finishup.kernel.policies.work_integrity import reportable_absent_outputs
 
     absent = frozenset({(_OBL, 0)})
     assert reportable_absent_outputs(case, absent) == frozenset()

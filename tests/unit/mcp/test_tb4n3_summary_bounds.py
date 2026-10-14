@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from yoetz.mcp import summaries
-from yoetz.mcp.summaries import (
+from finishup.mcp import summaries
+from finishup.mcp.summaries import (
     MAX_SUMMARY_BYTES,
     render_safe_compact_summary,
     render_safe_compact_summary_detailed,

@@ -66,7 +66,7 @@ provider adapter is even constructed. A missing or mismatched exact repository g
 denies before credential-handle minting, authorization, or dispatch.
 
 The external binding also selects one credential authority. HTTP profiles use
-`yoetz_vault_api_credential`. `codex-chatgpt-subscription@1` uses
+`finishup_vault_api_credential`. `codex-chatgpt-subscription@1` uses
 `external_runtime_oauth`: an exact Codex app-server owns ChatGPT OAuth and receives a secret-free
 attempt authority. It has no API-key, OAuth-token, generic-endpoint, proxy, or ambient-home
 fallback. Its content-free account/model readiness checks do not grant privacy authority.
@@ -121,16 +121,16 @@ The five independent `EgressChannel` values are `llm_inference`, `product_teleme
 `crash_diagnostics`, `update_checks`, and `capability_testing`. Enabling one never enables another.
 The four non-LLM channels accept only their reviewed bounded structural/synthetic schemas and can
 never carry task/user content. **v0.1 ships a production transport for `update_checks` only**
-(allowlisted PyPI JSON GET of the `yoetz` distribution version; interactive advisory surfaces
+(allowlisted PyPI JSON GET of the `finishup` distribution version; interactive advisory surfaces
 only). The other three non-LLM channels still have no production transport: an attempted use
 terminates before dispatch with outcome `channel_unavailable`, writes a no-dispatch structural
 decision receipt, and makes no DNS or socket attempt.
 
 The product durable default is `local_only` with structural `update_checks` on (opt-out) and the
-global ceiling true only because that channel is on. Yoetz's true zero-network state is the
+global ceiling true only because that channel is on. FinishUP's true zero-network state is the
 composite `profile=local_only`, `network_egress_permitted=false`,
 and all five channel policies disabled. That state permits only exact release-cell local IPC:
-Yoetz's own service/confidential endpoints, an optional approved local-model AF_UNIX profile, and
+FinishUP's own service/confidential endpoints, an optional approved local-model AF_UNIX profile, and
 measured OS credential/user-presence/session-lifecycle IPC (for example allowlisted Linux
 session-bus Secret Service routes, system-bus `org.freedesktop.login1`, or macOS native
 security/presence notifications). Arbitrary AF_UNIX destinations, bus methods, or proxies are
@@ -197,8 +197,8 @@ policy version/digest, authorization scope, approved/blocked categories, byte/to
 redaction counts, consent source, outcome/reason, and a keyed commitment to the exact final request
 body bytes — never plaintext content or the provider's response.
 
-For `external_runtime_oauth`, “request body” at this boundary means the exact disclosed Yoetz case
-bytes passed through app-server stdin. Codex constructs the upstream OpenAI body beyond Yoetz's
+For `external_runtime_oauth`, “request body” at this boundary means the exact disclosed FinishUP case
+bytes passed through app-server stdin. Codex constructs the upstream OpenAI body beyond FinishUP's
 observable boundary. Runtime provenance therefore commits separately to the disclosed case,
 instruction, output schema, executable/protocol/capability/launcher/config, model/reasoning
 selection, safe correlation, output digest, and process cleanup, and requires
@@ -241,7 +241,7 @@ through the ordinary control channel. A separate foreground human-control surfac
 renders, reauthenticates, and commits it. Ordinary MCP/agent schemas expose no method that can reach
 that surface. Revocation of an existing authorization is immediate.
 
-The separate local `yoetz consent` lane may let an allowlisted first-party agent relay one explicit
+The separate local `finishup consent` lane may let an allowlisted first-party agent relay one explicit
 current-chat decision for an exact prepared repository recipe, including `expanded_review`. Its v6
 agent projection carries the complete bounded substantive before/after diff and binds both frozen
 policy byte sets, repository commitment, authority generation, provider/model/endpoint, recipe,

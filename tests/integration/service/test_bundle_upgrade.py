@@ -13,11 +13,11 @@ from typing import cast
 import apsw
 import pytest
 
-import yoetz.adapters.sqlite.connection as connection_module
-import yoetz.service.bundle_upgrade as bundle_upgrade_module
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, initialize_catalog
-from yoetz.domain.values import Frontier, task_id
-from yoetz.service.bundle_upgrade import (
+import finishup.adapters.sqlite.connection as connection_module
+import finishup.service.bundle_upgrade as bundle_upgrade_module
+from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, initialize_catalog
+from finishup.domain.values import Frontier, task_id
+from finishup.service.bundle_upgrade import (
     BUNDLE_UPGRADE_TARGET_VERSION,
     BackupEvidence,
     BundleIntegrity,
@@ -768,7 +768,7 @@ async def test_post_commit_replay_failure_quarantines_and_restored_v12_is_not_cu
 
 
 def test_usage_preservation_digest_normalizes_legacy_nulls_and_detects_counter_changes() -> None:
-    from yoetz.service.bundle_upgrade import (
+    from finishup.service.bundle_upgrade import (
         _stream_table_digest,  # pyright: ignore[reportPrivateUsage]
     )
 

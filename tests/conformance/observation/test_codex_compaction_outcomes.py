@@ -37,20 +37,20 @@ from builders.codex_replay import (
     session_start,
     sweep_all,
 )
-from yoetz.application.observation_drain import ObservationOutboxSweeper
-from yoetz.domain.events import (
+from finishup.application.observation_drain import ObservationOutboxSweeper
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     EvidenceRecordedPayload,
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationEnvelope,
     ObservationIngestRequest,
     ObservationSource,
 )
-from yoetz.kernel.task_facts import EDITED_AFTER_LAST_VERIFICATION_GAP, task_fact_signals
+from finishup.kernel.task_facts import EDITED_AFTER_LAST_VERIFICATION_GAP, task_fact_signals
 
 type Bump = Literal["compact", "resume", "clear"]
 type Order = Literal["pre_post_stream", "pre_stream_post"]
@@ -411,12 +411,12 @@ def _post_only_envelope(
 ) -> ObservationEnvelope:
     """A Claude Code or Cursor ordinary-profile post: post-only, one call id (or none)."""
 
-    from yoetz.domain.observation import ObservationCursor
-    from yoetz.domain.observation_profiles import (
+    from finishup.domain.observation import ObservationCursor
+    from finishup.domain.observation_profiles import (
         CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
         CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
     )
-    from yoetz.domain.values import JsonObject, Timestamp
+    from finishup.domain.values import JsonObject, Timestamp
 
     profile = (
         CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
@@ -463,9 +463,9 @@ async def test_post_only_hosts_get_the_same_duplicate_classification(
 
     from types import SimpleNamespace
 
-    from yoetz.application.observation_coordinator import _AlreadyCommitted
-    from yoetz.application.observation_materialize import materialize_observation_envelope
-    from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+    from finishup.application.observation_coordinator import _AlreadyCommitted
+    from finishup.application.observation_materialize import materialize_observation_envelope
+    from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
     coordinator = build_coordinator(replay)
     command: Any = SimpleNamespace(
@@ -528,7 +528,7 @@ def _hook_post_copy(
     gone. ``row`` is the post's outbox row when it was captured before a sweep delivered it.
     """
 
-    from yoetz.domain.values import JsonObject
+    from finishup.domain.values import JsonObject
 
     source_row: Any = row if row is not None else _pending_hook_post(cell, call)
     payload = dict(source_row.envelope.structural_payload)
@@ -629,9 +629,9 @@ async def test_a_stream_copy_contradicting_the_committed_outcome_is_recorded_as_
     """The stream copy is a duplicate by event ids, and its differing outcome is not lost: the
     correction records it beside the hook's, flagged as a dedup conflict."""
 
-    from yoetz.adapters.integrations.codex_session_stream import STREAM_MAPPING_VERSION
-    from yoetz.domain.observation import ObservationCursor
-    from yoetz.domain.values import JsonObject
+    from finishup.adapters.integrations.codex_session_stream import STREAM_MAPPING_VERSION
+    from finishup.domain.observation import ObservationCursor
+    from finishup.domain.values import JsonObject
 
     await _committed_success_then_lost_manifests(replay, "call_conflict")
     rows = replay.store.list_pending_outbox_rows(replay.commitment)

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     MAX_REVIEWED_BLOCKERS,
     REVIEW_PHASE_QUESTIONS,
     review_question_set,
 )
-from yoetz.protocol.models import MAX_REVIEW_TEXT_BYTES
+from finishup.protocol.models import MAX_REVIEW_TEXT_BYTES
 
 
 def _ids(prefix: str, count: int, offset: int = 0) -> tuple[str, ...]:
@@ -23,7 +23,7 @@ def test_only_the_final_phase_asks_about_blockers() -> None:
     assert final[:-1] == review_question_set("final")
     assert final[0] == REVIEW_PHASE_QUESTIONS["final"]
     assert final[-1].startswith("Recorded blockers: decision evt_")
-    assert "yoetz-blocker:consent" in final[-1]
+    assert "finishup-blocker:consent" in final[-1]
     assert "citable_refs" in final[-1]
 
 
@@ -37,15 +37,15 @@ def test_the_blocker_question_stays_within_the_review_text_bound() -> None:
     assert len(question.encode("utf-8")) < MAX_REVIEW_TEXT_BYTES * 3 // 4
     assert "(+56 more)" in question
     assert "more blocker decisions)" in question
-    assert question.count("declares yoetz-blocker:") <= MAX_REVIEWED_BLOCKERS
+    assert question.count("declares finishup-blocker:") <= MAX_REVIEWED_BLOCKERS
 
 
 def test_a_genuine_credential_blocker_on_the_main_deliverable_may_stand() -> None:
     """#978: the main deliverable calls for scrutiny, not an automatic challenge. A recoverable
     outcome or an unattempted prerequisite forces one; a genuine credential blocker may stand."""
 
-    from yoetz.adapters.providers.openai_responses import SEMANTIC_REVIEW_INSTRUCTION
-    from yoetz.application.semantic_case import BLOCKER_REVIEW_INSTRUCTION
+    from finishup.adapters.providers.openai_responses import SEMANTIC_REVIEW_INSTRUCTION
+    from finishup.application.semantic_case import BLOCKER_REVIEW_INSTRUCTION
 
     blockers = (("evt_97800000-0000-4000-8000-000000000001", "credential", _ids("obl", 1)),)
     question = review_question_set("final", blockers)[-1]

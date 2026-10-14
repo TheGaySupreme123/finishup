@@ -23,22 +23,22 @@ from builders.dialogue import (
     ruling_check,
 )
 from builders.policy_cases import clm, evd, evt, finding_record, fnd, obl, res
-from yoetz.domain.events import ResponseRecordedPayload
-from yoetz.domain.findings import (
+from finishup.domain.events import ResponseRecordedPayload
+from finishup.domain.findings import (
     CheckVerdict,
     FindingKind,
     ResponseDisposition,
     finding_demands_work,
     is_limitation_request,
 )
-from yoetz.kernel.finding_resolution import (
+from finishup.kernel.finding_resolution import (
     apply_check_resolution,
     apply_check_rulings,
     finding_is_resolved,
     next_standing_position,
     reopen_findings_resolved_by,
 )
-from yoetz.kernel.finding_todo import (
+from finishup.kernel.finding_todo import (
     ABSOLUTELY_FINAL_TODO_STATES,
     REOPENABLE_TODO_STATES,
     FindingTodoState,
@@ -49,7 +49,7 @@ from yoetz.kernel.finding_todo import (
     ruling_since,
     standing_answer_frontier,
 )
-from yoetz.kernel.limitation import (
+from finishup.kernel.limitation import (
     DISCLOSED_BY_DECISION,
     DISCLOSED_BY_RESPONSE,
     LIMITATION_ACKNOWLEDGED_NOT_DONE,
@@ -60,15 +60,15 @@ from yoetz.kernel.limitation import (
     limitation_requested_ids,
     limitation_standing,
 )
-from yoetz.kernel.projections import (
+from finishup.kernel.projections import (
     ProjectionState,
     StandingPosition,
     projection_from_snapshot,
     projection_snapshot,
     unanswered_finding_ids,
 )
-from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
-from yoetz.protocol.coverage import Coverage
+from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+from finishup.protocol.coverage import Coverage
 
 D = ResponseDisposition
 
@@ -122,7 +122,7 @@ def test_one_reasoned_acknowledgement_settles_it_as_a_disclosed_limitation(
     disposition: ResponseDisposition,
 ) -> None:
     """The agent says the requirement may be met but cannot be verified here: that is the
-    disclosure. A ``self_verified`` answer is the agent's reasoned final word on a request Yoetz
+    disclosure. A ``self_verified`` answer is the agent's reasoned final word on a request FinishUP
     cannot prove (pretrain S ``fnd_1ff0de49``): it settles it too, because the request has no
     other exit once that answer is given."""
 
@@ -178,7 +178,7 @@ def test_a_verification_limit_decision_on_the_obligation_discloses_it_but_an_ass
     assert (standing.basis, standing.source_event_ids) == (DISCLOSED_BY_DECISION, (evt(30),))
     assumption = replace(
         base,
-        decisions={evt(30): limit_decision(30, obl(1), kind="yoetz-assumption")},
+        decisions={evt(30): limit_decision(30, obl(1), kind="finishup-assumption")},
     )
     assert _limit_state(assumption) == LIMITATION_REQUESTED
     other = replace(base, decisions={evt(30): limit_decision(30, obl(2))})
@@ -304,8 +304,8 @@ def test_g3_a_disclosed_limitation_never_clears_the_emptied_deliverable_fact() -
     it is disclosed, is independent of ``declared_output_emptied``, which stays agent-actionable on
     both routes and in the table every surface reads."""
 
-    from yoetz.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
-    from yoetz.kernel.task_facts import DECLARED_OUTPUT_EMPTIED_GAP
+    from finishup.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
+    from finishup.kernel.task_facts import DECLARED_OUTPUT_EMPTIED_GAP
 
     for route in (True, False):
         effect = gap_effect(DECLARED_OUTPUT_EMPTIED_GAP, GapContext(route_requires_review=route))
@@ -316,7 +316,7 @@ def test_g3_a_disclosed_limitation_never_clears_the_emptied_deliverable_fact() -
     # The class carries no deliverable state at all: it neither reads nor writes the delivered set.
     import inspect
 
-    import yoetz.kernel.limitation as limitation_module
+    import finishup.kernel.limitation as limitation_module
 
     assert "delivered_set" not in inspect.getsource(limitation_module)
 
@@ -565,7 +565,7 @@ def test_a_settled_reraise_widens_the_items_concern_by_what_it_cited() -> None:
 
 
 def test_a_claim_covering_the_obligation_names_the_concern_when_no_obligation_is_cited() -> None:
-    from yoetz.kernel.concern import concern_key
+    from finishup.kernel.concern import concern_key
 
     state = projection(
         {},

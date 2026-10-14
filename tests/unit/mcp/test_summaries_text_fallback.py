@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from yoetz.mcp.summaries import (
+from finishup.mcp.summaries import (
     MAX_SUMMARY_BYTES,
     render_check_reviewer_output,
     render_safe_compact_summary,

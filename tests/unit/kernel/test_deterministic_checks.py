@@ -12,7 +12,7 @@ import pytest
 
 from builders.policy_cases import clm, evt, make_case, obl, plan_record, record
 from builders.replay import replay_records
-from yoetz.domain.events import (
+from finishup.domain.events import (
     AcceptedEvent,
     ClaimKind,
     ClaimRecordedPayload,
@@ -21,13 +21,13 @@ from yoetz.domain.events import (
     accepted_record_digest_preimage,
     encode_payload,
 )
-from yoetz.domain.findings import FINDING_KIND_TRAITS, Finding, FindingKind, FindingOrigin
-from yoetz.domain.receipts import (
+from finishup.domain.findings import FINDING_KIND_TRAITS, Finding, FindingKind, FindingOrigin
+from finishup.domain.receipts import (
     COMPLETION_CLAIM_OUTSIDE_PLAN_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
     COMPLETION_SCOPE_UNDECLARED_GAP,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Frontier,
     action_id,
     claim_id,
@@ -37,8 +37,8 @@ from yoetz.domain.values import (
     obligation_id,
     result_id,
 )
-from yoetz.kernel import deterministic_checks
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel import deterministic_checks
+from finishup.kernel.deterministic_checks import (
     DETERMINISTIC_FINDING_TEMPLATES,
     DETERMINISTIC_TEXT_CONTRACT_DIGEST,
     CaseAvailabilityFacts,
@@ -54,17 +54,17 @@ from yoetz.kernel.deterministic_checks import (
     render_deterministic_finding_text,
     run_deterministic_policies,
 )
-from yoetz.kernel.policies.research_evidence import RESEARCH_EVIDENCE_POLICY_PACK
-from yoetz.kernel.policies.work_integrity import WORK_INTEGRITY_POLICY_PACK
-from yoetz.kernel.projections import empty_projection_state
-from yoetz.kernel.reducers import replay
-from yoetz.protocol.canonical import (
+from finishup.kernel.policies.research_evidence import RESEARCH_EVIDENCE_POLICY_PACK
+from finishup.kernel.policies.work_integrity import WORK_INTEGRITY_POLICY_PACK
+from finishup.kernel.projections import empty_projection_state
+from finishup.kernel.reducers import replay
+from finishup.protocol.canonical import (
     canonical_digest,
     canonical_encode,
     entry_digest,
     strict_json_parse,
 )
-from yoetz.protocol.coverage import (
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -355,7 +355,7 @@ def test_text_contract_digest_pins_every_rendered_wording_branch() -> None:
     rendered = canonical_encode(corpus).decode("utf-8")
     assert "No obligation in the current plan cites the recorded task statement." in rendered
     assert "plan declares no obligation for the recorded task statement" in rendered
-    assert "yoetz-no-material-work:evt_" in rendered
+    assert "finishup-no-material-work:evt_" in rendered
     assert "publish a NEW obligation_published" in rendered
     assert "cites no verification made after the latest observed edit" in rendered
     assert "self-generated evidence is admissible" in rendered

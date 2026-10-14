@@ -27,7 +27,7 @@ from typing import cast
 
 import pytest
 
-import yoetz.service.ready_composition as ready_composition
+import finishup.service.ready_composition as ready_composition
 from builders.ledger_adapters import MemoryObjects, ownership_fence
 from builders.start_application import (
     MemoryStartRuntime,
@@ -36,42 +36,42 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.adapters.memory.privacy import (
+from finishup.adapters.memory.privacy import (
     MemoryPrivacyAudit,
     MemoryPrivacyCatalogState,
     MemoryPrivacyPolicyStore,
 )
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import (
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
     VerificationPolicy,
 )
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.privacy import (
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     LocalDisclosureSink,
     PrivacyPolicy,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     PolicyVersionEntry,
     ReceiptVersionSlice,
     SchemaVersionEntry,
 )
-from yoetz.domain.values import Frontier
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.objects import ObjectStorePort
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import (
+from finishup.domain.values import Frontier
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.objects import ObjectStorePort
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import (
     DataCategory,
     FrontierModel,
     PublishWorkRequest,
@@ -102,7 +102,7 @@ class _IdleImporter:
     async def status(self, session: str) -> ImportStatusSnapshot:
         """Return an empty importer snapshot for the requested session."""
 
-        from yoetz.domain.values import session_id
+        from finishup.domain.values import session_id
 
         return ImportStatusSnapshot(session_id(session), 0, 0, (), ())
 
@@ -167,7 +167,7 @@ def _versions() -> ReceiptVersionSlice:
     """Return a stable version slice for local disclosure receipts."""
 
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",

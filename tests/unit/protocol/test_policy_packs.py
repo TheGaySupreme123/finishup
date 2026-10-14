@@ -5,14 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast, get_args
 
-from yoetz.domain.findings import FindingKind, finding_policy_identity
-from yoetz.protocol.models import (
+from finishup.domain.findings import FindingKind, finding_policy_identity
+from finishup.protocol.models import (
     CurrentPolicyPackWire,
     RecordedPolicyPackWire,
     RecordedPolicyVersionWire,
     RecordedVersionSlicePackWire,
 )
-from yoetz.protocol.policy_packs import (
+from finishup.protocol.policy_packs import (
     CURRENT_POLICY_PACKS,
     RECORDED_POLICY_PACKS,
     RECORDED_POLICY_VERSION_VALUES,
@@ -20,8 +20,8 @@ from yoetz.protocol.policy_packs import (
     is_recorded_policy_identity,
     policy_version_supersedes_or_equals,
 )
-from yoetz.protocol.schemas import schema_document_for
-from yoetz.version import (
+from finishup.protocol.schemas import schema_document_for
+from finishup.version import (
     COORDINATION_POLICY_VERSION,
     RESEARCH_EVIDENCE_POLICY_VERSION,
     WORK_INTEGRITY_POLICY_VERSION,

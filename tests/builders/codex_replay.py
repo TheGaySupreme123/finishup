@@ -24,17 +24,17 @@ import apsw
 import pytest
 
 from builders.ledger_adapters import FixedClock, FixedIds, MemoryObjects, ownership_fence
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.memory.importer import MemoryImportState
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_drain import ObservationOutboxSweeper
-from yoetz.cli import observe_hooks
-from yoetz.domain.events import AcceptedEvent
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.memory.importer import MemoryImportState
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_drain import ObservationOutboxSweeper
+from finishup.cli import observe_hooks
+from finishup.domain.events import AcceptedEvent
+from finishup.domain.observation import (
     ObservationContentChunk,
     ObservationContentKind,
     ObservationEnvelope,
@@ -42,9 +42,9 @@ from yoetz.domain.observation import (
     ObservationIngestResult,
     ObservationSource,
 )
-from yoetz.ports.runtime import RuntimeCapability, TaskRuntime
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.ports.runtime import RuntimeCapability, TaskRuntime
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 HOST = "019f9b27-c1de-7a61-9c5e-5d0b89759417"
 WALL_START = 1_790_704_600.0
@@ -102,7 +102,7 @@ def mcp_tool_call(
     tool: str,
     timestamp: str,
     *,
-    server: str | None = "yoetz",
+    server: str | None = "finishup",
     status: str = "completed",
 ) -> dict[str, Any]:
     """The nested ``McpToolCall`` item Codex 0.159.3 writes for a code-mode MCP call.

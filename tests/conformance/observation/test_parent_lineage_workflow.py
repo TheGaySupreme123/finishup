@@ -18,15 +18,15 @@ from unittest.mock import AsyncMock
 import pytest
 
 from builders.multi_agent import MultiAgentService, multi_agent_service
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.start import StartInternalResult
-from yoetz.domain.coordination import WorkState
-from yoetz.domain.findings import FindingKind
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.start import StartInternalResult
+from finishup.domain.coordination import WorkState
+from finishup.domain.findings import FindingKind
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.ledger import CheckCommitResult
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
@@ -34,7 +34,7 @@ from yoetz.protocol.models import (
     StatusLineagePageModel,
     StatusRequest,
 )
-from yoetz.service.elevated_bootstrap import (
+from finishup.service.elevated_bootstrap import (
     claim_pending_for_review,
     complete_review,
     record_import_publication_authorization,

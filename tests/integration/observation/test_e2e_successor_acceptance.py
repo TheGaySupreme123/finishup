@@ -11,17 +11,17 @@ from typing import Any
 
 import pytest
 
-from yoetz.adapters.integrations.codex_plugin import render_plugin_tree
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_verification import (
+from finishup.adapters.integrations.codex_plugin import render_plugin_tree
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_verification import (
     CompletedApprovedCheck,
     ObservationVerificationJob,
     ObservationVerificationSupervisor,
     ObservationVerificationWorker,
     VerificationDrainHandle,
 )
-from yoetz.cli.observe_hooks import handle_observe
-from yoetz.domain.values import Timestamp
+from finishup.cli.observe_hooks import handle_observe
+from finishup.domain.values import Timestamp
 
 
 def test_rendered_hooks_declare_workspace_binding_and_nonblocking_budgets() -> None:
@@ -196,14 +196,14 @@ async def test_verification_supervisor_preserves_wake_from_idle_handoff() -> Non
 async def test_completed_approved_check_forwards_bounded_result_for_ledger_materialization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.approved_checks import (
+    from finishup.adapters.approved_checks import (
         ApprovedCheckApproval,
         ApprovedCheckOutcome,
         ApprovedCheckResult,
         ApprovedCheckStatus,
         approval_commitment,
     )
-    from yoetz.application import observation_verification as verification_module
+    from finishup.application import observation_verification as verification_module
 
     state = "sha256:" + "d" * 64
     approval_digest = approval_commitment("focused-tests", ("/usr/bin/true",), allow_network=False)
@@ -305,25 +305,25 @@ async def test_approved_check_materialization_is_service_owned_and_idempotent(
         memory_adapter,
         ownership_fence,
     )
-    from yoetz.adapters.approved_checks import (
+    from finishup.adapters.approved_checks import (
         ApprovedCheckOutcome,
         ApprovedCheckResult,
         ApprovedCheckStatus,
         approval_commitment,
     )
-    from yoetz.application.observation_coordinator import ObservationCoordinator
-    from yoetz.application.observation_materialize import observation_writer_id
-    from yoetz.domain.events import (
+    from finishup.application.observation_coordinator import ObservationCoordinator
+    from finishup.application.observation_materialize import observation_writer_id
+    from finishup.domain.events import (
         AcceptedEvent,
         EvidenceDigestProvenance,
         EvidenceRecordedPayload,
     )
-    from yoetz.ports.diagnostics import RuntimeCapability
-    from yoetz.ports.importer import ImporterPort
-    from yoetz.ports.objects import ObjectKind, ObjectRef, ObjectStorePort, StagedObject
-    from yoetz.ports.runtime import BundleRuntimePort, TaskRuntime
-    from yoetz.protocol.coverage import PublicationChannel
-    from yoetz.protocol.errors import ProtocolValueError
+    from finishup.ports.diagnostics import RuntimeCapability
+    from finishup.ports.importer import ImporterPort
+    from finishup.ports.objects import ObjectKind, ObjectRef, ObjectStorePort, StagedObject
+    from finishup.ports.runtime import BundleRuntimePort, TaskRuntime
+    from finishup.protocol.coverage import PublicationChannel
+    from finishup.protocol.errors import ProtocolValueError
 
     seed = append_command()
     ledger = memory_adapter(seed)
@@ -473,24 +473,24 @@ async def test_advice_finding_materialization_passes_real_ledger_validation(tmp_
         memory_adapter,
         ownership_fence,
     )
-    from yoetz.application.observation_coordinator import ObservationCoordinator
-    from yoetz.application.observation_materialize import materialize_observation_envelope
-    from yoetz.domain.events import AcceptedEvent
-    from yoetz.domain.findings import Finding
-    from yoetz.domain.observation import (
+    from finishup.application.observation_coordinator import ObservationCoordinator
+    from finishup.application.observation_materialize import materialize_observation_envelope
+    from finishup.domain.events import AcceptedEvent
+    from finishup.domain.findings import Finding
+    from finishup.domain.observation import (
         AdviceItem,
         AdviceSnapshot,
         ObservationCursor,
         ObservationEnvelope,
         ObservationSource,
     )
-    from yoetz.domain.values import JsonObject, finding_id
-    from yoetz.ports.diagnostics import RuntimeCapability
-    from yoetz.ports.importer import ImporterPort
-    from yoetz.ports.objects import ObjectStorePort
-    from yoetz.ports.runtime import BundleRuntimePort, TaskRuntime
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel, weakest
-    from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+    from finishup.domain.values import JsonObject, finding_id
+    from finishup.ports.diagnostics import RuntimeCapability
+    from finishup.ports.importer import ImporterPort
+    from finishup.ports.objects import ObjectStorePort
+    from finishup.ports.runtime import BundleRuntimePort, TaskRuntime
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel, weakest
+    from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
     seed = append_command()
     ledger = memory_adapter(seed)
@@ -639,15 +639,15 @@ def test_untrusted_workspace_dot_does_not_bind_without_consent(
 
 
 def test_sqlite_session_advice_is_isolated_and_latest_anywhere_is_gone() -> None:
-    """Migration-0004 session advice must not leak across Yoetz sessions."""
+    """Migration-0004 session advice must not leak across FinishUP sessions."""
 
     import apsw
 
-    from yoetz.adapters.sqlite.migrations import initialize_bundle
-    from yoetz.adapters.sqlite.observation import SqliteObservationStore
-    from yoetz.domain.findings import FindingId, finding_id
-    from yoetz.domain.observation import AdviceSnapshot
-    from yoetz.protocol.coverage import (
+    from finishup.adapters.sqlite.migrations import initialize_bundle
+    from finishup.adapters.sqlite.observation import SqliteObservationStore
+    from finishup.domain.findings import FindingId, finding_id
+    from finishup.domain.observation import AdviceSnapshot
+    from finishup.protocol.coverage import (
         ArtifactObservation,
         AuthorshipAssurance,
         CheckType,
@@ -656,7 +656,7 @@ def test_sqlite_session_advice_is_isolated_and_latest_anywhere_is_gone() -> None
         LedgerFreshness,
         PublicationChannel,
     )
-    from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+    from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
     db = apsw.Connection(":memory:")
     initialize_bundle(db, {"task_id": "task_session_advice", "owner_generation": "1"})
@@ -707,9 +707,9 @@ def test_sqlite_session_advice_is_isolated_and_latest_anywhere_is_gone() -> None
 
 
 def test_unknown_hook_event_becomes_unsupported_without_guessing_success() -> None:
-    from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-    from yoetz.domain.observation import ObservationGapCode
-    from yoetz.domain.values import JsonObject
+    from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+    from finishup.domain.observation import ObservationGapCode
+    from finishup.domain.values import JsonObject
 
     payload = JsonObject(
         {

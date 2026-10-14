@@ -12,14 +12,14 @@ from typing import Literal
 import pytest
 
 from builders.privacy_policies import local_only_policy
-from yoetz.cli.privacy_setup import (
+from finishup.cli.privacy_setup import (
     PrivacyRecipe,
     PrivacySetupAnswers,
     build_candidate_policy,
 )
-from yoetz.config.models import OFFICIAL_OPENAI_ENDPOINT_PROFILE_ID, YoetzConfig
-from yoetz.config.write import codex_subscription_runtime
-from yoetz.domain.privacy import (
+from finishup.config.models import OFFICIAL_OPENAI_ENDPOINT_PROFILE_ID, FinishUpConfig
+from finishup.config.write import codex_subscription_runtime
+from finishup.domain.privacy import (
     AuthorizationScopeKind,
     DataClass,
     EgressChannel,
@@ -27,9 +27,9 @@ from yoetz.domain.privacy import (
     ProviderBinding,
     ReviewContextProfile,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.protocol.models import DataCategory
-from yoetz.service.confidential_protocol import PrivacyDecisionResult
+from finishup.domain.values import JsonObject
+from finishup.protocol.models import DataCategory
+from finishup.service.confidential_protocol import PrivacyDecisionResult
 
 
 def _answers(**overrides: object) -> PrivacySetupAnswers:
@@ -74,8 +74,8 @@ def _answers(**overrides: object) -> PrivacySetupAnswers:
 def test_configured_bindings_accepts_the_exact_external_runtime_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
-    import yoetz.config.load as config_load
+    import finishup.cli.privacy_setup as module
+    import finishup.config.load as config_load
 
     runtime = codex_subscription_runtime(
         executable_path="/opt/codex/0.150.1/codex",
@@ -87,13 +87,13 @@ def test_configured_bindings_accepts_the_exact_external_runtime_authority(
         isolated_config_sha256="sha256:" + "c" * 64,
         capability_profile="codex-evaluator/0.150.1/v1",
         capability_evidence_expires_at="2026-11-30T00:00:00Z",
-        codex_home="/var/lib/yoetz/codex-0.150.1",
+        codex_home="/var/lib/finishup/codex-0.150.1",
         model="gpt-5.6-sol",
         reasoning_effort="high",
     )
-    config = YoetzConfig(profile="codex-subscription", external_runtime=runtime)
+    config = FinishUpConfig(profile="codex-subscription", external_runtime=runtime)
 
-    def load_runtime_config(*_args: object, **_kwargs: object) -> YoetzConfig:
+    def load_runtime_config(*_args: object, **_kwargs: object) -> FinishUpConfig:
         return config
 
     monkeypatch.setattr(config_load, "load_config", load_runtime_config)
@@ -216,7 +216,7 @@ def test_network_egress_requires_an_exact_provider_binding() -> None:
 def test_metadata_only_hint_is_the_selected_privacy_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     prompts: list[tuple[str, str]] = []
 
@@ -240,11 +240,11 @@ def test_listing_the_options_never_reads_configuration(
     """Rendering must not be able to fail on an unrelated environment variable.
 
     `_recipe_prompt` briefly derived the recommendation itself, which loads configuration and
-    raises `ConfigError` on any unrecognized `YOETZ_*` variable. `ConfigError` is not a
+    raises `ConfigError` on any unrecognized `FINISHUP_*` variable. `ConfigError` is not a
     `ValueError`, so it escaped every handler and turned the option list into a traceback.
     """
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     def exploding_bindings() -> tuple[ProviderBinding | None, ProviderBinding | None]:
         raise AssertionError("rendering the option list must not read configuration")
@@ -262,7 +262,7 @@ def test_listing_the_options_never_reads_configuration(
 
 
 def test_recommendation_is_assisted_for_fireworks_store_false_route() -> None:
-    from yoetz.cli.privacy_setup import recommended_privacy_recipe
+    from finishup.cli.privacy_setup import recommended_privacy_recipe
 
     assert (
         recommended_privacy_recipe(
@@ -273,7 +273,7 @@ def test_recommendation_is_assisted_for_fireworks_store_false_route() -> None:
 
 
 def test_recommendation_is_assisted_for_an_eligible_exact_provider_route() -> None:
-    from yoetz.cli.privacy_setup import recommended_privacy_recipe
+    from finishup.cli.privacy_setup import recommended_privacy_recipe
 
     binding = ProviderBinding(
         "openai",
@@ -290,7 +290,7 @@ def test_recommendation_is_assisted_for_an_eligible_exact_provider_route() -> No
 
 
 def test_recommendation_is_private_for_router_without_constrained_downstream() -> None:
-    from yoetz.cli.privacy_setup import recommended_privacy_recipe
+    from finishup.cli.privacy_setup import recommended_privacy_recipe
 
     binding = ProviderBinding(
         "openrouter",
@@ -355,7 +355,7 @@ def test_router_route_remains_available_with_per_request_confirmation() -> None:
 def test_recommendation_is_private_when_no_provider_is_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     monkeypatch.setattr(module, "_configured_bindings", lambda: (None, None))
 
@@ -363,7 +363,7 @@ def test_recommendation_is_private_when_no_provider_is_configured(
 
 
 def test_recommended_metadata_recipe_is_bounded_and_confirmation_first() -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     external = _answers().external_provider
     answers = module._recipe_answers(  # pyright: ignore[reportPrivateUsage]
@@ -384,7 +384,7 @@ def test_recommended_metadata_recipe_is_bounded_and_confirmation_first() -> None
 
 
 def test_private_recipe_requires_no_provider() -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     answers = module._recipe_answers(  # pyright: ignore[reportPrivateUsage]
         "private", local_only_policy(), None
@@ -403,7 +403,7 @@ def test_external_recipes_fail_closed_without_a_configured_provider(
 ) -> None:
     """No recipe may enable egress against a destination the installation has not bound."""
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     with pytest.raises(ValueError, match="privacy_setup_provider_binding_required"):
         module._recipe_answers(recipe, local_only_policy(), None)  # pyright: ignore[reportPrivateUsage]
@@ -412,7 +412,7 @@ def test_external_recipes_fail_closed_without_a_configured_provider(
 def test_named_recipes_never_enable_an_unsupported_channel() -> None:
     """Telemetry, diagnostics, and capability testing stay off; update_checks defaults on."""
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     named: tuple[PrivacyRecipe, ...] = (
         "private",
@@ -435,7 +435,7 @@ def test_named_recipes_never_enable_an_unsupported_channel() -> None:
 def test_privacy_options_explain_tradeoffs_and_change_command(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     module._render_recipe_options(  # pyright: ignore[reportPrivateUsage]
         recommended="metadata_only"
@@ -447,14 +447,14 @@ def test_privacy_options_explain_tradeoffs_and_change_command(
     assert "Assisted review — better problem-specific feedback" in output
     assert "Expanded review — most reviewer context" in output
     assert "Custom — maximum control" in output
-    assert "yoetz --privacy" in output
+    assert "finishup --privacy" in output
 
 
 def test_named_review_context_reprompts_instead_of_aborting_on_yes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     answers = iter(("y", "assisted"))
 
@@ -488,7 +488,7 @@ def _install_setup_stubs(
 ) -> None:
     """Stub only the I/O edges, leaving the real recipe and branch selection under test."""
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     async def snapshot(_workspace_locator: object = None) -> object:
         return module.PrivacySetupSnapshot(
@@ -540,7 +540,7 @@ def _install_setup_stubs(
 
 
 def _forbid_custom_sections(monkeypatch: pytest.MonkeyPatch, reason: str) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     def forbidden(*_args: object) -> PrivacySetupAnswers:
         raise AssertionError(reason)
@@ -551,8 +551,8 @@ def _forbid_custom_sections(monkeypatch: pytest.MonkeyPatch, reason: str) -> Non
 def _stub_route(monkeypatch: pytest.MonkeyPatch, observation: object) -> list[str]:
     """Replace the Codex route probe and capture what the ceremony prints about it."""
 
-    import yoetz.cli.privacy_setup as module
-    import yoetz.cli.provider_status as provider_status
+    import finishup.cli.privacy_setup as module
+    import finishup.cli.provider_status as provider_status
 
     printed: list[str] = []
 
@@ -577,13 +577,13 @@ async def test_tui_opt_out_reaches_review_without_proposing_authority(
     """The documented prompt-loop opt-out is not service configuration.
 
     The privacy ceremony loads the configured bindings after rendering repository authority.
-    Treating ``YOETZ_TUI`` as an unknown config override failed there before the first review or
+    Treating ``FINISHUP_TUI`` as an unknown config override failed there before the first review or
     decision prompt, even though the variable can only choose the terminal presentation layer.
     """
 
     import os
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     configured_bindings = module._configured_bindings  # pyright: ignore[reportPrivateUsage]
     prompts: list[str] = []
@@ -596,10 +596,10 @@ async def test_tui_opt_out_reaches_review_without_proposing_authority(
     )
     monkeypatch.setattr(module, "_configured_bindings", configured_bindings)
     for name in tuple(os.environ):
-        if name.startswith("YOETZ_"):
+        if name.startswith("FINISHUP_"):
             monkeypatch.delenv(name)
-    monkeypatch.setenv("YOETZ_CONFIG", str(tmp_path / "missing.toml"))
-    monkeypatch.setenv("YOETZ_TUI", "0")
+    monkeypatch.setenv("FINISHUP_CONFIG", str(tmp_path / "missing.toml"))
+    monkeypatch.setenv("FINISHUP_TUI", "0")
 
     async def forbidden_propose(*_args: object, **_kwargs: object) -> str:
         raise AssertionError("declining the review must not create a privacy proposal")
@@ -623,7 +623,7 @@ async def test_a_widening_commit_names_a_strict_route_that_cannot_dispatch_it(
     ``blocked_by_policy`` / ``route_semantic_ceiling``, and nothing anywhere connects the two.
     """
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     _install_setup_stubs(
         monkeypatch,
@@ -638,14 +638,14 @@ async def test_a_widening_commit_names_a_strict_route_that_cannot_dispatch_it(
 
     assert report.outcome == "configured"
     assert any("'strict'" in line for line in printed)
-    assert any("yoetz integrate codex mcp preview" in line for line in printed)
+    assert any("finishup integrate codex mcp preview" in line for line in printed)
 
 
 @pytest.mark.anyio
 async def test_a_policy_route_draws_no_registration_note(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     _install_setup_stubs(
         monkeypatch,
@@ -668,7 +668,7 @@ async def test_an_unreadable_route_says_nothing_and_changes_no_outcome(
 ) -> None:
     """The note is advisory: an unobservable route is unknown, never a warning or a failure."""
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     _install_setup_stubs(
         monkeypatch,
@@ -691,7 +691,7 @@ async def test_a_local_only_commit_never_mentions_the_agent_route(
 ) -> None:
     """A policy that permits no external review has nothing to say about the route."""
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     _install_setup_stubs(
         monkeypatch,
@@ -706,7 +706,7 @@ async def test_a_local_only_commit_never_mentions_the_agent_route(
         probed.append("observed")
         return {"registered_profile": "strict", "observed": True}
 
-    import yoetz.cli.provider_status as provider_status
+    import finishup.cli.provider_status as provider_status
 
     monkeypatch.setattr(provider_status, "mcp_route_observation", observe)
 
@@ -721,7 +721,7 @@ async def test_a_local_only_commit_never_mentions_the_agent_route(
 async def test_accepting_recommended_policy_asks_nothing_else(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     prompts: list[str] = []
 
@@ -750,7 +750,7 @@ async def test_accepting_recommended_policy_asks_nothing_else(
 async def test_declining_recommended_policy_opens_the_recipe_list(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     prompts: list[str] = []
     offered: list[object] = []
@@ -784,7 +784,7 @@ async def test_declining_recommended_policy_opens_the_recipe_list(
 async def test_a_named_recipe_hint_skips_both_the_list_and_the_custom_sections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     prompts: list[str] = []
 
@@ -817,7 +817,7 @@ async def test_named_private_recipe_applies_explicit_update_choice_before_propos
     override: bool | None,
     expected_enabled: bool,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     prompts: list[str] = []
     proposed: list[PrivacyPolicy] = []
@@ -867,7 +867,7 @@ async def test_named_private_recipe_applies_explicit_update_choice_before_propos
 async def test_recommended_recipe_applies_update_override_without_changing_review_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     prompts: list[str] = []
     proposed: list[PrivacyPolicy] = []
@@ -925,7 +925,7 @@ async def test_recommended_recipe_applies_update_override_without_changing_revie
 async def test_update_override_never_bypasses_exact_candidate_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     prompts: list[str] = []
     _install_setup_stubs(
@@ -954,7 +954,7 @@ async def test_update_override_never_bypasses_exact_candidate_confirmation(
 async def test_custom_is_the_only_path_into_field_level_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     prompts: list[str] = []
     asked: list[object] = []
@@ -989,7 +989,7 @@ async def test_a_custom_hint_does_not_reopen_the_recipe_list(
 ) -> None:
     """A caller that passed `custom` already chose; asking again is a confirmation of nothing."""
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     def forbidden_prompt(*_args: object) -> str:
         raise AssertionError("a custom hint must not reopen the recipe list")
@@ -1016,7 +1016,7 @@ def test_custom_configuration_announces_all_five_sections(
 ) -> None:
     """Grouped sections replace the flat thirteen questions, and none is silently skipped."""
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     confirmations: list[tuple[str, bool]] = []
 
@@ -1047,7 +1047,7 @@ def test_custom_configuration_announces_all_five_sections(
     assert "cannot be turned on here" in output
     assert "package update" in output.casefold()
     assert (
-        "Check PyPI for Yoetz updates (package name and version only)?",
+        "Check PyPI for FinishUP updates (package name and version only)?",
         True,
     ) in confirmations
     # Mock confirm returns False for every prompt, so updates is explicitly declined.
@@ -1063,9 +1063,9 @@ def test_custom_configuration_announces_all_five_sections(
 async def test_repository_setup_snapshot_accepts_service_json_object(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.app as app_module
-    import yoetz.cli.privacy_setup as module
-    from yoetz.adapters.privacy.catalog import encode_privacy_policy_json
+    import finishup.cli.app as app_module
+    import finishup.cli.privacy_setup as module
+    from finishup.adapters.privacy.catalog import encode_privacy_policy_json
 
     current = local_only_policy()
 
@@ -1109,8 +1109,8 @@ async def test_repository_setup_snapshot_accepts_service_json_object(
 async def test_repository_proposal_carries_the_snapshot_authority_digest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import yoetz.cli.app as app_module
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.app as app_module
+    import finishup.cli.privacy_setup as module
 
     requests: list[JsonObject] = []
 
@@ -1151,7 +1151,7 @@ async def test_repository_proposal_carries_the_snapshot_authority_digest(
 async def test_widening_reports_configured_only_after_committed_trusted_decision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     def custom_recipe(_hint: object) -> str:
         return "custom"
@@ -1180,7 +1180,7 @@ def test_review_warns_when_data_use_requirement_cannot_be_satisfied(
 ) -> None:
     """RT-privacy-egress-2 companion: the refusal must be visible before it is committed."""
 
-    from yoetz.cli.privacy_setup import _render_review  # pyright: ignore[reportPrivateUsage]
+    from finishup.cli.privacy_setup import _render_review  # pyright: ignore[reportPrivateUsage]
 
     candidate = build_candidate_policy(
         local_only_policy(),
@@ -1214,7 +1214,7 @@ def test_review_warns_when_data_use_requirement_cannot_be_satisfied(
 def test_review_is_silent_when_the_requirement_is_off(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from yoetz.cli.privacy_setup import _render_review  # pyright: ignore[reportPrivateUsage]
+    from finishup.cli.privacy_setup import _render_review  # pyright: ignore[reportPrivateUsage]
 
     candidate = build_candidate_policy(
         local_only_policy(),
@@ -1235,7 +1235,7 @@ def test_assisted_recipe_requires_data_use_only_where_it_can_be_satisfied() -> N
     recipe therefore asks for it only where the bound endpoint ships reviewed evidence.
     """
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     owner_declared = ProviderBinding(
         "openrouter",
@@ -1266,7 +1266,7 @@ def test_assisted_recipe_requires_data_use_only_where_it_can_be_satisfied() -> N
 def test_informed_assisted_override_discloses_unknown_facts_and_guard_off(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from yoetz.cli.privacy_setup import _render_review  # pyright: ignore[reportPrivateUsage]
+    from finishup.cli.privacy_setup import _render_review  # pyright: ignore[reportPrivateUsage]
 
     candidate = build_candidate_policy(
         local_only_policy(),
@@ -1295,23 +1295,23 @@ def _admit_claude(project: Path) -> Path:
     settings = project / ".claude" / "settings.local.json"
     settings.parent.mkdir(exist_ok=True)
     settings.write_text(
-        json.dumps({"permissions": {"allow": ["mcp__plugin_yoetz_yoetz__check"]}}),
+        json.dumps({"permissions": {"allow": ["mcp__plugin_finishup_finishup__check"]}}),
         encoding="utf-8",
     )
     return settings
 
 
 @pytest.mark.anyio
-async def test_a_commit_that_stops_external_review_removes_the_host_admission_yoetz_wrote(
+async def test_a_commit_that_stops_external_review_removes_the_host_admission_finishup_wrote(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Grant revoke is a reverse transition for host admission (issue #467).
 
     The host rule is derived from the grant; when the trusted ceremony withdraws the grant, the
-    same ceremony removes exactly the entry Yoetz wrote and says so.
+    same ceremony removes exactly the entry FinishUP wrote and says so.
     """
 
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     answers = _answers()
     assisted = module.build_candidate_policy(local_only_policy(), answers, now=datetime.now(UTC))
@@ -1327,13 +1327,13 @@ async def test_a_commit_that_stops_external_review_removes_the_host_admission_yo
     settings = _admit_claude(tmp_path)
     foreign = tmp_path / ".cursor" / "permissions.json"
     foreign.parent.mkdir()
-    foreign.write_text(json.dumps({"mcpAllowlist": ["yoetz:*"]}), encoding="utf-8")
+    foreign.write_text(json.dumps({"mcpAllowlist": ["finishup:*"]}), encoding="utf-8")
 
     report = await module.run_privacy_setup(recipe_hint="private", workspace_locator=tmp_path)
 
     assert report.outcome == "configured"
     assert not settings.exists()
-    assert json.loads(foreign.read_text(encoding="utf-8")) == {"mcpAllowlist": ["yoetz:*"]}
+    assert json.loads(foreign.read_text(encoding="utf-8")) == {"mcpAllowlist": ["finishup:*"]}
     assert any("admission removed" in line and "claude" in line for line in printed)
     assert not any("cursor" in line for line in printed)
 
@@ -1342,7 +1342,7 @@ async def test_a_commit_that_stops_external_review_removes_the_host_admission_yo
 async def test_a_widening_commit_names_hosts_that_will_still_hold_every_check(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import yoetz.cli.privacy_setup as module
+    import finishup.cli.privacy_setup as module
 
     _install_setup_stubs(
         monkeypatch,
@@ -1360,6 +1360,6 @@ async def test_a_widening_commit_names_hosts_that_will_still_hold_every_check(
     note = next(line for line in printed if "no host auto-review admission" in line)
     assert "codex, cursor" in note
     assert "claude" not in note
-    assert any("yoetz integrate <host> admission preview" in line for line in printed)
+    assert any("finishup integrate <host> admission preview" in line for line in printed)
     # A widening never removes anything.
     assert (tmp_path / ".claude" / "settings.local.json").exists()

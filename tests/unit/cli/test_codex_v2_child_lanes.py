@@ -19,28 +19,28 @@ from typing import cast
 import pytest
 
 from builders.codex_rollout import encode_lines, session_meta
-from fixture_loader import build_fixture_loader
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     load_mapping,
     mapping_from_start_ids,
     scoped_child_session_id,
     store_mapping,
 )
-from yoetz.adapters.integrations.hook_spool import HookSpool
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe as observe_cli
-from yoetz.cli import observe_hooks
-from yoetz.cli.hook_diagnostics import hook_diagnostic_summary
-from yoetz.cli.hooks import (
+from finishup.adapters.integrations.hook_spool import HookSpool
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe as observe_cli
+from finishup.cli import observe_hooks
+from finishup.cli.hook_diagnostics import hook_diagnostic_summary
+from finishup.cli.hooks import (
     TRANSCRIPT_CHILD_IDENTITY_CONFLICT,
     bind_start_mapping_outcome,
     handle_post_tool_use,
     with_transcript_child_identity,
 )
-from yoetz.cli.observe_hooks import handle_observe, handle_spool
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.cli.observe_hooks import handle_observe, handle_spool
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
+from fixture_loader import build_fixture_loader
 
 _IMP_015 = "imports/codex/rollout-multi-agent-v2-0.153.4.case.json"
 _PARENT = "019f8b27-b98e-7061-bbb5-d0b897594de6"
@@ -312,7 +312,7 @@ def _attach_result(parent_task: str) -> dict[str, JsonValue]:
 def test_post_tool_use_binds_the_child_lane_from_the_childs_transcript(
     codex_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``yoetz hooks post-tool-use`` is the production binder for the child's attach."""
+    """``finishup hooks post-tool-use`` is the production binder for the child's attach."""
 
     parent = _mapping(_PARENT)
     store_mapping(parent, _state=tmp_path)
@@ -320,7 +320,7 @@ def test_post_tool_use_binds_the_child_lane_from_the_childs_transcript(
     callback = _callback(
         _rollout(codex_home, _CHILD, _imp_015("child")),
         hook_event_name="PostToolUse",
-        tool_name="mcp__yoetz__start",
+        tool_name="mcp__finishup__start",
         tool_response={"structuredContent": result},
     )
     observed: list[Mapping[str, JsonValue]] = []
@@ -356,7 +356,7 @@ def test_without_a_transcript_the_root_session_attach_stays_unbound(tmp_path: Pa
     callback = _callback(
         None,
         hook_event_name="PostToolUse",
-        tool_name="mcp__yoetz__start",
+        tool_name="mcp__finishup__start",
         tool_response={"structuredContent": _attach_result(parent.yoetz_task_id)},
     )
 

@@ -10,7 +10,7 @@ The lane walks the product's own path in order and records every step as bounded
 ``--evidence``: build the wheel and provision a pinned disposable instance
 (``scripts/provision_test_instance.py``), start its service, initialize the passphrase vault,
 bind the reviewed Fireworks Responses profile and store its credential, grant an assisted-review
-repository privacy recipe, connect the selected host through ``yoetz setup run`` (or the
+repository privacy recipe, connect the selected host through ``finishup setup run`` (or the
 documented no-OS-presence substitutes where a runner cannot answer LocalAuthentication), grant
 observation, run a deterministic ledger probe (start, publish, check with AI-powered review,
 receipt, hook carrier probes, drain), run one tiny native agent session against the same
@@ -18,10 +18,10 @@ instance, drain again, restart and unlock the service, and dispose.
 
 Verdict: the lane is *catastrophic* (exit 1) when an install, setup, connection, ledger, or
 service-lifecycle step fails, or when observation reports a service or storage failure after
-the agent ran. A native agent that never calls Yoetz, times out, or exits nonzero is recorded and
+the agent ran. A native agent that never calls FinishUP, times out, or exits nonzero is recorded and
 reported, not treated as catastrophic, unless ``--strict-agent`` is set: model compliance is not
 what this lane certifies. A green lane means the product installed and its main paths did not
-break; it is not evidence that Yoetz is correct, useful, or free of defects.
+break; it is not evidence that FinishUP is correct, useful, or free of defects.
 
 Secrets arrive only through the environment and are used once: ``DOGFOOD_VAULT_PASSPHRASE``
 (generated when absent), ``FIREWORKS_API_KEY`` (AI-powered review and the Codex/Claude agent
@@ -102,7 +102,7 @@ PROMPT_PRIVACY_CHOICE: Final = r"Choose a privacy option \[\d\]: "
 PROMPT_PRIVACY_CREATE: Final = r"Create this exact privacy proposal .*\? \[y/N\]: "
 PROMPT_PAM_PASSWORD: Final = r"Password for .*: "
 _LEDGER_TASK_STATEMENT: Final = (
-    "Exercise one isolated Yoetz workflow: attach to the host-mapped task or create the "
+    "Exercise one isolated FinishUP workflow: attach to the host-mapped task or create the "
     "probe task, publish a plan and an obligation for one ledger round trip, run the "
     "configured check, retain its exact result and coverage limitations, and request a "
     "receipt. This is a mechanics probe; do not claim the obligation is satisfied or "
@@ -136,7 +136,7 @@ _PROMPT_TEMPLATE: Final = (
     "task_id, session_id, writer_id, that status frontier "
     "as expected_frontier, format 'markdown', include 'standard', redaction_profile "
     "'default_local_export'. For Claude or Cursor only, before the final answer emit exactly one "
-    "physical line with the prefix YOETZ_NATIVE_BINDING followed by one compact JSON object with "
+    "physical line with the prefix FINISHUP_NATIVE_BINDING followed by one compact JSON object with "
     "exactly these keys: task_id, session_id, writer_id, frontier. Copy all four values from the "
     "start result, including frontier.sequence and frontier.head_digest; this line is only a "
     "locator and never replaces the MCP calls. Then answer with the single word DONE on its own "
@@ -144,7 +144,7 @@ _PROMPT_TEMPLATE: Final = (
     "or edit files."
 )
 
-_NATIVE_BINDING_PREFIX: Final = "YOETZ_NATIVE_BINDING "
+_NATIVE_BINDING_PREFIX: Final = "FINISHUP_NATIVE_BINDING "
 _NATIVE_MAX_SEQUENCE: Final = 2**63 - 1
 _NATIVE_ID_RE: Final = re.compile(
     r"^(?:tsk|ses|wri)_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -504,7 +504,7 @@ def _codex_workflow_completed(output: str, expected_statement: str | None = None
         item = cast(dict[str, Any], item)
         if (
             item.get("type") != "mcp_tool_call"
-            or item.get("server") != "yoetz"
+            or item.get("server") != "finishup"
             or item.get("status") != "completed"
             or item.get("error") is not None
         ):
@@ -689,7 +689,7 @@ def _digest(text: str) -> str:
 def _clean_env(
     extra: dict[str, str] | None = None, *, drop: tuple[str, ...] = ()
 ) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not k.startswith("YOETZ_") and k not in drop}
+    env = {k: v for k, v in os.environ.items() if not k.startswith("FINISHUP_") and k not in drop}
     if extra:
         env.update(extra)
     return env
@@ -753,7 +753,7 @@ class Lane:
         self.observation: dict[str, Any] = {}
         self.ledger: dict[str, Any] = {}
         self.plugin_dir: Path | None = None
-        self.mcp_tool_hint = "yoetz"
+        self.mcp_tool_hint = "finishup"
         self._counter = 0
         secret_values = [
             self.passphrase,
@@ -888,7 +888,7 @@ class Lane:
             int((time.monotonic() - started) * 1000),
         )
 
-    def _yoetz(
+    def _finishup(
         self,
         name: str,
         phase: str,
@@ -1094,7 +1094,7 @@ class Lane:
             stderr=err,
         )
 
-        _, isolation = self._yoetz(
+        _, isolation = self._finishup(
             "isolation", phase, ["service", "isolation", "--json"], fatal=True
         )
         if isolation is None or isolation.get("mode") != "isolated":
@@ -1109,8 +1109,8 @@ class Lane:
                 },
                 fatal=True,
             )
-        self._yoetz("instance_status", phase, ["instance", "status", "--json"], fatal=True)
-        _, version = self._yoetz("version", phase, ["version", "--json"], fatal=True)
+        self._finishup("instance_status", phase, ["instance", "status", "--json"], fatal=True)
+        _, version = self._finishup("version", phase, ["version", "--json"], fatal=True)
         if version is not None:
             self.identity["version"] = version
 
@@ -1156,7 +1156,7 @@ class Lane:
                 fatal=True,
             )
 
-        self._yoetz(
+        self._finishup(
             "provider_endpoint",
             phase,
             [
@@ -1215,7 +1215,7 @@ class Lane:
             fatal=True,
         )
 
-        _, provider_status = self._yoetz(
+        _, provider_status = self._finishup(
             "provider_status", phase, ["provider", "status", "--json"], expect_zero=False
         )
         if provider_status is not None:
@@ -1241,7 +1241,7 @@ class Lane:
                 reason="provider_status_unparseable",
                 fatal=True,
             )
-        _, setup_status = self._yoetz(
+        _, setup_status = self._finishup(
             "setup_status", phase, ["setup", "status", "--json"], expect_zero=False
         )
         if setup_status is not None:
@@ -1281,7 +1281,7 @@ class Lane:
             self._connect_plugin_dir(phase)
         elif self.connection_mode == "mcp-only":
             self._connect_mcp_only(phase)
-        self._yoetz(
+        self._finishup(
             "observe_grant",
             phase,
             ["observe", "grant", "--workspace", str(self.project)],
@@ -1305,7 +1305,7 @@ class Lane:
         ]
         if self.host_path:
             target[2:2] = ["--host-path", self.host_path]
-        _, preview = self._yoetz(
+        _, preview = self._finishup(
             "host_preview",
             phase,
             ["setup", "run", *target, "--non-interactive", "--json"],
@@ -1339,7 +1339,7 @@ class Lane:
             "--json",
         ]
         if plan.get("requires_os_presence") is False or self.host == "codex":
-            _, report = self._yoetz("host_accept", phase, accept[1:], fatal=True)
+            _, report = self._finishup("host_accept", phase, accept[1:], fatal=True)
         else:
             if not self.os_password:
                 self._record(
@@ -1368,7 +1368,7 @@ class Lane:
                 fatal=True,
             )
         status_args = ["setup", "status", *target[:-2], "--json"]
-        self._yoetz("host_status", phase, status_args, expect_zero=False)
+        self._finishup("host_status", phase, status_args, expect_zero=False)
         if self.host == "codex":
             mcp_status = [
                 "integrate",
@@ -1381,7 +1381,7 @@ class Lane:
             ]
             if self.host_path:
                 mcp_status[4:4] = ["--codex-path", self.host_path]
-            self._yoetz("codex_mcp_status", phase, mcp_status, expect_zero=False)
+            self._finishup("codex_mcp_status", phase, mcp_status, expect_zero=False)
             if self.fireworks_key:
                 self._grant_codex_check_admission(phase)
             else:
@@ -1409,10 +1409,12 @@ class Lane:
                 value = plan.get(key)
                 if isinstance(value, str):
                     status_argv += [flag, value]
-            self._yoetz("claude_plugin_status", phase, [*status_argv, "--json"], expect_zero=False)
-            self.mcp_tool_hint = "yoetz"
+            self._finishup(
+                "claude_plugin_status", phase, [*status_argv, "--json"], expect_zero=False
+            )
+            self.mcp_tool_hint = "finishup"
         else:
-            self._yoetz(
+            self._finishup(
                 "cursor_plugin_status",
                 phase,
                 [
@@ -1432,14 +1434,14 @@ class Lane:
 
         Codex's non-interactive process uses ``approval_policy = \"never\"`` in the evaluator
         home.  That is compatible with a per-tool ``approval_mode = \"approve\"`` entry, but it
-        cannot answer a remaining MCP prompt.  Use Yoetz's previewed, digest-bound host-admission
+        cannot answer a remaining MCP prompt.  Use FinishUP's previewed, digest-bound host-admission
         command so the privacy grant, observed route owner, and exact project file stay under the
         product's existing authority.  The subsequent native invocation is a fresh Codex process
         and is the final project-trust check.
         """
 
         project = str(self.project)
-        _, preview = self._yoetz(
+        _, preview = self._finishup(
             "codex_admission_preview",
             phase,
             [
@@ -1482,7 +1484,7 @@ class Lane:
             return
 
         self.identity["codex_admission_preview_digest"] = preview_digest
-        _, grant = self._yoetz(
+        _, grant = self._finishup(
             "codex_admission_grant",
             phase,
             [
@@ -1520,7 +1522,7 @@ class Lane:
             )
             return
 
-        _, status = self._yoetz(
+        _, status = self._finishup(
             "codex_admission_status",
             phase,
             [
@@ -1576,7 +1578,7 @@ class Lane:
         self.plugin_dir = self.base / f"{self.tag}-claude-plugin"
         if self.plugin_dir.exists():
             shutil.rmtree(self.plugin_dir)
-        _, export = self._yoetz(
+        _, export = self._finishup(
             "claude_plugin_export",
             phase,
             [
@@ -1597,7 +1599,7 @@ class Lane:
             ],
             fatal=True,
         )
-        self.mcp_tool_hint = "plugin_yoetz_yoetz"
+        self.mcp_tool_hint = "plugin_finishup_finishup"
         self._record(
             "host_connect",
             phase,
@@ -1622,7 +1624,7 @@ class Lane:
             "--project-binding",
             "registered-project",
         ]
-        _, preview = self._yoetz(
+        _, preview = self._finishup(
             "cursor_project_mcp_preview",
             phase,
             ["integrate", "cursor", "project-mcp", "preview", *target, "--json"],
@@ -1638,7 +1640,7 @@ class Lane:
                 fatal=True,
             )
             return
-        self._yoetz(
+        self._finishup(
             "cursor_project_mcp_install",
             phase,
             [
@@ -1664,7 +1666,7 @@ class Lane:
     # ---- observation helpers
 
     def _observe_status(self, name: str, phase: str) -> dict[str, Any] | None:
-        _, status = self._yoetz(
+        _, status = self._finishup(
             name,
             phase,
             ["observe", "status", "--workspace", str(self.project), "--json"],
@@ -1693,7 +1695,7 @@ class Lane:
         drain_step: Step | None = None
         while (remaining := deadline - time.monotonic()) > 0:
             polls += 1
-            drain_step, drain = self._yoetz(
+            drain_step, drain = self._finishup(
                 name if polls == 1 else f"{name}_poll_{polls}",
                 phase,
                 ["observe", "drain", "--workspace", str(self.project), "--json"],
@@ -1795,7 +1797,7 @@ class Lane:
                 "requested_view": "compact",
             }
         start_body["task_statement"] = _LEDGER_TASK_STATEMENT
-        _, started = self._yoetz(
+        _, started = self._finishup(
             "ledger_start",
             phase,
             ["start", "--input", "-", "--json"],
@@ -1864,7 +1866,7 @@ class Lane:
         dry = json.loads(self._request(publish_body))
         dry["request_id"] = publish_rid
         dry["dry_run"] = True
-        self._yoetz(
+        self._finishup(
             "ledger_publish_dry_run",
             phase,
             ["publish-work", "--input", "-", "--json"],
@@ -1874,7 +1876,7 @@ class Lane:
         )
         real = dict(dry)
         real["dry_run"] = False
-        _, published = self._yoetz(
+        _, published = self._finishup(
             "ledger_publish",
             phase,
             ["publish-work", "--input", "-", "--json"],
@@ -1882,7 +1884,7 @@ class Lane:
             stdin=json.dumps(real),
             fatal=True,
         )
-        _, status = self._yoetz(
+        _, status = self._finishup(
             "ledger_status",
             phase,
             ["status", "--input", "-", "--json"],
@@ -1896,7 +1898,7 @@ class Lane:
             check_body["mode"] = "semantic_required"
         check_request = json.loads(self._request(check_body))
         check_request_id = cast(str, check_request["request_id"])
-        _, checked = self._yoetz(
+        _, checked = self._finishup(
             "ledger_check",
             phase,
             ["check", "--input", "-", "--json"],
@@ -1906,14 +1908,14 @@ class Lane:
             timeout=420.0,
         )
         # Owner-only diagnostics explain a semantic outcome the public reason cannot name.
-        self._yoetz(
+        self._finishup(
             "service_diagnostics_for_check",
             phase,
             ["service", "diagnostics", "--request-id", check_request_id, "--json"],
             expect_zero=False,
         )
         for correlation_id in self._diagnostic_correlation_ids():
-            self._yoetz(
+            self._finishup(
                 f"service_diagnostics_{correlation_id[4:12]}",
                 phase,
                 ["service", "diagnostics", "--correlation-id", correlation_id, "--json"],
@@ -1933,7 +1935,7 @@ class Lane:
             )
             frontier = _find_frontier(checked) or frontier
             # The egress receipt names why a case was or was not dispatched; keep it as evidence.
-            self._yoetz(
+            self._finishup(
                 "privacy_receipts",
                 phase,
                 ["privacy", "receipts", "list", "--json"],
@@ -1991,7 +1993,7 @@ class Lane:
                 )
         # The AI-powered result is recorded after the check returns, so the frontier the check
         # reported is usually stale by now; read the live one and honor one refresh continuation.
-        _, before_receipt = self._yoetz(
+        _, before_receipt = self._finishup(
             "ledger_status_before_receipt",
             phase,
             ["status", "--input", "-", "--json"],
@@ -2007,7 +2009,7 @@ class Lane:
             "include": "standard",
             "redaction_profile": "default_local_export",
         }
-        _, receipt = self._yoetz(
+        _, receipt = self._finishup(
             "ledger_receipt",
             phase,
             ["receipt", "--input", "-", "--json"],
@@ -2017,7 +2019,7 @@ class Lane:
         )
         refreshed = self._frontier_refresh(receipt)
         if refreshed is not None:
-            _, receipt = self._yoetz(
+            _, receipt = self._finishup(
                 "ledger_receipt_retry",
                 phase,
                 ["receipt", "--input", "-", "--json"],
@@ -2166,7 +2168,7 @@ class Lane:
     def _hook_post_probe(self, phase: str) -> None:
         carrier, payloads = self._hook_payloads()
         event, payload = payloads[1]
-        self._yoetz(
+        self._finishup(
             f"hook_probe_{event}",
             phase,
             [*carrier, "--event", event],
@@ -2207,7 +2209,7 @@ class Lane:
         )
         self.native_prompt = prompt
         assert self.launcher is not None
-        # setup run supplies this launch PATH because packaged hooks invoke bare yoetz.
+        # setup run supplies this launch PATH because packaged hooks invoke bare finishup.
         # The first executable is the disposable instance-pinned launcher (ADR-028).
         env: dict[str, str] = {
             "PATH": str(self.launcher.parent) + os.pathsep + os.environ.get("PATH", ""),
@@ -2377,7 +2379,7 @@ class Lane:
         def status_page(
             name: str, query: dict[str, Any]
         ) -> tuple[dict[str, str] | None, list[dict[str, Any]] | None, str | None]:
-            _, status = self._yoetz(
+            _, status = self._finishup(
                 name,
                 phase,
                 ["status", "--input", "-", "--json"],
@@ -2705,7 +2707,7 @@ class Lane:
             summary={"mapping_present": mapped, "catastrophic_diagnostics": catastrophic},
             fatal=bool(catastrophic),
         )
-        self._yoetz(
+        self._finishup(
             "service_status_after_agent", phase, ["service", "status", "--json"], fatal=True
         )
 
@@ -2715,7 +2717,7 @@ class Lane:
         """Restart the service and unlock it; the restarted service re-reads provider readiness."""
 
         assert self.launcher is not None
-        self._yoetz(
+        self._finishup(
             f"service_restart{suffix}",
             phase,
             ["service", "restart", "--json"],
@@ -2746,7 +2748,7 @@ class Lane:
         """Lock and unlock the vault; the unlock recomposes the application in place."""
 
         assert self.launcher is not None
-        self._yoetz(f"service_lock{suffix}", phase, ["service", "lock", "--json"], fatal=True)
+        self._finishup(f"service_lock{suffix}", phase, ["service", "lock", "--json"], fatal=True)
         status = self._wait_for_service(f"service_status_after_lock{suffix}", phase)
         if status.get("state") == "locked":
             self._ceremony_step(
@@ -2775,7 +2777,7 @@ class Lane:
         if not (self.fireworks_key and isinstance(session_id, str) and isinstance(writer_id, str)):
             return
         ids = {"session_id": session_id, "writer_id": writer_id}
-        _, status = self._yoetz(
+        _, status = self._finishup(
             "ledger_status_after_restart",
             phase,
             ["status", "--input", "-", "--json"],
@@ -2785,7 +2787,7 @@ class Lane:
         frontier = _find_frontier(status)
         if frontier is None:
             return
-        _, checked = self._yoetz(
+        _, checked = self._finishup(
             "ledger_check_after_restart",
             phase,
             ["check", "--input", "-", "--json"],

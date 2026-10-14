@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.cli.render import render_human_check
-from yoetz.protocol.models import (
+from finishup.cli.render import render_human_check
+from finishup.protocol.models import (
     CheckAdvisoryNoteModel,
     CheckChildrenPreviewModel,
     CheckMissingItemModel,
@@ -124,7 +124,7 @@ def test_check_labels_finding_only_next_when_input_repair_is_required() -> None:
     """Issue #963: the findings checklist cannot outrank an actionable review-input gap."""
 
     claim = "clm_59000000-0000-4000-8000-000000000011"
-    from yoetz.protocol.models import CheckFindingChecklistModel
+    from finishup.protocol.models import CheckFindingChecklistModel
 
     checklist = CheckFindingChecklistModel.model_validate(
         {
@@ -230,7 +230,7 @@ def test_check_renders_recorded_work_continuation_with_bounded_targets() -> None
 def test_check_renders_the_finding_checklist_with_structural_tokens_only() -> None:
     """Issue #905: ``[ ] F-1 ... open (2/2)`` lines and one closed "Next:" sentence."""
 
-    from yoetz.protocol.models import CheckFindingChecklistModel
+    from finishup.protocol.models import CheckFindingChecklistModel
 
     checklist = CheckFindingChecklistModel.model_validate(
         {
@@ -285,7 +285,7 @@ def test_check_renders_the_finding_checklist_with_structural_tokens_only() -> No
 
 
 def test_check_checklist_says_how_many_items_the_list_leaves_out() -> None:
-    from yoetz.protocol.models import CheckFindingChecklistModel
+    from finishup.protocol.models import CheckFindingChecklistModel
 
     checklist = CheckFindingChecklistModel.model_validate(
         {
@@ -325,7 +325,7 @@ def test_check_checklist_says_how_many_items_the_list_leaves_out() -> None:
 
 
 def _limit_checklist(next_step: str, bases: tuple[tuple[str, str], ...]) -> object:
-    from yoetz.protocol.models import CheckFindingChecklistModel
+    from finishup.protocol.models import CheckFindingChecklistModel
 
     items = [
         {

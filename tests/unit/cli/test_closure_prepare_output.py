@@ -18,11 +18,11 @@ from typing import cast
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-import yoetz.cli.closure as closure
-import yoetz.config.paths as paths
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.service.client import ServiceClient
+import finishup.cli.app as cli
+import finishup.cli.closure as closure
+import finishup.config.paths as paths
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.service.client import ServiceClient
 
 _SESSION = "ses_0f62968e-d590-4a19-90c0-a6a0deea32ac"
 _WRITER = "wri_27cc27e7-45c1-490b-8a98-8132de8c4840"

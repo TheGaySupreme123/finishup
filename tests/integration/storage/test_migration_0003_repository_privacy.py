@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import apsw
 
-from yoetz.adapters.sqlite.migrations import CATALOG_MIGRATIONS, run_migrations
+from finishup.adapters.sqlite.migrations import CATALOG_MIGRATIONS, run_migrations
 
 
 def test_catalog_0003_snapshots_only_preupgrade_routes_and_is_idempotent() -> None:

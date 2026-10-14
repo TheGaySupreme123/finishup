@@ -18,7 +18,7 @@ from typing import Final
 
 import pytest
 
-from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, CATALOG_MIGRATIONS
+from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, CATALOG_MIGRATIONS
 
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 
@@ -120,7 +120,7 @@ def test_root_and_installed_migration_trees_are_byte_identical() -> None:
             installed_file = (
                 _REPO_ROOT
                 / "src"
-                / "yoetz"
+                / "finishup"
                 / "resources"
                 / "migrations"
                 / family
@@ -131,7 +131,7 @@ def test_root_and_installed_migration_trees_are_byte_identical() -> None:
 
 def test_each_migration_family_has_contiguous_versions(installed: _Installed) -> None:
     probe = (
-        "from yoetz.adapters.sqlite.migrations import ("
+        "from finishup.adapters.sqlite.migrations import ("
         "BUNDLE_MIGRATIONS, CATALOG_MIGRATIONS, current_schema_version)\n"
         "import json\n"
         "print(json.dumps({\n"
@@ -193,7 +193,7 @@ def test_migration_ddl_contains_only_reviewed_table_rebuilds(installed: _Install
             text = (
                 _REPO_ROOT
                 / "src"
-                / "yoetz"
+                / "finishup"
                 / "resources"
                 / "migrations"
                 / family
@@ -250,8 +250,8 @@ def test_fresh_catalog_and_bundle_initialize_at_current_schema_version(
 ) -> None:
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.migrations import initialize_catalog, initialize_bundle\n"
-        "from yoetz.adapters.sqlite.connection import verify_schema_identity\n"
+        "from finishup.adapters.sqlite.migrations import initialize_catalog, initialize_bundle\n"
+        "from finishup.adapters.sqlite.connection import verify_schema_identity\n"
         "catalog = apsw.Connection(':memory:')\n"
         "initialize_catalog(catalog)\n"
         "catalog_identity = verify_schema_identity(catalog)\n"
@@ -279,7 +279,7 @@ def test_replaying_migrations_on_an_already_current_database_is_a_verified_noop(
 ) -> None:
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.migrations import initialize_catalog, run_migrations, CATALOG_MIGRATIONS\n"
+        "from finishup.adapters.sqlite.migrations import initialize_catalog, run_migrations, CATALOG_MIGRATIONS\n"
         "catalog = apsw.Connection(':memory:')\n"
         "initialize_catalog(catalog)\n"
         "report = run_migrations(catalog, CATALOG_MIGRATIONS, maintenance=None)\n"
@@ -296,7 +296,7 @@ def test_replaying_migrations_on_an_already_current_database_is_a_verified_noop(
 def test_uninitialized_database_reports_uninitialized_not_current(installed: _Installed) -> None:
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.connection import verify_schema_identity\n"
+        "from finishup.adapters.sqlite.connection import verify_schema_identity\n"
         "fresh = apsw.Connection(':memory:')\n"
         "identity = verify_schema_identity(fresh)\n"
         "print(json.dumps({'state': identity.state, 'user_version': identity.user_version}))\n"
@@ -310,9 +310,9 @@ def test_newer_than_candidate_schema_fails_migration_and_identity_checks_honestl
 ) -> None:
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.migrations import ("
+        "from finishup.adapters.sqlite.migrations import ("
         "initialize_catalog, run_migrations, CATALOG_MIGRATIONS)\n"
-        "from yoetz.adapters.sqlite.connection import verify_schema_identity, StorageUnsafeError\n"
+        "from finishup.adapters.sqlite.connection import verify_schema_identity, StorageUnsafeError\n"
         "catalog = apsw.Connection(':memory:')\n"
         "initialize_catalog(catalog)\n"
         "catalog.execute('PRAGMA user_version = 6')\n"
@@ -336,7 +336,7 @@ def test_newer_than_candidate_schema_fails_migration_and_identity_checks_honestl
 def test_wrong_application_id_is_rejected_as_unsafe(installed: _Installed) -> None:
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.connection import verify_schema_identity, StorageUnsafeError\n"
+        "from finishup.adapters.sqlite.connection import verify_schema_identity, StorageUnsafeError\n"
         "db = apsw.Connection(':memory:')\n"
         "db.execute('PRAGMA application_id = 12345')\n"
         "db.execute('CREATE TABLE decoy(id INTEGER PRIMARY KEY)')\n"
@@ -358,7 +358,7 @@ def test_unknown_older_than_current_user_version_requires_initialization_not_sil
     # silently treat it as current.
     probe = (
         "import apsw, json\n"
-        "from yoetz.adapters.sqlite.migrations import run_migrations, CATALOG_MIGRATIONS\n"
+        "from finishup.adapters.sqlite.migrations import run_migrations, CATALOG_MIGRATIONS\n"
         "fresh = apsw.Connection(':memory:')\n"
         "reason = None\n"
         "try:\n"

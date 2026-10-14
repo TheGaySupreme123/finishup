@@ -8,11 +8,11 @@ import pytest
 from pydantic import ValidationError
 
 from builders.multi_agent import multi_agent_service
-from yoetz.domain.coordination import SessionHealth, WorkState
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import StartRequest
+from finishup.domain.coordination import SessionHealth, WorkState
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import StartRequest
 
 pytestmark = pytest.mark.anyio
 _REPOSITORY = RepositoryPrivacyContext("hmac-sha256:" + "f" * 64, "git_common_root")

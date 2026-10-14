@@ -8,24 +8,24 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.adapters.privacy.catalog import (
+from finishup.adapters.privacy.catalog import (
     decode_privacy_policy_canonical,
     encode_privacy_policy_json,
 )
-from yoetz.application.start import _request_digest  # pyright: ignore[reportPrivateUsage]
-from yoetz.domain.events import TASK_STATEMENT_EVENT_SCHEMAS, EventSchema, decode_payload
-from yoetz.domain.events import encode_payload as encode_event_payload
-from yoetz.domain.values import freeze_json
-from yoetz.ports.start_catalog import (
+from finishup.application.start import _request_digest  # pyright: ignore[reportPrivateUsage]
+from finishup.domain.events import TASK_STATEMENT_EVENT_SCHEMAS, EventSchema, decode_payload
+from finishup.domain.events import encode_payload as encode_event_payload
+from finishup.domain.values import freeze_json
+from finishup.ports.start_catalog import (
     StartCommand,
     StartIdentityCommitments,
     StartIdentityInput,
     StartMode,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import MAX_REVIEW_EXCERPTS, StartRequestModel
-from yoetz.protocol.schemas import validate_schema_instance
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import MAX_REVIEW_EXCERPTS, StartRequestModel
+from finishup.protocol.schemas import validate_schema_instance
 
 _ROOT = Path(__file__).resolve().parents[3]
 

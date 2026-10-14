@@ -27,9 +27,9 @@ import pytest
 
 from builders.gate_readiness import blocker_recheck
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.application.check import CheckScope, run_deterministic_policies
-from yoetz.cli.closure_gate import BLOCKER_RECHECK_ITEM, closure_gate_from_readiness
-from yoetz.domain.events import (
+from finishup.application.check import CheckScope, run_deterministic_policies
+from finishup.cli.closure_gate import BLOCKER_RECHECK_ITEM, closure_gate_from_readiness
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     EventSchema,
@@ -41,17 +41,17 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.values import ObligationId, action_id, obligation_id, result_id
-from yoetz.kernel.closure_readiness import closure_readiness_facts, derive_closure_readiness
-from yoetz.kernel.deterministic_checks import (
+from finishup.domain.findings import FindingKind
+from finishup.domain.values import ObligationId, action_id, obligation_id, result_id
+from finishup.kernel.closure_readiness import closure_readiness_facts, derive_closure_readiness
+from finishup.kernel.deterministic_checks import (
     REQUESTED_OUTPUT_ABSENT_FACT,
     CaseAvailabilityFacts,
     build_deterministic_case,
 )
-from yoetz.kernel.policies.work_integrity import work_integrity_findings
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.kernel.policies.work_integrity import work_integrity_findings
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     PLANNED_VERIFICATION_NOT_OBSERVED_GAP,
     WRITE_OUTSIDE_WORKSPACE_GAP,
     RequestedOutputState,
@@ -61,7 +61,7 @@ from yoetz.kernel.task_facts import (
     requested_output_facts,
     task_fact_signals,
 )
-from yoetz.protocol.policy_packs import current_policy_pack
+from finishup.protocol.policy_packs import current_policy_pack
 
 _FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "tb4_replay"
 _PACKS = (current_policy_pack("research-evidence"), current_policy_pack("work-integrity"))
@@ -296,8 +296,8 @@ def test_pretrain_shard_corruption_det_would_have_been_continued_at_stop() -> No
     assert "Remaining: 3 open obligation(s)" in gate.text
     # Repair first; the blocker exit is offered only because obligations are open, and an
     # inherent verification limit or a best-effort choice is disclosed, never blocked (#984, #995).
-    assert gate.text.index("Finish each open obligation") < gate.text.index("yoetz-blocker:")
-    assert "yoetz-assumption:<obligation id>" in gate.text
+    assert gate.text.index("Finish each open obligation") < gate.text.index("finishup-blocker:")
+    assert "finishup-assumption:<obligation id>" in gate.text
     # #997 review: the acknowledgement is offered only after a blocker challenge, not here.
     assert "acknowledged_not_done" not in gate.text
     assert len(gate.text) <= 2_000
@@ -330,7 +330,7 @@ def test_atrx_vep_crispr_det_missing_report_blocks_the_receipt_and_continues_the
 
 
 def test_atrx_findings_without_open_obligations_offer_no_blocker() -> None:
-    """With only a receipt-blocking finding left, the gate never offers a yoetz-blocker (#984)."""
+    """With only a receipt-blocking finding left, the gate never offers a finishup-blocker (#984)."""
 
     view = SimpleNamespace(
         state="action_required",
@@ -345,7 +345,7 @@ def test_atrx_findings_without_open_obligations_offer_no_blocker() -> None:
     assert gate is not None
     assert gate.items == ("receipt_findings_unresolved",)
     assert "respond `self_verified`" in gate.text
-    assert "yoetz-blocker:<" not in gate.text
+    assert "finishup-blocker:<" not in gate.text
     assert "publish decision_recorded" not in gate.text
 
 
@@ -355,8 +355,8 @@ _BLOCKER_BATCHES = [0]
 def _declare_blocker(replayed: _Replay, rationale: str) -> tuple[ObligationId, ...]:
     """Publish the blocker decision in its own publish batch, as an agent's publish_work does."""
 
-    from yoetz.domain.events import DecisionRecordedPayload
-    from yoetz.domain.values import actor_id
+    from finishup.domain.events import DecisionRecordedPayload
+    from finishup.domain.values import actor_id
 
     _BLOCKER_BATCHES[0] += 1
     projection = replay(replayed.ledger.prefix)
@@ -364,7 +364,7 @@ def _declare_blocker(replayed: _Replay, rationale: str) -> tuple[ObligationId, .
     replayed.ledger.append(
         EventSchema("decision_recorded", "1.0.0"),
         DecisionRecordedPayload(
-            statement="yoetz-blocker:dependency_unavailable",
+            statement="finishup-blocker:dependency_unavailable",
             rationale=rationale,
             authority=actor_id("agt_codex"),
             affected_obligation_ids=open_obligations,
@@ -377,7 +377,7 @@ def _declare_blocker(replayed: _Replay, rationale: str) -> tuple[ObligationId, .
 
 def test_tb4v1_pretrain_blocker_for_a_missing_snapshot_is_rechecked_once() -> None:
     """tb4v1: the agent declared ``dependency_unavailable`` for "no original snapshot found"
-    although the task said the data was recoverable. Yoetz cannot judge that claim, so the next
+    although the task said the data was recoverable. FinishUP cannot judge that claim, so the next
     Stop re-asks it once, naming each obligation and the claimed kind."""
 
     replayed, _fixture = _replay("pretrain_shard_corruption_det")
@@ -390,11 +390,11 @@ def test_tb4v1_pretrain_blocker_for_a_missing_snapshot_is_rechecked_once() -> No
     assert "obligation_blocker_unconfirmed" in gate.items
     for obligation in blocked:
         assert f"{obligation} (dependency_unavailable)" in gate.text
-    # Re-pinned against the current re-check text: repair first, recoverable data and a Yoetz
+    # Re-pinned against the current re-check text: repair first, recoverable data and a FinishUP
     # limit are not blockers, and how to confirm is said only in the challenge (#985, #984).
     assert "Continue that work unless it is genuinely outside your control" in gate.text
-    assert "a Yoetz limit never is" in gate.text
-    assert "same yoetz-blocker line again in a later" in gate.text
+    assert "a FinishUP limit never is" in gate.text
+    assert "same finishup-blocker line again in a later" in gate.text
 
 
 def test_a_genuine_blocker_lets_pretrain_stop_after_one_recheck() -> None:
@@ -432,7 +432,7 @@ def test_tb4n1_pretrain_det_blocker_is_claimed_until_confirmed() -> None:
     """tb4n1 pretrain-shard-corruption (deterministic, reward 0; #985 C4).
 
     Readiness was ``action_required [obligations_open, planned_verification_not_observed]`` at
-    09:09 and, after one ``yoetz-blocker:dependency_unavailable`` ("authoritative historical
+    09:09 and, after one ``finishup-blocker:dependency_unavailable`` ("authoritative historical
     source") on every open obligation, ``ready_with_limitations []`` by 09:27:30 although the main
     deliverable was not done. A first blocker is now only claimed: still agent work. Only the same
     line again in a later decision (after the publish-time challenge and the Stop re-ask) turns it
@@ -462,12 +462,12 @@ def test_tb4n1_pretrain_det_blocker_is_claimed_until_confirmed() -> None:
 
 def test_a_blocker_naming_only_finished_obligations_has_no_effect() -> None:
     """tb4n1: 31 of 38 blocker attempts named only resolved obligations to excuse findings
-    Yoetz could not clear (#985 C3). Such a blocker changes no readiness and no gap."""
+    FinishUP could not clear (#985 C3). Such a blocker changes no readiness and no gap."""
 
-    from yoetz.domain.events import DecisionRecordedPayload
-    from yoetz.domain.values import actor_id
-    from yoetz.domain.values import event_id as make_event_id
-    from yoetz.kernel.task_facts import (
+    from finishup.domain.events import DecisionRecordedPayload
+    from finishup.domain.values import actor_id
+    from finishup.domain.values import event_id as make_event_id
+    from finishup.kernel.task_facts import (
         BLOCKER_NOTICE_WITHOUT_EFFECT,
         OBLIGATION_BLOCKED_GAP,
         OBLIGATION_BLOCKER_UNCONFIRMED_GAP,
@@ -481,7 +481,7 @@ def test_a_blocker_naming_only_finished_obligations_has_no_effect() -> None:
     assert resolved not in open_effective_obligations(replay(replayed.ledger.prefix))
     before = _readiness(replayed)
     payload = DecisionRecordedPayload(
-        statement="Closure is blocked by Yoetz review limits.\nyoetz-blocker:authority",
+        statement="Closure is blocked by FinishUP review limits.\nfinishup-blocker:authority",
         rationale="coverage:content_redacted prevents a qualifying closure",
         authority=actor_id("agt_codex"),
         affected_obligation_ids=(resolved,),

@@ -11,7 +11,7 @@ validating frame encoder, the service's frame parser), materializes the received
 coordinator does, and appends it after a check. Every surface that reads the check's applicability
 then answers the same: a workspace write makes the check no longer current; a notes write or a
 scratch write does not (the command still bounds the conclusion with the earlier-frontier note, as
-any command Yoetz cannot classify does; ADR-040).
+any command FinishUP cannot classify does; ADR-040).
 """
 
 # pyright: reportPrivateUsage=false
@@ -23,29 +23,29 @@ from typing import Any, Literal, cast
 
 import pytest
 
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.domain.events import EventPayload
+from finishup.domain.observation import (
+    ObservationEnvelope,
+    ObservationIngestRequest,
+    observation_ingest_request_from_json,
+    observation_ingest_request_to_json,
+)
+from finishup.domain.values import JsonObject
+from finishup.ports.control import ControlCallRequest, ControlMethod
+from finishup.protocol.coverage import LedgerFreshness
+from finishup.service.control_protocol import (
+    decode_control_frame,
+    encode_control_frame,
+    parse_control_request,
+)
 from integration.application import test_tb4n3_own_calls_cross_surface as surfaces_of
 from integration.observation.test_failure_supersession_hosts import (
     _claude_bash,
     _codex_exec,
     _cursor_shell,
     _host,
-)
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.domain.events import EventPayload
-from yoetz.domain.observation import (
-    ObservationEnvelope,
-    ObservationIngestRequest,
-    observation_ingest_request_from_json,
-    observation_ingest_request_to_json,
-)
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import ControlCallRequest, ControlMethod
-from yoetz.protocol.coverage import LedgerFreshness
-from yoetz.service.control_protocol import (
-    decode_control_frame,
-    encode_control_frame,
-    parse_control_request,
 )
 
 pytestmark = pytest.mark.anyio

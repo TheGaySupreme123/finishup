@@ -19,10 +19,10 @@ from typing import cast
 
 import pytest
 
+import finishup.application.check as check_module
+import finishup.observability.diagnostics as diagnostics_module
+import finishup.service.ready_composition as ready_composition_module
 import integration.service.test_semantic_non_dispatch as non_dispatch
-import yoetz.application.check as check_module
-import yoetz.observability.diagnostics as diagnostics_module
-import yoetz.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import (
     FixedClock,
     MemoryObjects,
@@ -37,30 +37,30 @@ from builders.policy_cases import (
     obligation_record,
     record,
 )
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.privacy.local_enforcer import LocalPrivacyEnforcer, scan_exact_bytes
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.check_change import (
+from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.privacy.local_enforcer import LocalPrivacyEnforcer, scan_exact_bytes
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.check_change import (
     capture_check_time_change,
     check_change_shown_files,
     record_task_change_base,
 )
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.semantic_case import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.semantic_case import (
     CHECK_TIME_CHANGE_ITEM_PREFIX,
     REVIEW_PACKET_ITEM_ID,
     CheckTimeChange,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     CheckChangeShownFiles,
     ClaimKind,
     ClaimRecordedPayload,
     ObligationPublishedPayload,
     ObligationStatus,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScopeKind,
     CandidateContext,
     ChannelPolicy,
@@ -72,25 +72,25 @@ from yoetz.domain.privacy import (
     ProviderBinding,
     ReviewContextProfile,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP,
     CHECK_TIME_CHANGE_REDACTED_GAP,
     CHECK_TIME_CHANGE_TRUNCATED_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
 )
-from yoetz.ports.change_capture import (
+from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     CheckChangeCapture,
     CheckWorkspaceSource,
     check_workspace_source_scope,
 )
-from yoetz.ports.ledger import FrozenCase
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.ports.privacy import EffectivePrivacyPolicy
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.ports.start_catalog import StartCatalogPort
-from yoetz.protocol.canonical import strict_json_parse
-from yoetz.protocol.models import DataCategory, SemanticStatus
+from finishup.ports.ledger import FrozenCase
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.ports.privacy import EffectivePrivacyPolicy
+from finishup.ports.runtime import TaskRuntime
+from finishup.ports.start_catalog import StartCatalogPort
+from finishup.protocol.canonical import strict_json_parse
+from finishup.protocol.models import DataCategory, SemanticStatus
 
 type _Evaluator = Callable[
     [FrozenCase, tuple[object, ...], TaskRuntime], Awaitable[FinalSemanticEvaluation]
@@ -114,9 +114,9 @@ def _git(repository: Path, *arguments: str) -> None:
         (
             "git",
             "-c",
-            "user.name=Yoetz Test",
+            "user.name=FinishUP Test",
             "-c",
-            "user.email=yoetz@example.invalid",
+            "user.email=finishup@example.invalid",
             *arguments,
         ),
         cwd=repository,
@@ -312,7 +312,7 @@ async def test_shell_rewrites_and_commits_reach_the_packet_and_survive_replay(
     assert all(scan_exact_bytes(item.plaintext) == () for item in candidate.items)
     assert CHECK_TIME_CHANGE_REDACTED_GAP in waiting.case_content_gaps
     assert CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP not in waiting.case_content_gaps
-    # The change text itself was redacted: a reviewer's diff request is Yoetz's packet limit.
+    # The change text itself was redacted: a reviewer's diff request is FinishUP's packet limit.
     assert CHECK_TIME_CHANGE_TRUNCATED_GAP not in waiting.case_content_gaps
     assert _packet_limits(waiting, ())["change_clipped"]
     # Keyed commitments to the files the packet carried: the rewritten file whole, the test file
@@ -440,7 +440,7 @@ async def test_change_larger_than_the_packet_is_truncated_and_disclosed(tmp_path
     # The header names every changed file, including the ones whose hunks did not fit.
     for index in range(20):
         assert f"  A module_{index:02d}.ts (+240 -0) untracked" in text
-    assert "[Yoetz check-time change, part 1 of " in text
+    assert "[FinishUP check-time change, part 1 of " in text
 
 
 @pytest.mark.anyio
@@ -666,13 +666,13 @@ async def test_nested_repository_task_input_and_deliverables_reach_the_recorded_
     file and the declared deliverables all reach the packet the privacy gateway is offered."""
 
     from builders.policy_cases import evt, plan_record
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         PlanPublishedPayload,
         RequestedItem,
         RequestedItemKind,
         RequestedItemRole,
     )
-    from yoetz.domain.task_statement import RecordedTaskStatement
+    from finishup.domain.task_statement import RecordedTaskStatement
 
     repository = _repository(tmp_path)
     (repository / "spec").mkdir()
@@ -851,7 +851,7 @@ async def test_a_redacted_task_input_is_disclosed_even_when_the_change_is_clean(
     """Review of #1045: redacting only a task input file still reports the redaction."""
 
     from builders.policy_cases import evt
-    from yoetz.domain.task_statement import RecordedTaskStatement
+    from finishup.domain.task_statement import RecordedTaskStatement
 
     repository = _repository(tmp_path)
     (repository / "spec").mkdir()

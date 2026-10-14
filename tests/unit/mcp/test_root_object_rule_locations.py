@@ -14,10 +14,10 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from yoetz.mcp.descriptors import descriptor_for
-from yoetz.mcp.errors import authoring_hint, safe_validation_locations
-from yoetz.mcp.server import invalid_request_message
-from yoetz.protocol.models import PublishWorkRequest, StartRequestModel
+from finishup.mcp.descriptors import descriptor_for
+from finishup.mcp.errors import authoring_hint, safe_validation_locations
+from finishup.mcp.server import invalid_request_message
+from finishup.protocol.models import PublishWorkRequest, StartRequestModel
 
 _START_SCHEMA = descriptor_for("start").input_schema
 _PUBLISH_SCHEMA = descriptor_for("publish_work").input_schema
@@ -54,7 +54,7 @@ def test_workspace_ref_without_external_ref_names_both_fields_and_pairing_rule()
     assert "workspace_ref requires external_ref" in hint
     message = invalid_request_message("start", locations)
     assert "workspace_ref requires external_ref" in message
-    assert "yoetz://guidance/request-templates.md" in message
+    assert "finishup://guidance/request-templates.md" in message
 
 
 def test_external_ref_without_workspace_ref_is_equally_actionable() -> None:
@@ -382,7 +382,7 @@ def test_unrecognized_root_rule_degrades_to_bounded_generic_error() -> None:
     # Empty locations still produce a bounded public message (template + guidance), never raise.
     message = invalid_request_message("start", ())
     assert message.startswith("The tool arguments are invalid.")
-    assert "yoetz://guidance/request-templates.md" in message
+    assert "finishup://guidance/request-templates.md" in message
     assert authoring_hint(_START_SCHEMA, ()) != ""
 
 

@@ -14,9 +14,9 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
-from yoetz.domain.events import EventSchema, decode_payload, encode_payload
-from yoetz.domain.values import freeze_json
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
+from finishup.domain.events import EventSchema, decode_payload, encode_payload
+from finishup.domain.values import freeze_json
+from finishup.protocol.canonical import canonical_digest, canonical_encode
 
 _RELATIVE = "canonical/review-dialogue-1.3.0.case.json"
 _ID = "DLG-001"

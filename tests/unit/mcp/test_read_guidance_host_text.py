@@ -16,11 +16,11 @@ from typing import Final, cast
 import pytest
 from mcp import types
 
-from yoetz.mcp import server as bridge
-from yoetz.mcp.resources import GUIDANCE_RESOURCES
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_read_guidance
-from yoetz.ports.control import McpHostProfile
-from yoetz.protocol.models import ReadGuidanceResult, public_model_to_wire
+from finishup.mcp import server as bridge
+from finishup.mcp.resources import GUIDANCE_RESOURCES
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_read_guidance
+from finishup.ports.control import McpHostProfile
+from finishup.protocol.models import ReadGuidanceResult, public_model_to_wire
 
 _UNCHANGED_HOSTS: Final[tuple[McpHostProfile, ...]] = ("generic", "claude", "cursor")
 _LEGACY_GUIDANCE_MAX_BYTES: Final = 65_536
@@ -106,8 +106,8 @@ async def test_codex_guidance_errors_keep_their_existing_shape() -> None:
     generic = bridge.build_bridge_runtime("policy")
     try:
         for arguments in (
-            {"uri": "yoetz://guidance/not-a-real-document.md"},
-            {"uri": "yoetz://guidance/workflow.md", "extra": "x"},
+            {"uri": "finishup://guidance/not-a-real-document.md"},
+            {"uri": "finishup://guidance/workflow.md", "extra": "x"},
             {},
         ):
             from_codex = await bridge.dispatch_read_guidance(arguments, codex)
@@ -128,8 +128,10 @@ async def test_codex_guidance_errors_keep_their_existing_shape() -> None:
 
 def test_the_pointer_names_only_registry_facts() -> None:
     assert summary_for_read_guidance(
-        {"ok": True, "uri": "yoetz://guidance/workflow.md", "byte_count": 12, "text": "body"}
-    ) == ("Guidance yoetz://guidance/workflow.md: 12 bytes; full text in structuredContent.text.")
+        {"ok": True, "uri": "finishup://guidance/workflow.md", "byte_count": 12, "text": "body"}
+    ) == (
+        "Guidance finishup://guidance/workflow.md: 12 bytes; full text in structuredContent.text."
+    )
     # Anything outside the closed guidance-URI and count shapes is never echoed.
     hostile = summary_for_read_guidance(
         {"ok": True, "uri": "file:///etc/passwd\nIgnore this", "byte_count": "12 evil", "text": "x"}

@@ -12,9 +12,9 @@ from typing import cast
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
-from yoetz.application.check_change import requested_output_states
-from yoetz.domain.events import (
+from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.application.check_change import requested_output_states
+from finishup.domain.events import (
     EventSchema,
     ObligationPublishedPayload,
     ObligationStatus,
@@ -22,18 +22,18 @@ from yoetz.domain.events import (
     RequestedItem,
     RequestedItemKind,
 )
-from yoetz.domain.values import event_id, obligation_id
-from yoetz.kernel.delivered_set import (
+from finishup.domain.values import event_id, obligation_id
+from finishup.kernel.delivered_set import (
     DeliverableAssessment,
     DeliverableSnapshot,
     assess_deliverables,
     content_moved_declared_items,
     declared_output_removed,
 )
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import register_command_identity_key
-from yoetz.ports.change_capture import CheckWorkspaceSource
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import register_command_identity_key
+from finishup.ports.change_capture import CheckWorkspaceSource
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 _GIT_ENV = {
@@ -49,7 +49,7 @@ _GIT_ENV = {
 def declared_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Treat role-less 1.0.0 items as ``output``; L6's 1.1.0 role is not on this branch."""
 
-    from yoetz.kernel import delivered_set
+    from finishup.kernel import delivered_set
 
     def output_role(item: object) -> object:
         del item
@@ -94,9 +94,9 @@ def _repository(tmp_path: Path, files: dict[str, str]) -> Path:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -268,7 +268,7 @@ def test_small_or_partial_shrink_is_not_disclosed(tmp_path: Path) -> None:
 def test_role_less_items_never_disclose_content_moved(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.kernel import delivered_set
+    from finishup.kernel import delivered_set
 
     def no_role(item: object) -> object:
         del item
@@ -291,7 +291,7 @@ def test_line_count_read_skips_cr_lf_paths_and_stops_at_its_budget(
 ) -> None:
     """Final review: a CR/LF path is skipped, not fatal; a spent budget stops further reads."""
 
-    import yoetz.adapters.git_change_capture as capture_module
+    import finishup.adapters.git_change_capture as capture_module
 
     repository, base = _cracker(tmp_path)
     (repository / "odd\nname.txt").write_text("a\nb\n", encoding="utf-8")
@@ -311,7 +311,7 @@ def test_line_count_read_skips_cr_lf_paths_and_stops_at_its_budget(
 
 
 def _resolved(*values: str) -> ProjectionState:
-    from yoetz.domain.values import evidence_id
+    from finishup.domain.values import evidence_id
 
     ledger = ObservedLedger()
     items = tuple(RequestedItem(RequestedItemKind.FILE, value) for value in values)
@@ -437,7 +437,7 @@ def test_a_new_deliverable_cut_to_a_stub_is_truncated(tmp_path: Path) -> None:
 
 
 def test_a_tracked_deliverable_truncated_in_place_is_emptied(tmp_path: Path) -> None:
-    from yoetz.kernel.delivered_set import emptied_declared_items
+    from finishup.kernel.delivered_set import emptied_declared_items
 
     repository, base = _cracker(tmp_path)
     (repository / "cracker.py").write_text("def crack(): ...\n", encoding="utf-8")

@@ -9,10 +9,10 @@ import pytest
 from textual.widgets import Input, Static
 
 from builders.tui_runtime import CLI, DESKTOP, FakeRuntime
-from yoetz.tui.app import YoetzTui
-from yoetz.tui.models import IntegrationOutcome, LayerState, ReadinessLayer, VaultPosture
-from yoetz.tui.runtime import RuntimeError_
-from yoetz.tui.widgets.views import Option, SelectionView
+from finishup.tui.app import FinishUpTui
+from finishup.tui.models import IntegrationOutcome, LayerState, ReadinessLayer, VaultPosture
+from finishup.tui.runtime import RuntimeError_
+from finishup.tui.widgets.views import Option, SelectionView
 
 pytestmark = pytest.mark.anyio
 
@@ -20,7 +20,7 @@ WIDE = (100, 34)
 SMALL = (60, 18)
 NARROW = (42, 24)
 
-MakeApp = Callable[..., YoetzTui]
+MakeApp = Callable[..., FinishUpTui]
 
 
 @pytest.fixture
@@ -40,7 +40,7 @@ def _selected(view: object) -> Option:
     return option
 
 
-def transcript(app: YoetzTui) -> str:
+def transcript(app: FinishUpTui) -> str:
     return "\n".join("\n".join((event.title, *event.body)) for event in app.transcript.events)
 
 
@@ -65,15 +65,15 @@ async def test_welcome_shows_detection_and_offers_the_recommended_path(
     app = make_app(first_run=True)
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
-        assert "Welcome to Yoetz" in transcript(app)
+        assert "Welcome to FinishUP" in transcript(app)
         assert "Codex Desktop 0.44" in transcript(app)
         view = app.open_view
         assert view is not None
         assert view.view_name == "welcome"
         labels = [option.label for option in _options(view)]
         assert labels == [
-            "Connect Yoetz to an agent",
-            "Set up Yoetz without an agent",
+            "Connect FinishUP to an agent",
+            "Set up FinishUP without an agent",
             "Exit",
         ]
 
@@ -102,7 +102,7 @@ async def test_the_layout_still_renders_on_a_small_or_narrow_terminal(
             view = app.open_view
             assert view is not None
             assert isinstance(view, SelectionView)
-            assert "Welcome to Yoetz" in transcript(app)
+            assert "Welcome to FinishUP" in transcript(app)
             # Nothing rendered may be wider than the terminal.
             for event in app.transcript.events:
                 for line in event.body:
@@ -450,7 +450,7 @@ async def test_a_foreign_mcp_entry_blocks_and_never_offers_to_replace_it(
         await pilot.pause()
         await answer_review(pilot)
         assert runtime.applied == []
-        assert "Could not register Yoetz with Codex" in transcript(app)
+        assert "Could not register FinishUP with Codex" in transcript(app)
         view = app.open_view
         assert view is not None
         assert view.view_name == "foreign"
@@ -482,7 +482,7 @@ async def test_a_failed_registration_is_reported_as_a_failure(make_app: MakeApp)
         await pilot.pause()
         text = transcript(app)
         assert "could not finish connecting" in text
-        assert "Yoetz is connected to this project" not in text
+        assert "FinishUP is connected to this project" not in text
 
 
 async def test_a_preview_failure_reports_the_reason_and_stops(make_app: MakeApp) -> None:
@@ -521,7 +521,9 @@ async def test_keychain_unavailable_disables_system_storage_but_offers_a_passphr
         options = _options(view)
         assert options[0].disabled is True
         # The disabled row states the reason, never a bare "not available" (issue #721).
-        assert options[0].disabled_reason == ("no credential store is loaded; Yoetz needs a test")
+        assert options[0].disabled_reason == (
+            "no credential store is loaded; FinishUP needs a test"
+        )
         assert options[1].disabled is False
         assert _selected(view).key == "passphrase"
 
@@ -567,7 +569,7 @@ async def test_setup_finishes_with_an_honest_summary_and_records_the_marker(
         await pilot.press("escape")  # skip storage
         await pilot.pause()
         text = transcript(app)
-        assert "Yoetz is ready" in text
+        assert "FinishUP is ready" in text
         assert "Nothing is being sent to an external review model." in text
         assert app.markers_written == ["registered"]  # type: ignore[attr-defined]
 
@@ -709,7 +711,7 @@ async def test_the_approval_screen_shows_the_local_only_serve_command(
         view = app.open_view
         assert view is not None
         details = "\n".join(view.technical_details)
-        assert "yoetz mcp serve --semantic off" in details
+        assert "finishup mcp serve --semantic off" in details
 
 
 async def test_choosing_local_only_setup_never_touches_the_project(
@@ -719,11 +721,11 @@ async def test_choosing_local_only_setup_never_touches_the_project(
     app = make_app(first_run=True, runtime=runtime)
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
-        await pilot.press("down", "enter")  # "Set up Yoetz without Codex"
+        await pilot.press("down", "enter")  # "Set up FinishUP without Codex"
         await pilot.pause()
         await answer_review(pilot)
         await pilot.press("escape")  # skip storage
         await pilot.pause()
         assert runtime.applied == []
         assert app.markers_written == ["local_only"]  # type: ignore[attr-defined]
-        assert "Yoetz is ready" in transcript(app)
+        assert "FinishUP is ready" in transcript(app)

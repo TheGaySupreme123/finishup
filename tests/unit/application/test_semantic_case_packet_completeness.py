@@ -26,10 +26,7 @@ from builders.policy_cases import (
     record,
     res,
 )
-from unit.application.test_semantic_case import (
-    _captured_case_values,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     TASK_INPUT_ITEM_PREFIX,
     CheckTimeChange,
     build_semantic_case,
@@ -37,7 +34,7 @@ from yoetz.application.semantic_case import (
     review_input_manifest_to_json,
     semantic_case_to_prepared_payload,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -54,19 +51,22 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.task_statement import RecordedTaskStatement
-from yoetz.domain.values import timestamp_from_string
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.ports.change_capture import (
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.task_statement import RecordedTaskStatement
+from finishup.domain.values import timestamp_from_string
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.ports.change_capture import (
     CHECK_CHANGE_MEDIA_TYPE,
     CheckChangeCapture,
     TaskInputFile,
 )
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
-from yoetz.ports.semantic import SemanticCase
-from yoetz.protocol.canonical import JsonValue, strict_json_parse
-from yoetz.protocol.models import DataCategory
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectRef
+from finishup.ports.semantic import SemanticCase
+from finishup.protocol.canonical import JsonValue, strict_json_parse
+from finishup.protocol.models import DataCategory
+from unit.application.test_semantic_case import (
+    _captured_case_values,  # pyright: ignore[reportPrivateUsage]
+)
 
 _TASK = "tsk_10000000-0000-4000-8000-000000000001"
 _STATEMENT = (
@@ -184,7 +184,7 @@ def test_task_input_files_travel_as_repository_excerpts_linked_to_the_statement(
     assert str(evt(50)) in item.linked_subject_refs
     content = item.content.decode("utf-8")
     assert content.startswith(
-        f"[Yoetz task input file vba/UserForm1.frm ({len(_VBA)} bytes): named by the task, "
+        f"[FinishUP task input file vba/UserForm1.frm ({len(_VBA)} bytes): named by the task, "
         "unchanged since the task started"
     )
     assert "VBA_INPUT_MARKER" in content
@@ -381,7 +381,7 @@ def test_the_newest_artifact_at_one_path_wins() -> None:
 
 def test_declared_deliverables_reach_the_packet_with_the_check_facts() -> None:
     change = _change(
-        b"Yoetz check-time change: captured by the Yoetz service when this check ran; the "
+        b"FinishUP check-time change: captured by the FinishUP service when this check ran; the "
         b"agent did not supply it.\n"
         b"Changed files: 1 tracked, 0 untracked. Not shown: 0.\n"
         b"Files:\n"

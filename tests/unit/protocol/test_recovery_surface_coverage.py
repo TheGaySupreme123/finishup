@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
-from yoetz.cli.hooks import (
+from finishup.cli.hooks import (
     _LOCKED_CONTEXT,  # pyright: ignore[reportPrivateUsage]
     _RETRY_CONTEXT,  # pyright: ignore[reportPrivateUsage]
     _STORAGE_UNSAFE_CONTEXT,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.cli.observe_hooks import (
+from finishup.cli.observe_hooks import (
     _attachment_recovery_context,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.cli.render import (
+from finishup.cli.render import (
     render_hook_recovery_suffix,
     render_local_recovery_lines,
     render_semantic_outcome_recovery_lines,
 )
-from yoetz.domain.findings import SemanticFailureClass
-from yoetz.mcp.summaries import summary_for_check
-from yoetz.protocol.models import SemanticReason, SemanticStatus
-from yoetz.protocol.recovery import (
+from finishup.domain.findings import SemanticFailureClass
+from finishup.mcp.summaries import summary_for_check
+from finishup.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.recovery import (
     continuation_for_reason,
     continuation_for_semantic_outcome,
     directive_for,

@@ -9,8 +9,8 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.domain.check_totals import CHECK_TOTAL_KEYS, render_check_totals
-from yoetz.domain.events import (
+from finishup.domain.check_totals import CHECK_TOTAL_KEYS, render_check_totals
+from finishup.domain.events import (
     CheckMode,
     CheckRecordedPayload,
     LedgerRecord,
@@ -23,7 +23,7 @@ from yoetz.domain.events import (
     ResponseRecordedPayload,
     encode_payload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
@@ -36,7 +36,7 @@ from yoetz.domain.findings import (
     SemanticProvenance,
     semantic_provenance_to_json,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     CHECK_CURRENT_AS_OF_EARLIER_FRONTIER_GAP,
     COMPLETION_CLAIM_OUTSIDE_PLAN_GAP,
     COMPLETION_SCOPE_DECLARED_NONE_GAP,
@@ -58,7 +58,7 @@ from yoetz.domain.receipts import (
     resolved_finding_ids_for_render,
     unresolved_findings_for_render,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     ActorType,
     EventId,
     FindingId,
@@ -74,8 +74,8 @@ from yoetz.domain.values import (
     task_id,
     timestamp_from_string,
 )
-from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, CaseGap
-from yoetz.kernel.projections import (
+from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, CaseGap
+from finishup.kernel.projections import (
     FindingProjectionRecord,
     LatestTestedState,
     ObligationProjectionRecord,
@@ -84,15 +84,15 @@ from yoetz.kernel.projections import (
     ProjectionState,
     empty_projection_state,
 )
-from yoetz.kernel.receipt_builder import (
+from finishup.kernel.receipt_builder import (
     CheckSuffixClass,
     ReceiptBuildContext,
     ReceiptFindingState,
     build_receipt,
 )
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.coverage import (
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -101,7 +101,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.models import (
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     ReceiptInclude,
@@ -109,7 +109,7 @@ from yoetz.protocol.models import (
     SemanticReason,
     SemanticStatus,
 )
-from yoetz.protocol.redacted_values import SemanticRedactedValue
+from finishup.protocol.redacted_values import SemanticRedactedValue
 
 _DIGEST = "sha256:" + "1" * 64
 _HEAD = "sha256:" + "2" * 64
@@ -291,7 +291,7 @@ def _projection(
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",
@@ -431,8 +431,9 @@ def test_digest_provenance_limitation_is_retained_in_receipt() -> None:
         for section in receipt.sections
         if section.key is ReceiptSectionKey.LIMITATIONS_AND_COVERAGE
     )
-    assert "One cited evidence item carries a caller-asserted digest that Yoetz did not verify" in (
-        limitations
+    assert (
+        "One cited evidence item carries a caller-asserted digest that FinishUP did not verify"
+        in (limitations)
     )
 
 
@@ -454,7 +455,7 @@ def _digest_gap(code: str, root: EventId) -> CaseGap:
                 _digest_gap("evidence_content_digest_only", _SOURCE_EVENT_ID),
                 _digest_gap("evidence_content_withheld", _WITHHELD_EVENT_ID),
             ),
-            "2 cited evidence items carry caller-asserted digests that Yoetz did not verify: "
+            "2 cited evidence items carry caller-asserted digests that FinishUP did not verify: "
             f"1 is digest-only ({_DIGEST_ONLY_CLAUSE}) and 1 is withheld ({_WITHHELD_CLAUSE}).",
             True,
             (),
@@ -465,7 +466,7 @@ def _digest_gap(code: str, root: EventId) -> CaseGap:
                 _digest_gap("evidence_content_digest_only", _SOURCE_EVENT_ID),
                 _digest_gap("evidence_content_digest_only", _SECOND_DIGEST_EVENT_ID),
             ),
-            "2 cited evidence items carry caller-asserted digests that Yoetz did not verify: "
+            "2 cited evidence items carry caller-asserted digests that FinishUP did not verify: "
             f"{_DIGEST_ONLY_CLAUSE}.",
             True,
             (_WITHHELD_CLAUSE, "withheld"),
@@ -473,7 +474,7 @@ def _digest_gap(code: str, root: EventId) -> CaseGap:
         ),
         pytest.param(
             (_digest_gap("evidence_content_withheld", _WITHHELD_EVENT_ID),),
-            "One cited evidence item carries a caller-asserted digest that Yoetz did not "
+            "One cited evidence item carries a caller-asserted digest that FinishUP did not "
             f"verify: {_WITHHELD_CLAUSE}.",
             True,
             ("not retained", "digest-only"),
@@ -487,7 +488,7 @@ def _digest_gap(code: str, root: EventId) -> CaseGap:
                     (),
                 ),
             ),
-            "Recorded check or finding coverage names caller-asserted digests that Yoetz did not "
+            "Recorded check or finding coverage names caller-asserted digests that FinishUP did not "
             "verify; no currently cited evidence item carries one.",
             False,
             (),
@@ -887,7 +888,7 @@ def test_builder_never_adds_new_findings_or_evidence() -> None:
 def test_semantic_review_not_configured_limitations_state_not_run() -> None:
     """Requirement: receipt limitations disclose that AI-powered relevance review was not run."""
 
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_CONFIGURED_GAP, render_receipt_compact
+    from finishup.domain.receipts import SEMANTIC_REVIEW_NOT_CONFIGURED_GAP, render_receipt_compact
 
     gap = CaseGap(
         f"semantic_outcome:{SEMANTIC_REVIEW_NOT_CONFIGURED_GAP}",
@@ -923,7 +924,7 @@ def test_semantic_review_not_configured_limitations_state_not_run() -> None:
 def test_scoped_deterministic_clean_keeps_the_review_gap_in_the_receipt() -> None:
     """A scoped check result never upgrades the receipt past its standing coverage limit."""
 
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
+    from finishup.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
 
     coverage = _coverage(gaps=(SEMANTIC_REVIEW_NOT_REQUESTED_GAP,))
     gap = CaseGap(
@@ -1495,7 +1496,7 @@ _REDACTED = (
 def test_check_event_round_trips_redacted_values_and_old_events_decode() -> None:
     """PL2-1 (issue #982): optional 1.4.0 field; events without it decode unchanged."""
 
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         REVIEW_CHECK_EVENT_SCHEMA_VERSION,
         EventSchema,
         decode_payload,
@@ -1620,7 +1621,7 @@ def test_redacted_share_does_not_leak_omitted_resolved_finding_ids() -> None:
 def test_registration_drift_gap_names_policy_recovery_in_limitations() -> None:
     """Issue #537 slice C: applied-policy-serving-strict names the recovery in Limitations."""
 
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
         OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     )
@@ -1646,7 +1647,7 @@ def test_registration_drift_gap_names_policy_recovery_in_limitations() -> None:
     # section reports the disagreement and offers the recovery conditionally.
     assert "If this strict route was not intended" in section.body
     assert "is stale" not in section.body
-    assert "yoetz integrate codex mcp install --route-profile policy" in section.body
+    assert "finishup integrate codex mcp install --route-profile policy" in section.body
     assert "start a fresh Codex process" in section.body
     assert section.items == gaps
 
@@ -1654,7 +1655,7 @@ def test_registration_drift_gap_names_policy_recovery_in_limitations() -> None:
 def test_genuine_strict_ceiling_keeps_generic_limitations_wording() -> None:
     """A genuinely applied strict route keeps today's terminal Limitations wording exactly."""
 
-    from yoetz.domain.receipts import OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP
+    from finishup.domain.receipts import OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP
 
     coverage = _coverage(gaps=(OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,))
     receipt = _build(
@@ -1803,7 +1804,7 @@ def test_task_statement_source_is_not_claimed_without_a_completed_review_or_hist
 
 def test_a_redacted_statement_event_is_not_reported_as_title_only() -> None:
     from builders.replay import genesis_session_opened_variant
-    from yoetz.domain.events import RedactionState
+    from finishup.domain.events import RedactionState
 
     opened = genesis_session_opened_variant(
         version="1.2.0", statement="The request.", redaction=RedactionState.LOGICALLY_REDACTED
@@ -1832,9 +1833,9 @@ def test_a_withheld_statement_keeps_its_gap_prose_instead_of_a_source_sentence()
 
 
 def test_child_receipt_retains_provider_usage_under_the_combined_contract() -> None:
-    from yoetz.domain.receipts import ReceiptChildOutcome, ReceiptChildren
-    from yoetz.protocol.canonical import JsonValue
-    from yoetz.protocol.schemas import validate_schema_instance
+    from finishup.domain.receipts import ReceiptChildOutcome, ReceiptChildren
+    from finishup.protocol.canonical import JsonValue
+    from finishup.protocol.schemas import validate_schema_instance
 
     provenance = _subscription_provenance()
     receipt = _build(
@@ -1941,7 +1942,7 @@ def test_a_rejection_accepted_row_stops_blocking_only_where_the_receipt_disclose
 def test_check_time_change_unavailable_reason_is_a_plain_sentence_in_every_format(
     reason: str, phrase: str
 ) -> None:
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
         check_time_change_unavailable_reason_gap,
     )
@@ -2010,7 +2011,7 @@ def test_single_agent_deterministic_run_with_standing_host_gaps_reaches_a_clean_
     always ``skipped/not_applicable`` on a single-agent run, and standing host-observation gaps
     a local absence proof tolerates were missing from the receipt's advisory list."""
 
-    from yoetz.kernel.deterministic_scope import (
+    from finishup.kernel.deterministic_scope import (
         CLEAN_COMPATIBLE_GAPS,
         DETERMINISTIC_SCOPED_STANDING_GAPS,
     )
@@ -2059,8 +2060,8 @@ def test_full_check_completeness_reads_the_same_clean_list() -> None:
     """#986: a policy- or semantic-route check is ``complete`` under the same list, and a
     host-observation gap counts only when the command counters show no unknown outcome."""
 
-    from yoetz.application.check import full_check_gaps_clean
-    from yoetz.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
+    from finishup.application.check import full_check_gaps_clean
+    from finishup.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
 
     clean = {"commands": {"unknown": "0", "live_failed": "0"}}
     unknown = {"commands": {"unknown": "1", "live_failed": "0"}}
@@ -2099,23 +2100,23 @@ def test_a_standing_gap_a_local_proof_does_not_tolerate_still_bounds_the_receipt
 def test_child_self_verified_finding_reads_self_verified_on_the_parent_receipt() -> None:
     """Issue #984 (ADR-034): a child's self-verified repair is not parent work and never clean."""
 
-    from yoetz.domain.coordination import (
+    from finishup.domain.coordination import (
         LineageAcceptance,
         LineageOrigin,
         SessionHealth,
         WorkState,
     )
-    from yoetz.domain.receipts import CHILD_SELF_VERIFIED_NOTE
-    from yoetz.kernel.lineage import (
+    from finishup.domain.receipts import CHILD_SELF_VERIFIED_NOTE
+    from finishup.kernel.lineage import (
         CHILD_SELF_VERIFIED_GAP,
         ChildDependencySnapshot,
         ChildFindingSnapshot,
         LineageManifest,
         evaluate_lineage,
     )
-    from yoetz.protocol.canonical import JsonValue
-    from yoetz.protocol.errors import ProtocolValueError
-    from yoetz.protocol.schemas import validate_schema_instance
+    from finishup.protocol.canonical import JsonValue
+    from finishup.protocol.errors import ProtocolValueError
+    from finishup.protocol.schemas import validate_schema_instance
 
     child_task = task_id("tsk_00000000-0000-4000-8000-000000000077")
     child_finding = finding_id("fnd_00000000-0000-4000-8000-000000000077")
@@ -2186,7 +2187,9 @@ def test_child_self_verified_finding_reads_self_verified_on_the_parent_receipt()
     assert receipt_document_from_json(wire) == receipt
 
     note = f"{child_finding}: {CHILD_SELF_VERIFIED_NOTE}"
-    assert CHILD_SELF_VERIFIED_NOTE == "self-verified by the child agent; Yoetz could not prove it"
+    assert (
+        CHILD_SELF_VERIFIED_NOTE == "self-verified by the child agent; FinishUP could not prove it"
+    )
     assert note in render_receipt_human(receipt, markdown=True)
     assert note in render_receipt_human(receipt, markdown=False)
     assert "1 child finding was self-verified by the child agent" in render_receipt_compact(receipt)
@@ -2221,26 +2224,26 @@ def test_a_child_review_finding_reaches_the_parent_receipt_under_its_own_kind(
 
     from builders.dialogue import reviewer_finding
     from builders.policy_cases import evt, finding_record, fnd, obl
-    from yoetz.application.lineage_coordinator import (
+    from finishup.application.lineage_coordinator import (
         _child_finding_snapshots,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.domain.coordination import (
+    from finishup.domain.coordination import (
         LineageAcceptance,
         LineageOrigin,
         SessionHealth,
         WorkState,
     )
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ChildDependenciesRecordedPayload,
         ChildDependencySnapshot,
         EventSchema,
         decode_payload,
     )
-    from yoetz.domain.values import Actor, actor_id
-    from yoetz.domain.values import JsonValue as DomainJsonValue
-    from yoetz.kernel.lineage import evaluate_lineage, lineage_manifest_from_records
-    from yoetz.protocol.canonical import JsonValue, canonical_encode
-    from yoetz.protocol.schemas import validate_schema_instance
+    from finishup.domain.values import Actor, actor_id
+    from finishup.domain.values import JsonValue as DomainJsonValue
+    from finishup.kernel.lineage import evaluate_lineage, lineage_manifest_from_records
+    from finishup.protocol.canonical import JsonValue, canonical_encode
+    from finishup.protocol.schemas import validate_schema_instance
 
     # The child: one reviewer finding of ``kind``, open or proved absent by a later check.
     finding = reviewer_finding(1, obl(1), kind=kind)
@@ -2381,8 +2384,8 @@ def test_a_linked_duplicate_is_disclosed_by_ids_and_never_reads_cleaner() -> Non
 def test_acknowledged_obligation_is_disclosed_and_never_clean() -> None:
     """Issue #997 (ADR-032 slice C): an obligation the agent will not do caps the conclusion."""
 
-    from yoetz.protocol.canonical import JsonValue
-    from yoetz.protocol.schemas import validate_schema_instance
+    from finishup.protocol.canonical import JsonValue
+    from finishup.protocol.schemas import validate_schema_instance
 
     obligation = ObligationPublishedPayload(
         obligation_id("obl_00000000-0000-4000-8000-000000000020"),
@@ -2425,7 +2428,7 @@ def test_acknowledged_obligation_is_disclosed_and_never_clean() -> None:
 
 
 def _not_requested_receipt(route_required: bool | None) -> ReceiptDocument:
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
+    from finishup.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
 
     coverage = _coverage(gaps=(SEMANTIC_REVIEW_NOT_REQUESTED_GAP,))
     gap = CaseGap(
@@ -2475,7 +2478,7 @@ def test_a_requiring_or_unrecorded_route_keeps_not_requested_blocking(
 def test_a_route_record_never_excuses_a_carried_review_attempt_gap() -> None:
     """Issue #986: only the not-requested code is tolerated; a refused review still bounds."""
 
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
+    from finishup.domain.receipts import SEMANTIC_REVIEW_NOT_REQUESTED_GAP
 
     gaps = ("semantic_relevance_review_not_run", SEMANTIC_REVIEW_NOT_REQUESTED_GAP)
     coverage = _coverage(gaps=gaps)
@@ -2496,14 +2499,14 @@ def test_a_route_record_never_excuses_a_carried_review_attempt_gap() -> None:
 def test_check_event_route_record_round_trips_and_old_events_replay_unchanged() -> None:
     """Issue #986: optional on check_recorded 1.4.0 only; events without it keep their bytes."""
 
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         CHECK_EVENT_SCHEMA_VERSION,
         REVIEW_CHECK_EVENT_SCHEMA_VERSION,
         EventSchema,
         decode_payload,
         encode_payload,
     )
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.protocol.canonical import canonical_encode
 
     schema = EventSchema("check_recorded", REVIEW_CHECK_EVENT_SCHEMA_VERSION)
     old = _check(
@@ -2570,14 +2573,14 @@ def _historical_receipt(*, historical: bool, schema_version: str = "1.3.0") -> R
 
 
 def test_cleared_gap_is_historical_and_never_lowers_the_conclusion() -> None:
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         HISTORICAL_GAPS_SECTION_TITLE,
         ReceiptGapStatus,
         historical_receipt_gaps,
         live_receipt_gap_codes,
     )
-    from yoetz.protocol.canonical import JsonValue
-    from yoetz.protocol.schemas import validate_schema_instance
+    from finishup.protocol.canonical import JsonValue
+    from finishup.protocol.schemas import validate_schema_instance
 
     receipt = _historical_receipt(historical=True)
     # The conclusion equals a receipt that never carried the gap at all.
@@ -2621,7 +2624,7 @@ def test_cleared_gap_is_historical_and_never_lowers_the_conclusion() -> None:
 
 
 def test_gap_the_latest_check_still_carries_stays_live() -> None:
-    from yoetz.domain.receipts import HISTORICAL_GAPS_SECTION_TITLE, ReceiptGapStatus
+    from finishup.domain.receipts import HISTORICAL_GAPS_SECTION_TITLE, ReceiptGapStatus
 
     receipt = _historical_receipt(historical=False)
     assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
@@ -2635,7 +2638,7 @@ def test_gap_the_latest_check_still_carries_stays_live() -> None:
 
 
 def test_earlier_receipt_artifact_keeps_every_gap_live() -> None:
-    from yoetz.domain.receipts import ReceiptGapStatus
+    from finishup.domain.receipts import ReceiptGapStatus
 
     receipt = _historical_receipt(historical=True, schema_version="1.0.0")
     assert receipt.conclusion is ReceiptConclusion.INSUFFICIENT_COVERAGE
@@ -2657,7 +2660,7 @@ def _check_record(sequence: int, gaps: tuple[str, ...]) -> Any:
 
 
 def test_application_names_the_first_check_that_no_longer_carried_the_gap() -> None:
-    from yoetz.application.receipt import (
+    from finishup.application.receipt import (
         _historical_gaps,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -2685,13 +2688,13 @@ def test_application_names_the_first_check_that_no_longer_carried_the_gap() -> N
 
 
 def test_result_coverage_and_every_surface_count_live_gaps_only() -> None:
-    from yoetz.application.receipt import (
+    from finishup.application.receipt import (
         _internal_result,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.cli.render import render_human_receipt
-    from yoetz.domain.receipts import historical_gaps_from_wire
-    from yoetz.mcp.summaries import summary_for_receipt
-    from yoetz.protocol.models import CoverageModel, ReceiptFormat, ReceiptSuccessModel
+    from finishup.cli.render import render_human_receipt
+    from finishup.domain.receipts import historical_gaps_from_wire
+    from finishup.mcp.summaries import summary_for_receipt
+    from finishup.protocol.models import CoverageModel, ReceiptFormat, ReceiptSuccessModel
 
     receipt = _historical_receipt(historical=True)
     for output_format in (ReceiptFormat.JSON, ReceiptFormat.MARKDOWN, ReceiptFormat.TEXT):

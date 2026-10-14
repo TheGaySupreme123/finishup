@@ -7,14 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.keys.installation_recovery import (
+from finishup.adapters.keys.installation_recovery import (
     InstallationRecoveryMode,
     InstallationRecoverySecretKind,
     create_installation_recovery_artifact,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import SecretPurpose
-from yoetz.service.installation_recovery import (
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.secret_memory import SecretPurpose
+from finishup.service.installation_recovery import (
     InstallationRecoverySetStore,
     InstallationRecoveryState,
 )
@@ -70,7 +70,7 @@ def test_stage_is_not_advertised_until_matching_metadata_activates(tmp_path: Pat
     assert after.state is InstallationRecoveryState.RECOVERY_MATERIAL_REQUIRED
     assert after.active_generation == 1
     assert after.available_modes == ("compact",)
-    assert after.next_command == "yoetz service recovery restore"
+    assert after.next_command == "finishup service recovery restore"
 
 
 def test_recovery_continuation_is_opaque_restart_state(tmp_path: Path) -> None:
@@ -411,7 +411,7 @@ def test_import_stages_pending_and_never_activates_on_its_own(tmp_path: Path) ->
     assert locked.state is InstallationRecoveryState.RECOVERY_MATERIAL_REQUIRED
     assert locked.reason == "imported_set_pending_restore"
     assert locked.active_generation == 9
-    assert locked.next_command == "yoetz service recovery restore"
+    assert locked.next_command == "finishup service recovery restore"
 
     # A restore that does not authenticate leaves the good generation reactivatable.
     continuation = target.begin_recovery(9)

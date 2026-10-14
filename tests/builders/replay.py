@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import fields, replace
 from typing import Any, cast
 
-from fixture_loader import load_fixture_json
-from yoetz.domain.events import (
+from finishup.domain.events import (
     PAYLOAD_TYPES,
     AcceptedEvent,
     EventSchema,
@@ -23,7 +22,7 @@ from yoetz.domain.events import (
     decode_payload,
     encode_payload,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     actor_id,
@@ -36,14 +35,15 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.coverage import (
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     Coverage,
     PublicationChannel,
     coverage_from_json,
 )
+from fixture_loader import load_fixture_json
 
 
 def _schema(row: dict[str, Any]) -> EventSchema:

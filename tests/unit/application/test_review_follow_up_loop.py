@@ -1,7 +1,7 @@
 """The check's in-check follow-up loop and its facade seam (issue #1047).
 
 ``check._review_follow_up`` re-asks the reviewer only while it concludes ``insufficient_packet``
-and names content Yoetz holds, at most ``MAX_REVIEW_FOLLOW_UP_ROUNDS`` times; the last round's
+and names content FinishUP holds, at most ``MAX_REVIEW_FOLLOW_UP_ROUNDS`` times; the last round's
 outcome is the check's. The service facade forwards a follow-up only to an evaluator that names
 the keyword itself, so every older evaluator keeps today's single review.
 """
@@ -16,19 +16,19 @@ import pytest
 
 from builders.dialogue import provenance
 from builders.policy_cases import FRONTIER, act, evd, res
-from unit.application.test_review_follow_up import (
-    _verification_case,  # pyright: ignore[reportPrivateUsage]
-)
-from yoetz.application.check import (
+from finishup.application.check import (
     FinalSemanticEvaluation,
     _review_follow_up,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.missing_for_assessment import ReviewFollowUp, ReviewFollowUpItem
-from yoetz.application.service import Application
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.ports.ledger import CheckPhase, FrozenCase, OperationLease
-from yoetz.ports.semantic import MissingForAssessment, SemanticJudgment
-from yoetz.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS, SemanticReason, SemanticStatus
+from finishup.application.missing_for_assessment import ReviewFollowUp, ReviewFollowUpItem
+from finishup.application.service import Application
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.ports.ledger import CheckPhase, FrozenCase, OperationLease
+from finishup.ports.semantic import MissingForAssessment, SemanticJudgment
+from finishup.protocol.models import MAX_REVIEW_FOLLOW_UP_ROUNDS, SemanticReason, SemanticStatus
+from unit.application.test_review_follow_up import (
+    _verification_case,  # pyright: ignore[reportPrivateUsage]
+)
 
 pytestmark = pytest.mark.anyio
 

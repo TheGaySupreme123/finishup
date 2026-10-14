@@ -1,4 +1,4 @@
-"""``yoetz service restart`` replaces even a service this CLI cannot handshake with."""
+"""``finishup service restart`` replaces even a service this CLI cannot handshake with."""
 
 from __future__ import annotations
 
@@ -7,9 +7,9 @@ from typing import Any
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as module
-import yoetz.service.client as client_module
-from yoetz.ports.control import ControlError, ServiceState, ServiceStatus
+import finishup.cli.app as module
+import finishup.service.client as client_module
+from finishup.ports.control import ControlError, ServiceState, ServiceStatus
 
 
 def _status() -> ServiceStatus:
@@ -89,4 +89,4 @@ def test_restart_reports_an_incompatible_holder_it_cannot_identify(
 
     assert result.exit_code != 0
     assert "service_incompatible" in result.output
-    assert "yoetz service restart" in result.output
+    assert "finishup service restart" in result.output

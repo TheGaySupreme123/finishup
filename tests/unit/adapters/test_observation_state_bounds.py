@@ -9,24 +9,24 @@ from typing import cast
 
 import pytest
 
-import yoetz.adapters.integrations.codex_session_stream as stream_mod
-import yoetz.adapters.integrations.observation_local as local_mod
+import finishup.adapters.integrations.codex_session_stream as stream_mod
+import finishup.adapters.integrations.observation_local as local_mod
 from builders.codex_rollout import encode_lines, response_item, session_meta
-from yoetz.adapters.integrations.codex_session_stream import (
+from finishup.adapters.integrations.codex_session_stream import (
     STREAM_MAPPING_VERSION,
     SessionStreamReader,
     default_stream_profile,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationGapCode,
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.errors import ProtocolValueError, PublicErrorCode, PublicOperationError
 
 _DROPPED_GAP = "_local_stream_partial_dropped"
 _MAX_PARTIAL = local_mod._MAX_STREAM_PARTIAL_BYTES  # pyright: ignore[reportPrivateUsage]

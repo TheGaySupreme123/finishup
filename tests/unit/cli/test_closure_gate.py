@@ -17,23 +17,23 @@ from builders.gate_readiness import (
     blocker_recheck,
     premise_recheck,
 )
-from yoetz.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import closure_gate as gate_module
-from yoetz.cli import observe_hooks
-from yoetz.cli.closure_gate import (
+from finishup.adapters.integrations.codex_lifecycle import mapping_from_start_ids, store_mapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import closure_gate as gate_module
+from finishup.cli import observe_hooks
+from finishup.cli.closure_gate import (
     closure_gate_already_delivered,
     closure_gate_from_readiness,
     record_closure_gate_delivered,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationIngestDisposition,
     ObservationIngestResult,
     observation_ingest_result_to_json,
 )
-from yoetz.kernel.task_facts import STOP_GATE_TOKENS
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.kernel.task_facts import STOP_GATE_TOKENS
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
 
 _DIGEST = "sha256:" + "d" * 64
 
@@ -66,8 +66,8 @@ def test_every_stop_gate_token_fires(token: str) -> None:
     assert gate.identity == f"7:{_DIGEST}"
     # The blocker exit is offered only for open obligations (F1, #984).
     offers_blocker = token in {"obligations_open", gate_module.BLOCKER_UNCONFIRMED_TOKEN}
-    assert ("yoetz-blocker:<" in gate.text) is offers_blocker
-    assert "A Yoetz limit is never a `yoetz-blocker`" in gate.text
+    assert ("finishup-blocker:<" in gate.text) is offers_blocker
+    assert "A FinishUP limit is never a `finishup-blocker`" in gate.text
     assert len(gate.text) <= 2000
     assert "/" not in gate.text.replace("<authority|consent|credential|dependency_unavailable>", "")
 
@@ -273,7 +273,7 @@ class _Host:
         else:
             assert set(output) == {"followup_message"}
             text = output["followup_message"]
-        assert "Yoetz closure gate" in text
+        assert "FinishUP closure gate" in text
         assert "open obligation" in text
         return cast(str, text)
 
@@ -342,7 +342,7 @@ def test_unreachable_status_lets_the_agent_stop(tmp_path: Path, host: _Host) -> 
 def test_closing_review_requirement_continues_with_the_final_review_repair() -> None:
     from types import SimpleNamespace
 
-    from yoetz.cli.closure_gate import closure_gate_from_readiness
+    from finishup.cli.closure_gate import closure_gate_from_readiness
 
     gate = closure_gate_from_readiness(
         SimpleNamespace(
@@ -520,7 +520,7 @@ def test_blocker_published_after_the_gate_is_reasked_once_on_the_active_stop(
     h.sequence = "6"
     second = _stop(h, host, session, guarded=True)
     text = _text(host, second)
-    assert text.startswith("Yoetz closure gate (shown once for these blockers)")
+    assert text.startswith("FinishUP closure gate (shown once for these blockers)")
     assert f"{_OBL} (dependency_unavailable)" in text
     # Ordinary items never ride an active Stop.
     assert "open obligation(s)" not in text
@@ -613,8 +613,8 @@ def test_unconfirmed_blocker_token_gates_and_confirms_only_in_the_recheck() -> N
     assert gate.items == (gate_module.BLOCKER_UNCONFIRMED_TOKEN, gate_module.BLOCKER_RECHECK_ITEM)
     # The confirm instruction appears once, inside the re-check that challenges the blocker.
     recheck = gate.text.index("Blocker re-check (asked once)")
-    assert gate.text.count("same yoetz-blocker line again") == 1
-    assert gate.text.index("same yoetz-blocker line again") > recheck
+    assert gate.text.count("same finishup-blocker line again") == 1
+    assert gate.text.index("same finishup-blocker line again") > recheck
     # An obligation is never `self_verified`: the re-check says to finish it and disclose.
     assert "self_verified" not in gate.text[recheck:]
     assert "finish the obligation and disclose any limit in your final answer" in gate.text
@@ -633,7 +633,7 @@ def test_unconfirmed_blocker_already_rechecked_says_how_to_confirm() -> None:
     assert gate is not None
     assert gate.items == (gate_module.BLOCKER_UNCONFIRMED_TOKEN,)
     assert "You were already asked about your recorded blocker" in gate.text
-    assert "same yoetz-blocker line again" in gate.text
+    assert "same finishup-blocker line again" in gate.text
 
 
 def test_full_recheck_never_offers_self_verified_for_an_obligation() -> None:
@@ -918,7 +918,7 @@ def test_the_reread_names_the_uncovered_obligations_and_ends_on_a_pure_confirmat
     assert _RESOLVED_A not in named.text
     # The downgrade path is unchanged (#1050 item 3) ...
     assert "republish that obligation as `acknowledged_not_done`" in named.text
-    assert "`yoetz-verification-limit:<obligation id>`" in named.text
+    assert "`finishup-verification-limit:<obligation id>`" in named.text
     # ... and a pure confirmation is the end of it (item 2): no new record, check or receipt.
     assert "that confirmation alone needs no new record, check or receipt" in named.text
     # Every resolved obligation addressed: nothing to ask, the agent stops.
@@ -993,7 +993,7 @@ _ADDRESSED_BOTH = (
 def test_a_final_message_that_addresses_every_criterion_skips_the_reread(
     tmp_path: Path, host: _Host
 ) -> None:
-    """60 of 60 tb4n4 deterministic attempts were asked; 41 then only did Yoetz bookkeeping.
+    """60 of 60 tb4n4 deterministic attempts were asked; 41 then only did FinishUP bookkeeping.
 
     Codex and Claude Code pass the final message: an addressed set is not asked and the gate
     records ``closure_gate_acceptance_covered``. Cursor's ``stop`` carries none, so it keeps the

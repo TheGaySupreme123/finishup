@@ -7,21 +7,21 @@ from pathlib import Path
 
 import apsw
 
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.domain.observation import ObservationRevokeCommand
-from yoetz.domain.observation_profiles import (
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.domain.observation import ObservationRevokeCommand
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import Timestamp
-from yoetz.protocol.canonical import canonical_encode
+from finishup.domain.values import Timestamp
+from finishup.protocol.canonical import canonical_encode
 
 _WORKSPACE = "hmac-sha256:" + "1" * 64
 _SESSION = "hmac-sha256:" + "2" * 64
 _SOURCE = "hmac-sha256:" + "3" * 64
 _TASK = "tsk_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-_YOETZ_SESSION = "ses_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+_FINISHUP_SESSION = "ses_bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 _TIME = Timestamp("2026-09-06T10:00:00.000Z")
 
 
@@ -42,7 +42,7 @@ def _ticket_row(
         "ticket_id": "sha256:" + f"{ticket_number:064x}",
         "workspace_commitment": _WORKSPACE,
         "task_id": _TASK,
-        "yoetz_session_id": _YOETZ_SESSION,
+        "yoetz_session_id": _FINISHUP_SESSION,
         "session_commitment": _SESSION,
         "source": "claude_hook",
         "source_identity": f"hook:consent-cleanup-{ticket_number}",

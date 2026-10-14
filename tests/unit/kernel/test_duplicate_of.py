@@ -16,7 +16,7 @@ from typing import cast
 import pytest
 
 from builders.policy_cases import evt, finding_record, fnd, obl, record
-from yoetz.domain.events import (
+from finishup.domain.events import (
     CheckMode,
     CheckRecordedPayload,
     EventSchema,
@@ -25,7 +25,7 @@ from yoetz.domain.events import (
     decode_payload,
     encode_payload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
@@ -36,14 +36,14 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.values import FindingId, Frontier, evidence_id
-from yoetz.kernel.closure_readiness import closure_readiness_facts
-from yoetz.kernel.finding_resolution import (
+from finishup.domain.values import FindingId, Frontier, evidence_id
+from finishup.kernel.closure_readiness import closure_readiness_facts
+from finishup.kernel.finding_resolution import (
     apply_check_rulings,
     finding_is_resolved,
     reopen_findings_resolved_by,
 )
-from yoetz.kernel.finding_todo import (
+from finishup.kernel.finding_todo import (
     FindingTodoState,
     duplicate_counting_id,
     duplicate_link_target,
@@ -51,7 +51,7 @@ from yoetz.kernel.finding_todo import (
     finding_blocks_receipt,
     finding_todo_state,
 )
-from yoetz.kernel.projections import (
+from finishup.kernel.projections import (
     FindingProjectionRecord,
     ProjectionRecord,
     ProjectionState,
@@ -60,10 +60,10 @@ from yoetz.kernel.projections import (
     projection_snapshot,
     unanswered_finding_ids,
 )
-from yoetz.kernel.receipt_capacity import receipt_blocking_finding_count
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.kernel.receipt_capacity import receipt_blocking_finding_count
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -72,8 +72,8 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import (
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     SemanticReason,

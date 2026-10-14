@@ -9,8 +9,8 @@ from unittest.mock import patch
 from hypothesis import given
 from hypothesis import strategies as st
 
-from yoetz.adapters.providers import codex_app_server as module
-from yoetz.adapters.providers.codex_app_server import (
+from finishup.adapters.providers import codex_app_server as module
+from finishup.adapters.providers.codex_app_server import (
     CODEX_APP_SERVER_SCHEMA_SHA256,
     CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
     CODEX_EVALUATOR_CAPABILITY_PROFILE,
@@ -18,7 +18,7 @@ from yoetz.adapters.providers.codex_app_server import (
     CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
     CodexAppServerProfile,
 )
-from yoetz.adapters.providers.data_use_catalog import data_use_record_for_endpoint
+from finishup.adapters.providers.data_use_catalog import data_use_record_for_endpoint
 
 
 def _profile() -> CodexAppServerProfile:
@@ -34,7 +34,7 @@ def _profile() -> CodexAppServerProfile:
         capability_cell_sha256=CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
         capability_profile=CODEX_EVALUATOR_CAPABILITY_PROFILE,
         capability_evidence_expires_at=CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
-        codex_home=Path("/var/lib/yoetz/codex-0.150.1"),
+        codex_home=Path("/var/lib/finishup/codex-0.150.1"),
         isolated_config_sha256=CODEX_EVALUATOR_CONFIG_SHA256,
         model="gpt-5.6-sol",
         reasoning_effort="high",

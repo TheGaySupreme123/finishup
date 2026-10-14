@@ -15,14 +15,14 @@ from typing import Any
 import pytest
 
 from builders.policy_cases import finding_record, fnd
+from finishup.application.check import build_finding_checklist, build_overall_next
+from finishup.domain.findings import FindingKind, ResponseDisposition
 from unit.kernel.test_closure_class import (  # pyright: ignore[reportMissingImports]
     _finding,  # pyright: ignore[reportPrivateUsage]
     _one,  # pyright: ignore[reportPrivateUsage]
     _response,  # pyright: ignore[reportPrivateUsage]
     _state,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.check import build_finding_checklist, build_overall_next
-from yoetz.domain.findings import FindingKind, ResponseDisposition
 
 # What ``build_overall_next`` reads of a check result once no finding is left for the agent.
 _RESULT: Any = SimpleNamespace(
@@ -150,7 +150,7 @@ def test_a_rejection_no_reviewer_can_rule_on_is_not_open_work(
 ) -> None:
     # The route cannot dispatch a review (the latest check recorded a durable reason), so the
     # rejection is settled and disclosed: asking the agent to "request a ruling" would be untrue.
-    monkeypatch.setattr("yoetz.kernel.closure_class.review_can_rule", lambda *a, **k: False)
+    monkeypatch.setattr("finishup.kernel.closure_class.review_can_rule", lambda *a, **k: False)
     finding = _finding(1, semantic=True, next_step="act")
     state, closure = _one(finding, ResponseDisposition.REJECTED, reasoned=True)
     assert closure.basis == "rejected_review_unavailable"

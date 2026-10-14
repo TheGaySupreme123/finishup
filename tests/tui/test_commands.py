@@ -7,8 +7,8 @@ from collections.abc import Awaitable, Callable
 import pytest
 
 from builders.tui_runtime import RECOMMEND_PRIVATE, FakeRuntime
-from yoetz.tui.app import YoetzTui
-from yoetz.tui.models import (
+from finishup.tui.app import FinishUpTui
+from finishup.tui.models import (
     CheckMode,
     PrivacyPosture,
     ProviderOption,
@@ -19,7 +19,7 @@ from yoetz.tui.models import (
 pytestmark = pytest.mark.anyio
 
 WIDE = (100, 34)
-MakeApp = Callable[..., YoetzTui]
+MakeApp = Callable[..., FinishUpTui]
 
 
 @pytest.fixture
@@ -27,11 +27,11 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def transcript(app: YoetzTui) -> str:
+def transcript(app: FinishUpTui) -> str:
     return "\n".join("\n".join((event.title, *event.body)) for event in app.transcript.events)
 
 
-async def run_command(pilot: object, app: YoetzTui, command: str) -> None:
+async def run_command(pilot: object, app: FinishUpTui, command: str) -> None:
     app.composer.focus_input()
     app.composer.text = command
     await pilot.pause()  # type: ignore[attr-defined]
@@ -52,12 +52,14 @@ async def test_connection_handover_preserves_foreground_authority_and_continuati
 
     from textual.app import SuspendNotSupported
 
-    from yoetz.cli import host_connection
-    from yoetz.tui.models import HarnessOption
+    from finishup.cli import host_connection
+    from finishup.tui.models import HarnessOption
 
     app = make_app()
     plan = SimpleNamespace(unchanged=False)
-    continuation = "/opt/test-instance/bin/yoetz setup disconnect --host claude --project /project"
+    continuation = (
+        "/opt/test-instance/bin/finishup setup disconnect --host claude --project /project"
+    )
 
     def select(*_args: object) -> object:
         return object()
@@ -115,7 +117,7 @@ async def test_the_post_install_landing_is_a_header_a_tip_and_a_composer(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         assert app.open_view is None
-        assert "Ask Codex to use Yoetz" in transcript(app)
+        assert "Ask Codex to use FinishUP" in transcript(app)
         assert app.composer.display is True
         # No dashboard, sidebar, or permanent settings screen exists to find.
         assert app.query("#sidebar").__len__() == 0
@@ -153,7 +155,7 @@ async def test_the_popup_narrows_as_the_command_is_typed(make_app: MakeApp) -> N
 async def test_popup_selection_preserves_the_typed_argument_suffix(
     make_app: MakeApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.tui.widgets.composer import CommandSubmitted
+    from finishup.tui.widgets.composer import CommandSubmitted
 
     app = make_app()
     async with app.run_test(size=WIDE) as pilot:
@@ -198,7 +200,7 @@ async def test_an_unknown_command_is_reported_rather_than_guessed(
     async with app.run_test(size=WIDE) as pilot:
         await pilot.pause()
         await run_command(pilot, app, "/nonsense")
-        assert "not a Yoetz command" in transcript(app)
+        assert "not a FinishUP command" in transcript(app)
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +216,7 @@ async def test_status_renders_each_readiness_layer_and_the_privacy_claim(
         await pilot.pause()
         await run_command(pilot, app, "/status")
         text = transcript(app)
-        assert "Yoetz status" in text
+        assert "FinishUP status" in text
         assert "Nothing is leaving this computer." in text
         # Technical details keep every layer separate.
         event = app.transcript.latest_with_details()
@@ -245,7 +247,7 @@ async def test_status_does_not_claim_privacy_it_could_not_read(
 async def test_help_lists_every_command_with_a_plain_language_description(
     make_app: MakeApp,
 ) -> None:
-    from yoetz.tui.commands import SLASH_COMMANDS
+    from finishup.tui.commands import SLASH_COMMANDS
 
     app = make_app()
     async with app.run_test(size=WIDE) as pilot:
@@ -389,7 +391,7 @@ async def test_the_provider_picker_is_searchable_over_the_reviewed_presets(
         assert "OpenAI" in labels
         assert "Codex subscription status" in labels
         assert "Disconnect dedicated Codex home" in labels
-        assert "Roll back Yoetz Codex binding" in labels
+        assert "Roll back FinishUP Codex binding" in labels
         assert "Switch Codex ChatGPT account" in labels
         view.filter("anthro")  # type: ignore[attr-defined]
         assert [option.label for option in view.options] == ["Anthropic"]  # type: ignore[attr-defined]
@@ -593,7 +595,7 @@ async def test_provider_switch_preserves_existing_subscription_model_when_omitte
     runtime = FakeRuntime()
     runtime.codex_subscription_defaults = lambda: (  # type: ignore[method-assign]
         "/opt/codex/codex",
-        "/var/lib/yoetz/codex-home",
+        "/var/lib/finishup/codex-home",
         "gpt-5.6-sol",
         "high",
     )
@@ -617,7 +619,7 @@ async def test_provider_switch_preserves_existing_subscription_model_when_omitte
     assert runtime.subscription_setups == [
         (
             "/opt/codex/codex",
-            "/var/lib/yoetz/codex-home",
+            "/var/lib/finishup/codex-home",
             "gpt-5.6-sol",
             "high",
             True,
@@ -908,7 +910,7 @@ async def test_service_rotate_uses_the_same_confidential_handoff(
         view = app.open_view
         assert view is not None
         assert view.view_name == "confidential"
-        assert view.title_text == "Change your Yoetz passphrase"
+        assert view.title_text == "Change your FinishUP passphrase"
         await pilot.press("enter")
         await pilot.pause()
         assert runtime.ceremonies == ["rotate_vault_passphrase"]
@@ -928,8 +930,8 @@ async def test_the_transcript_gets_the_space_and_the_composer_stays_one_line(
     a single composer line and a one-line footer beneath it.
     """
 
-    from yoetz.tui.widgets.composer import Composer, Footer
-    from yoetz.tui.widgets.history import History
+    from finishup.tui.widgets.composer import Composer, Footer
+    from finishup.tui.widgets.history import History
 
     app = make_app()
     async with app.run_test(size=(100, 30)) as pilot:
@@ -951,7 +953,7 @@ async def test_a_temporary_view_replaces_the_composer_and_then_restores_it(
 ) -> None:
     """Opening a view must not cost the user the line they were writing."""
 
-    from yoetz.tui.widgets.views import Option, SelectionView
+    from finishup.tui.widgets.views import Option, SelectionView
 
     app = make_app()
     async with app.run_test(size=(100, 30)) as pilot:

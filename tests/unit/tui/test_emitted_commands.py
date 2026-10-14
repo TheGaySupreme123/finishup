@@ -18,12 +18,12 @@ from typing import Any, Final
 import pytest
 import typer.main
 
-_TUI: Final = Path(__file__).resolve().parents[3] / "src" / "yoetz" / "tui"
+_TUI: Final = Path(__file__).resolve().parents[3] / "src" / "finishup" / "tui"
 
-# ``yoetz`` followed by one or more subcommand words, then everything up to the
+# ``finishup`` followed by one or more subcommand words, then everything up to the
 # closing quote of the sentence the command is embedded in (or the end of the
 # literal), which is where any options live.
-_COMMAND: Final = re.compile(r"\byoetz((?:\s+[a-z][a-z0-9-]*)+)([^'\"\n]*)")
+_COMMAND: Final = re.compile(r"\bfinishup((?:\s+[a-z][a-z0-9-]*)+)([^'\"\n]*)")
 _OPTION: Final = re.compile(r"--[a-z][a-z0-9-]*")
 
 
@@ -66,11 +66,11 @@ def _resolve(words: tuple[str, ...]) -> Any:
     """Walk the Typer tree; ``None`` when a word is not a registered subcommand.
 
     A group may declare positional arguments of its own that precede the
-    subcommand name (``yoetz integrate {harness} mcp preview``); those words
+    subcommand name (``finishup integrate {harness} mcp preview``); those words
     are consumed as argument values, not looked up as subcommands.
     """
 
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     command: Any = typer.main.get_command(app)
     remaining = list(words)
@@ -89,7 +89,7 @@ def _resolve(words: tuple[str, ...]) -> Any:
 
 
 def _leaf_paths() -> set[tuple[str, ...]]:
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     leaves: set[tuple[str, ...]] = set()
 
@@ -128,7 +128,7 @@ def test_the_typer_tree_is_the_real_one() -> None:
 @pytest.mark.parametrize(
     ("literal", "words", "options"),
     [
-        pytest.param(*entry, id=" ".join(("yoetz", *entry[1], *entry[2])))
+        pytest.param(*entry, id=" ".join(("finishup", *entry[1], *entry[2])))
         for entry in _emitted_commands()
     ],
 )
@@ -136,7 +136,9 @@ def test_every_emitted_command_resolves_in_the_cli_tree(
     literal: str, words: tuple[str, ...], options: tuple[str, ...]
 ) -> None:
     command = _resolve(words)
-    assert command is not None, f"{literal} names no registered command 'yoetz {' '.join(words)}'"
+    assert command is not None, (
+        f"{literal} names no registered command 'finishup {' '.join(words)}'"
+    )
     registered = {
         opt
         for param in command.params
@@ -144,12 +146,12 @@ def test_every_emitted_command_resolves_in_the_cli_tree(
     }
     unknown = [option for option in options if option not in registered]
     assert unknown == [], (
-        f"{literal} uses options 'yoetz {' '.join(words)}' does not take: {unknown}"
+        f"{literal} uses options 'finishup {' '.join(words)}' does not take: {unknown}"
     )
 
 
 def test_the_passphrase_fallback_is_the_initialize_ceremony_not_an_unlock_flag() -> None:
-    """``yoetz service unlock`` takes no ``--initialize``; the regression this guards."""
+    """``finishup service unlock`` takes no ``--initialize``; the regression this guards."""
 
     assert _resolve(("service", "unlock")) is not None
     unlock_options = {opt for param in _resolve(("service", "unlock")).params for opt in param.opts}
@@ -157,4 +159,4 @@ def test_the_passphrase_fallback_is_the_initialize_ceremony_not_an_unlock_flag()
     assert _resolve(("service", "initialize-passphrase")) is not None
     app_source = (_TUI / "app.py").read_text(encoding="utf-8")
     assert "service unlock --initialize" not in app_source
-    assert app_source.count('fallback_command="yoetz service initialize-passphrase"') == 2
+    assert app_source.count('fallback_command="finishup service initialize-passphrase"') == 2

@@ -11,8 +11,8 @@ from typing import Any, cast
 
 import pytest
 
-import yoetz.observability.diagnostics as diagnostics_module
-import yoetz.service.ready_composition as ready_composition_module
+import finishup.observability.diagnostics as diagnostics_module
+import finishup.service.ready_composition as ready_composition_module
 from builders.ledger_adapters import (
     FixedClock,
     append_command,
@@ -32,9 +32,9 @@ from builders.policy_cases import (
     plan_record,
     record,
 )
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import (
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.check import (
     CheckScope,
     FinalSemanticEvaluation,
     allocate_findings,
@@ -42,15 +42,15 @@ from yoetz.application.check import (
     run_deterministic_policies,
     semantic_coverage_gap_code,
 )
-from yoetz.application.egress import (
+from finishup.application.egress import (
     PrivacyCoordinator,
     RepositoryGrantAdmission,
     SemanticEgressAwaitingHuman,
     SemanticEgressBlocked,
     SemanticEgressProviderOutcome,
 )
-from yoetz.application.semantic_content import CapturedContentResolution
-from yoetz.domain.events import (
+from finishup.application.semantic_content import CapturedContentResolution
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceKind,
@@ -59,15 +59,15 @@ from yoetz.domain.events import (
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     FindingKind,
     SamplingParams,
     SemanticDispatchKind,
     SemanticFailureClass,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.domain.privacy import (
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -82,19 +82,19 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP,
     SEMANTIC_RELEVANCE_REVIEW_NOT_RUN_GAP,
     SEMANTIC_REVIEW_NOT_CONFIGURED_GAP,
 )
-from yoetz.domain.values import EvidenceId, timestamp_from_string
-from yoetz.kernel.deterministic_checks import CaseGap, FindingBasisRef
-from yoetz.kernel.projections import EvidenceProjectionRecord
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.ledger import CheckPhase, FrozenCase, OperationLease
-from yoetz.ports.objects import ObjectKind, ObjectMetadata, ObjectSource, ObjectStorePort
-from yoetz.ports.privacy import (
+from finishup.domain.values import EvidenceId, timestamp_from_string
+from finishup.kernel.deterministic_checks import CaseGap, FindingBasisRef
+from finishup.kernel.projections import EvidenceProjectionRecord
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort
+from finishup.ports.ledger import CheckPhase, FrozenCase, OperationLease
+from finishup.ports.objects import ObjectKind, ObjectMetadata, ObjectSource, ObjectStorePort
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     OutboundGatewayPort,
     PrivacyAuditPort,
@@ -102,19 +102,19 @@ from yoetz.ports.privacy import (
     PrivacyPolicyStorePort,
     RepositoryPrivacyAuthority,
 )
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.ports.semantic import ProviderAttemptProvenance, SemanticResultUnavailable
-from yoetz.ports.start_catalog import (
+from finishup.ports.runtime import TaskRuntime
+from finishup.ports.semantic import ProviderAttemptProvenance, SemanticResultUnavailable
+from finishup.ports.start_catalog import (
     SessionBinding,
     StartCatalogPort,
     TaskRoute,
     TaskRouteState,
 )
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import DataCategory, SemanticReason, SemanticStatus
-from yoetz.service.semantic_ceiling import ChannelAdmission
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import DataCategory, SemanticReason, SemanticStatus
+from finishup.service.semantic_ceiling import ChannelAdmission
 
 _TASK = "tsk_53000000-0000-4000-8000-000000000001"
 _SESSION = "ses_53000000-0000-4000-8000-000000000001"
@@ -438,7 +438,7 @@ class _RoutedObservation:
         self.session_id = session_id
         self.route_task = task_id if route_task is None else route_task
 
-    def workspace_for_yoetz_session(self, session_id: str) -> str | None:
+    def workspace_for_finishup_session(self, session_id: str) -> str | None:
         assert session_id == self.session_id
         return _OBSERVATION_WORKSPACE
 
@@ -451,7 +451,7 @@ class _RoutedObservation:
 
 
 class _AmbiguousObservation:
-    def workspace_for_yoetz_session(self, _session: str) -> object:
+    def workspace_for_finishup_session(self, _session: str) -> object:
         return (_OBSERVATION_WORKSPACE, "hmac-sha256:" + "d" * 64)
 
     def observation_route_for_session(
@@ -462,7 +462,7 @@ class _AmbiguousObservation:
 
 
 class _MissingRouteObservation:
-    def workspace_for_yoetz_session(self, _session: str) -> str:
+    def workspace_for_finishup_session(self, _session: str) -> str:
         return _OBSERVATION_WORKSPACE
 
     def observation_route_for_session(self, *, workspace: str, yoetz_session_id: str) -> None:
@@ -773,7 +773,7 @@ async def test_missing_repository_grant_suspends_same_request_before_provider_re
     )
     assert result.continuation is not None
     assert result.continuation.kind == "repository_privacy_setup"
-    assert result.continuation.command == ("yoetz", "--privacy")
+    assert result.continuation.command == ("finishup", "--privacy")
     assert result.continuation.request_id == _REQUEST
     assert provider_resolutions == 0
     assert privacy.calls == 0
@@ -1304,7 +1304,7 @@ async def test_required_packet_capacity_refuses_before_job_and_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.application.semantic_case as semantic_case_module
+    import finishup.application.semantic_case as semantic_case_module
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
     monkeypatch.setattr(semantic_case_module, "MAX_EGRESS_ENVELOPE_BYTES", 1)
@@ -1340,7 +1340,7 @@ async def test_required_packet_capacity_refuses_before_job_and_provider(
 async def test_dispatch_and_mapping_failures_keep_original_check_join(
     stage: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.observability.semantic_context import semantic_check_request
+    from finishup.observability.semantic_context import semantic_check_request
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
     adapter = memory_adapter(append_command())
@@ -1383,7 +1383,7 @@ async def test_dispatch_and_mapping_failures_keep_original_check_join(
 async def test_lineage_capacity_refuses_before_job_and_provider(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.application.semantic_case import LineageSemanticCapacityExceeded
+    from finishup.application.semantic_case import LineageSemanticCapacityExceeded
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
 
@@ -1591,8 +1591,8 @@ async def test_task_statement_gap_or_item_reaches_the_final_evaluation(
     the final evaluation carries ``task_statement_unavailable`` with ``not_authorized``.
     """
 
-    from yoetz.domain.task_statement import RecordedTaskStatement
-    from yoetz.domain.values import event_id
+    from finishup.domain.task_statement import RecordedTaskStatement
+    from finishup.domain.values import event_id
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
     privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)
@@ -1637,7 +1637,7 @@ async def test_task_statement_gap_or_item_reaches_the_final_evaluation(
 def _excerpt_heavy_frozen(count: int, description: str) -> FrozenCase:
     """A frozen case whose completion claim cites ``count`` evidence records (issue #907)."""
 
-    from yoetz.protocol.coverage import EvidenceImmutability
+    from finishup.protocol.coverage import EvidenceImmutability
 
     evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
     for index in range(1, count + 1):
@@ -1696,8 +1696,8 @@ def _with_full_admission(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _prepared_size(candidate: CandidateContext) -> int:
-    from yoetz.application.semantic_case import assemble_filtered_review_packet
-    from yoetz.protocol.canonical import strict_json_parse
+    from finishup.application.semantic_case import assemble_filtered_review_packet
+    from finishup.protocol.canonical import strict_json_parse
 
     envelope = next(item.plaintext for item in candidate.items if item.item_id == "review-packet")
     return len(
@@ -1780,7 +1780,7 @@ def _prose_heavy_frozen(
     """Unsupported claims whose findings carry 4 KiB clipped summary and detail prose, beside one
     claim that ``excerpts`` 2,000-byte evidence rows support (the R944-01 trigger)."""
 
-    from yoetz.protocol.coverage import EvidenceImmutability
+    from finishup.protocol.coverage import EvidenceImmutability
 
     evidence: dict[EvidenceId, EvidenceProjectionRecord] = {}
     for index in range(1, excerpts + 1):
@@ -1975,8 +1975,8 @@ async def test_a_channel_that_withholds_task_description_says_the_statement_was_
     """
 
     from builders.privacy_policies import minimal_external_policy
-    from yoetz.domain.task_statement import RecordedTaskStatement
-    from yoetz.domain.values import event_id
+    from finishup.domain.task_statement import RecordedTaskStatement
+    from finishup.domain.values import event_id
 
     monkeypatch.setattr(diagnostics_module, "log_dir", lambda: tmp_path)
     privacy = _Privacy(profile=ReviewContextProfile.EXPANDED)

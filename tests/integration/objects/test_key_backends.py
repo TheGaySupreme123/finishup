@@ -13,26 +13,26 @@ from pathlib import Path
 import pytest
 from cryptography.hazmat.primitives import keywrap
 
-from yoetz.adapters.keys.encrypted_vault import (
+from finishup.adapters.keys.encrypted_vault import (
     EncryptedVaultError,
     EncryptedVaultStore,
     VaultRecordKind,
 )
-from yoetz.adapters.keys.os_keyring import (
+from finishup.adapters.keys.os_keyring import (
     AutoUnlockPassphraseStore,
     KeyringInitializationBinding,
     OSKeyringError,
     OSKeyringState,
     OSVaultRootKeySource,
 )
-from yoetz.adapters.keys.secret_memory import LocalSecretMemory
-from yoetz.ports.secret_memory import (
+from finishup.adapters.keys.secret_memory import LocalSecretMemory
+from finishup.ports.secret_memory import (
     SecretConsumer,
     SecretMemoryError,
     SecretPurpose,
     UserPresenceCapability,
 )
-from yoetz.protocol.canonical import JsonValue
+from finishup.protocol.canonical import JsonValue
 
 _INSTALLATION_ID = "ins_30000000-0000-4000-8000-000000000004"
 _DIGEST_A = "sha256:" + "a" * 64
@@ -107,7 +107,7 @@ def test_initialization_refuses_preexisting_auto_unlock_entry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.adapters.keys.os_keyring as keyring_module
+    import finishup.adapters.keys.os_keyring as keyring_module
 
     backend = _AtomicBackend()
     store = AutoUnlockPassphraseStore(tmp_path.resolve(), backend=backend)
@@ -330,7 +330,7 @@ def test_auto_unlock_creation_fails_closed_and_wipes_generated_buffer(
     backend_type: type[object],
     reason: str,
 ) -> None:
-    import yoetz.adapters.keys.os_keyring as keyring_module
+    import finishup.adapters.keys.os_keyring as keyring_module
 
     backend = backend_type()
     store = AutoUnlockPassphraseStore(tmp_path.resolve(), backend=backend)

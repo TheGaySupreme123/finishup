@@ -1,7 +1,7 @@
-# Yoetz architecture
+# FinishUP architecture
 
 How the system is put together and why. This page describes shape and ownership; the code under
-`src/yoetz/` is the executable truth, and the ADRs under [`docs/adr/`](adr/) are the decisions that
+`src/finishup/` is the executable truth, and the ADRs under [`docs/adr/`](adr/) are the decisions that
 bind it. Shared names — ID prefixes, error codes, event families, coverage dimensions, port
 signatures — live in [`docs/INTERFACES.md`](INTERFACES.md).
 
@@ -102,7 +102,7 @@ Flow for a typical task:
 
 1. **`start`** opens a task and issues a session and a writer identity.
 2. **`publish_work`** records bounded, participant-published facts: plan, obligations, claims,
-   actions, results, evidence. On this cooperative path the participant publishes; Yoetz does not
+   actions, results, evidence. On this cooperative path the participant publishes; FinishUP does not
    infer observation or verification from those assertions.
 3. **`check`** runs the local policy packs over the recorded state, producing findings with
    an exact coverage vector. If AI-powered review is configured and requested, an advisory
@@ -121,7 +121,7 @@ authority; ordinary `publish_work` cannot self-award it.
 ## External AI-powered evaluator authorities
 
 External review has two closed runtime shapes behind the same privacy gateway. HTTP profiles use a
-one-attempt credential handle minted from the Yoetz vault. The Codex subscription profile instead
+one-attempt credential handle minted from the FinishUP vault. The Codex subscription profile instead
 launches one exact digest-bound Codex app-server process group and gives it a secret-free attempt
 authority; Codex alone owns ChatGPT OAuth and the upstream OpenAI body. Both receive only the
 approved canonical case after repository-scoped policy authorization, and both terminate in a
@@ -151,7 +151,7 @@ These are enforced in code and locked by tests; they are the reason the system i
   and effective policy loosens only through a reauthenticated decision the user makes: the trusted
   local ceremony, or — for one exact prepared, expiring consent target — the user's explicit
   current-chat instruction relayed by a capable agent through the consent lane (ADR-016), an
-  attestation Yoetz cannot independently authenticate.
+  attestation FinishUP cannot independently authenticate.
 - **Machine capability is not repository consent.** External LLM admission requires the exact
   repository grant before provider construction or credential minting; a first grant may atomically
   combine a machine-ceiling widening with repository-row creation.
@@ -178,14 +178,14 @@ shapes remain readable but cannot bypass the repository/authority-digest gate.
 
 ## Harness integration
 
-Yoetz works with any MCP host with no integration, no installed skill, and no configuration: the
+FinishUP works with any MCP host with no integration, no installed skill, and no configuration: the
 host gets the six operations, read-only `read_guidance`, a short always-delivered instruction set,
 and the same guidance documents every harness ships, fetchable on demand.
 
 Codex is the first harness with a first-party integration because its skill surface delivers that
 guidance natively. The guidance itself is harness-neutral, owned once under [`guidance/`](../guidance/),
 and shipped byte-identically everywhere. Integration is a port with Codex as its first adapter
-([ADR-010](adr/ADR-010-harness-integration-port.md)) — a fork can make Yoetz first-party on another
+([ADR-010](adr/ADR-010-harness-integration-port.md)) — a fork can make FinishUP first-party on another
 harness by adding an adapter and a profile, without touching the core.
 
 Integration buys ergonomics, never a stronger claim. An agent publishing over MCP earns the weakest
@@ -202,8 +202,8 @@ observation stay separately owned sibling capabilities (`PluginArtifactPort`,
 `HostActivationPort`, the existing `HarnessMcpPort` and `ObservationPort`), and format
 compatibility with the standard earns no support claim, activation claim, or coverage.
 
-`src/yoetz/ports/plugin_artifacts.py` owns the neutral plan and lifecycle types.
-`src/yoetz/adapters/integrations/portable_plugin.py` owns the Agent Plugins 1.0.0 projection,
+`src/finishup/ports/plugin_artifacts.py` owns the neutral plan and lifecycle types.
+`src/finishup/adapters/integrations/portable_plugin.py` owns the Agent Plugins 1.0.0 projection,
 offline validation, optional exclusive route-bound `mcp.json`, Codex-root preview/status, and
 failure-atomic whole-directory migration. It
 reads only packaged `skills/portable/`, `guidance/`, and vendored `support/agent-plugins/` bytes.
@@ -231,9 +231,9 @@ marketplace and Claude-native plugin from `PortablePluginPlan`, then delegates p
 update, enablement, disablement, and qualified removal to the exact Claude executable. Status reads
 Claude's project settings/list result and exact cache bytes while keeping enablement distinct from
 loaded-session activation. It observes local/project/user/plugin/connector MCP sources without
-turning Claude's precedence winner into a Yoetz ownership claim.
+turning Claude's precedence winner into a FinishUP ownership claim.
 
-Claude-native hooks enter through `hooks claude-observe`. Only the exact scoped Yoetz MCP tool names
+Claude-native hooks enter through `hooks claude-observe`. Only the exact scoped FinishUP MCP tool names
 and bounded structural lifecycle facts survive; raw Claude prompt/transcript/path/tool/result/error
 content is discarded before storage. The `claude_hook` source is carried on local-control schema
 `2.2.0`. The initial capability fixture covers only local CLI `2.1.241`, macOS arm64, project scope,

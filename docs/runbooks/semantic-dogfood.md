@@ -1,12 +1,12 @@
 # AI-powered review dogfood runbook
 
-This runbook governs sessions that use Yoetz on Yoetz and then report a finding about it. Its
+This runbook governs sessions that use FinishUP on FinishUP and then report a finding about it. Its
 purpose is to fix, **before** the first task action, which claim the run is allowed to make — so a
 result is never read as evidence for a question the run's configuration made unanswerable.
 
 It exists because of the 2026-08-03 codex-testing postmortem (a private drafting input under the
 gitignored `docs/postmortems/`, not shipped; this runbook is self-contained without it), which
-scored "did AI-powered feedback help?" against a session whose MCP route was `strict`. Yoetz
+scored "did AI-powered feedback help?" against a session whose MCP route was `strict`. FinishUP
 behaved correctly and reported honestly — `semantic_status=blocked_by_policy`,
 `semantic_reason=route_semantic_ceiling`, `semantic_provenance: null`, zero egress. The run simply
 could never have measured AI-powered review usefulness. Nothing in the tooling said so in advance.
@@ -35,7 +35,7 @@ with `observed: true` and are likewise not Profile A.
 
 Claims this run may make:
 
-- zero external AI-powered review egress through the Yoetz agent route
+- zero external AI-powered review egress through the FinishUP agent route
 - local-check behaviour
 - receipt honesty — that the refusal is recorded with the exact status/reason and no promoted
   local-check outcome
@@ -51,14 +51,14 @@ or "absent" — the route declined to attempt it, which is not a measurement of 
 1. `registered_profile == "policy"`
 2. `agent_route_semantic_ready == true`
 3. human authorization obtained through the existing ceremony — either the API credential
-   ceremony (`yoetz provider credential set`) or the Codex-managed subscription setup — with the
+   ceremony (`finishup provider credential set`) or the Codex-managed subscription setup — with the
    privacy policy already in place before the run starts
 
 Claims this run may make: everything in Profile A, plus observations about AI-powered output,
 subject to the provenance gate in §3.
 
 Explicitly: previewing a registration change from inside the session is allowed
-(`yoetz integrate codex mcp preview`). **Widening privacy policy from the agent channel is not.**
+(`finishup integrate codex mcp preview`). **Widening privacy policy from the agent channel is not.**
 Policy widening is a human ceremony; if a run finds it needs wider policy, the run stops and is
 re-planned, it does not widen and continue.
 
@@ -72,14 +72,14 @@ Run all five before the first task action and record the output verbatim. Every 
 read-only and already exists — this runbook adds no command.
 
 ```text
-yoetz version
-yoetz service status
-yoetz provider status --json
-yoetz integrate codex mcp status --json
-yoetz privacy show
+finishup version
+finishup service status
+finishup provider status --json
+finishup integrate codex mcp status --json
+finishup privacy show
 ```
 
-Fields to record from `yoetz provider status --json`:
+Fields to record from `finishup provider status --json`:
 
 | Field | What it settles |
 |---|---|
@@ -93,12 +93,12 @@ Fields to record from `yoetz provider status --json`:
 
 `registered_profile != configured_profile` is registration drift: the registered entry no longer
 matches what this installation's configuration would produce. Record it and resolve it before
-starting, through a fresh digest-bound re-registration — `yoetz integrate codex mcp preview`, then
-`yoetz integrate codex mcp install --accept --preview-digest <digest>` (ADR-018 decision 7). Do not
+starting, through a fresh digest-bound re-registration — `finishup integrate codex mcp preview`, then
+`finishup integrate codex mcp install --accept --preview-digest <digest>` (ADR-018 decision 7). Do not
 assume the configured value is what the agent will get.
 
 A second, independent drift signal compares the live registration against the last applied
-install rather than current configuration (issue #537). `yoetz provider status --json`
+install rather than current configuration (issue #537). `finishup provider status --json`
 `mcp_route` carries `applied_profile` (the route the installer last applied, from the
 state-root record) and `drift_since_install` (true when the live observed registration
 disagrees with it). Record both at preflight alongside the table above. A ceiling check served
@@ -117,7 +117,7 @@ allows.
 `mcp_route.observed: false` is disqualifying for **both** profiles. An unread route is not a policy
 route, and it is not a strict route either — it is no route at all until it is read.
 
-`yoetz integrate codex mcp status --json` reports `route_profile` alongside `registered_profile`,
+`finishup integrate codex mcp status --json` reports `route_profile` alongside `registered_profile`,
 `applied_profile`, and `drift_since_install` for the same reason, and is the narrower check when
 you only need the route and its post-install drift.
 
@@ -131,19 +131,19 @@ mid-run, and treat the policy step as the human ceremony it is.
 Subscription primary, API provider as fallback:
 
 ```text
-yoetz provider codex-subscription setup --executable /absolute/path/to/codex   # if not bound yet
-yoetz provider endpoint --provider <preset> --model <model-id> --as-fallback
-yoetz provider credential set                                                 # fallback's API key
-yoetz privacy setup                                                           # approve both destinations
+finishup provider codex-subscription setup --executable /absolute/path/to/codex   # if not bound yet
+finishup provider endpoint --provider <preset> --model <model-id> --as-fallback
+finishup provider credential set                                                 # fallback's API key
+finishup privacy setup                                                           # approve both destinations
 ```
 
 API provider primary, subscription as fallback:
 
 ```text
-yoetz provider endpoint --provider <preset> --model <model-id>                # if not bound yet
-yoetz provider credential set
-yoetz provider codex-subscription setup --executable /absolute/path/to/codex --as-fallback
-yoetz privacy setup                                                           # approve both destinations
+finishup provider endpoint --provider <preset> --model <model-id>                # if not bound yet
+finishup provider credential set
+finishup provider codex-subscription setup --executable /absolute/path/to/codex --as-fallback
+finishup privacy setup                                                           # approve both destinations
 ```
 
 `--as-fallback` refuses (`semantic_fallback_endpoint_missing`) unless the other authority is
@@ -151,24 +151,24 @@ already bound; without the flag the ordinary single-endpoint rule replaces the e
 The result reports `endpoint_role`, and `config.toml` gains a nonsecret `[semantic_fallback]`
 table whose `primary` is `codex_subscription` or `api_provider`. Two API providers cannot pair.
 
-Binding the fallback does not authorize it. `yoetz privacy setup` reads both endpoints and prints
+Binding the fallback does not authorize it. `finishup privacy setup` reads both endpoints and prints
 the second as `Fallback destination (after the primary cannot serve)`; committing it is a
 widening of exactly one more destination, shown in the trusted `before -> after` view as
 `Fallback provider and model` right after the primary row, and goes through the ordinary
 propose → decide ceremony. Until that decision, egress admits the primary only. Record the
-committed `yoetz privacy show` output at preflight so a fallback-served attempt can be matched
+committed `finishup privacy show` output at preflight so a fallback-served attempt can be matched
 against the approved set.
 
 Reverse and swap:
 
 ```text
-yoetz provider fallback remove                       # primary keeps serving alone
-yoetz provider fallback primary api_provider          # or codex_subscription: swap roles, both kept
-yoetz provider codex-subscription disconnect --accept # inside a pairing: API provider becomes sole endpoint
+finishup provider fallback remove                       # primary keeps serving alone
+finishup provider fallback primary api_provider          # or codex_subscription: swap roles, both kept
+finishup provider codex-subscription disconnect --accept # inside a pairing: API provider becomes sole endpoint
 ```
 
 `fallback remove` restores the exact single-endpoint `config.toml`; the policy still names the
-removed destination until `yoetz privacy setup` is re-run, which is a tightening and needs no
+removed destination until `finishup privacy setup` is re-run, which is a tightening and needs no
 widening ceremony. A swap keeps both bindings and both approvals.
 
 What engages the fallback is closed and service-side, identical on every host: the primary is
@@ -191,7 +191,7 @@ fallback defect.
 
 Whether a run may score AI-powered review usefulness is derived from the check result, never
 asserted from configuration. The rule is protocol-enforced by `validate_semantic_provenance_binding`
-(`src/yoetz/protocol/models.py`) and its totality is locked by test.
+(`src/finishup/protocol/models.py`) and its totality is locked by test.
 
 **Read provenance together with `semantic_status` and `semantic_reason` — never alone.** Null
 provenance means *no provider attempt was made* only on the branches where the protocol forbids
@@ -230,7 +230,7 @@ the result says whether one *happened*.
   observation, not a verdict.
 - It does not measure whether feedback changed the agent's behaviour. Influence measurement is
   governed by the [influence dogfood runbook](influence-dogfood.md) (issue
-  [#133](https://github.com/TheGaySupreme123/yoetz/issues/133)): four separate evidence streams,
+  [#133](https://github.com/TheGaySupreme123/finishup/issues/133)): four separate evidence streams,
   seeded-defect and miss taxonomy, and a forbidden-summary rule so zero influence cannot be sold as
   improvement.
 

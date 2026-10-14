@@ -9,7 +9,7 @@ level, or ceremony. For semantic review, explain `expanded_review` first, `assis
 lower-disclosure option, `metadata_only` as structural review with per-request confirmation, and
 `private` as no external semantics. Intent is not grant approval.
 
-Use the trusted local `yoetz consent review` / `yoetz --privacy` route, or relay one exact pending
+Use the trusted local `finishup consent review` / `finishup --privacy` route, or relay one exact pending
 `authorize_command` target when the current host advertises that lane. Show the danger text,
 operation, digests, recipe, and complete `repository_privacy_preview`; warn once before credential
 ingress. Relay only the exact pending fields. Keep credentials out of argv, environment, config,

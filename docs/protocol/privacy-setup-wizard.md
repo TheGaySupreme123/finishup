@@ -1,9 +1,9 @@
 # Privacy setup and policy-change contract
 
-This page freezes the experience and security contract for creating or widening Yoetz privacy
+This page freezes the experience and security contract for creating or widening FinishUP privacy
 policy, independent of any one graphical toolkit. The v0.1 CLI trusted-control flow satisfies this
 contract today; a future desktop UI must present the same questions, examples, preview, and
-confirmation semantics — it cannot hide, merge, or weaken a question, and Yoetz (not the rendering
+confirmation semantics — it cannot hide, merge, or weaken a question, and FinishUP (not the rendering
 surface) always validates and commits policy.
 
 ## Setup session shape
@@ -31,7 +31,7 @@ before proposing.
 
 | # | `question_id` | Meaning | Answer type |
 |---:|---|---|---|
-| 1 | `network_egress` | Global ceiling: whether any Yoetz network egress may be permitted at all | boolean |
+| 1 | `network_egress` | Global ceiling: whether any FinishUP network egress may be permitted at all | boolean |
 | 2 | `local_models` | Whether local models are permitted | boolean |
 | 3 | `external_provider` | Which external provider/model/endpoint profile is trusted, and whether current data-use evidence is required | `{binding, require_current_provider_data_use_evidence}` or `none` |
 | 4 | `review_context` | Which deterministic selection strategy builds AI-powered review cases | `{profile, selection}` |
@@ -89,7 +89,7 @@ or skips the review/decision step.**
 
 ### The one recommendation rule
 
-First run, `yoetz --privacy`, and the terminal interface's `/privacy` all apply the same rule, from
+First run, `finishup --privacy`, and the terminal interface's `/privacy` all apply the same rule, from
 one function:
 
 - **No external provider binding configured → `private`.** External LLM egress stays off.
@@ -197,7 +197,7 @@ Settings 9–12 are the four non-LLM channels. **`update_checks` (setting 11) is
 (product default yes) for structural package version checks only. The other three
 (`product_telemetry`, `crash_diagnostics`, `capability_testing`) remain read-only `unsupported`
 and off: `propose` rejects a `true` answer for those three with `channel_unavailable` without
-changing durable policy or making any I/O. A later Yoetz release cannot silently activate an old
+changing durable policy or making any I/O. A later FinishUP release cannot silently activate an old
 stored draft or answer for those capabilities — it always requires a fresh local-human capability
 confirmation first.
 
@@ -225,12 +225,12 @@ commits both or neither. Older setup/propose decoders remain readable, but canno
 repository grant and fail closed with upgrade guidance under repository-grant mode.
 
 **That trusted-terminal ceremony is the default authorization for a widening, and the allowlisted
-`yoetz consent` lane described above is its only exception.** No other surface may take its own
+`finishup consent` lane described above is its only exception.** No other surface may take its own
 approval for one first. A selecting surface may show a proposal or hand one over, but a second "do
 you approve?" outside the trusted terminal is not a second gate — it only teaches users that
 consenting in an untrusted surface is what changes privacy. The consent lane is not that second
 gate: it is one exact prepared, expiring, single-use target whose complete substantive diff is
-rendered before the one decision, and the catalog states that Yoetz cannot independently
+rendered before the one decision, and the catalog states that FinishUP cannot independently
 authenticate the relayed chat provenance.
 
 What the ceremony renders is the **complete substantive diff**, as `before → after` steps derived
@@ -284,5 +284,5 @@ ordinary egress path.
 - [`../../PRIVACY.md`](../../PRIVACY.md) — the user-facing privacy summary.
 - the versioned `schemas/privacy/setup-wizard-contract-*.schema.json` set — the wire schemas for
   this contract; older decoders remain fail-closed for repository authority.
-- `yoetz privacy setup` / `yoetz privacy show` / `yoetz privacy propose` / `yoetz privacy tighten`
+- `finishup privacy setup` / `finishup privacy show` / `finishup privacy propose` / `finishup privacy tighten`
   — the v0.1 CLI surface implementing this contract.

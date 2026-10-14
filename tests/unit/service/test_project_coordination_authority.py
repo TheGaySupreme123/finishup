@@ -7,15 +7,15 @@ from pathlib import Path
 import pytest
 
 from builders.ledger_adapters import FixedIds
-from yoetz.application.projects import (
+from finishup.application.projects import (
     InMemoryProjectCatalog,
     ProjectApplication,
     ProjectCommandError,
     ProjectGrantCommand,
 )
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.service.elevated_bootstrap import (
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.ids import IdKind, new_id
+from finishup.service.elevated_bootstrap import (
     ElevatedBootstrapError,
     PendingElevatedConsent,
     consume_project_coordination_authorization,
@@ -27,7 +27,7 @@ from yoetz.service.elevated_bootstrap import (
     project_coordination_target_digest,
     record_project_coordination_authorization,
 )
-from yoetz.service.project_coordination_authority import ProjectCoordinationGrantAuthority
+from finishup.service.project_coordination_authority import ProjectCoordinationGrantAuthority
 
 
 def _binding() -> tuple[str, int, str, dict[str, JsonValue]]:

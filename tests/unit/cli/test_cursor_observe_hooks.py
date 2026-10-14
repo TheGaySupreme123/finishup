@@ -10,28 +10,28 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     load_mapping,
     mapping_from_start_ids,
     store_mapping,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.recommendations import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.recommendations import (
     RecommendationState,
     cached_pending_recommendations,
     store_recommendation_state,
 )
-from yoetz.cli import observe_hooks
-from yoetz.cli.hook_io import MAX_HOOK_SKIM_BYTES, MAX_HOOK_STDIN_BYTES
-from yoetz.domain.observation import (
+from finishup.cli import observe_hooks
+from finishup.cli.hook_io import MAX_HOOK_SKIM_BYTES, MAX_HOOK_STDIN_BYTES
+from finishup.domain.observation import (
     ObservationGapCode,
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.observation_profiles import CURSOR_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.kernel.policies.observation_advice import ObservationCompositionFact
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.domain.observation_profiles import CURSOR_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.kernel.policies.observation_advice import ObservationCompositionFact
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.ids import IdKind, new_id
 
 
 @pytest.mark.parametrize("payload", [b"broken", b"{}", b'{"hook_event_name":"preToolUse"}'])
@@ -142,7 +142,7 @@ def test_cursor_hook_ingress_drops_every_content_and_identity_denylist_field(
         "hook_event_name": "afterMCPExecution",
         "model_id": "cursor-grok-4.6-medium",
         "model_params": [{"id": "effort", "value": "medium"}],
-        "tool_name": "mcp__yoetz__start",
+        "tool_name": "mcp__finishup__start",
         "tool_input": "secret prompt and arguments",
         "result_json": "private tool result",
         "transcript_path": "/private/transcript.jsonl",
@@ -702,7 +702,7 @@ def test_cursor_advice_delivery_stays_pending_until_session_start(
                     "conversation_id": session,
                     "hook_event_name": "sessionStart",
                     "cursor_version": "3.17.8",
-                    "tool_name": "mcp__yoetz__start",
+                    "tool_name": "mcp__finishup__start",
                     "source": "clear",
                 }
             ),
@@ -812,12 +812,12 @@ def test_cursor_advice_delivery_stays_pending_until_session_start(
         ),
         (
             "postToolUse",
-            {"tool_name": "yoetz:publish_work", "tool_output": "{}"},
+            {"tool_name": "finishup:publish_work", "tool_output": "{}"},
             False,
         ),
         (
             "postToolUse",
-            {"tool_name": "plugin-yoetz-yoetz:publish_work", "tool_output": "{}"},
+            {"tool_name": "plugin-finishup-finishup:publish_work", "tool_output": "{}"},
             False,
         ),
     ],
@@ -1014,7 +1014,7 @@ def test_cursor_lifecycle_identifiers_bind_one_conversation_to_one_session(
     assert observed_sessions[-1] == "cursor:c-solo"
 
 
-def test_cursor_mcp_executions_of_yoetz_tools_follow_the_self_observation_policy(
+def test_cursor_mcp_executions_of_finishup_tools_follow_the_self_observation_policy(
     tmp_path: Path,
 ) -> None:
     """#564 on Cursor: a ``status`` execution stays local, a ``respond`` ships one row."""
@@ -1044,16 +1044,16 @@ def test_cursor_mcp_executions_of_yoetz_tools_follow_the_self_observation_policy
             == 0
         )
 
-    hook("mcp__yoetz__status", "generation-1")
-    hook("mcp__yoetz__receipt", "generation-2")
-    hook("mcp__yoetz__respond", "generation-3")
-    hook("plugin-yoetz-yoetz:status", "generation-4")
-    hook("plugin-yoetz-yoetz:check", "generation-5")
+    hook("mcp__finishup__status", "generation-1")
+    hook("mcp__finishup__receipt", "generation-2")
+    hook("mcp__finishup__respond", "generation-3")
+    hook("plugin-finishup-finishup:status", "generation-4")
+    hook("plugin-finishup-finishup:check", "generation-5")
 
     rows = store.list_pending_outbox_rows(commitment)
     assert [row.envelope.structural_payload["tool_name"] for row in rows] == [
-        "mcp__yoetz__respond",
-        "plugin-yoetz-yoetz:check",
+        "mcp__finishup__respond",
+        "plugin-finishup-finishup:check",
     ]
     assert all(row.envelope.structural_payload["action"] == "cursor_mcp" for row in rows)
     assert len(store.list_envelopes(commitment)) == 5
@@ -1065,7 +1065,7 @@ def test_cursor_version_mapping_distinguishes_ide_cli_unknown_and_omitted() -> N
     takes the legacy post-only carrier. Compatible events ingest in every branch (see the
     parametrized ingress test above); none is promoted to the proven profile."""
 
-    from yoetz.ports.integrations import observation_pairing_contract
+    from finishup.ports.integrations import observation_pairing_contract
 
     mapper = observe_hooks._cursor_capability_profile_id  # pyright: ignore[reportPrivateUsage]
     assert mapper("3.17.8") == "cursor-ide-3.17.8"

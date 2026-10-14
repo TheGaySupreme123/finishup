@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_marketplace import (
+from finishup.adapters.integrations.codex_marketplace import (
     ActivationInspection,
     ActivationState,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import setup
-from yoetz.ports.harness_mcp import HarnessBinary
-from yoetz.ports.integrations import HarnessId
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import setup
+from finishup.ports.harness_mcp import HarnessBinary
+from finishup.ports.integrations import HarnessId
 
 
 def _tree(root: Path) -> dict[str, bytes]:
@@ -29,7 +29,7 @@ def test_observation_probe_reads_real_consent_but_writes_only_ephemeral_state(
     workspace = tmp_path / "project"
     workspace.mkdir()
 
-    import yoetz.adapters.integrations.observation_local as observation_local
+    import finishup.adapters.integrations.observation_local as observation_local
 
     monkeypatch.setattr(observation_local, "state_dir", lambda: live_state)
 
@@ -38,7 +38,7 @@ def test_observation_probe_reads_real_consent_but_writes_only_ephemeral_state(
 
     monkeypatch.setattr(setup, "_installed_hooks_declare_workspace_binding", hooks_installed)
 
-    import yoetz.cli.observe_hooks as observe_hooks
+    import finishup.cli.observe_hooks as observe_hooks
 
     service_touches: list[str] = []
 

@@ -13,20 +13,20 @@ from typing import cast
 import pytest
 
 from builders.privacy_policies import minimal_external_policy
-from yoetz.adapters.privacy.catalog import (
+from finishup.adapters.privacy.catalog import (
     decode_privacy_policy_canonical,
     encode_privacy_policy_json,
 )
-from yoetz.application.privacy_policy import privacy_policy_changes
-from yoetz.cli.app import (
+from finishup.application.privacy_policy import privacy_policy_changes
+from finishup.cli.app import (
     _effective_task_statement_line,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.cli.privacy_setup import policy_task_statement_disclosure
-from yoetz.cli.unlock import (
+from finishup.cli.privacy_setup import policy_task_statement_disclosure
+from finishup.cli.unlock import (
     _privacy_policy_change_text,  # pyright: ignore[reportPrivateUsage]
     _task_statement_change_note,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     CURRENT_PRIVACY_POLICY_PRESET_VERSION,
     PRIVACY_POLICY_PRESET_VERSIONS,
     PrivacyPolicy,
@@ -34,10 +34,10 @@ from yoetz.domain.privacy import (
     ReviewSelectionPolicy,
     review_selection_policy_schema_version,
 )
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.models import DataCategory
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
-from yoetz.service.confidential_protocol import PrivacyPolicyDecisionPreview
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.models import DataCategory
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.service.confidential_protocol import PrivacyPolicyDecisionPreview
 
 _GOAL_PROFILES = (
     ReviewContextProfile.GOAL_AWARE,
@@ -169,7 +169,7 @@ def test_privacy_show_line_is_plain_for_both_wire_versions() -> None:
 
 
 def test_a_channel_that_withholds_task_description_drops_the_section_for_delivery() -> None:
-    from yoetz.domain.task_statement import review_selection_for_delivery
+    from finishup.domain.task_statement import review_selection_for_delivery
 
     current = minimal_external_policy()
     assert review_selection_for_delivery(current) == current.review_selection

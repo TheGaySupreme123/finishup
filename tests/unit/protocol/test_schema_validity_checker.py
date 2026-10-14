@@ -21,17 +21,17 @@ import pytest
 
 from builders.projection_workflow import project_case, run_projection_workflow
 from builders.start_application import protocol_id
-from yoetz.ports.control import ControlMethod, ControlResult
-from yoetz.protocol import schemas
-from yoetz.protocol.canonical import (
+from finishup.ports.control import ControlMethod, ControlResult
+from finishup.protocol import schemas
+from finishup.protocol.canonical import (
     JsonValue,
     canonical_encode,
     canonical_fragment,
     strict_json_parse,
 )
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.models import StatusResult
-from yoetz.service.control_protocol import encode_control_frame
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.models import StatusResult
+from finishup.service.control_protocol import encode_control_frame
 
 pytestmark = pytest.mark.anyio
 

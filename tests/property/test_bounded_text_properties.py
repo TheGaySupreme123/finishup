@@ -5,7 +5,7 @@ from __future__ import annotations
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from yoetz.domain.bounded_text import compose_bounded, compose_bounded_detail
+from finishup.domain.bounded_text import compose_bounded, compose_bounded_detail
 
 # Arbitrary Unicode, including lone surrogates, control characters and astral planes.
 _TEXT = st.text(alphabet=st.characters(codec=None), min_size=0, max_size=120)

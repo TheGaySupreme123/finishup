@@ -8,7 +8,7 @@ It is not an acceptance result for the selection implementation.
 The workload is deterministic and synthetic. It uses eight host session lanes,
 paired `PreToolUse`/`PostToolUse` hook events, successful routine reads,
 failures, denials, cancellation, a mutation, a negative verification, retry
-and recovery, ambiguous shell work, and Yoetz closure reads. Payloads contain
+and recovery, ambiguous shell work, and FinishUP closure reads. Payloads contain
 only fixed labels and digests. The run uses an owner only state directory under
 `/private/tmp`; it starts no service, opens no vault, reads no session corpus,
 and performs no native content capture. The capture column is therefore an
@@ -55,7 +55,7 @@ this structural only replay.
 | 8,192 | 3,163,186 | 512 | 7,272 | 954,623 | 8,192 | 7,046,911,597 | 417.43 s | 43.7 |
 
 The 488 rows at 512 and the overflow counts at larger workloads account for
-successful Yoetz status reads being suppressed by the existing self observation
+successful FinishUP status reads being suppressed by the existing self observation
 delivery filter. All envelopes were locally accepted in these runs, while the
 retained envelope view remained capped at 256. A full or empty outbox therefore
 does not describe the upstream write or retention cost.
@@ -127,7 +127,7 @@ The benchmark phase above still owns the defaults: Focused/512 stays the only
 default, and #828 does not change it. When that phase runs, include at least
 one custom count between the profiles (for example 1,024) and the 8,192 ceiling
 case, and record the same serialized-byte, write-count and latency fields. A
-No Yoetz cap row cannot be measured because the structural queue has no
+No FinishUP cap row cannot be measured because the structural queue has no
 uncapped mode; the 16 MiB state document is the reason it is unsupported.
 
 ## Coverage limits
@@ -180,9 +180,9 @@ uv run python scripts/provision_test_instance.py create \
   --base "$HOME/.yz-instances" --tag obs689 --lifecycle disposable --expires-in 8 \
   --revision 55c81ed1ae6f10878f6c6ea4aaee86bfa3189428
 
-env -u YOETZ_ISOLATED_ROOT "$HOME/.yz-instances/obs689/runtime/bin/python" \
+env -u FINISHUP_ISOLATED_ROOT "$HOME/.yz-instances/obs689/runtime/bin/python" \
   scripts/benchmark_observation_hooks.py --fanout 8 --retained
-env -u YOETZ_ISOLATED_ROOT "$HOME/.yz-instances/obs689/runtime/bin/python" \
+env -u FINISHUP_ISOLATED_ROOT "$HOME/.yz-instances/obs689/runtime/bin/python" \
   scripts/benchmark_observation_hooks.py --fanout 8
 ```
 
@@ -273,9 +273,9 @@ To reproduce, with the baseline in a separate clean worktree:
 
 ```text
 BASELINE=/path/to/clean/f0693e93e35e58a6b77f7dee30937e82cdd73963
-PYTHONPATH="$BASELINE/src" env -u YOETZ_ISOLATED_ROOT uv run python \
+PYTHONPATH="$BASELINE/src" env -u FINISHUP_ISOLATED_ROOT uv run python \
   scripts/benchmark_observation_hooks.py --retained --fanout 16 --drain
-env -u YOETZ_ISOLATED_ROOT uv run python \
+env -u FINISHUP_ISOLATED_ROOT uv run python \
   scripts/benchmark_observation_hooks.py --retained --fanout 8 --pending-rows 2000 --drain
 ```
 

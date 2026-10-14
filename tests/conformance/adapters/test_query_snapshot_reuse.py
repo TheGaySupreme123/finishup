@@ -10,13 +10,13 @@ import apsw
 import pytest
 
 from builders.replay import replay_records
+from finishup.adapters.memory import ledger as module
+from finishup.application import ledger_snapshot
+from finishup.domain.events import LedgerRecord
+from finishup.domain.values import Frontier
+from finishup.kernel.projections import ProjectionState
+from finishup.ports.ledger import ProjectionItem, ProjectionQuery, ProjectionView
 from integration.storage.test_append_and_replay import command_from_records, memory_for, sqlite_for
-from yoetz.adapters.memory import ledger as module
-from yoetz.application import ledger_snapshot
-from yoetz.domain.events import LedgerRecord
-from yoetz.domain.values import Frontier
-from yoetz.kernel.projections import ProjectionState
-from yoetz.ports.ledger import ProjectionItem, ProjectionQuery, ProjectionView
 
 
 @pytest.fixture
@@ -241,8 +241,8 @@ async def test_redaction_append_invalidates_pinned_page_cache(
 def test_incremental_fold_matches_genesis_replay_and_still_validates_new_records() -> None:
     """Issue #886: trusted-prior folding is an optimisation only, never a trust widening."""
 
-    from yoetz.kernel.projections import derive_projection_state
-    from yoetz.kernel.reducers import (
+    from finishup.kernel.projections import derive_projection_state
+    from finishup.kernel.reducers import (
         build_replay_index,
         replay,
         replay_extension,
@@ -289,7 +289,7 @@ def test_incremental_fold_matches_genesis_replay_and_still_validates_new_records
 async def test_trusted_frontier_history_is_exact_identity_fenced_and_redaction_cleared(
     backend: str,
 ) -> None:
-    from yoetz.kernel.reducers import replay
+    from finishup.kernel.reducers import replay
 
     records = replay_records("all-event-families")
     redaction_index = next(
@@ -339,8 +339,8 @@ async def test_trusted_frontier_history_is_exact_identity_fenced_and_redaction_c
 
 
 def test_trusted_history_rejects_a_prefix_whose_record_objects_changed() -> None:
-    from yoetz.adapters.memory.ledger import TrustedProjectionHistory
-    from yoetz.kernel.reducers import replay
+    from finishup.adapters.memory.ledger import TrustedProjectionHistory
+    from finishup.kernel.reducers import replay
 
     records = replay_records("all-event-families")
     prefix = records[:3]

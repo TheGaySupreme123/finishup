@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
-from yoetz.kernel.finding_resolution import DETERMINISTIC_PROOF_TOLERATED_GAPS
-from yoetz.kernel.gap_effect import (
+from finishup.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+from finishup.kernel.finding_resolution import DETERMINISTIC_PROOF_TOLERATED_GAPS
+from finishup.kernel.gap_effect import (
     GAP_EFFECT_TABLE,
     GAP_EFFECT_WHY,
     PROOF_TOLERATED_GAPS,
@@ -118,7 +118,7 @@ _CHANGED = frozenset(
         "semantic_review_not_configured",
         # tb4n4 (#1044): a disclosure that is now agent work (rule G0c).
         "deliverable_references_undeclared_file",
-        # tb4n4 (#1046, review): Yoetz's own deferral is disclosed where review is not required.
+        # tb4n4 (#1046, review): FinishUP's own deferral is disclosed where review is not required.
         "semantic_review_deferred_before_first_edit",
     }
 )
@@ -218,7 +218,9 @@ def test_host_observation_gaps_are_disclosed_only_while_the_check_carried_them()
         assert gap_effect(code, incomplete).kind is GapEffectKind.STANDING_BOUNDING
 
 
-def test_a_yoetz_review_budget_bounds_only_when_the_reviewer_reported_it_could_not_assess() -> None:
+def test_a_finishup_review_budget_bounds_only_when_the_reviewer_reported_it_could_not_assess() -> (
+    None
+):
     for code in ("check_time_change_truncated", "semantic_reference_scope_reduced"):
         clean = GapContext(route_requires_review=True, review_succeeded=True)
         assert gap_effect(code, clean).kind is GapEffectKind.DISCLOSED

@@ -8,13 +8,13 @@ from typing import Literal
 import anyio
 import pytest
 
-from yoetz.application.applied_mcp_route import read_applied_route, record_applied_route
-from yoetz.application.harness_mcp import (
+from finishup.application.applied_mcp_route import read_applied_route, record_applied_route
+from finishup.application.harness_mcp import (
     HarnessMcpService,
     McpRegistrationConfirmation,
     McpRegistrationDiagnostic,
 )
-from yoetz.ports.harness_mcp import (
+from finishup.ports.harness_mcp import (
     MCP_SERVE_COMMAND,
     HarnessBinary,
     McpRegistrationAction,
@@ -26,7 +26,7 @@ from yoetz.ports.harness_mcp import (
     McpRegistrationResult,
     McpRegistrationState,
 )
-from yoetz.ports.integrations import HarnessId
+from finishup.ports.integrations import HarnessId
 
 _DIGEST = "sha256:" + "a" * 64
 _BINARY = HarnessBinary(
@@ -65,7 +65,7 @@ class _Port:
         if self.fail_with is not None:
             raise McpRegistrationError(self.fail_with, {})
         route_profile: Literal["policy", "strict"] | None = (
-            "strict" if self.state is McpRegistrationState.YOETZ_OWNED else None
+            "strict" if self.state is McpRegistrationState.FINISHUP_OWNED else None
         )
         return McpRegistrationObservation(
             binary.harness_id,
@@ -96,7 +96,7 @@ class _Port:
             binary.harness_id,
             McpRegistrationAction.REGISTER,
             self.state,
-            McpRegistrationState.YOETZ_OWNED,
+            McpRegistrationState.FINISHUP_OWNED,
             command.preview_digest,
         )
 
@@ -142,15 +142,15 @@ def test_status_and_preview_record_success_diagnostics() -> None:
 
 def test_observe_records_a_status_phase_diagnostic_and_carries_the_route() -> None:
     sink = _Sink()
-    service = HarnessMcpService(_Port(McpRegistrationState.YOETZ_OWNED), sink)
+    service = HarnessMcpService(_Port(McpRegistrationState.FINISHUP_OWNED), sink)
     observation = anyio.run(lambda: service.observe(_BINARY))
-    assert observation.state is McpRegistrationState.YOETZ_OWNED
+    assert observation.state is McpRegistrationState.FINISHUP_OWNED
     assert observation.route_profile == "strict"
     # Observing reads exactly what status reads, so it shares the phase; the diagnostic shape
     # is unchanged.
     assert sink.records[-1].phase == "status"
     assert sink.records[-1].outcome == "success"
-    assert sink.records[-1].state_before is McpRegistrationState.YOETZ_OWNED
+    assert sink.records[-1].state_before is McpRegistrationState.FINISHUP_OWNED
 
 
 def test_observe_failure_is_recorded_and_reraised() -> None:
@@ -169,8 +169,8 @@ def test_observe_rejects_an_invalid_binary() -> None:
         anyio.run(lambda: service.observe(object()))  # type: ignore[arg-type]
 
 
-def test_a_route_profile_is_only_meaningful_for_a_yoetz_owned_entry() -> None:
-    """A foreign or absent entry has no Yoetz route, so claiming one is a construction error."""
+def test_a_route_profile_is_only_meaningful_for_a_finishup_owned_entry() -> None:
+    """A foreign or absent entry has no FinishUP route, so claiming one is a construction error."""
 
     with pytest.raises(ValueError):
         McpRegistrationObservation(
@@ -211,7 +211,7 @@ def test_register_passes_exact_digest_and_records_result(tmp_path: Path) -> None
             _state=tmp_path,
         )
     )
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     assert port.applied == [McpRegistrationCommand(_DIGEST, True)]
     assert sink.records[-1].phase == "execute"
     assert sink.records[-1].outcome == "success"
@@ -248,7 +248,7 @@ def test_invalid_binary_rejected() -> None:
 
 def test_unregister_requires_explicit_acceptance() -> None:
     sink = _Sink()
-    port = _Port(McpRegistrationState.YOETZ_OWNED)
+    port = _Port(McpRegistrationState.FINISHUP_OWNED)
     service = HarnessMcpService(port, sink)
     with pytest.raises(McpRegistrationError) as caught:
         anyio.run(
@@ -261,7 +261,9 @@ def test_unregister_requires_explicit_acceptance() -> None:
     assert port.applied == []
 
 
-@pytest.mark.parametrize("state", [McpRegistrationState.YOETZ_OWNED, McpRegistrationState.ABSENT])
+@pytest.mark.parametrize(
+    "state", [McpRegistrationState.FINISHUP_OWNED, McpRegistrationState.ABSENT]
+)
 def test_unregister_passes_exact_digest_and_records_result(
     tmp_path: Path, state: McpRegistrationState
 ) -> None:

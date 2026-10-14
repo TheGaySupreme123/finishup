@@ -6,8 +6,8 @@
 
 **Owners:** storage and runtime foundation
 
-This page is the durable storage ownership inventory required by issues [#496](https://github.com/TheGaySupreme123/yoetz/issues/496)
-and [#498](https://github.com/TheGaySupreme123/yoetz/issues/498). It records the durable owner of each
+This page is the durable storage ownership inventory required by issues [#496](https://github.com/TheGaySupreme123/finishup/issues/496)
+and [#498](https://github.com/TheGaySupreme123/finishup/issues/498). It records the durable owner of each
 workspace-keyed store, what may be shared, how an object remains rooted, and which concurrency
 and migration rule applies. A workspace reference is an input to routing; it is not authority to
 open another task bundle.
@@ -19,7 +19,7 @@ The catalog DDL source and generated mirror are part of the durable schema contr
 * `migrations/catalog/0004.sql` and `migrations/catalog/0005.sql` are the hand-authored sources for
   the catalog 0004 and 0005 schemas. Catalog 0005 adds the project-operation request journal; it
   does not relocate project text or task evidence.
-* `src/yoetz/resources/migrations/catalog/0004.sql` and `0005.sql` are byte mirrors produced by the
+* `src/finishup/resources/migrations/catalog/0004.sql` and `0005.sql` are byte mirrors produced by the
   resource ripple. They are never edited independently.
 * The bundle migrations `0003`, `0004`, `0008`, `0009`, `0010`, `0011`, and `0012` remain separate
   sources. Catalog 0004 and 0005 do not move or recreate bundle tables.
@@ -68,7 +68,7 @@ a shared catalog ownership domain.
 | `observation_advice_history` (0003) | Task/workspace advice history; `(workspace_commitment, suppression_identity, evidence_basis_digest)` | `snapshot_json` is structural and rooted by the history row; it contains no unencrypted user prose | Idempotent history insert and ordered frontier index; no cross-task latest-row lookup | stay; tested for session/task scoping |
 | `observation_advice_delivery` (0003) | Task/workspace delivery audit; `(advice_id, channel, attempt)` | No separate object; advice history is the parent root | Append-only attempts; retry outcome is a new attempt | stay |
 | `observation_inspection_snapshots` (0004) | Task/workspace inspection projection; `(workspace_commitment, yoetz_session_id, subject_state_digest)` | `facts_object_id` and `excerpt_object_id` are encrypted task objects rooted by the snapshot row; 0008 nullable bindings preserve weaker historical coverage | Current-row selection is indexed and updates occur in the bundle writer transaction; 0008 only adds nullable digest/size/redaction flags | stay; tested for concurrent session isolation |
-| `observation_workspace_session_routes` (0004) | Task-local projection of workspace to Yoetz session; `(workspace_commitment, yoetz_session_id)` with unique `yoetz_session_id` | No plaintext object; route points at the task/session identity in the same bundle | Active/unbound is a state transition; the catalog's `task_sessions` table is the installation-level liveness authority for the 0.3 foundation | stay as provenance projection; catalog liveness is the shared-mutable surface |
+| `observation_workspace_session_routes` (0004) | Task-local projection of workspace to FinishUP session; `(workspace_commitment, yoetz_session_id)` with unique `yoetz_session_id` | No plaintext object; route points at the task/session identity in the same bundle | Active/unbound is a state transition; the catalog's `task_sessions` table is the installation-level liveness authority for the 0.3 foundation | stay as provenance projection; catalog liveness is the shared-mutable surface |
 | `observation_session_advice` (0004) | Task/workspace session advice; `(workspace_commitment, yoetz_session_id)` | Structural snapshot only; encrypted detail remains in task-owned objects | Current advice replaces only the same session row; no workspace-wide fallback for task-scoped delivery | stay; tested for multiple live session lanes |
 | `observation_content_manifests.content_digest` and `.content_bytes` (0008) | Same manifest owner and key as 0003 | Digest/size bind the manifest to the encrypted object; the object remains the root | Nullable checks preserve pre-0008 rows and their weaker coverage | stay |
 | `observation_inspection_snapshots.facts_content_digest`, `.facts_content_bytes`, `.excerpt_content_digest`, `.excerpt_content_bytes`, `.excerpt_redacted`, and `.excerpt_truncated` (0008) | Same snapshot owner and key as 0004 | Nullable digest/size and redaction facts never own plaintext; object references remain the roots | Nullable, bounded checks preserve older snapshots and prevent inferred capture strength | stay |

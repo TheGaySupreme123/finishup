@@ -4,21 +4,21 @@ from __future__ import annotations
 
 import apsw
 
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     current_schema_version,
     initialize_bundle,
     run_migrations,
 )
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.domain.observation import (
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.domain.observation import (
     ObservationCursor,
     ObservationEnvelope,
     ObservationIngestDisposition,
     ObservationSource,
     ObservationStatusQuery,
 )
-from yoetz.domain.values import JsonObject, Timestamp
+from finishup.domain.values import JsonObject, Timestamp
 
 _WORKSPACE = "hmac-sha256:" + "a" * 64
 _SESSION = "hmac-sha256:" + "b" * 64

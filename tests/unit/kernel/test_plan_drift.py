@@ -14,7 +14,7 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     AcceptedEvent,
     ActionKind,
     ActionRecordedPayload,
@@ -29,8 +29,8 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.values import event_id
-from yoetz.kernel.plan_drift import (
+from finishup.domain.values import event_id
+from finishup.kernel.plan_drift import (
     INSTRUCTION_REQUIREMENT_UNMAPPED_GAP,
     OBLIGATION_EVIDENCE_STALE_AFTER_SCOPE_EDIT_GAP,
     PLAN_UNREFINED_BEFORE_FIRST_EDIT_GAP,

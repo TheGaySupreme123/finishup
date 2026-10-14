@@ -15,12 +15,12 @@ from typing import Any
 
 import pytest
 
+from finishup.ports.control import ControlCallRequest
+from finishup.ports.ledger import CheckObservationsAwaited
+from finishup.service import daemon as daemon_module
+from finishup.service.check_waits import CheckWaits
+from finishup.service.daemon import ServiceDaemon
 from unit.service.test_check_await_observations_dispatch import _Probe, _request
-from yoetz.ports.control import ControlCallRequest
-from yoetz.ports.ledger import CheckObservationsAwaited
-from yoetz.service import daemon as daemon_module
-from yoetz.service.check_waits import CheckWaits
-from yoetz.service.daemon import ServiceDaemon
 
 
 class _NeverDetach(CheckWaits):

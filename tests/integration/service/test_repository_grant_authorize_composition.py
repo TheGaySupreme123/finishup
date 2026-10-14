@@ -3,7 +3,7 @@
 The defect the granted lane locks against: an exact prepared `repository_privacy_grant` was
 authorized, the durable policy transition committed, the real confidential server sent the
 terminal result — and a lost close confirmation collapsed the whole ceremony to
-`elevated_bootstrap: repository_privacy_grant_failed` while `yoetz provider status` already
+`elevated_bootstrap: repository_privacy_grant_failed` while `finishup provider status` already
 reported the grant effective. Both named external-review recipes (Assisted and Expanded) run
 that lane: PR #542 switched the single lane to Expanded, which silently dropped the Assisted
 end-to-end coverage this file restores (#552).
@@ -30,7 +30,25 @@ from unittest.mock import patch
 import apsw
 import pytest
 
-import yoetz.service.daemon as daemon_module
+import finishup.service.daemon as daemon_module
+from finishup.adapters.privacy.catalog import decode_privacy_policy_canonical
+from finishup.cli import elevated
+from finishup.cli.privacy_setup import (
+    PrivacySetupSnapshot,
+    build_candidate_policy,
+    get_privacy_setup_snapshot,
+    recipe_answers,
+)
+from finishup.domain.privacy import (
+    PrivacyPolicy,
+    ProviderBinding,
+    ReviewContextProfile,
+    ReviewSelectionPolicy,
+)
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.service.confidential_protocol import ServerCloseEnvelope
+from finishup.service.daemon import ServiceDaemon
+from finishup.service.elevated_bootstrap import load_pending, repository_grant_binding
 from integration.service.test_consent_vault_initialize_composition import (
     _approve_attestation,  # pyright: ignore[reportPrivateUsage]
     _approved_store,  # pyright: ignore[reportPrivateUsage]
@@ -38,24 +56,6 @@ from integration.service.test_consent_vault_initialize_composition import (
     _production_daemon,  # pyright: ignore[reportPrivateUsage]
     runtime_directory,  # noqa: F401 - imported pytest fixture  # pyright: ignore[reportUnusedImport]
 )
-from yoetz.adapters.privacy.catalog import decode_privacy_policy_canonical
-from yoetz.cli import elevated
-from yoetz.cli.privacy_setup import (
-    PrivacySetupSnapshot,
-    build_candidate_policy,
-    get_privacy_setup_snapshot,
-    recipe_answers,
-)
-from yoetz.domain.privacy import (
-    PrivacyPolicy,
-    ProviderBinding,
-    ReviewContextProfile,
-    ReviewSelectionPolicy,
-)
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.service.confidential_protocol import ServerCloseEnvelope
-from yoetz.service.daemon import ServiceDaemon
-from yoetz.service.elevated_bootstrap import load_pending, repository_grant_binding
 
 _GrantRecipe = Literal["assisted_review", "expanded_review"]
 
@@ -216,14 +216,14 @@ class _GrantCell:
         store = self._store
         stack = ExitStack()
         for item in (
-            patch("yoetz.service.elevated_bootstrap.state_dir", return_value=self.consent_state),
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.service.elevated_bootstrap.state_dir", return_value=self.consent_state),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
             patch(
-                "yoetz.cli.elevated._load_auto_unlock_passphrase",
+                "finishup.cli.elevated._load_auto_unlock_passphrase",
                 side_effect=lambda: store.load(),
             ),
             patch(
-                "yoetz.cli.privacy_setup.configured_bindings",
+                "finishup.cli.privacy_setup.configured_bindings",
                 return_value=(_EXTERNAL_BINDING, None),
             ),
         ):

@@ -9,7 +9,7 @@ Scope note (open gap, reported rather than guessed around): ADR-007 treats ``PRI
 protocol docs, the root ``schemas/`` tree, and the eight privacy fixtures as required source/sdist
 artifacts. The current ``pyproject.toml`` configures the ``uv_build`` backend with no explicit
 sdist-include list beyond ``README.md`` and ``src/``, so ``uv build --no-sources`` produces an sdist
-containing only ``PKG-INFO``, ``README.md``, ``pyproject.toml``, and ``src/yoetz/**`` -- none of
+containing only ``PKG-INFO``, ``README.md``, ``pyproject.toml``, and ``src/finishup/**`` -- none of
 ``PRIVACY.md``, ``docs/``, root ``schemas/``, or ``fixtures/`` are present. The assertions that
 depend on sdist inclusion of these root files are implemented and precise, but are marked ``xfail``
 (strict) with this exact reason so the bounded suite stays green while the gap remains visible;
@@ -150,7 +150,7 @@ def test_setup_wizard_doc_names_exactly_the_schema_thirteen_questions() -> None:
     schema = _read_json(
         _REPO_ROOT
         / "src"
-        / "yoetz"
+        / "finishup"
         / "resources"
         / "schemas"
         / "privacy"
@@ -168,7 +168,7 @@ def test_setup_wizard_doc_names_exactly_the_schema_thirteen_questions() -> None:
 def test_egress_receipt_vocabulary_excludes_pending_and_dispatched_states() -> None:
     for name in ("egress-receipt-1.0.0.schema.json", "egress-receipt-1.1.0.schema.json"):
         schema = _read_json(
-            _REPO_ROOT / "src" / "yoetz" / "resources" / "schemas" / "privacy" / name
+            _REPO_ROOT / "src" / "finishup" / "resources" / "schemas" / "privacy" / name
         )
         encoded = json.dumps(schema)
         for token in _FORBIDDEN_RECEIPT_TOKENS:
@@ -184,13 +184,15 @@ def test_root_privacy_schemas_are_byte_identical_to_the_installed_mirror() -> No
     for name in _PRIVACY_SCHEMA_NAMES:
         root_bytes = (_REPO_ROOT / "schemas" / "privacy" / name).read_bytes()
         installed_bytes = (
-            _REPO_ROOT / "src" / "yoetz" / "resources" / "schemas" / "privacy" / name
+            _REPO_ROOT / "src" / "finishup" / "resources" / "schemas" / "privacy" / name
         ).read_bytes()
         assert root_bytes == installed_bytes, name
 
 
 def test_schema_manifest_lists_all_four_privacy_schemas_once() -> None:
-    manifest = _read_json(_REPO_ROOT / "src" / "yoetz" / "resources" / "schemas" / "manifest.json")
+    manifest = _read_json(
+        _REPO_ROOT / "src" / "finishup" / "resources" / "schemas" / "manifest.json"
+    )
     members = cast(list[Mapping[str, object]], manifest["members"])
     ids = [cast(str, member["$id"]) for member in members]
     assert len(ids) == len(set(ids)), "duplicate $id in schema manifest"
@@ -202,7 +204,7 @@ def test_schema_manifest_lists_all_four_privacy_schemas_once() -> None:
 def test_privacy_schemas_resolve_offline_with_no_network_ref() -> None:
     for name in _PRIVACY_SCHEMA_NAMES:
         text = (
-            _REPO_ROOT / "src" / "yoetz" / "resources" / "schemas" / "privacy" / name
+            _REPO_ROOT / "src" / "finishup" / "resources" / "schemas" / "privacy" / name
         ).read_text(encoding="utf-8")
         schema = json.loads(text)
         assert schema["$id"] == f"{_SCHEMA_HOST}privacy/{name}"
@@ -284,7 +286,7 @@ def test_privacy_md_and_protocol_docs_are_present_in_the_sdist(built_dist: _Buil
 
 
 def test_resource_manifest_declares_each_privacy_schema_version_once() -> None:
-    manifest = _read_json(_REPO_ROOT / "src" / "yoetz" / "resources" / "manifest.json")
+    manifest = _read_json(_REPO_ROOT / "src" / "finishup" / "resources" / "manifest.json")
     entries = cast(list[Mapping[str, object]], manifest["entries"])
     privacy_entries = [
         entry
@@ -300,10 +302,10 @@ def test_resource_manifest_declares_each_privacy_schema_version_once() -> None:
 def test_installed_wheel_privacy_schemas_match_source_bytes(built_dist: _BuiltDist) -> None:
     with zipfile.ZipFile(built_dist.wheel) as archive:
         for name in _PRIVACY_SCHEMA_NAMES:
-            member = f"yoetz/resources/schemas/privacy/{name}"
+            member = f"finishup/resources/schemas/privacy/{name}"
             installed_bytes = archive.read(member)
             source_bytes = (
-                _REPO_ROOT / "src" / "yoetz" / "resources" / "schemas" / "privacy" / name
+                _REPO_ROOT / "src" / "finishup" / "resources" / "schemas" / "privacy" / name
             ).read_bytes()
             assert installed_bytes == source_bytes, name
 
@@ -376,7 +378,7 @@ def test_privacy_surface_has_no_host_path_marker(built_dist: _BuiltDist) -> None
 
 def test_python_can_run_a_bounded_privacy_json_probe() -> None:
     # A tiny, real sanity check that the privacy-policy schema is syntactically valid strict JSON
-    # and importable independent of the yoetz package (no src/cwd import of the product itself).
+    # and importable independent of the finishup package (no src/cwd import of the product itself).
     result = subprocess.run(
         [
             sys.executable,
@@ -385,7 +387,7 @@ def test_python_can_run_a_bounded_privacy_json_probe() -> None:
             str(
                 _REPO_ROOT
                 / "src"
-                / "yoetz"
+                / "finishup"
                 / "resources"
                 / "schemas"
                 / "privacy"

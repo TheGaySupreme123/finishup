@@ -17,33 +17,33 @@ from typing import TYPE_CHECKING, cast
 import pytest
 from cryptography.hazmat.primitives.keywrap import aes_key_unwrap, aes_key_wrap
 
-from yoetz.adapters.objects import encrypted_files as encrypted_files_module
-from yoetz.adapters.objects.encrypted_files import (
+from finishup.adapters.objects import encrypted_files as encrypted_files_module
+from finishup.adapters.objects.encrypted_files import (
     EncryptedFilesObjectStore,
     object_ref_from_staged,
 )
-from yoetz.adapters.objects.envelope import (
+from finishup.adapters.objects.envelope import (
     ObjectEnvelopeHeader,
     decode_object_envelope,
     encode_object_envelope,
 )
-from yoetz.ports.keys import BundleKeys, WrappedDek
-from yoetz.ports.objects import (
+from finishup.ports.keys import BundleKeys, WrappedDek
+from finishup.ports.objects import (
     OBJECT_COMMITMENT_DOMAINS,
     ObjectKind,
     ObjectMetadata,
     ObjectRootSnapshot,
     ObjectSource,
 )
-from yoetz.ports.secret_memory import (
+from finishup.ports.secret_memory import (
     SecretConsumer,
     SecretMemoryCapability,
     SecretPurpose,
 )
-from yoetz.protocol.ids import IdKind
+from finishup.protocol.ids import IdKind
 
 if TYPE_CHECKING:
-    from yoetz.ports.secret_memory import SecretHandle
+    from finishup.ports.secret_memory import SecretHandle
 
 _TASK_ID = "tsk_30000000-0000-4000-8000-000000000001"
 _DIGEST = "sha256:" + "0" * 64
@@ -409,12 +409,12 @@ def test_adapter_generated_truncation_stays_storage_corrupt(
 ) -> None:
     """A finalized object that ends before its recorded frame size is deterministic corruption."""
 
-    import yoetz.observability.diagnostics as diagnostics
-    from yoetz.application.receipt import (  # noqa: SLF001
+    import finishup.observability.diagnostics as diagnostics
+    from finishup.application.receipt import (  # noqa: SLF001
         _read_object,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.observability.diagnostics import lookup_diagnostic_records
-    from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+    from finishup.observability.diagnostics import lookup_diagnostic_records
+    from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     now = datetime(2026, 3, 4, 5, 6, 7, tzinfo=UTC)
@@ -453,12 +453,12 @@ def test_read_object_through_encrypted_files_maps_eio_to_retryable_storage_unsaf
 ) -> None:
     """execute_receipt replay reads through ``_read_object``; use the real adapter, not a stub."""
 
-    import yoetz.observability.diagnostics as diagnostics
-    from yoetz.application.receipt import (  # noqa: SLF001
+    import finishup.observability.diagnostics as diagnostics
+    from finishup.application.receipt import (  # noqa: SLF001
         _read_object,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.observability.diagnostics import lookup_diagnostic_records
-    from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+    from finishup.observability.diagnostics import lookup_diagnostic_records
+    from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     now = datetime(2026, 3, 4, 5, 6, 7, tzinfo=UTC)
@@ -492,7 +492,7 @@ def test_read_object_through_encrypted_files_maps_eio_to_retryable_storage_unsaf
     assert found[0]["operation"] == "receipt_object_read"
     origin = found[0].get("origin")
     assert type(origin) is str
-    assert origin.startswith("yoetz.")
+    assert origin.startswith("finishup.")
     assert "Input/output error" not in caught.value.message
 
 

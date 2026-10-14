@@ -14,7 +14,7 @@ local checks, findings, and receipts all work in this state.
 Turning on external AI-powered review is a separate, explicit decision. It is not implied by
 installing, by binding a provider, or by having a credential.
 
-An MCP host can impose a stronger process-local ceiling with `yoetz mcp serve --semantic off`. That
+An MCP host can impose a stronger process-local ceiling with `finishup mcp serve --semantic off`. That
 strict route cannot request external AI-powered review even if durable policy is widened later. It
 is separate from the policy profiles below; see [Auto-approving an MCP
 route](auto-approving-agents.md).
@@ -27,10 +27,10 @@ the artifact does not enable content capture. Content capture is a second, rever
 same repository:
 
 ```text
-yoetz observe content-enable --workspace /exact/project \
+finishup observe content-enable --workspace /exact/project \
   --profile claude-code-ordinary-observation-v1
-yoetz observe content-status --workspace /exact/project --json
-yoetz observe content-disable --workspace /exact/project \
+finishup observe content-status --workspace /exact/project --json
+finishup observe content-disable --workspace /exact/project \
   --profile claude-code-ordinary-observation-v1
 ```
 
@@ -65,7 +65,7 @@ capability testing have their own separate policies. `local_only` governs LLM di
 coexist with a separately consented bounded structural non-LLM channel.
 
 **True zero-network mode** is the composite of `local_only`, the global ceiling off, and all five
-network channels disabled. Even then, exact release-profiled local IPC is permitted for the Yoetz
+network channels disabled. Even then, exact release-profiled local IPC is permitted for the FinishUP
 service, the confidential helper, an approved local model, the OS credential service, and session
 paths.
 
@@ -77,7 +77,7 @@ not unlock it: sensitive and confidential content stays sensitive no matter who 
 
 Effective policy loosens only through a reauthenticated decision you make: the trusted local
 ceremony, or your explicit current-chat approval of one exact prepared, previewed, expiring consent
-target that a capable agent relays for you. That relay is the agent's assertion, which Yoetz cannot
+target that a capable agent relays for you. That relay is the agent's assertion, which FinishUP cannot
 independently authenticate, so the local ceremony remains the stronger path. Loosening is never
 silent: every path shows the complete change before you decide. The machine row is an installation
 ceiling; external LLM work also needs an exact granted row for the current repository beneath it.
@@ -85,7 +85,7 @@ ceiling; external LLM work also needs an exact granted row for the current repos
 Secret-shaped text that only looks like a credential (an assignment to a name such as `token`) is
 redacted in place when it would leave your machine: only the value is replaced, by
 `[withheld-by-yoetz:possible-credential]`, and the rest of the line and file is still reviewed. The
-check reports `semantic_review_value_redacted`. If a value cannot be replaced safely, Yoetz withholds
+check reports `semantic_review_value_redacted`. If a value cannot be replaced safely, FinishUP withholds
 only the item that carries it and reviews the rest; the check lists the withheld items and reports
 `semantic_review_item_withheld`. Checks, receipts and `status view=operation` name each affected
 item and the line numbers involved, counted within the captured excerpt rather than the whole file
@@ -95,7 +95,7 @@ work in full, and you never need to change consent or your code to clear them. O
 blocks the whole review. You never need to hide or git-ignore a requested output to keep it out of
 review.
 
-What Yoetz records on your machine follows the same split. A concrete credential shape (a known
+What FinishUP records on your machine follows the same split. A concrete credential shape (a known
 API-key or access-token format, a private-key header, or a password inside a URL) is replaced before
 anything is stored. Text that only looks like a credential is kept as captured in the encrypted
 local store, so local checks see your work as it is; it is replaced only when content would leave
@@ -108,16 +108,16 @@ external AI reviewer, for example when it keeps hiding values your review needs 
 are not secrets. The setting belongs to the current repository:
 
 ```text
-yoetz privacy credential-heuristic disable   # this repository: stop replacing look-alike values
-yoetz privacy credential-heuristic enable    # this repository: turn the filter back on (default)
-yoetz privacy credential-heuristic disable --machine-default   # default for new repository grants
-yoetz privacy credential-heuristic enable --machine-default    # restore that default
+finishup privacy credential-heuristic disable   # this repository: stop replacing look-alike values
+finishup privacy credential-heuristic enable    # this repository: turn the filter back on (default)
+finishup privacy credential-heuristic disable --machine-default   # default for new repository grants
+finishup privacy credential-heuristic enable --machine-default    # restore that default
 ```
 
 Turning it off means values assigned to names such as `password`, `secret`, `api_key` or
 `*_token` are sent to the external AI reviewer as written, instead of as
 `[withheld-by-yoetz:possible-credential]`. Everything that stays on your machine keeps the
-filter: what Yoetz shows your agent and what a local model reviews are filtered exactly as before.
+filter: what FinishUP shows your agent and what a local model reviews are filtered exactly as before.
 It never affects the never-send set: a known credential shape, a private key, a password inside a
 URL, or a scanner that cannot finish still blocks or redacts exactly as before.
 
@@ -130,44 +130,44 @@ it back on is a tightening of the same grant and applies at once, to this reposi
 installation-wide default (`--machine-default`) is what a new repository grant starts from;
 changing it does not change a repository that already has a grant.
 
-`yoetz status` and the agent's status show, before any check runs, whether the filter is on for
-this repository and what the installation default is; `yoetz provider status` and `/privacy`
-show the same pair, and `yoetz privacy show` names the installation default when it is off. A
+`finishup status` and the agent's status show, before any check runs, whether the filter is on for
+this repository and what the installation default is; `finishup provider status` and `/privacy`
+show the same pair, and `finishup privacy show` names the installation default when it is off. A
 repository without a grant has nothing to turn back on; `enable` then tells you to use
 `--machine-default`. While it is off, every privacy receipt for an external review
 made under it records it, and every check whose external AI-powered review ran under it reports
 `semantic_review_credential_heuristic_disabled`. That code describes your choice, not a problem
 with the agent's work. The setting is part of your privacy policy, so
-`yoetz privacy export-desired` and `apply-desired` carry it too, through the same approval.
+`finishup privacy export-desired` and `apply-desired` carry it too, through the same approval.
 
 ## Commands
 
 ```text
-yoetz --privacy                 # recommended policy first; customize only when declined
-yoetz privacy setup             # equivalent guided policy review
-yoetz privacy show              # current effective policy
-yoetz privacy tighten           # tighten (proceeds through gates)
-yoetz privacy propose           # propose a change for decision
-yoetz privacy decide-policy     # approve or deny one exact pending policy proposal on the terminal
-yoetz privacy export-desired    # effective nonsecret policy as desired-state TOML (never secrets)
-yoetz privacy apply-desired     # apply desired-state TOML; tighten may proceed, widen never silent
-yoetz privacy credential-heuristic disable|enable  # external reviewer's possible-credential filter, per repository
-yoetz privacy pending           # list disclosure decisions waiting for you
-yoetz privacy decide-disclosure # decide one exact pending disclosure by id (see below)
-yoetz privacy receipts          # inspect bounded structural egress receipts
+finishup --privacy                 # recommended policy first; customize only when declined
+finishup privacy setup             # equivalent guided policy review
+finishup privacy show              # current effective policy
+finishup privacy tighten           # tighten (proceeds through gates)
+finishup privacy propose           # propose a change for decision
+finishup privacy decide-policy     # approve or deny one exact pending policy proposal on the terminal
+finishup privacy export-desired    # effective nonsecret policy as desired-state TOML (never secrets)
+finishup privacy apply-desired     # apply desired-state TOML; tighten may proceed, widen never silent
+finishup privacy credential-heuristic disable|enable  # external reviewer's possible-credential filter, per repository
+finishup privacy pending           # list disclosure decisions waiting for you
+finishup privacy decide-disclosure # decide one exact pending disclosure by id (see below)
+finishup privacy receipts          # inspect bounded structural egress receipts
 ```
 
-`yoetz privacy receipts list` pages through every receipt of what Yoetz showed locally and sent
+`finishup privacy receipts list` pages through every receipt of what FinishUP showed locally and sent
 off the machine, newest first; pass `--cursor` with the `next_cursor` it prints to read the next
 page. If a stored receipt cannot be read back, the listing does not fail: it prints every receipt
 it could read, reports `undecodable_count` and the skipped receipt ids, explains the partial page
 on stderr, and exits `40` so a script cannot mistake it for a complete listing. Run
-`yoetz privacy receipts get <receipt id>` for each skipped id; a receipt that cannot be read is
-reported as `privacy_audit_unreadable` with a correlation id for `yoetz service diagnostics`.
+`finishup privacy receipts get <receipt id>` for each skipped id; a receipt that cannot be read is
+reported as `privacy_audit_unreadable` with a correlation id for `finishup service diagnostics`.
 `invalid_request` means only that the command itself was wrong, such as a cursor from a different
 listing.
 
-You can also ask a capable Yoetz agent to install, configure, or change Yoetz in ordinary
+You can also ask a capable FinishUP agent to install, configure, or change FinishUP in ordinary
 conversation. The agent should explain each consequential choice, recommend an option and its
 trade-off, perform the mechanical steps, and leave the decision with you. If you explicitly ask
 for AI-powered review, it recommends **Expanded review** first for the deepest useful in-scope
@@ -222,10 +222,10 @@ costs. It then offers exactly three choices: `Keep current`, `Review recommended
 `Other privacy options`. `Other privacy options` lists the same five recipe names the CLI uses.
 
 The interface takes **no approval of its own.** Choosing anything but `Keep current` suspends the
-interface and hands the controlling terminal to the same `yoetz privacy setup` flow, ordinary
+interface and hands the controlling terminal to the same `finishup privacy setup` flow, ordinary
 proposal, and separately reauthenticated trusted decision used by the CLI — and that trusted screen
 is where the exact `before → after` policy diff is rendered and where the widening is authorized.
-If terminal handoff is unavailable it prints `yoetz privacy setup` and changes nothing. Tightening
+If terminal handoff is unavailable it prints `finishup privacy setup` and changes nothing. Tightening
 likewise stays on the existing policy gate. `local_only` remains the default and the interface
 never moves off it on its own
 ([ADR-017](../adr/ADR-017-full-screen-terminal-interface.md) decision 5).
@@ -237,7 +237,7 @@ proposal moves as a plain-English `before -> after` line, grouped by destination
 disclosed, authorization, limits, and local visibility, with the ones that make privacy less
 restrictive marked `(!)`. Simultaneous tightenings appear too, unmarked, so you see the whole
 change rather than half of it. The service sends structured field/value records and never
-explanatory prose, and the wording is fixed locally by Yoetz. The diff digest is printed underneath
+explanatory prose, and the wording is fixed locally by FinishUP. The diff digest is printed underneath
 and labelled for what it is: integrity evidence binding the decision to exact bytes, not a
 description of the change.
 
@@ -250,7 +250,7 @@ the destination group carries a second row, `Fallback provider and model`, direc
 `Provider and model`. Adding or changing it is a widening and is marked `(!)`; removing it is a
 tightening and appears unmarked. The approval covers exactly the two named destinations —
 nothing is sent to the fallback before that decision, and nothing else ever becomes a fallback.
-`yoetz privacy setup` shows the same pair before asking, as `Destination` and
+`finishup privacy setup` shows the same pair before asking, as `Destination` and
 `Fallback destination (after the primary cannot serve)`.
 
 Custom privacy setup asks separately whether to authorize the configured fallback, naming its
@@ -268,7 +268,7 @@ reviewer asked for, and your recorded responses to them, so the next review can 
 These are the same finding and response records the case already held; no new kind of data is
 sent for them.
 
-The check-time change is the one thing Yoetz reads from your repository for review. When the recipe
+The check-time change is the one thing FinishUP reads from your repository for review. When the recipe
 includes diff excerpts, each check reads the change from the commit the task started on (for a task
 started before this version, the commit at its first check) — committed and uncommitted edits to
 tracked files, plus untracked files Git does not ignore — from the repository the check's own
@@ -277,19 +277,19 @@ Git settings point its working tree elsewhere is not read), and shows it to the 
 a header naming every changed file. Files you declared as outputs come first, then small files,
 then the rest, so when the change is cut for room your deliverables are kept and scratch files go
 first. It covers edits made by scripts and commits that no hook captured. A declared output that
-lives outside the repository (for example `/output/result.json`) is never read by Yoetz itself; when
+lives outside the repository (for example `/output/result.json`) is never read by FinishUP itself; when
 the case already holds a capture of it (output a hook recorded, or evidence the agent published
 that names it), that capture is carried with the same priority as the change, under the same
 redaction and never-send checks, and listed in the review input like every other excerpt. Because the starting point is a commit, uncommitted work that was already in your
 working tree when the task started is included too. Untracked files that were already there when
 the task started and have not changed since are left out of the change and only counted in its
 header, so the reviewer never reads them as your agent's additions; one that changed is shown whole
-and marked as having existed at the start. To tell them apart, Yoetz keeps, encrypted with the task,
+and marked as having existed at the start. To tell them apart, FinishUP keeps, encrypted with the task,
 the names of the untracked files present when the task started and a digest of their file metadata,
 never their content. A Git repository nested inside yours (for example an `api` directory that is
 its own repository) has its own change read from the commit it held when the task started, which
-Yoetz keeps with those names, and shown under its directory, at most eight per check; one that
-cannot be read safely is named in the header with the reason. Yoetz keeps the same names and
+FinishUP keeps with those names, and shown under its directory, at most eight per check; one that
+cannot be read safely is named in the header with the reason. FinishUP keeps the same names and
 digests for the untracked files inside each such repository, so they are left out or shown exactly
 like the ones in yours. When that commit was not kept for a nested repository yours tracks (for
 example, a task started before this version), its change starts from the commit your repository
@@ -297,7 +297,7 @@ records for it, and the header says that commits made in it before the task may 
 When the untracked files inside a nested repository were not all kept (for example: the task
 started before this version; the repository was created during the task, had no commit when it
 started, came after the eighth nested repository or failed a safety check; or its untracked files
-were too many for Yoetz to keep, had names it cannot store, could not be examined or could not be
+were too many for FinishUP to keep, had names it cannot store, could not be examined or could not be
 listed in time), they are listed by name only and their content is never sent, because any of them
 may have been there before the task; the header says so and counts them as not shown. When the
 task statement names files the work depends on, such as a specification, a rulebook or the source
@@ -308,7 +308,7 @@ travels only when the task's starting commit was kept, Git compares it normally 
 skip-worktree or assume-unchanged never travels) and its content still matches that commit
 exactly. Task inputs are labelled as task inputs, not as your agent's work, and pass the same
 redaction and never-send checks. The reviewer also gets one short
-list of the deliverables you declared, whether the change touches each one, and Yoetz's own facts
+list of the deliverables you declared, whether the change touches each one, and FinishUP's own facts
 about them (for example that a deliverable refers to a file you created but did not declare). Git hooks, helpers, filters and network
 access are off while it is read, credential-like text is redacted, and each part still passes the
 never-send check. Files named like credentials (`.env`, `.env.*`, `.netrc`, `*.pem`, `*.key` and
@@ -319,9 +319,9 @@ line counts are never shown; Git may still open such a file while it works, but 
 discarded and never enters the change. Every stored Git object a shown diff uses must match its own
 name, and a repository whose object store is reached through a link or borrowed from another
 repository is not read; a local `git clone` that hard-links its objects is read normally. If your
-working tree or object store keeps changing while the change is read, Yoetz reads it again, up to
+working tree or object store keeps changing while the change is read, FinishUP reads it again, up to
 three times, and otherwise reports the change as unavailable rather than send a mix of two states.
-Whenever the change is unavailable, the check result, `yoetz status` and the receipt say why in one
+Whenever the change is unavailable, the check result, `finishup status` and the receipt say why in one
 plain sentence (for example, that the working tree kept changing, or that the repository failed a
 safety check). A later review clears an AI-powered finding despite these limits only when it saw
 each file the raising review saw, whole or through an identical view; for a file shown in part each
@@ -342,7 +342,7 @@ repository, storage, environment, or transcript handles.
 
 The Codex subscription evaluator follows the same policy and receives the same approved packet.
 The difference is credential and transport authority: Codex owns ChatGPT login and internally
-constructs the upstream OpenAI body, while Yoetz passes the packet to one exact app-server over
+constructs the upstream OpenAI body, while FinishUP passes the packet to one exact app-server over
 stdio. The receipt commits to the packet and exact runtime cell and says
 `upstream_body_observability=unavailable`. It does not claim to know Codex's upstream body. Login,
 plan, or model availability never substitutes for repository privacy approval.
@@ -373,8 +373,8 @@ This is new content, so it has its own consent. Goal-aware, Assisted and Expande
 from this version on include it; Structural never does; Custom only when you list the
 `task_statement` section. A policy you approved before this version is not widened: the statement
 stays on your machine, and checks and receipts say `task_statement_not_authorized` until you
-approve a current recipe with `yoetz --privacy`. The approval screen, `yoetz --privacy` and
-`yoetz privacy show` say in plain words whether the task statement is sent. Your prompt as captured
+approve a current recipe with `finishup --privacy`. The approval screen, `finishup --privacy` and
+`finishup privacy show` say in plain words whether the task statement is sent. Your prompt as captured
 by the host is never used for review.
 
 ### How many excerpts the reviewer sees
@@ -386,7 +386,7 @@ session the byte budget, not the count, decides how much the reviewer sees. The 
 per-case ceilings (256 KiB, 65,536 estimated tokens) do not change.
 
 An Expanded policy you approved earlier keeps its 16-excerpt limit until you approve the new
-recipe. `yoetz privacy show` and `yoetz --privacy` show your current limits beside the ones the
+recipe. `finishup privacy show` and `finishup --privacy` show your current limits beside the ones the
 current recipe offers, and the approval screen marks the higher count as a widening. When many
 large excerpts would push a review over your per-case ceiling, the review carries fewer excerpts
 and says so (`content_unselected`) instead of being refused. Content your review channel does not
@@ -394,8 +394,8 @@ send does not count toward that ceiling. The packet's own structure always count
 fallback destination is set, anything either destination may receive counts, so the estimate never
 comes in under what is sent. A review packet with more excerpts or
 bytes than your policy allows is still refused, never cut down to fit. To go
-back to 16, choose Assisted in `yoetz --privacy`, or propose the earlier Expanded limits with
-`yoetz privacy propose`. A lower limit is a narrowing, so it needs no new approval.
+back to 16, choose Assisted in `finishup --privacy`, or propose the earlier Expanded limits with
+`finishup privacy propose`. A lower limit is a narrowing, so it needs no new approval.
 
 ## How review comes back
 
@@ -403,14 +403,14 @@ Inside that confirmed policy, review is direct-to-agent. The reviewer returns a 
 the main agent, which can act, supply evidence, revise its claim, dispute with evidence, or state an
 unresolved limitation — then recheck. The reviewer can also ask the agent a question. The agent
 answers each review finding with a reason, and the next review sees that answer (and the agent's
-answers to Yoetz's own findings) and rules on it; a reply that names an earlier finding comes back as
+answers to FinishUP's own findings) and rules on it; a reply that names an earlier finding comes back as
 a new finding linked to it. Routine checks and retries need no human prompt.
 
 The reviewer works as a verifying reviewer: it checks the change against the task and the recorded
 verification against the change. It judges recorded test and command output itself instead of
 asking the agent to run it again, reports every distinct problem it finds (up to three per review),
 and names the exact missing item when it needs more. It knows it is the review that was asked for,
-so it does not report its own review, Yoetz checks, findings, or limits on what its packet could
+so it does not report its own review, FinishUP checks, findings, or limits on what its packet could
 carry as problems in the work, and it never asks the agent to install tools or change the
 environment. It does flag delivery risks it can see, such as an import the recorded environment
 lacks or files written outside the requested location, and it tests an "impossible" or
@@ -421,13 +421,13 @@ command that differs from the one observed. Every provider — the Codex subscri
 OpenAI-compatible endpoints — gets the same instructions. Track a required review by choosing
 `semantic_required` for each check, not as a plan item.
 
-When the reviewer cannot assess the packet and names recorded content Yoetz already holds — the
-output of a recorded run, its exact command, or a captured edit the packet had no room for — Yoetz
+When the reviewer cannot assess the packet and names recorded content FinishUP already holds — the
+output of a recorded run, its exact command, or a captured edit the packet had no room for — FinishUP
 answers inside the same check: it sends the packet again with that content first and asks again, up
 to three times. Each follow-up packet follows the same policy, limits and never-send rules as the
 first and is its own disclosure with its own privacy receipt, and the content added this way takes
 at most half of the packet's excerpt room. The check records the last answer; the check result and
-the receipt say which follow-up round it answered and what Yoetz added. A follow-up that fails ends
+the receipt say which follow-up round it answered and what FinishUP added. A follow-up that fails ends
 the check the way a failed review does. Anything else the reviewer names (the task statement, plan
 or claim text, or material only the agent can record) still comes back to the agent as before.
 
@@ -475,7 +475,7 @@ receipt for that attempt is recorded as `transport_failed` with reason `outcome_
 says the request left your machine and its answer never came back. Nothing is sent again. If the
 service stops before the receipt lands, it is written once when the service next starts, before any
 new request can go out. The background note for that session is marked cancelled and names the
-attempt and provider it reconciled, so `yoetz privacy receipts` accounts for every authorization
+attempt and provider it reconciled, so `finishup privacy receipts` accounts for every authorization
 that was spent. A cancelled note that names neither means nothing was sent.
 
 When you are auditing a run rather than the installation, the
@@ -488,7 +488,7 @@ means **no provider attempt was made**; where it requires provenance, an attempt
 not the same as it being useful); and `failed`/`coordinator_failure` is unconstrained, so it is
 **indeterminate** — never read it as "not attempted".
 
-If you believe Yoetz disclosed, retained, or logged something these commitments forbid, treat it as
+If you believe FinishUP disclosed, retained, or logged something these commitments forbid, treat it as
 a security report: [`SECURITY.md`](../../SECURITY.md), not a public issue.
 
 ### Reviews that take longer

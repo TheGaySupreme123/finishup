@@ -22,23 +22,23 @@ from builders.multi_agent import (
     multi_agent_service,
     relock_and_reopen_multi_agent_service,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.coordination import CoordinationRuntime
-from yoetz.application.projects import ProjectRevokeCommand
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.start import StartInternalResult
-from yoetz.application.status import StatusInternalResult
-from yoetz.domain.coordination import CoordinationDetection, CoordinationGapCode
-from yoetz.domain.events import AcceptedEvent, CoordinationContextRecordedPayload
-from yoetz.domain.findings import Finding, FindingKind
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.runtime import RouteAccess, RouteCommand
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.coordination import CoordinationRuntime
+from finishup.application.projects import ProjectRevokeCommand
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.start import StartInternalResult
+from finishup.application.status import StatusInternalResult
+from finishup.domain.coordination import CoordinationDetection, CoordinationGapCode
+from finishup.domain.events import AcceptedEvent, CoordinationContextRecordedPayload
+from finishup.domain.findings import Finding, FindingKind
+from finishup.domain.values import JsonObject
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.runtime import RouteAccess, RouteCommand
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptRequest,
@@ -46,8 +46,8 @@ from yoetz.protocol.models import (
     StatusFindingsPageModel,
     StatusRequest,
 )
-from yoetz.protocol.recovery import RECOVERY_DIRECTIVES
-from yoetz.service.elevated_bootstrap import (
+from finishup.protocol.recovery import RECOVERY_DIRECTIVES
+from finishup.service.elevated_bootstrap import (
     load_pending,
     record_project_coordination_authorization,
 )

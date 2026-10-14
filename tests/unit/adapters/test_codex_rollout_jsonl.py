@@ -16,9 +16,8 @@ from builders.codex_rollout import (
     response_item,
     session_meta,
 )
-from fixture_loader import FixtureLoader, build_fixture_loader
-from yoetz.adapters.importers.codex_jsonl import profile_for_codex_version
-from yoetz.adapters.importers.codex_rollout_jsonl import (
+from finishup.adapters.importers.codex_jsonl import profile_for_codex_version
+from finishup.adapters.importers.codex_rollout_jsonl import (
     CODEX_ROLLOUT_COMPATIBLE_PROFILE_ID,
     COMPATIBLE_ROLLOUT_PROFILE,
     SUPPORTED_ROLLOUT_PROFILES,
@@ -29,7 +28,7 @@ from yoetz.adapters.importers.codex_rollout_jsonl import (
     profile_for_rollout_version,
     rollout_admission_provenance,
 )
-from yoetz.adapters.integrations.codex_capability_cells import (
+from finishup.adapters.integrations.codex_capability_cells import (
     CODEX_ROLLOUT_CLI_VERSION,
     CODEX_ROLLOUT_COMPATIBLE_EVIDENCE_CASE_IDS,
     CODEX_ROLLOUT_EVIDENCE_CASE_IDS,
@@ -39,9 +38,10 @@ from yoetz.adapters.integrations.codex_capability_cells import (
     codex_version_manifest_profiles,
     rollout_parser_proof,
 )
-from yoetz.adapters.integrations.codex_skill import CODEX_HARNESS_PROFILE
-from yoetz.ports.importer import ImportLineStatus
-from yoetz.protocol.canonical import JsonValue
+from finishup.adapters.integrations.codex_skill import CODEX_HARNESS_PROFILE
+from finishup.ports.importer import ImportLineStatus
+from finishup.protocol.canonical import JsonValue
+from fixture_loader import FixtureLoader, build_fixture_loader
 
 _CANARY_SECRET = "sk-proj-CANARYLEGACYTOKEN0001"
 # Every 0.150.1 fixture value carries this prefix; none of it may survive into records.
@@ -158,11 +158,11 @@ def test_redaction_canary_is_stripped_from_records() -> None:
             }
         ),
         function_call(
-            name="mcp__yoetz__status",
-            call_id="call_yoetz_1",
+            name="mcp__finishup__status",
+            call_id="call_finishup_1",
             arguments='{"request_id":"req_canary"}',
         ),
-        function_call_output(call_id="call_yoetz_1", output="ok"),
+        function_call_output(call_id="call_finishup_1", output="ok"),
     )
     parsed = parse_codex_rollout_jsonl(source, profile, require_admission=True)
     assert all(status is not ImportLineStatus.UNKNOWN for status in parsed.statuses)
@@ -394,7 +394,7 @@ def test_0_150_1_fixture_secret_canary_is_redacted_from_records() -> None:
     assert "[REDACTED]" in dumped
     # Structural identity survives redaction so pairing and dedup still work.
     tool_call = next(record for record in parsed.records if record.item_type == "function_call")
-    assert cast(dict[str, object], tool_call.value["payload"])["call_id"] == "call_yoetz_1"
+    assert cast(dict[str, object], tool_call.value["payload"])["call_id"] == "call_finishup_1"
 
 
 def test_0_150_1_truncated_fixture_holds_live_partial_tail() -> None:
@@ -767,7 +767,7 @@ def _hook_prompt(ordinal: int) -> dict[str, object]:
 
 
 def test_compatible_hook_prompt_is_bookkeeping_without_promoting_an_exact_cell() -> None:
-    """Yoetz's own Stop-gate prompt row maps on the compatibility profile only (#1041)."""
+    """FinishUP's own Stop-gate prompt row maps on the compatibility profile only (#1041)."""
 
     compatible = parse_codex_rollout_jsonl(
         encode_lines(

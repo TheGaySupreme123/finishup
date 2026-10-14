@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     LifecycleMapping,
     acquire_session_lock,
     load_mapping,
@@ -16,8 +16,8 @@ from yoetz.adapters.integrations.codex_lifecycle import (
     scoped_child_session_id,
     store_mapping,
 )
-from yoetz.cli.hooks import bind_start_mapping_outcome, recover_pending_start_mapping
-from yoetz.protocol.canonical import JsonValue
+from finishup.cli.hooks import bind_start_mapping_outcome, recover_pending_start_mapping
+from finishup.protocol.canonical import JsonValue
 
 PARENT_TASK = "tsk_00000000-0000-4000-8000-000000000001"
 PARENT_SESSION = "ses_00000000-0000-4000-8000-000000000002"
@@ -61,7 +61,7 @@ def _child_start_payload(
 ) -> dict[str, JsonValue]:
     payload: dict[str, JsonValue] = {
         "session_id": host_session,
-        "tool_name": "mcp__yoetz__start",
+        "tool_name": "mcp__finishup__start",
         "tool_response": {
             "structuredContent": {
                 "ok": True,

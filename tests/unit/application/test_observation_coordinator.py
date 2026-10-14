@@ -16,20 +16,20 @@ from typing import cast
 import apsw
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite import connection as connection_module
-from yoetz.adapters.sqlite.migrations import initialize_bundle as initialize_schema
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.application.observation_control import build_observation_support_handlers
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_drain import (
+from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite import connection as connection_module
+from finishup.adapters.sqlite.migrations import initialize_bundle as initialize_schema
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.application.observation_control import build_observation_support_handlers
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_drain import (
     ObservationCaptureRecoveryOutcome,
     ObservationDrainAction,
     ObservationOutboxSweeper,
     route_observation_ingest,
 )
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     MATERIALIZATION_LEGACY_MAPPING_VERSIONS,
     MATERIALIZATION_MAPPING_VERSION,
     MaterializedObservationBatch,
@@ -40,9 +40,9 @@ from yoetz.application.observation_materialize import (
     observation_writer_id,
     stable_observation_id,
 )
-from yoetz.domain.events import AcceptedEvent
-from yoetz.domain.findings import Finding
-from yoetz.domain.observation import (
+from finishup.domain.events import AcceptedEvent
+from finishup.domain.findings import Finding
+from finishup.domain.observation import (
     ObservationContentChunk,
     ObservationContentKind,
     ObservationCursor,
@@ -56,14 +56,14 @@ from yoetz.domain.observation import (
     observation_ingest_request_from_json,
     observation_ingest_request_to_json,
 )
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.domain.values import Frontier, JsonObject, Timestamp, finding_id
-from yoetz.ports.ledger import CheckPhase, OperationKind, OperationRecord, OperationState
-from yoetz.ports.observation import TaskObservationPort
-from yoetz.ports.runtime import TaskRuntime
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.domain.values import Frontier, JsonObject, Timestamp, finding_id
+from finishup.ports.ledger import CheckPhase, OperationKind, OperationRecord, OperationState
+from finishup.ports.observation import TaskObservationPort
+from finishup.ports.runtime import TaskRuntime
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
 
 
 def initialize_bundle(db: apsw.Connection, seed: Mapping[str, str]) -> None:
@@ -221,7 +221,7 @@ def test_materialization_uses_ledger_mapping_independent_of_transport_cursor() -
 
 
 def test_materialize_post_only_profiles_never_invent_a_pre_pair() -> None:
-    from yoetz.domain.events import ActionRecordedPayload
+    from finishup.domain.events import ActionRecordedPayload
 
     task = _task_id()
     session = f"hmac-sha256:{'73' * 32}"
@@ -398,10 +398,10 @@ def test_materialize_post_consumes_host_outcome_semantics() -> None:
 
     from collections.abc import Mapping as _Mapping
 
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         HOST_OUTCOME_UNAVAILABLE_GAP,
     )
-    from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
+    from finishup.domain.events import ResultOutcome, ResultRecordedPayload
 
     task = _task_id()
     session = f"hmac-sha256:{'aa' * 32}"
@@ -455,7 +455,7 @@ def test_materialize_post_consumes_host_outcome_semantics() -> None:
 
 
 def test_stream_outcome_correction_links_canonical_action_without_rewriting_unknown() -> None:
-    from yoetz.domain.events import ResultOutcome, ResultRecordedPayload
+    from finishup.domain.events import ResultOutcome, ResultRecordedPayload
 
     task = _task_id()
     session = f"hmac-sha256:{'ac' * 32}"
@@ -517,7 +517,7 @@ def test_stream_outcome_correction_links_canonical_action_without_rewriting_unkn
     success = materialize_observation_outcome_correction(success_stream, task_id=task)
     assert tuple(item.role for item in success.drafts) == ("result_correction_success_0",)
 
-    from yoetz.application.observation_materialize import observation_operation_digest
+    from finishup.application.observation_materialize import observation_operation_digest
 
     common = {
         "task_id": task,
@@ -556,7 +556,7 @@ def test_routine_read_coalescing_respects_result_status_failures() -> None:
 def test_statusless_routine_read_keeps_durable_result_and_capability_gap() -> None:
     """Missing host outcome semantics are not coalesced as a successful read."""
 
-    from yoetz.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
+    from finishup.application.observation_materialize import HOST_OUTCOME_UNAVAILABLE_GAP
 
     task = _task_id()
     session = f"hmac-sha256:{'bb' * 32}"
@@ -1703,7 +1703,7 @@ def test_local_store_lock_serializes_a_separate_process_writer(tmp_path: Path) -
     store.grant_consent(workspace)
     code = (
         "from pathlib import Path; "
-        "from yoetz.adapters.integrations.observation_local import LocalObservationStore; "
+        "from finishup.adapters.integrations.observation_local import LocalObservationStore; "
         f"store = LocalObservationStore(_state=Path({str(tmp_path)!r})); "
         f"print(store.pending_outbox_count({workspace!r}), flush=True); "
         f"store.note_coverage_gap({workspace!r}, 'service_unavailable'); "
@@ -1733,7 +1733,7 @@ def test_local_store_lock_serializes_a_separate_process_writer(tmp_path: Path) -
 def test_first_key_creation_is_identical_across_processes(tmp_path: Path) -> None:
     code = (
         "from pathlib import Path; "
-        "from yoetz.adapters.integrations.observation_local import LocalObservationStore; "
+        "from finishup.adapters.integrations.observation_local import LocalObservationStore; "
         f"print(LocalObservationStore(_state=Path({str(tmp_path)!r}))"
         f".workspace_commitment({str(tmp_path.resolve())!r}), flush=True)"
     )
@@ -1758,7 +1758,7 @@ def test_first_key_creation_is_identical_across_processes(tmp_path: Path) -> Non
 def test_enqueue_refuses_projected_oversize_without_losing_consent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.adapters.integrations.observation_local as local_mod
+    import finishup.adapters.integrations.observation_local as local_mod
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -1785,7 +1785,7 @@ def test_enqueue_refuses_projected_oversize_without_losing_consent(
 def test_size_save_preserves_distinct_same_source_rows_when_bound_cannot_fit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.adapters.integrations.observation_local as local_mod
+    import finishup.adapters.integrations.observation_local as local_mod
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -1828,7 +1828,7 @@ def test_monotonic_samples_fenced_across_simulated_reboot(tmp_path: Path) -> Non
     samples so status reports DEGRADED until fresh progress in the new epoch.
     """
 
-    from yoetz.domain.observation import ObservationLifecycle
+    from finishup.domain.observation import ObservationLifecycle
 
     # Boot 1: monotonic 1000, wall 5000 -> epoch 4000.
     boot1 = LocalObservationStore(_state=tmp_path, _monotonic=lambda: 1000.0, _wall=lambda: 5000.0)
@@ -1857,7 +1857,7 @@ def test_monotonic_samples_fenced_across_simulated_reboot(tmp_path: Path) -> Non
 
 
 def test_session_end_reports_stopped_and_persists(tmp_path: Path) -> None:
-    from yoetz.domain.observation import ObservationLifecycle
+    from finishup.domain.observation import ObservationLifecycle
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -1879,7 +1879,7 @@ def test_session_end_reports_stopped_and_persists(tmp_path: Path) -> None:
 
 
 def test_new_session_generation_resumes_and_stale_end_remains_fenced(tmp_path: Path) -> None:
-    from yoetz.domain.observation import ObservationLifecycle
+    from finishup.domain.observation import ObservationLifecycle
 
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
@@ -1938,7 +1938,7 @@ def test_local_outbox_quarantine_is_visible_and_durable(tmp_path: Path) -> None:
 def test_quarantine_eviction_retains_aggregate_loss_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.adapters.integrations.observation_local as local_mod
+    import finishup.adapters.integrations.observation_local as local_mod
 
     monkeypatch.setattr(local_mod, "_MAX_QUARANTINE", 2)
     # Wall clock pinned near the fixture receipt_time (2026-01-01) so only the
@@ -2065,7 +2065,7 @@ def test_reclaim_quarantine_empties_detail_and_records_the_drop(tmp_path: Path) 
 
 
 def test_local_outbox_overflow_records_gap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import yoetz.adapters.integrations.observation_local as local_mod
+    import finishup.adapters.integrations.observation_local as local_mod
 
     monkeypatch.setattr(local_mod, "_MAX_OUTBOX", 2)
     store = LocalObservationStore(_state=tmp_path)
@@ -2628,7 +2628,7 @@ def _obs(
 
 
 def test_hook_and_stream_copies_share_one_logical_operation() -> None:
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         canonical_logical_identity,
         observation_operation_digest,
     )
@@ -2691,8 +2691,8 @@ def test_hook_and_stream_copies_share_one_logical_operation() -> None:
 def test_reused_call_id_isolated_by_source_session_and_generation() -> None:
     """A host call id is meaningful only inside its source generation lane."""
 
-    from yoetz.application.observation_materialize import materialize_observation_envelope
-    from yoetz.domain.events import ActionRecordedPayload, ResultRecordedPayload
+    from finishup.application.observation_materialize import materialize_observation_envelope
+    from finishup.domain.events import ActionRecordedPayload, ResultRecordedPayload
 
     task = "task_identity_scope"
     base = _envelope(
@@ -2770,7 +2770,7 @@ async def test_run_advice_persists_snapshot_with_real_datetime_clock(tmp_path: P
 
     import apsw
 
-    from yoetz.adapters.sqlite.migrations import initialize_bundle
+    from finishup.adapters.sqlite.migrations import initialize_bundle
 
     class _DatetimeClock:
         def now_utc(self) -> datetime:
@@ -2836,12 +2836,12 @@ async def test_advice_finding_materialization_uses_canonical_schema_and_envelope
     from datetime import UTC, datetime
     from types import SimpleNamespace
 
-    from yoetz.application import observation_coordinator as coordinator_module
-    from yoetz.application.unit_of_work import PreparedMutation
-    from yoetz.domain.observation import AdviceItem, AdviceSnapshot
-    from yoetz.ports.ledger import ProjectionView
-    from yoetz.ports.objects import ObjectRef
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel, weakest
+    from finishup.application import observation_coordinator as coordinator_module
+    from finishup.application.unit_of_work import PreparedMutation
+    from finishup.domain.observation import AdviceItem, AdviceSnapshot
+    from finishup.ports.ledger import ProjectionView
+    from finishup.ports.objects import ObjectRef
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel, weakest
 
     task_id = PREFIX_BY_KIND[IdKind.TASK] + str(uuid.uuid4())
     session_id = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
@@ -3031,12 +3031,12 @@ async def test_advice_finding_subject_refs_never_cite_unappended_drafts(
     from datetime import UTC, datetime
     from types import SimpleNamespace
 
-    from yoetz.application import observation_coordinator as coordinator_module
-    from yoetz.application.unit_of_work import PreparedMutation
-    from yoetz.domain.observation import AdviceItem, AdviceSnapshot
-    from yoetz.ports.ledger import ProjectionView
-    from yoetz.ports.objects import ObjectRef
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
+    from finishup.application import observation_coordinator as coordinator_module
+    from finishup.application.unit_of_work import PreparedMutation
+    from finishup.domain.observation import AdviceItem, AdviceSnapshot
+    from finishup.ports.ledger import ProjectionView
+    from finishup.ports.objects import ObjectRef
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
 
     task_id = PREFIX_BY_KIND[IdKind.TASK] + str(uuid.uuid4())
     session_id = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
@@ -3170,7 +3170,7 @@ async def test_advice_finding_subject_refs_never_cite_unappended_drafts(
 async def test_deferred_verification_uses_a_dedicated_runtime_lease(tmp_path: Path) -> None:
     from types import SimpleNamespace
 
-    from yoetz.application.observation_verification import ObservationVerificationSupervisor
+    from finishup.application.observation_verification import ObservationVerificationSupervisor
 
     task_id = PREFIX_BY_KIND[IdKind.TASK] + str(uuid.uuid4())
     session_id = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
@@ -3253,7 +3253,7 @@ async def test_rediscovery_drains_pending_repositories_for_every_bound_session(
 ) -> None:
     from types import SimpleNamespace
 
-    from yoetz.application.observation_verification import ObservationVerificationSupervisor
+    from finishup.application.observation_verification import ObservationVerificationSupervisor
 
     workspace = "hmac-sha256:" + "7" * 64
     task_ids = (_task_id(), _task_id())
@@ -3363,9 +3363,9 @@ async def test_advice_materialization_failure_does_not_advance_suppression_snaps
 
     from datetime import UTC, datetime
 
-    from yoetz.domain.observation import AdviceItem, AdviceSnapshot
-    from yoetz.ports.runtime import OwnershipFence, RuntimeCapability, TaskRuntime
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
+    from finishup.domain.observation import AdviceItem, AdviceSnapshot
+    from finishup.ports.runtime import OwnershipFence, RuntimeCapability, TaskRuntime
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
 
     task_id = PREFIX_BY_KIND[IdKind.TASK] + str(uuid.uuid4())
     session_id = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
@@ -3508,7 +3508,7 @@ async def test_duplicate_ingest_reconciles_ledger_instead_of_early_return(tmp_pa
     operation and refresh advice.
     """
 
-    from yoetz.adapters.integrations.codex_lifecycle import LifecycleMapping
+    from finishup.adapters.integrations.codex_lifecycle import LifecycleMapping
 
     calls = {"append": 0, "advice": 0}
 
@@ -3620,8 +3620,8 @@ async def test_check_barrier_deferral_is_designed_backpressure(
 
     from types import SimpleNamespace
 
-    import yoetz.application.observation_coordinator as coordinator_module
-    from yoetz.domain.observation import OBSERVATION_BACKPRESSURE_REASON
+    import finishup.application.observation_coordinator as coordinator_module
+    from finishup.domain.observation import OBSERVATION_BACKPRESSURE_REASON
 
     recorded: list[str] = []
 
@@ -3717,7 +3717,7 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
     session_b = f"hmac-sha256:{'0b' * 32}"
     envelope_a = _envelope(session=session_a, kind="PostToolUse", identity="hook:a", exit_status=2)
     envelope_b = _envelope(session=session_b, kind="PostToolUse", identity="hook:b", exit_status=0)
-    yoetz_session = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
+    finishup_session = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
 
     class _Store:
         def list_envelopes(self, workspace: str) -> tuple[ObservationEnvelope, ...]:
@@ -3738,7 +3738,7 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
             self, *, workspace: str, yoetz_session_id: str
         ) -> str | None:
             del workspace
-            return session_b if yoetz_session_id == yoetz_session else None
+            return session_b if yoetz_session_id == finishup_session else None
 
         def load_advice_snapshot(self, workspace: str) -> None:
             del workspace
@@ -3748,7 +3748,7 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
             raise AssertionError("mapped build must not read workspace-wide status")
 
         async def status_for_session(self, workspace: str, session_commitment: str) -> object:
-            from yoetz.domain.observation import ObservationLifecycle, ObservationStatus
+            from finishup.domain.observation import ObservationLifecycle, ObservationStatus
 
             del workspace
             return ObservationStatus(
@@ -3792,7 +3792,7 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
     )
     runtime = SimpleNamespace(
         task_id=_task_id(),
-        session_id=yoetz_session,
+        session_id=finishup_session,
         writer_id=None,
     )
 
@@ -3815,12 +3815,12 @@ async def test_run_advice_scopes_envelopes_to_the_mapped_session(tmp_path: Path)
 def test_backpressure_reason_routes_to_retry_without_gap_projection() -> None:
     """#351: operation_pending is retryable, safe, and marked as expected."""
 
-    from yoetz.application.observation_drain import (
+    from finishup.application.observation_drain import (
         EXPECTED_OBSERVATION_BACKPRESSURE_REASONS,
         ObservationDrainAction,
         route_observation_ingest,
     )
-    from yoetz.domain.observation import OBSERVATION_BACKPRESSURE_REASON
+    from finishup.domain.observation import OBSERVATION_BACKPRESSURE_REASON
 
     decision = route_observation_ingest(
         ObservationIngestResult(
@@ -3839,7 +3839,7 @@ async def test_control_handlers_accept_ingest_request(tmp_path: Path) -> None:
     class _Port:
         async def ingest_request(self, request: ObservationIngestRequest):
             assert request.codex_session_id == "sess-control"
-            from yoetz.domain.observation import ObservationIngestResult
+            from finishup.domain.observation import ObservationIngestResult
 
             return ObservationIngestResult(
                 ObservationIngestDisposition.ACCEPTED,
@@ -3860,7 +3860,7 @@ async def test_control_handlers_accept_ingest_request(tmp_path: Path) -> None:
             raise AssertionError("unused")
 
     handlers = build_observation_support_handlers(_Port())  # type: ignore[arg-type]
-    from yoetz.ports.control import ControlMethod
+    from finishup.ports.control import ControlMethod
 
     session = f"hmac-sha256:{'33' * 32}"
     body = observation_ingest_request_to_json(
@@ -3874,7 +3874,7 @@ async def test_control_handlers_accept_ingest_request(tmp_path: Path) -> None:
 
 
 def test_materialization_phases_claim_distinct_role_scoped_identities() -> None:
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         canonical_logical_identity,
         observation_claim_identity,
         observation_content_identity,
@@ -4251,10 +4251,10 @@ async def test_pre_post_and_stream_copies_claim_without_storage_corrupt(tmp_path
 
     import apsw
 
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         canonical_logical_identity as _identity,
     )
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         observation_operation_digest as _digest,
     )
 
@@ -4530,22 +4530,22 @@ async def test_later_stream_failure_correction_projection_policy(
 
     import apsw
 
-    from yoetz.application import observation_coordinator as coordinator_module
-    from yoetz.application.observation_materialize import (
+    from finishup.application import observation_coordinator as coordinator_module
+    from finishup.application.observation_materialize import (
         canonical_logical_identity as _identity,
     )
-    from yoetz.application.observation_materialize import (
+    from finishup.application.observation_materialize import (
         observation_operation_digest as _digest,
     )
-    from yoetz.domain.events import ActionRecordedPayload, ResultRecordedPayload, encode_payload
-    from yoetz.kernel.projections import ProjectionRecord, empty_projection_state
-    from yoetz.ports.ledger import (
+    from finishup.domain.events import ActionRecordedPayload, ResultRecordedPayload, encode_payload
+    from finishup.kernel.projections import ProjectionRecord, empty_projection_state
+    from finishup.ports.ledger import (
         AcceptedEventSummary,
         AppendResult,
         ProjectionView,
         StoredProjection,
     )
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.protocol.canonical import canonical_digest
 
     local, _workspace, session, mapping = _mapped_local(tmp_path, "outcome-correction")
 
@@ -4945,9 +4945,9 @@ class _ReattachCell:
         import apsw
 
         from builders.ledger_adapters import FixedClock, FixedIds, MemoryObjects, ownership_fence
-        from yoetz.adapters.memory.importer import MemoryImportState
-        from yoetz.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
-        from yoetz.ports.runtime import RuntimeCapability, TaskRuntime
+        from finishup.adapters.memory.importer import MemoryImportState
+        from finishup.adapters.memory.ledger import MemoryLedgerAdapter, MemoryLedgerState
+        from finishup.ports.runtime import RuntimeCapability, TaskRuntime
 
         self.local, self.workspace, self.session, mapping = _mapped_local(tmp_path, codex_id)
         self.local_root = tmp_path
@@ -5060,7 +5060,7 @@ def _schema_eight_store() -> tuple[object, SqliteObservationStore]:
 
     import apsw
 
-    from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS
+    from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS
 
     db = apsw.Connection(":memory:")
     db.execute("PRAGMA foreign_keys = ON")
@@ -5083,7 +5083,7 @@ async def test_host_hook_row_refused_by_ledger_schema_quarantines_then_delivers_
     the service reported ready. After the bundle migrates, the identical envelope delivers.
     """
 
-    from yoetz.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
+    from finishup.adapters.sqlite.migrations import BUNDLE_MIGRATIONS, run_migrations
 
     cell = _reattach_fixture(tmp_path, f"host-{source.value}")
     db, cell.store = _schema_eight_store()
@@ -5117,7 +5117,11 @@ async def test_host_hook_row_refused_by_ledger_schema_quarantines_then_delivers_
 _REATTACH_ENVELOPES: dict[str, dict[str, object]] = {
     "pre": {"kind": "PreToolUse", "tool": "shell", "corr": "call-560"},
     "paired_post": {"kind": "PostToolUse", "tool": "shell", "corr": "call-560", "exit_status": 0},
-    "yoetz_mcp_post": {"kind": "PostToolUse", "tool": "mcp__yoetz__status", "corr": "call-560-s"},
+    "finishup_mcp_post": {
+        "kind": "PostToolUse",
+        "tool": "mcp__finishup__status",
+        "corr": "call-560-s",
+    },
     "unpaired_post": {
         "kind": "PostToolUse",
         "tool": "shell",
@@ -5138,7 +5142,7 @@ async def test_repeated_observation_replays_committed_operation_across_reattach(
 
     The stable event ids depend on the task and the source identity only, so a
     replayed envelope after a lost acknowledgement, a service restart, or a
-    workflow reattach (which rotates the Yoetz session and writer) must find
+    workflow reattach (which rotates the FinishUP session and writer) must find
     the operation that already committed those ids instead of appending a
     second operation that the ledger rejects as a duplicate event.
     """
@@ -5225,7 +5229,7 @@ async def test_conflicting_reuse_of_a_stable_event_id_still_fails_closed(tmp_pat
 
 
 def _schema_rows(cell: _ReattachCell, name: str) -> list[AcceptedEvent]:
-    from yoetz.domain.events import AcceptedEvent as _Accepted
+    from finishup.domain.events import AcceptedEvent as _Accepted
 
     return [
         row
@@ -5255,7 +5259,7 @@ async def test_paired_pre_then_post_records_one_action_linked_to_its_result(
     second action keyed on the call id, so one call held two actions.
     """
 
-    from yoetz.domain.events import ActionRecordedPayload, ResultOutcome, ResultRecordedPayload
+    from finishup.domain.events import ActionRecordedPayload, ResultOutcome, ResultRecordedPayload
 
     cell = _reattach_fixture(tmp_path, "paired-917")
     pre = _envelope(session=cell.session, kind="PreToolUse", identity="hook:917:pre", corr="c917")
@@ -5312,7 +5316,7 @@ async def test_paired_pre_then_post_records_one_action_linked_to_its_result(
 async def test_post_without_delivered_pre_still_records_its_action(tmp_path: Path) -> None:
     """#917: a post whose pre never reached the ledger keeps its own action.
 
-    Yoetz-owned calls deliver only their post (#564); a post-first order must also
+    FinishUP-owned calls deliver only their post (#564); a post-first order must also
     not strand a later copy of the pre as a ledger conflict.
     """
 
@@ -5320,9 +5324,9 @@ async def test_post_without_delivered_pre_still_records_its_action(tmp_path: Pat
     post = _envelope(
         session=cell.session,
         kind="PostToolUse",
-        identity="hook:917:yoetz-post",
-        tool="mcp__yoetz__publish_work",
-        corr="c917-yoetz",
+        identity="hook:917:finishup-post",
+        tool="mcp__finishup__publish_work",
+        corr="c917-finishup",
     )
     accepted = await cell.ingest(post)
     assert accepted.disposition is ObservationIngestDisposition.ACCEPTED, accepted.reason
@@ -5337,9 +5341,9 @@ async def test_post_without_delivered_pre_still_records_its_action(tmp_path: Pat
         _envelope(
             session=cell.session,
             kind="PreToolUse",
-            identity="stream:917:yoetz-pre",
-            tool="mcp__yoetz__publish_work",
-            corr="c917-yoetz",
+            identity="stream:917:finishup-pre",
+            tool="mcp__finishup__publish_work",
+            corr="c917-finishup",
         ),
         source=ObservationSource.CODEX_SESSION_STREAM,
     )
@@ -5364,9 +5368,9 @@ async def test_pre_committed_before_upgrade_is_never_rematerialized_as_a_third_a
 
     from types import SimpleNamespace
 
-    from yoetz.application import observation_materialize as materialize_module
-    from yoetz.domain.events import ActionRecordedPayload
-    from yoetz.domain.values import action_id
+    from finishup.application import observation_materialize as materialize_module
+    from finishup.domain.events import ActionRecordedPayload
+    from finishup.domain.values import action_id
 
     cell = _reattach_fixture(tmp_path, "upgrade-917")
     pre = _envelope(
@@ -5447,11 +5451,11 @@ async def test_advice_findings_reuse_operation_committed_by_predecessor_session(
 
     from types import SimpleNamespace
 
-    import yoetz.application.observation_coordinator as coordinator_module
-    from yoetz.application.unit_of_work import PreparedMutation
-    from yoetz.domain.observation import AdviceItem, AdviceSnapshot
-    from yoetz.ports.ledger import ProjectionView
-    from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel, weakest
+    import finishup.application.observation_coordinator as coordinator_module
+    from finishup.application.unit_of_work import PreparedMutation
+    from finishup.domain.observation import AdviceItem, AdviceSnapshot
+    from finishup.ports.ledger import ProjectionView
+    from finishup.protocol.coverage import PublicationChannel, coverage_for_channel, weakest
 
     task_id = _task_id()
     successor_session = PREFIX_BY_KIND[IdKind.SESSION] + str(uuid.uuid4())
@@ -5875,7 +5879,7 @@ async def test_ingest_replays_legacy_operation_after_route_cache_restart(tmp_pat
     from types import SimpleNamespace
 
     from builders.ledger_adapters import FixedClock
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         load_mapping,
         load_route_history,
         store_mapping,
@@ -6109,7 +6113,7 @@ async def test_successor_route_cache_preserves_concurrent_lifecycle_changes(
 
     from contextlib import ExitStack
 
-    from yoetz.adapters.integrations.codex_lifecycle import (
+    from finishup.adapters.integrations.codex_lifecycle import (
         acquire_session_lock,
         clear_mapping,
         load_mapping,
@@ -6417,7 +6421,7 @@ async def test_native_activity_releases_runtime_before_lineage_callback(tmp_path
         observed_activity_hook=renew,
         mapping_loader=lambda *_args, **_kwargs: mapping,  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]
     )
-    from yoetz.domain.values import timestamp_from_datetime
+    from finishup.domain.values import timestamp_from_datetime
 
     envelope = replace(
         _envelope(session=session, kind="SubagentStart", identity="hook:activity-release"),
@@ -6724,7 +6728,7 @@ async def test_ingest_releases_runtime_when_final_backlog_feedback_fails(
 async def test_verification_worker_records_no_capture_gap_for_an_absent_check_policy(
     tmp_path: Path, policy_bytes: bytes | None
 ) -> None:
-    """No `.yoetz/checks.toml` is the ordinary opt-in state, not lost content capture (tb4v1).
+    """No `.finishup/checks.toml` is the ordinary opt-in state, not lost content capture (tb4v1).
 
     A present-but-broken policy still records the conservative capture gap, so this test fails if
     the absent branch is deleted or widened.
@@ -6737,8 +6741,8 @@ async def test_verification_worker_records_no_capture_gap_for_an_absent_check_po
     workspace_root.mkdir()
     subprocess.run(["git", "init", "-q", str(workspace_root)], check=True)
     if policy_bytes is not None:
-        (workspace_root / ".yoetz").mkdir()
-        (workspace_root / ".yoetz" / "checks.toml").write_bytes(policy_bytes)
+        (workspace_root / ".finishup").mkdir()
+        (workspace_root / ".finishup" / "checks.toml").write_bytes(policy_bytes)
     locator = canonical_encode(
         {
             "content_kind": "workspace_locator",

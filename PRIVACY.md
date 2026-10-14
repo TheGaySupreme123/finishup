@@ -1,11 +1,11 @@
-# Yoetz privacy
+# FinishUP privacy
 
-> **Specification-stage notice:** this repository does not contain the Yoetz product
+> **Specification-stage notice:** this repository does not contain the FinishUP product
 > implementation yet. The rules below are design commitments being frozen before implementation,
 > not claims about working software. Artifact-bound tests must pass before any release advertises
 > them as implemented guarantees.
 
-Yoetz is designed around one trusted persistent local service. The service—not the CLI, MCP,
+FinishUP is designed around one trusted persistent local service. The service—not the CLI, MCP,
 an agent, an LLM, or a future ordinary UI—owns encryption keys, decrypted local state, privacy
 policy, provider credentials, and outbound dispatch. Normal clients exchange only bounded control
 requests and results.
@@ -26,11 +26,11 @@ checks/retries without per-request human prompts. The user may choose a stricter
 or forked configuration instead.
 
 Repository identity comes from the trusted client's actual/configured working directory, not from an
-agent-supplied task reference. Yoetz resolves Git's common root and creates an installation-keyed
+agent-supplied task reference. FinishUP resolves Git's common root and creates an installation-keyed
 commitment. The raw path is never stored, logged or returned; it stays in service memory for that
 client connection only, so a check can read the check-time change described below. Branches and
 linked worktrees share one grant; independent clones and unrelated repositories need their own.
-Without the exact grant, Yoetz blocks before provider construction, credential-handle minting,
+Without the exact grant, FinishUP blocks before provider construction, credential-handle minting,
 authorization, or dispatch.
 
 Package upgrades preserve accepted machine-policy bytes. A bounded migration may automatically
@@ -49,16 +49,16 @@ crash diagnostics, update checks, and capability testing have separate policies.
 channel never enables another. A separate global network ceiling authorizes nothing by itself.
 `local_only` governs LLM disclosure and may coexist with a separately consented bounded structural
 non-LLM channel. **Package update checks** may contact the allowlisted PyPI JSON endpoint for the
-`yoetz` distribution when the durable `update_checks` channel is enabled (product default: on;
+`finishup` distribution when the durable `update_checks` channel is enabled (product default: on;
 opt-out in first-run setup or privacy custom section 5). That path carries only package name/version
 identity — never task or user content — and never auto-upgrades. On a fresh, unconfigured
 installation, pre-policy advisory paths are local/cache-only and network-disabled, so nothing
 egresses before first-run setup confirms the resulting exact policy. Rerunning setup does not
 suspend or revoke an existing standing policy: ordinary service activity remains governed by that
-policy until a replacement is committed. True Yoetz zero-network mode is the
+policy until a replacement is committed. True FinishUP zero-network mode is the
 composite of `local_only`, the global ceiling off, and all five network channels disabled (including
 turning update checks off). That mode still permits only exact release-profiled local IPC required
-for the Yoetz service, confidential helper, approved local model, OS credential/user-presence
+for the FinishUP service, confidential helper, approved local model, OS credential/user-presence
 service, and session-lifecycle monitor; it does not permit arbitrary AF_UNIX destinations.
 
 An independent review-context profile controls which potentially useful material is selected before
@@ -67,7 +67,7 @@ recommended `assisted` packet includes goal, obligations, claims, decisions, mat
 deterministic finding bases, coverage and change-observation facts, plus bounded problem-local
 recorded evidence/test/failure/diff/source excerpts. It excludes sensitive/confidential content by
 default and carries an explicit omission reason when content was not recorded, selected, or allowed.
-Missing source never means “no code changed.” Yoetz does not browse the filesystem to fill a
+Missing source never means “no code changed.” FinishUP does not browse the filesystem to fill a
 semantic-review packet. The one repository read is the **check-time change** (ADR-031): when the
 review recipe selects diff excerpts, the service reads the task's own repository once per check,
 with Git's hooks, helpers, filters and network transports disabled, and renders the change from the
@@ -80,10 +80,10 @@ content), and the commit each nested repository held with the same names and dig
 untracked files. A nested Git repository inside the task's repository has its own change read from
 that commit, under every fence below, at most eight per check, and its untracked files are left
 out or shown exactly like the outer ones. When no commit was recorded for a nested repository the
-outer one tracks (for example, a task started before Yoetz recorded one), its change starts from
+outer one tracks (for example, a task started before FinishUP recorded one), its change starts from
 the commit the outer repository records for it, and the header says that commits made in it before
 the task may then be included. When a nested repository's untracked files were not recorded whole
-(for example: the task started before Yoetz recorded them; the repository was created during the
+(for example: the task started before FinishUP recorded them; the repository was created during the
 task, had no commit when it started, came after the eighth nested repository or was refused by a
 safety check; or its untracked names did not fit the record, could not be stored in it, could not
 be examined or could not be listed in time), they are named but their content is never read,
@@ -110,7 +110,7 @@ redaction or hunk keeps the finding open. The change is redacted like captured c
 encrypted, and offered to the privacy gateway as bounded `repository_excerpt` items under the same
 policy and never-send scan: a policy whose inference channel does not allow repository excerpts
 never sends it, and the check says the review's context was withheld. Everything else must already
-be captured or agent-published in the frozen case. The separate ADR-011 `yoetz state capture`
+be captured or agent-published in the frozen case. The separate ADR-011 `finishup state capture`
 support command may read one explicitly named local Git worktree and return only bounded structural
 state digests. It returns no source or path content. Neither it nor the check-time change gives MCP
 clients or review providers a repository handle.
@@ -118,7 +118,7 @@ clients or review providers a repository handle.
 The upstream recommendation appears only for an exact installed endpoint whose current versioned
 data-use record states customer-content training `prohibited`, retention `none|bounded`, and
 provider human access `prohibited|restricted`. This is inspectable provider-profile evidence, not a
-technical guarantee that Yoetz can prove downstream provider behavior. Known-broad, unknown, or
+technical guarantee that FinishUP can prove downstream provider behavior. Known-broad, unknown, or
 stale posture removes the recommendation. The recommended recipe visibly enables a current-evidence runtime guard; a
 technical user can turn that guard off through a custom policy, but that choice no longer carries
 the upstream no-training recommendation.
@@ -153,7 +153,7 @@ for, on a vault you unlocked, on your own machine, is not a disclosure to anyone
 answer gates it. An unconfigured install still shows you your own findings in full.
 
 Releasing content into an *agent-capable host* is a different sink, and that one is gated — because
-that host may forward its context to its own provider, and Yoetz can neither see nor promise
+that host may forward its context to its own provider, and FinishUP can neither see nor promise
 anything about what happens there. That gate is conditioned on authorship. An agent always receives
 back the material it published and the deterministic findings computed solely from it: that content
 is already sitting in its context, so withholding it would protect nothing while breaking the very
@@ -163,7 +163,7 @@ work, imported records, and a semantic reviewer's prose — stays gated until yo
 Authorship never unlocks a data class. Sensitive/confidential content and the never-send set above
 remain absolute at every sink, no matter who wrote what.
 
-The same boundary applies to structural subject-state capture. `yoetz state capture` is a local CLI
+The same boundary applies to structural subject-state capture. `finishup state capture` is a local CLI
 operation: it hashes the explicitly selected worktree without networking and emits only closed
 metadata and digests to the invoking terminal. It does not persist file contents or names, inspect
 an arbitrary MCP-supplied path, populate a semantic-review packet, or prove who made a change. If
@@ -179,17 +179,17 @@ preview, receipt, log, environment, configuration, or reusable SDK state. Encryp
 recovery secrets have no such exception. Choosing literal zero credential egress would disable
 credentialed external providers.
 
-The separate `external_runtime_oauth` authority never takes a credential from the Yoetz vault. For
+The separate `external_runtime_oauth` authority never takes a credential from the FinishUP vault. For
 the exact Codex subscription profile, Codex owns ChatGPT login, refresh, credential storage, and
-the upstream OpenAI body. Yoetz supplies only a secret-free one-attempt authority and the already
+the upstream OpenAI body. FinishUP supplies only a secret-free one-attempt authority and the already
 approved case through app-server stdin. A dedicated Codex home may be named in nonsecret config;
-Yoetz never reads, hashes, copies, logs, exports, or stores its credential bytes or account email.
+FinishUP never reads, hashes, copies, logs, exports, or stores its credential bytes or account email.
 There is no API-key, proxy, generic OAuth, or undocumented-endpoint fallback.
 
 ## Local models and human authority
 
 A local model receives plaintext only after the same classification, minimization, scope, and
-never-send checks. Yoetz itself uses an exact AF_UNIX-only path and performs no model launch,
+never-send checks. FinishUP itself uses an exact AF_UNIX-only path and performs no model launch,
 download, DNS, or IP networking. A separately running model process is nevertheless a trusted
 local disclosure sink unless its exact support cell proves enforceable no-network sandboxing.
 
@@ -224,13 +224,13 @@ either later requires an explicit ADR amendment.
 Each successfully reserved terminal outbound decision and every physical attempt produces a local
 structural receipt with destination, policy/scope/category decisions, sizes, transformations,
 consent source, bounded outcome, and—only for a physical attempt—a keyed commitment to the final
-application bytes at the Yoetz-controlled boundary. For HTTP profiles those are the provider body
-before authentication metadata. For `external_runtime_oauth` they are the disclosed Yoetz case;
+application bytes at the FinishUP-controlled boundary. For HTTP profiles those are the provider body
+before authentication metadata. For `external_runtime_oauth` they are the disclosed FinishUP case;
 Codex's upstream body is explicitly unavailable, and separate runtime evidence binds the exact
 launcher/config/protocol/model/output boundary. Waiting for a human, approval, and
 consumed-but-unreceipted work
 remain resumable internal states, not finished receipts. If the initial audit reservation itself
-fails, Yoetz fails closed before preview/authorization/dispatch and returns bounded `audit_failed`
+fails, FinishUP fails closed before preview/authorization/dispatch and returns bounded `audit_failed`
 without fabricating a receipt; this is the sole no-receipt decision exception. Receipts contain no
 request body, credential, header, path, raw response, or unbounded provider error. Content-bearing
 v0.1 privacy proposals are encrypted in their owning task bundle; taskless unavailable-channel
@@ -250,7 +250,7 @@ logs, status, or receipts). Revocation stops new ingestion and retains already-k
 
 Observation never retains hidden reasoning or complete transcript prose. Sensitive bounded evidence
 lives only in encrypted objects; plaintext observation state is allowlisted structural fields plus
-commitments. On vault or service outage Yoetz never creates an unencrypted transcript spool.
+commitments. On vault or service outage FinishUP never creates an unencrypted transcript spool.
 Semantic review receives only minimized approved packets. Secret-like command output never appears
 in status, logs, hook advice, or semantic packets. Live observation uses local control methods, not
 a seventh MCP tool; advice surfaces through nonblocking hooks and ordinary `status`.
@@ -278,16 +278,16 @@ CI. A claim whose own wording names still-missing capability or drill evidence r
 
 ## How to inspect or report a privacy problem
 
-Everything Yoetz decides about your data is designed to be inspectable locally. Privacy policy
+Everything FinishUP decides about your data is designed to be inspectable locally. Privacy policy
 answers are plain reviewed configuration you can read and edit; every terminal outbound decision
 and physical attempt leaves a local structural egress receipt; and the installation privacy
 catalog keeps encrypted proposal objects and their structural sidecars enumerable for the
 supported installation-data lifetime. No control surface is required to trust a summary: the
 receipts, catalog, and policy file are the evidence, and they live on your machine.
 
-If you believe Yoetz has disclosed, retained, or logged something these commitments forbid,
+If you believe FinishUP has disclosed, retained, or logged something these commitments forbid,
 treat it as a security report: use GitHub private vulnerability reporting or email
-`support@yoetz.dev`. Never open a public issue for a report that may itself contain sensitive
+`support@finishup.dev`. Never open a public issue for a report that may itself contain sensitive
 content. Ordinary non-sensitive questions about privacy behavior belong in repository issues.
 The repository security policy ([`SECURITY.md`](SECURITY.md)) defines the private routes; they are
 verified before any release that advertises them.

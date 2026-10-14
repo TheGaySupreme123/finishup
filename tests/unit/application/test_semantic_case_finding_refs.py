@@ -23,17 +23,17 @@ from builders.policy_cases import (
     plan_record,
     record,
 )
-from yoetz.application.check import (
+from finishup.application.check import (
     CheckScope,
     allocate_findings,
     prior_finding_ids,
     run_deterministic_policies,
 )
-from yoetz.application.semantic_case import (
+from finishup.application.semantic_case import (
     build_semantic_case,
     semantic_case_to_prepared_payload,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceKind,
@@ -42,16 +42,16 @@ from yoetz.domain.events import (
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.findings import Finding, FindingKind
-from yoetz.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
-from yoetz.domain.receipts import SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP
-from yoetz.domain.values import EvidenceId, FindingId, timestamp_from_string
-from yoetz.kernel.deterministic_checks import CaseGap, DeterministicCase
-from yoetz.kernel.projections import EvidenceProjectionRecord, FindingProjectionRecord
-from yoetz.ports.semantic import MAX_SEMANTIC_ITEM_SUBJECT_REFS, SemanticCase
-from yoetz.protocol.coverage import EvidenceImmutability, LedgerFreshness
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import DataCategory
+from finishup.domain.findings import Finding, FindingKind
+from finishup.domain.privacy import ReviewContextProfile, ReviewSelectionPolicy
+from finishup.domain.receipts import SEMANTIC_CASE_FINDING_REFS_OVER_LIMIT_GAP
+from finishup.domain.values import EvidenceId, FindingId, timestamp_from_string
+from finishup.kernel.deterministic_checks import CaseGap, DeterministicCase
+from finishup.kernel.projections import EvidenceProjectionRecord, FindingProjectionRecord
+from finishup.ports.semantic import MAX_SEMANTIC_ITEM_SUBJECT_REFS, SemanticCase
+from finishup.protocol.coverage import EvidenceImmutability, LedgerFreshness
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import DataCategory
 
 _PACKS = ("research-evidence/0.2.0", "work-integrity/0.3.0")
 _PROSE_PROFILES = (

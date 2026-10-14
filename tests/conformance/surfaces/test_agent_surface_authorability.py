@@ -10,15 +10,15 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.mcp.descriptors import (
+from finishup.mcp.descriptors import (
     ORDINARY_MCP_PUBLISH_EVENT_FAMILIES,
     TOOL_DESCRIPTORS,
     McpRouteProfile,
     descriptor_for,
 )
-from yoetz.mcp.resources import GUIDANCE_RESOURCES
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import (
+from finishup.mcp.resources import GUIDANCE_RESOURCES
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import (
     CheckRequestModel,
     ClosurePrepareRequestModel,
     PublishWorkRequestModel,
@@ -41,7 +41,7 @@ _ENVELOPE_FIELDS = {
 }
 _DROPPED_METADATA_KEYS = frozenset({"$defs", "enum", "examples", "oneOf"})
 _JSON_FENCE_RE = re.compile(r"```json\n(?P<body>.*?)\n```", re.DOTALL)
-_REQUEST_TEMPLATE_URI = "yoetz://guidance/request-templates.md"
+_REQUEST_TEMPLATE_URI = "finishup://guidance/request-templates.md"
 _OBSERVATION_FIXTURE = (
     Path(__file__).resolve().parents[3]
     / "fixtures"

@@ -9,9 +9,9 @@ from typing import Any
 
 import pytest
 
-import yoetz.adapters.git_change_capture as capture_module
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
-from yoetz.ports.change_capture import CheckChangeCapture
+import finishup.adapters.git_change_capture as capture_module
+from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.ports.change_capture import CheckChangeCapture
 
 
 def _git(repository: Path, *arguments: str) -> str:
@@ -42,9 +42,9 @@ def _repository(tmp_path: Path) -> Path:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -167,9 +167,9 @@ def _commit_all(repository: Path) -> None:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",

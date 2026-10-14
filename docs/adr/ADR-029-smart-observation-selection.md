@@ -3,7 +3,7 @@
 **Status:** Proposed for issue #687; the maintainer requested the complete implementation in one
 draft PR on 2026-09-10. Product direction is acknowledged; measured performance acceptance and
 the larger-profile rollout remain review decisions on that issue. Amended 2026-09-24 for #828
-(configurable capacity policy, custom counts, and the typed no-Yoetz-cap outcome) and 2026-09-25
+(configurable capacity policy, custom counts, and the typed no-FinishUP-cap outcome) and 2026-09-25
 for #843 (a finite over-target drain bound that keeps accounting writable) and #836
 (stranded capture handoffs are reconciled as admission-independent maintenance).
 
@@ -275,7 +275,7 @@ pending rows, quarantine, or loss history.
 
 Status distinguishes selected and effective settings, origin, scope and expiry, current pressure,
 and historical loss. A downgrade and a recovery each produce one notice; actual loss and stalled
-recovery use bounded aggregation. Status reads and successful redundant Yoetz bookkeeping must
+recovery use bounded aggregation. Status reads and successful redundant FinishUP bookkeeping must
 not amplify their own observation traffic.
 
 ### Evidence and receipts
@@ -302,16 +302,16 @@ remaining limits before this draft is marked ready. Larger profiles are not vali
 passing a count-boundary unit test. No live installation or private corpus is changed by the
 implementation or its synthetic benchmarks.
 
-## Amendment — configurable capacity policy, custom counts and the no-Yoetz-cap outcome (2026-09-24, #828)
+## Amendment — configurable capacity policy, custom counts and the no-FinishUP-cap outcome (2026-09-24, #828)
 
-Issue #828 asks for explicit larger, custom and no-Yoetz-cap choices for multi-agent capacity,
+Issue #828 asks for explicit larger, custom and no-FinishUP-cap choices for multi-agent capacity,
 each with a resource and cost disclosure on the terminal interface, the CLI and agent guidance.
 This amendment delivers the local structural observation queue dimension end to end and records
 the policy for the other dimensions. It does not change any default.
 
 ### Capacity dimensions
 
-| Dimension | Owner-selectable finite values | No Yoetz cap | Status |
+| Dimension | Owner-selectable finite values | No FinishUP cap | Status |
 | --- | --- | --- | --- |
 | Structural observation queue | `standard` 512, `larger` 2,048, `largest` 8,192, or `custom` 64..8,192 rows | Unsupported: typed `capacity_no_cap_unsupported`, reason `state_document_ceiling` | Implemented |
 | Pending pre/post pairs | Fixed at 256 | Unsupported | Unchanged |
@@ -331,7 +331,7 @@ The 512, 2,048 and 8,192 profiles produce exactly the limits in the profile tabl
 pressure, and setting lifetime. The pending-pair,
 capture, diagnostic, optional-detail and pressure-threshold values are the same for every count.
 
-### No Yoetz cap
+### No FinishUP cap
 
 The local observation state is one document that is re-encoded on every save. Its 16 MiB safety
 ceiling is a product quota that would defeat any "unlimited" queue selection downstream, so this
@@ -356,7 +356,7 @@ and `validation_status: not_validated`. Every command in the disclosure and ever
 uses the literal `<workspace>` and `<session-id>` placeholders rather than the typed path or session
 id. The CLI human output and the terminal interface render that record through one shared renderer,
 and agent guidance tells agents to relay those lines, so the three surfaces cannot drift. An
-increase names possible disk, memory and CPU use and possible slowdown of Yoetz or other apps, and
+increase names possible disk, memory and CPU use and possible slowdown of FinishUP or other apps, and
 carries the consequence token `workspace_aggregate_raised` with the line that the shared workspace
 queue follows the largest active selection, so it can raise the queue and state-document bounds for
 every session in the workspace. A decrease affects future admission only; accepted records drain and
@@ -500,7 +500,7 @@ later phase without the action draft only when the task ledger already projects 
 event, so its result and captured evidence link to the committed action; any other state appends
 the full batch as before. This is a delay, not a drop: an individually flushed pre still becomes a
 pending action at its five-second deadline, a post whose pre never reached the ledger (for example
-a Yoetz-owned call, #564) still records its own action, and no post or its outcome is dropped. The
+a FinishUP-owned call, #564) still records its own action, and no post or its outcome is dropped. The
 dropped duplicate is not an input omission and is not counted as one.
 
 The materialization mapping version stays `obs-ledger/1.7.0`: every other identity, including
@@ -597,11 +597,11 @@ a mid-session `check` still froze whatever the ledger held.
 ### Decision
 
 - `check` accepts an optional boolean `await_observations` (check-request 1.1.0, unreleased,
-  additive in place; MCP `check` and `yoetz check --await-observations`). Omitted or `false`
+  additive in place; MCP `check` and `finishup check --await-observations`). Omitted or `false`
   keeps today's behaviour and bytes.
 - When `true`, the service, before it takes either dispatch gate and before the case freezes,
   snapshots the local hook outbox rows that belong to the check's task: rows of every host session
-  whose lifecycle mapping names the check's Yoetz session, across all workspaces with pending
+  whose lifecycle mapping names the check's FinishUP session, across all workspaces with pending
   delivery work. This is the same task rule the Stop gate uses (`observation_task_pending`),
   minus the Stop hook's own unmapped host session, which the service cannot name. The service
   wakes its observation sweeper and polls that real local state until none of the snapshot rows is
@@ -637,7 +637,7 @@ Owner decision (P3-2): "just ack the image, don't send it".
 ### Problem
 
 tb4n1 lost image tool results (`view_image`, screenshots read back, MCP image blocks) at the old
-hook ingress cap, and an agent that inspected its rendered deliverable then had no Yoetz-held
+hook ingress cap, and an agent that inspected its rendered deliverable then had no FinishUP-held
 record that it had looked. The review packet cannot carry images, so the agent had nothing to cite.
 
 ### Decision

@@ -15,38 +15,43 @@ from typing import cast
 import apsw
 import pytest
 
-import yoetz.service.ready_composition as ready_module
+import finishup.service.ready_composition as ready_module
 from conformance.adapters import test_start_catalog_port as catalog_fixture
-from integration.application import test_native_capture_pipeline as native
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.sqlite.migrations import initialize_bundle
-from yoetz.adapters.sqlite.observation import SqliteObservationStore
-from yoetz.adapters.sqlite.start_catalog import SqliteStartCatalog
-from yoetz.application.observation_coordinator import ObservationCoordinator
-from yoetz.application.observation_drain import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.sqlite.migrations import initialize_bundle
+from finishup.adapters.sqlite.observation import SqliteObservationStore
+from finishup.adapters.sqlite.start_catalog import SqliteStartCatalog
+from finishup.application.observation_coordinator import ObservationCoordinator
+from finishup.application.observation_drain import (
     ObservationCaptureRecoveryOutcome,
     ObservationOutboxSweeper,
 )
-from yoetz.application.semantic_content import resolve_captured_semantic_content
-from yoetz.domain.observation import (
+from finishup.application.semantic_content import resolve_captured_semantic_content
+from finishup.domain.observation import (
     ObservationCaptureBacklog,
     ObservationCaptureTicket,
     ObservationCursor,
     ObservationIngestRequest,
     ObservationSource,
 )
-from yoetz.domain.observation_budget import BudgetLimits, CapacityProfile
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_budget import BudgetLimits, CapacityProfile
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import timestamp_from_datetime
-from yoetz.ports.ledger import FrozenCase
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.ports.start_catalog import StartAllocation, StartCatalogPort, TaskRoute, TaskRouteState
-from yoetz.protocol.canonical import JsonValue as CanonicalJsonValue
-from yoetz.protocol.canonical import canonical_digest, canonical_encode
-from yoetz.protocol.ids import IdKind
+from finishup.domain.values import timestamp_from_datetime
+from finishup.ports.ledger import FrozenCase
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.ports.start_catalog import (
+    StartAllocation,
+    StartCatalogPort,
+    TaskRoute,
+    TaskRouteState,
+)
+from finishup.protocol.canonical import JsonValue as CanonicalJsonValue
+from finishup.protocol.canonical import canonical_digest, canonical_encode
+from finishup.protocol.ids import IdKind
+from integration.application import test_native_capture_pipeline as native
 
 _REPOSITORY = "hmac-sha256:" + "7" * 64
 
@@ -652,7 +657,7 @@ async def test_duplicate_host_session_binding_is_refused_before_inventory_change
     other_workspace = world.local.workspace_commitment(str(unrelated))
     world.local.grant_consent(other_workspace)
     try:
-        from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+        from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
         with pytest.raises(PublicOperationError) as refused:
             world.local.bind_codex_session(other_workspace, world.host_session)

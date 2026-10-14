@@ -1,4 +1,4 @@
-"""Shared deterministic pytest support for all Yoetz test suites."""
+"""Shared deterministic pytest support for all FinishUP test suites."""
 
 from __future__ import annotations
 
@@ -30,11 +30,11 @@ def _isolated_diagnostic_log(  # pyright: ignore[reportUnusedFunction]
     The import is deliberately inside the fixture. The portable console-boundary job runs
     ``tests/unit/cli/test_trusted_console.py`` with pytest alone and no project dependencies, and
     this file is a ``conftest`` on that path; importing the diagnostics module at module scope
-    pulls in ``platformdirs`` through ``yoetz.config.paths`` and breaks collection there.
+    pulls in ``platformdirs`` through ``finishup.config.paths`` and breaks collection there.
     """
 
     try:
-        import yoetz.observability.diagnostics as diagnostics_module
+        import finishup.observability.diagnostics as diagnostics_module
     except ImportError:
         return  # No project dependencies installed, so there is no durable sink to redirect.
 
@@ -52,7 +52,7 @@ def _isolated_command_identity_key() -> Iterator[None]:  # pyright: ignore[repor
     """
 
     try:
-        import yoetz.kernel.task_facts as task_facts_module
+        import finishup.kernel.task_facts as task_facts_module
     except ImportError:
         yield
         return
@@ -75,7 +75,7 @@ def _isolated_hook_pass_timing(  # pyright: ignore[reportUnusedFunction]
     """
 
     try:
-        import yoetz.cli.hook_timing as hook_timing_module
+        import finishup.cli.hook_timing as hook_timing_module
     except ImportError:
         return
 

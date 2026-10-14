@@ -7,7 +7,7 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.compaction_recap import (
+from finishup.domain.compaction_recap import (
     RECAP_CONTEXT_LIMIT,
     RECAP_LIMIT,
     RecapCheck,
@@ -323,7 +323,7 @@ def test_identifier_fields_cannot_start_a_line_or_forge_a_source_label() -> None
     assert all(
         line.startswith(
             (
-                "Yoetz recap",
+                "FinishUP recap",
                 "ids:",
                 "frontier:",
                 "plan:",

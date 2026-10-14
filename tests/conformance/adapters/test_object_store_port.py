@@ -13,10 +13,10 @@ from typing import TYPE_CHECKING
 import pytest
 from cryptography.hazmat.primitives.keywrap import aes_key_unwrap, aes_key_wrap
 
-from yoetz.adapters.memory.objects import MemoryObjectStore
-from yoetz.adapters.objects.encrypted_files import EncryptedFilesObjectStore
-from yoetz.ports.keys import BundleKeys, WrappedDek
-from yoetz.ports.objects import (
+from finishup.adapters.memory.objects import MemoryObjectStore
+from finishup.adapters.objects.encrypted_files import EncryptedFilesObjectStore
+from finishup.ports.keys import BundleKeys, WrappedDek
+from finishup.ports.objects import (
     OBJECT_COMMITMENT_DOMAINS,
     ObjectKind,
     ObjectMetadata,
@@ -24,15 +24,15 @@ from yoetz.ports.objects import (
     ObjectRootSnapshot,
     ObjectSource,
 )
-from yoetz.ports.secret_memory import (
+from finishup.ports.secret_memory import (
     SecretConsumer,
     SecretMemoryCapability,
     SecretPurpose,
 )
-from yoetz.protocol.ids import IdKind
+from finishup.protocol.ids import IdKind
 
 if TYPE_CHECKING:
-    from yoetz.ports.secret_memory import SecretHandle
+    from finishup.ports.secret_memory import SecretHandle
 
 _DIGEST = "sha256:" + "0" * 64
 _TASK_ID = "tsk_30000000-0000-4000-8000-000000000001"
@@ -175,7 +175,7 @@ async def _read(ref: ObjectRef, store: MemoryObjectStore | EncryptedFilesObjectS
 
 
 async def _source_chunks() -> AsyncIterator[bytes]:
-    yield b"\0YOETZ"
+    yield b"\0FINISHUP"
     yield b"\xff synthetic object payload\n"
 
 
@@ -186,7 +186,7 @@ async def test_stage_finalize_open_parity(tmp_path: Path) -> None:
     metadata = ObjectMetadata(
         ObjectKind.CAPTURED_CONTENT, "application/octet-stream", _TASK_ID, now
     )
-    plaintext = b"\0YOETZ\xff synthetic object payload\n"
+    plaintext = b"\0FINISHUP\xff synthetic object payload\n"
 
     results: list[tuple[str, bytes]] = []
     for store in stores:

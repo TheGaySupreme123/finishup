@@ -1,4 +1,4 @@
-"""Honesty conformance: adversarial fixtures never let Yoetz overclaim capability or coverage.
+"""Honesty conformance: adversarial fixtures never let FinishUP overclaim capability or coverage.
 
 Grounded entirely in the reviewed ``fixtures/adversarial/ADV-*.case.json`` corpus and its
 ``owns_requirements`` declarations: every registered ``FindingKind`` is owned by exactly one of the
@@ -13,8 +13,7 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, cast
 
-from fixture_loader import FixtureLoader, JsonValue
-from yoetz.domain.events import (
+from finishup.domain.events import (
     EVIDENCE_SCHEMA_VERSION,
     AcceptedEvent,
     EventPayload,
@@ -34,8 +33,8 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.findings import CandidateFinding, Finding, FindingKind, finding_from_json
-from yoetz.domain.values import (
+from finishup.domain.findings import CandidateFinding, Finding, FindingKind, finding_from_json
+from finishup.domain.values import (
     Actor,
     ActorType,
     EventId,
@@ -54,18 +53,18 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel.deterministic_checks import (
     CaseAvailabilityFacts,
     UnavailableCapturedObject,
     build_deterministic_case,
     healthy_storage_availability,
     run_deterministic_policies,
 )
-from yoetz.kernel.policies.research_evidence import RESEARCH_EVIDENCE_POLICY_PACK
-from yoetz.kernel.policies.work_integrity import WORK_INTEGRITY_POLICY_PACK
-from yoetz.kernel.reducers import replay
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest
-from yoetz.protocol.coverage import (
+from finishup.kernel.policies.research_evidence import RESEARCH_EVIDENCE_POLICY_PACK
+from finishup.kernel.policies.work_integrity import WORK_INTEGRITY_POLICY_PACK
+from finishup.kernel.reducers import replay
+from finishup.protocol.canonical import canonical_digest, canonical_encode, entry_digest
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -75,6 +74,7 @@ from yoetz.protocol.coverage import (
     PublicationChannel,
     coverage_to_json,
 )
+from fixture_loader import FixtureLoader, JsonValue
 
 # The exhaustive public policy-rule mapping frozen by the fixture ``owns_requirements`` fields.
 # The fourteen built-in policy FindingKind values are owned by exactly one of these seven

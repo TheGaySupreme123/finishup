@@ -11,11 +11,11 @@ import pytest
 from pydantic import ValidationError
 from tests.builders.privacy_policies import local_only_policy
 
-from yoetz.cli import setup
-from yoetz.cli import setup_readiness as module
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.protocol.setup_readiness import SetupReadiness
+from finishup.cli import setup
+from finishup.cli import setup_readiness as module
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.protocol.setup_readiness import SetupReadiness
 
 
 @pytest.mark.anyio
@@ -108,7 +108,7 @@ def test_continuation_quotes_and_pins_runtime_project_and_isolation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    launcher = tmp_path / "bin with space" / "yoetz"
+    launcher = tmp_path / "bin with space" / "finishup"
     launcher.parent.mkdir()
     launcher.write_text("#!/bin/sh\n")
     launcher.chmod(0o700)
@@ -122,7 +122,7 @@ def test_continuation_quotes_and_pins_runtime_project_and_isolation(
         str(project),
         "&&",
         "env",
-        f"YOETZ_ISOLATED_ROOT={root}",
+        f"FINISHUP_ISOLATED_ROOT={root}",
         str(launcher.resolve()),
         "service",
         "unlock",
@@ -160,8 +160,8 @@ def test_vault_setup_continuation_is_storage_only_and_reports_selected_host(
 ) -> None:
     from typing import cast
 
-    from yoetz.adapters.integrations.host_discovery import HostInstallation, SetupHost
-    from yoetz.cli import host_connection
+    from finishup.adapters.integrations.host_discovery import HostInstallation, SetupHost
+    from finishup.cli import host_connection
 
     selected = HostInstallation(
         cast(SetupHost, host), tmp_path / host, "1.0.0", tmp_path / "home", host
@@ -199,7 +199,7 @@ async def test_storage_only_ceremony_stops_before_provider_selection(
     def forbidden(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("storage-only setup must never configure a provider")
 
-    monkeypatch.setattr("yoetz.cli.provider_binding.prompt_provider_endpoint_binding", forbidden)
+    monkeypatch.setattr("finishup.cli.provider_binding.prompt_provider_endpoint_binding", forbidden)
     service: dict[str, JsonValue] = {
         "reachable": True,
         "state": "ready",
@@ -225,7 +225,7 @@ async def test_storage_only_keyring_unlock_uses_existing_confidential_path(
     async def ready() -> dict[str, JsonValue]:
         return {"reachable": True, "state": "ready", "vault_mode": "os_keyring"}
 
-    monkeypatch.setattr("yoetz.cli.unlock.retry_keyring", unlock)
+    monkeypatch.setattr("finishup.cli.unlock.retry_keyring", unlock)
     monkeypatch.setattr(setup, "_service_reachability", ready)
     observed, _provider = await setup._interactive_provider_setup(  # pyright: ignore[reportPrivateUsage]
         {"reachable": True, "state": "locked", "vault_mode": "os_keyring"},
@@ -253,12 +253,12 @@ def test_module_continuation_preserves_venv_interpreter_spelling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     interpreter = str(tmp_path / "venv" / "bin" / "python")
-    monkeypatch.setattr(module, "invoking_launcher", lambda: (interpreter, "-m", "yoetz"))
+    monkeypatch.setattr(module, "invoking_launcher", lambda: (interpreter, "-m", "finishup"))
     monkeypatch.setattr(module, "isolated_root", lambda: None)
     assert shlex.split(module.continuation(["setup", "vault"])) == [
         interpreter,
         "-m",
-        "yoetz",
+        "finishup",
         "setup",
         "vault",
     ]
@@ -273,8 +273,8 @@ def test_setup_status_next_names_the_background_advice_setting(
 ) -> None:
     """Issue #888: setup status shows the effective background-advice state and its reason."""
 
-    from yoetz.config import load as config_load
-    from yoetz.config.models import YoetzConfig
+    from finishup.config import load as config_load
+    from finishup.config.models import FinishUpConfig
 
     async def ready(_project: Path, _operation: str) -> dict[str, JsonValue]:
         return {"service": {"reachable": True, "state": "ready", "vault_mode": "passphrase"}}
@@ -282,8 +282,8 @@ def test_setup_status_next_names_the_background_advice_setting(
     monkeypatch.setattr(module, "installation_readiness", ready)
     monkeypatch.setattr(module, "isolated_root", lambda: None)
 
-    def _load(*_args: object) -> YoetzConfig:
-        return YoetzConfig()
+    def _load(*_args: object) -> FinishUpConfig:
+        return FinishUpConfig()
 
     monkeypatch.setattr(config_load, "load_config", _load)
     module.setup_next(

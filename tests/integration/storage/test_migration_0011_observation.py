@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import apsw
 
-from yoetz.adapters.sqlite.connection import verify_schema_identity
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.sqlite.connection import verify_schema_identity
+from finishup.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     current_schema_version,
     run_migrations,
 )
-from yoetz.protocol.canonical import canonical_encode
+from finishup.protocol.canonical import canonical_encode
 
 _WORKSPACE = "hmac-sha256:" + "a" * 64
 _SESSION = "hmac-sha256:" + "b" * 64
@@ -18,7 +18,7 @@ _SOURCE = "hmac-sha256:" + "c" * 64
 _CONTENT = "hmac-sha256:" + "d" * 64
 _OBJECT_ID = "obj_00000000-0000-4000-8000-000000001101"
 _TASK_ID = "tsk_00000000-0000-4000-8000-000000001101"
-_YOETZ_SESSION_ID = "ses_00000000-0000-4000-8000-000000001102"
+_FINISHUP_SESSION_ID = "ses_00000000-0000-4000-8000-000000001102"
 _TIME = "2026-09-06T10:00:00.000Z"
 
 
@@ -263,7 +263,7 @@ def test_schema_ten_upgrade_preserves_rows_and_installs_capture_ticket_shape() -
             ticket_id,
             _WORKSPACE,
             _TASK_ID,
-            _YOETZ_SESSION_ID,
+            _FINISHUP_SESSION_ID,
             _SESSION,
             "claude_hook",
             "hook:claude:1101",

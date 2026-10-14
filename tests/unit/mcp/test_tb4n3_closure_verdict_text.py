@@ -10,7 +10,7 @@ counters that explain it follow it.
 
 from __future__ import annotations
 
-from yoetz.mcp.summaries import summary_for_status
+from finishup.mcp.summaries import summary_for_status
 
 _HEAD = "sha256:" + "a" * 64
 _STOP = (
@@ -100,8 +100,8 @@ _RECHECKS = [
 def test_the_announced_rechecks_follow_the_stop_sentence_on_every_surface() -> None:
     """A "nothing further to do" is never followed by a surprise gate: the text names the re-reads."""
 
-    from yoetz.domain.closure import recheck_note
-    from yoetz.protocol.readiness_text import recheck_note as shared
+    from finishup.domain.closure import recheck_note
+    from finishup.protocol.readiness_text import recheck_note as shared
 
     readiness = _status(rechecks=_RECHECKS)["closure_readiness"]
     sentence = shared(readiness)
@@ -118,7 +118,7 @@ def test_the_announced_rechecks_follow_the_stop_sentence_on_every_surface() -> N
 
 
 def test_findings_awaiting_a_ruling_are_named_with_the_frontier_of_the_rejection() -> None:
-    from yoetz.protocol.readiness_text import awaiting_ruling_variants
+    from finishup.protocol.readiness_text import awaiting_ruling_variants
 
     counts: dict[str, str] = {
         "to_do": "1",

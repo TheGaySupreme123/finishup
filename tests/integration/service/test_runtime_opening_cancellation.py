@@ -10,17 +10,17 @@ from typing import cast
 
 import pytest
 
-import yoetz.adapters.sqlite.connection as connection_module
-import yoetz.adapters.sqlite.recovery as recovery_module
-import yoetz.service.ready_composition as ready_composition_module
-from yoetz.adapters.runtime import open_local_bundle_runtime
-from yoetz.ports.diagnostics import RuntimeCapability, StartupCheckResult
-from yoetz.ports.keys import BundleKeys
-from yoetz.ports.runtime import OwnershipFence, RouteAccess, RouteCommand, ServiceRuntimeContext
-from yoetz.ports.start_catalog import TaskRoute, TaskRouteState
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.service.ready_composition import IdPort
+import finishup.adapters.sqlite.connection as connection_module
+import finishup.adapters.sqlite.recovery as recovery_module
+import finishup.service.ready_composition as ready_composition_module
+from finishup.adapters.runtime import open_local_bundle_runtime
+from finishup.ports.diagnostics import RuntimeCapability, StartupCheckResult
+from finishup.ports.keys import BundleKeys
+from finishup.ports.runtime import OwnershipFence, RouteAccess, RouteCommand, ServiceRuntimeContext
+from finishup.ports.start_catalog import TaskRoute, TaskRouteState
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.ids import IdKind, new_id
+from finishup.service.ready_composition import IdPort
 
 _SERVICE_INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000001"
 

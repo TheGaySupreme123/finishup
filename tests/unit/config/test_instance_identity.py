@@ -18,7 +18,7 @@ from typing import cast
 import pytest
 from platformdirs import PlatformDirs
 
-from yoetz.config.installation import (
+from finishup.config.installation import (
     INSTANCE_IDENTITY_SCHEMA,
     InstanceIdentity,
     InstanceIdentityError,
@@ -33,7 +33,7 @@ from yoetz.config.installation import (
     write_instance_identity,
     write_runtime_pin,
 )
-from yoetz.config.paths import (
+from finishup.config.paths import (
     ISOLATED_ROOT_ENV,
     RUNTIME_PIN_NAME,
     PathSafetyError,
@@ -62,7 +62,7 @@ def _probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, prefix: Path) -> 
         home=tmp_path,
         shared_temp=private_temp,
         fixed_shared_temps=(),
-        platform_dirs=PlatformDirs(appname="yoetz", appauthor=False, roaming=False),
+        platform_dirs=PlatformDirs(appname="finishup", appauthor=False, roaming=False),
         mount_table=lambda: "rootfs / ext4 rw 0 0",
         macos_fstype=lambda _path: None,
         diagnostic=lambda _reason: None,

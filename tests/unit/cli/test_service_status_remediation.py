@@ -2,7 +2,7 @@
 
 "Nothing is listening" and "something is listening and silent" arrive on the same wire reason but
 need opposite next steps. Sending an operator from an unresponsive-but-live daemon to
-`yoetz service run` produced a pair of commands that each pointed at the other.
+`finishup service run` produced a pair of commands that each pointed at the other.
 """
 
 # pyright: reportPrivateUsage=false
@@ -15,12 +15,12 @@ from typing import cast
 import pytest
 from typer.testing import CliRunner
 
-import yoetz.cli.app as cli
-import yoetz.config.paths as paths
-import yoetz.service.client as client_module
-from yoetz.ports.control import ControlError
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.service.client import ServiceClient
+import finishup.cli.app as cli
+import finishup.config.paths as paths
+import finishup.service.client as client_module
+from finishup.ports.control import ControlError
+from finishup.protocol.errors import PublicErrorCode
+from finishup.service.client import ServiceClient
 
 
 def _status_stderr(monkeypatch: pytest.MonkeyPatch, error: ControlError) -> tuple[int, str]:
@@ -51,13 +51,13 @@ def test_unresponsive_daemon_and_absent_daemon_get_different_next_steps(
     assert silent_code == absent_code == 20
     assert silent.startswith("service_unavailable:")
     assert "did not answer" in silent
-    assert "yoetz service stop" in silent
+    assert "finishup service stop" in silent
     # The one command the old guidance prescribed here is the one that must refuse.
-    assert "Do not run 'yoetz service run'" in silent
+    assert "Do not run 'finishup service run'" in silent
     assert "under your selected user supervisor" not in silent
 
     assert absent.startswith("service_unavailable:")
-    assert "run 'yoetz service run' under your selected user supervisor" in absent
+    assert "run 'finishup service run' under your selected user supervisor" in absent
     assert "did not answer" not in absent
 
 
@@ -66,7 +66,7 @@ def test_unresponsive_guidance_names_the_holder_pid_when_the_stamp_resolves(
 ) -> None:
     import os
 
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.protocol.canonical import canonical_encode
 
     lock = tmp_path / "service.lock"
     lock.write_bytes(canonical_encode({"instance_id": "svc", "pid": os.getpid()}) + b"\n")
@@ -85,7 +85,7 @@ def test_other_control_failures_keep_their_existing_guidance(
 
     assert code == 20
     assert guidance.startswith(PublicErrorCode.VAULT_LOCKED.value.lower())
-    assert "yoetz service unlock" in guidance
+    assert "finishup service unlock" in guidance
 
 
 @pytest.mark.parametrize("failure_stage", ["connect", "status"])
@@ -120,7 +120,7 @@ def test_closure_prepare_uses_control_remediation_and_closes_client(
     )
     assert result.exit_code == 20
     assert result.stderr.startswith("vault_locked:")
-    assert "yoetz service unlock" in result.stderr
+    assert "finishup service unlock" in result.stderr
     assert closed is (failure_stage == "status")
 
 
@@ -152,7 +152,7 @@ def test_incompatible_service_status_json_names_reason_holder_and_correlation(
 ) -> None:
     import os
 
-    from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+    from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
     lock = tmp_path / "service.lock"
     lock.write_bytes(
@@ -177,7 +177,7 @@ def test_incompatible_service_status_json_names_reason_holder_and_correlation(
         return "err_00000000-0000-4000-8000-000000000099"
 
     monkeypatch.setattr(
-        "yoetz.observability.logging.record_public_error_without_raising",
+        "finishup.observability.logging.record_public_error_without_raising",
         record_correlation,
     )
     result = CliRunner().invoke(cli.app, ["service", "status", "--json"])
@@ -198,8 +198,8 @@ def test_incompatible_service_status_json_names_reason_holder_and_correlation(
     ("holder_version", "expected", "absent"),
     [
         # An in-place update is waiting for the next session; nothing is broken (#820).
-        ("0.0.1", "Yoetz was updated", "different Yoetz installation"),
-        ("99.0.0", "different Yoetz installation", "Yoetz was updated"),
+        ("0.0.1", "FinishUP was updated", "different FinishUP installation"),
+        ("99.0.0", "different FinishUP installation", "FinishUP was updated"),
     ],
 )
 def test_incompatible_service_status_names_a_pending_update_only_for_an_older_holder(
@@ -211,7 +211,7 @@ def test_incompatible_service_status_names_a_pending_update_only_for_an_older_ho
 ) -> None:
     import os
 
-    from yoetz.protocol.canonical import canonical_encode
+    from finishup.protocol.canonical import canonical_encode
 
     lock = tmp_path / "service.lock"
     lock.write_bytes(
@@ -231,14 +231,14 @@ def test_incompatible_service_status_names_a_pending_update_only_for_an_older_ho
         return "err_00000000-0000-4000-8000-000000000099"
 
     monkeypatch.setattr(
-        "yoetz.observability.logging.record_public_error_without_raising",
+        "finishup.observability.logging.record_public_error_without_raising",
         record_correlation,
     )
     code, stderr = _status_stderr(monkeypatch, ControlError("service_incompatible", retryable=True))
     assert code == 20
     assert expected in stderr
     assert absent not in stderr
-    assert "yoetz service restart" in stderr
+    assert "finishup service restart" in stderr
     assert f"service version {holder_version}" in stderr
 
 
@@ -247,8 +247,8 @@ def test_a_service_that_failed_to_start_is_named_not_prescribed_again(
 ) -> None:
     """A command whose on-demand start failed names the stage and class (#1040)."""
 
-    import yoetz.observability.diagnostics as diagnostics
-    from yoetz.service.startup_failure import record_startup_failure
+    import finishup.observability.diagnostics as diagnostics
+    from finishup.service.startup_failure import record_startup_failure
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     startup_id = "err_11111111-2222-4333-8444-555555555555"

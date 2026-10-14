@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     AdviceItem,
     AdviceSnapshot,
     ObservationCursor,
@@ -26,8 +26,8 @@ from yoetz.domain.observation import (
     observation_envelope_to_json,
     workspace_commitment_from_path,
 )
-from yoetz.domain.values import JsonObject, Timestamp, finding_id
-from yoetz.protocol.coverage import (
+from finishup.domain.values import JsonObject, Timestamp, finding_id
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -36,7 +36,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
 
 _COMMITMENT = "hmac-sha256:" + "a" * 64
 _COMMITMENT_B = "hmac-sha256:" + "b" * 64

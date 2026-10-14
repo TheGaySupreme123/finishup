@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     MAX_EGRESS_CASE_BYTES,
     MAX_RECEIPT_FINAL_BYTES,
     MAX_WITHHELD_ITEM_IDS,
@@ -27,7 +27,7 @@ from yoetz.domain.privacy import (
     ReceiptTransformations,
     RequestCommitment,
 )
-from yoetz.protocol.models import DataCategory
+from finishup.protocol.models import DataCategory
 
 _RECEIPT_ID = "egr_00000000-0000-4000-8000-000000000001"
 _REQUEST_ID = "req_00000000-0000-4000-8000-000000000002"

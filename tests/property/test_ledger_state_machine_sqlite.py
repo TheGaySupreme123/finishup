@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from conformance.adapters.test_ledger_port import ledger_command, memory_ledger, sqlite_ledger
-from yoetz.ports.ledger import ProjectionView
+from finishup.ports.ledger import ProjectionView
 
 
 @pytest.fixture

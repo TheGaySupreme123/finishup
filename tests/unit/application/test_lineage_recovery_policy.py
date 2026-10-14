@@ -9,17 +9,17 @@ import pytest
 
 from builders.ledger_adapters import FixedClock, FixedIds
 from builders.multi_agent import ScenarioClock
-from yoetz.application.lineage import (
+from finishup.application.lineage import (
     DelegationRequest,
     LineageConfig,
     LineageCoordinator,
     LineageSnapshot,
     MemoryLineageStore,
 )
-from yoetz.domain.coordination import SESSION_LEASE_SECONDS, SessionHealth, WorkState
-from yoetz.domain.values import Timestamp, timestamp_from_datetime
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind
+from finishup.domain.coordination import SESSION_LEASE_SECONDS, SessionHealth, WorkState
+from finishup.domain.values import Timestamp, timestamp_from_datetime
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind
 
 pytestmark = pytest.mark.anyio
 
@@ -303,7 +303,7 @@ async def test_hold_without_a_host_lineage_registry_holds_nothing() -> None:
 
 
 async def test_in_flight_hold_requires_the_current_host_session_binding() -> None:
-    """An unstopped predecessor operation cannot renew a reattached Yoetz session."""
+    """An unstopped predecessor operation cannot renew a reattached FinishUP session."""
 
     store = MemoryLineageStore()
     clock = ScenarioClock()

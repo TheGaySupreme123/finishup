@@ -11,23 +11,23 @@ from typing import cast
 
 import pytest
 
-import yoetz.adapters.runtime as runtime_module
-from yoetz.adapters.runtime import (
+import finishup.adapters.runtime as runtime_module
+from finishup.adapters.runtime import (
     LocalBundleRuntime,
     RuntimeAdapterFactories,
     RuntimeCachePolicy,
     open_local_bundle_runtime,
 )
-from yoetz.adapters.session_events import (
+from finishup.adapters.session_events import (
     LinuxLogin1Backend,
     SessionEventMonitor,
 )
-from yoetz.ports.diagnostics import RuntimeCapability, StartupCheckResult
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.keys import BundleKeys
-from yoetz.ports.ledger import LedgerPort
-from yoetz.ports.objects import ObjectStorePort
-from yoetz.ports.runtime import (
+from finishup.ports.diagnostics import RuntimeCapability, StartupCheckResult
+from finishup.ports.importer import ImporterPort
+from finishup.ports.keys import BundleKeys
+from finishup.ports.ledger import LedgerPort
+from finishup.ports.objects import ObjectStorePort
+from finishup.ports.runtime import (
     BundleProvisionMode,
     OwnershipFence,
     RouteAccess,
@@ -37,11 +37,11 @@ from yoetz.ports.runtime import (
     StartMilestoneExpectation,
     TaskRuntime,
 )
-from yoetz.ports.start_catalog import SessionBinding, TaskRoute, TaskRouteState
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import PREFIX_BY_KIND, IdKind
-from yoetz.service.lifecycle import SessionSecurityEvent
+from finishup.ports.start_catalog import SessionBinding, TaskRoute, TaskRouteState
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import PREFIX_BY_KIND, IdKind
+from finishup.service.lifecycle import SessionSecurityEvent
 
 
 @pytest.mark.anyio

@@ -1,4 +1,4 @@
-"""``yoetz integrate <host> admission`` (issue #467): the CLI gate over the adapter.
+"""``finishup integrate <host> admission`` (issue #467): the CLI gate over the adapter.
 
 The adapter decides; these tests pin that the CLI hands it observed facts and nothing invented —
 an unread grant or route is ``None`` and refuses a grant — and that the JSON surfaces stay
@@ -14,8 +14,8 @@ from typing import cast
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.cli import host_admission as module
-from yoetz.cli.app import app
+from finishup.cli import host_admission as module
+from finishup.cli.app import app
 
 
 def _facts(
@@ -86,7 +86,7 @@ def test_preview_grant_and_revoke_round_trip_through_the_cli(
     granted = json.loads(out)
     assert granted["state_after"] == "present"
     assert json.loads((tmp_path / ".claude" / "settings.local.json").read_text()) == {
-        "permissions": {"allow": ["mcp__plugin_yoetz_yoetz__check"]}
+        "permissions": {"allow": ["mcp__plugin_finishup_finishup__check"]}
     }
 
     code, out, _err = _run(monkeypatch, tmp_path, "claude", "admission", "status")
@@ -162,10 +162,10 @@ def test_codex_and_cursor_grants_follow_the_observed_owner(
         )
         assert code == 0, out
     assert (tmp_path / ".codex" / "config.toml").read_text(encoding="utf-8") == (
-        '[plugins."yoetz@yoetz".mcp_servers.yoetz.tools.check]\napproval_mode = "approve"\n'
+        '[plugins."finishup@finishup".mcp_servers.finishup.tools.check]\napproval_mode = "approve"\n'
     )
     assert json.loads((tmp_path / ".cursor" / "cli.json").read_text(encoding="utf-8")) == {
-        "permissions": {"allow": ["Mcp(plugin-yoetz-yoetz:check)"]}
+        "permissions": {"allow": ["Mcp(plugin-finishup-finishup:check)"]}
     }
 
 
@@ -190,7 +190,7 @@ def test_claude_external_registration_uses_its_configured_server_name(
     settings = json.loads(
         (tmp_path / ".claude" / "settings.local.json").read_text(encoding="utf-8")
     )
-    assert settings == {"permissions": {"allow": ["mcp__yoetz__check"]}}
+    assert settings == {"permissions": {"allow": ["mcp__finishup__check"]}}
 
 
 def test_status_reads_without_facts_and_reports_unknown_for_an_unreadable_file(
@@ -211,7 +211,7 @@ def test_status_reads_without_facts_and_reports_unknown_for_an_unreadable_file(
 async def test_gather_facts_maps_provider_status_for_codex_and_leaves_others_unobserved(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    import yoetz.cli.provider_status as provider_status
+    import finishup.cli.provider_status as provider_status
 
     async def report(*, workspace_locator: Path | None = None) -> dict[str, object]:
         assert workspace_locator == tmp_path
@@ -276,14 +276,16 @@ def test_raw_observation_errors_are_reduced_to_path_free_tokens(
     assert str(private_path) not in err
 
 
-def test_reverse_sweep_and_its_preview_disclosure_touch_only_yoetz_entries(tmp_path: Path) -> None:
+def test_reverse_sweep_and_its_preview_disclosure_touch_only_finishup_entries(
+    tmp_path: Path,
+) -> None:
     """The reverse transitions (uninstall, strict re-render, unregistration) ride on these."""
 
     settings = tmp_path / ".claude" / "settings.local.json"
     settings.parent.mkdir()
     settings.write_text(
         json.dumps(
-            {"permissions": {"allow": ["Bash(git status)", "mcp__plugin_yoetz_yoetz__check"]}}
+            {"permissions": {"allow": ["Bash(git status)", "mcp__plugin_finishup_finishup__check"]}}
         ),
         encoding="utf-8",
     )

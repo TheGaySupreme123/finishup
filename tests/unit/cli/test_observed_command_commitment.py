@@ -1,7 +1,7 @@
 """Installation-keyed command identity computed inside the hook process (#909).
 
 The identity lets a later passing run of the same command supersede an earlier failure without
-Yoetz ever retaining the command: the hook normalizes the host's command argument, commits to it
+FinishUP ever retaining the command: the hook normalizes the host's command argument, commits to it
 with the installation key, and forwards only the ``hmac-sha256:`` value. These tests start at the
 real host normalizers with host-shaped payloads and assert the command text never reaches local
 state, the envelope, or the materialized ledger action.
@@ -16,22 +16,22 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.cli import observe_hooks
-from yoetz.domain.events import ActionRecordedPayload
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.cli import observe_hooks
+from finishup.domain.events import ActionRecordedPayload
+from finishup.domain.observation import (
     ObservationEnvelope,
     ObservationSource,
     normalize_observed_command,
     observed_command_commitment,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonValue
-from yoetz.protocol.canonical import canonical_encode
+from finishup.domain.values import JsonValue
+from finishup.protocol.canonical import canonical_encode
 
 # A distinctive token: if any byte of it survives anywhere, command text leaked.
 _CANARY = "zq909canary"

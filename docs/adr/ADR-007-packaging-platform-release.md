@@ -2,7 +2,7 @@
 
 **Status:** Implementation lock (2026-07-17). Release ratification still requires clean-VM
 install/upgrade/uninstall evidence from built artifacts and the E-001 release refresh.
-**Implemented by:** repository build metadata, `src/yoetz/version.py`, packaged resource
+**Implemented by:** repository build metadata, `src/finishup/version.py`, packaged resource
 manifests, the packaging/capability suites, and the release workflows under `.github/workflows/`.
 
 ## Decisions
@@ -17,10 +17,10 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    coupling. Async bridge: exactly one top-level `anyio.run(...)` per process entry (CLI command,
    MCP bridge, or foreground service); no nested event-loop helpers. Amended by ADR-012: bare
    invocation prints help in every case except the bounded first-run TTY exception on the root
-   command only (interactive terminal, setup marker absent), which launches `yoetz setup run`.
-4. **Console script:** distribution and executable both `yoetz`
-   (`yoetz.cli.app:main`). `python -m yoetz` delegates to the same entry.
-5. **Wheel strategy:** yoetz itself is a pure-Python wheel; platform specificity comes from
+   command only (interactive terminal, setup marker absent), which launches `finishup setup run`.
+4. **Console script:** distribution and executable both `finishup`
+   (`finishup.cli.app:main`). `python -m finishup` delegates to the same entry.
+5. **Wheel strategy:** finishup itself is a pure-Python wheel; platform specificity comes from
    the pinned APSW dependency wheels. Advertised platform matrix remains macOS 11.0+ arm64
    (`macosx_11_0_arm64`) and glibc 2.28+ x86-64 (`manylinux_2_28_x86_64`) until exact release
    evidence expands it. ADR-024 adds Windows 11+ x86-64 (`win_amd64`) as a candidate that may be
@@ -34,10 +34,10 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    `platform_cell_untested` to `limitations`, `setup status` reports `platform.cell`, and the
    interface's `/doctor` shows the platform line as not proven. The install is neither refused
    nor claimed. Certifying that cell requires a real `ubuntu-24.04-arm` release runner and
-   release evidence, at which point the certified-cell table in `yoetz.version` and this list
+   release evidence, at which point the certified-cell table in `finishup.version` and this list
    change together.
    Primary install:
-   `uv tool install --managed-python --python 3.14.6 "yoetz==0.1.0"`.
+   `uv tool install --managed-python --python 3.14.6 "finishup==0.1.0"`.
 6. **Keys, AI-powered review readiness, and compatibility extras:** the certified standard install
    includes direct pinned `cryptography` (AES-GCM, RFC 3394 AES Key Wrap, HKDF/HMAC) and `keyring`
    plus the approved secure-backend dependencies for each advertised cell because object/vault
@@ -54,8 +54,8 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    by `npm run typecheck` is the reproducible invocation. Node/npm are not end-user runtime
    requirements. Amended by ADR-012: the npm launcher now exists at `support/npm-launcher/` with
    its own provenance/delegation/upgrade contract — a dependency-free delegator to
-   `uvx yoetz==<version>`. Maintainer release decision (2026-08-20, issue #366): v0.1.0 publishes
-   that launcher as the public `yoetz` npm package through the protected tagged workflow, after
+   `uvx finishup==<version>`. Maintainer release decision (2026-08-20, issue #366): v0.1.0 publishes
+   that launcher as the public `finishup` npm package through the protected tagged workflow, after
    PyPI publication and with trusted-publisher provenance plus byte-for-byte download verification.
 8. **Release artifacts:** sdist + wheel, SHA-256 checksums, CycloneDX SBOM via `uv export`,
    dependency lock, support matrix, conformance summary, known limitations, changelog, security
@@ -65,17 +65,17 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
    is deferred until a documented verification command exists (a signature without a verifier is
    not a gate).
 9. **Install/upgrade/uninstall:** documented and tested: `uv tool install/upgrade/uninstall`, the
-   foreground `yoetz service run` entrypoint suitable for a user-selected external
-   supervisor, `codex mcp add/remove yoetz`, and data-retention behavior on uninstall. Native
+   foreground `finishup service run` entrypoint suitable for a user-selected external
+   supervisor, `codex mcp add/remove finishup`, and data-retention behavior on uninstall. Native
    launchd/systemd-user installer commands are deferred; uninstall never deletes bundles/vault/
    keyring entries. Amended by ADR-012: the `codex mcp get`/`codex mcp add` sequence is also
-   available as the preview-gated `yoetz integrate <harness> mcp` commands and the `yoetz setup`
+   available as the preview-gated `finishup integrate <harness> mcp` commands and the `finishup setup`
    wizard; the manual commands remain valid and the runbook's preservation rules are unchanged.
-   Amended by issue #419: `yoetz integrate <harness> mcp remove` and
-   `yoetz integrate codex plugin remove` are the digest-bound inverses for the MCP entry and the
+   Amended by issue #419: `finishup integrate <harness> mcp remove` and
+   `finishup integrate codex plugin remove` are the digest-bound inverses for the MCP entry and the
    marketplace/`config.toml`/cache surfaces setup writes; uninstall still never deletes
    bundles/vault/keyring entries, consent records, or the observation store.
-10. **Diagnostics:** `yoetz version --json` emits the full `VersionManifest`; startup safety
+10. **Diagnostics:** `finishup version --json` emits the full `VersionManifest`; startup safety
     validation is mandatory but the public `doctor` command stays v0.2.
 11. **Public schema hosting without runtime coupling:** the checked-in `schemas/` tree is mounted
     byte-for-byte at `https://schemas.yoetz.dev/0.1/`; each `$id` is the direct URL formed by
@@ -83,14 +83,14 @@ manifests, the packaging/capability suites, and the release workflows under `.gi
     manifest advances atomically with digest/ETag binding. The release comparison permits new
     manifest members while requiring every previous member to remain identical; released schema,
     migration, and canonical-vector files remain byte-immutable (release #702). PR/release gates resolve all refs from
-    the local manifest with network denied, and installed Yoetz always uses packaged mirrors;
+    the local manifest with network denied, and installed FinishUP always uses packaged mirrors;
     hosted availability is independently verified release evidence, never an operational
     dependency.
 
 ## Amendment — package update and compatible data upgrade (2026-09-12)
 
 Package replacement and data migration are separate lifecycle stages. The supported `uv tool`
-carrier uses the guarded package action from `yoetz upgrade --accept` (the 2026-09-24
+carrier uses the guarded package action from `finishup upgrade --accept` (the 2026-09-24
 amendment below removed the `--writers-stopped` attestation); the command refuses source checkouts,
 pinned test instances, and isolated runtimes. Other carriers follow their own package procedure. A
 successful carrier command is therefore not a host, service, or data-upgrade result.
@@ -148,13 +148,13 @@ no-side-by-side-runtime non-goal and the quiescence requirement for upgrades sta
    interpreter, and a process lease travels across the initial exec without a pruning gap.
 4. **The next session switches.** A fresh MCP bridge retires a stamped older package's service,
    including a protocol-compatible one, through the existing bounded shutdown and restart path.
-   A bridge from an older release never signals a newer holder. Explicit `yoetz service restart`
+   A bridge from an older release never signals a newer holder. Explicit `finishup service restart`
    retains rollback authority. An absent/unparseable version retains the prior bounded identity
    rules. Hooks and ordinary CLI connections never supersede an existing service. Reopening a
    host can interrupt an older session if the new service is incompatible; the old bridge then
    asks to reopen, never to replace its newer successor.
-5. **Package success is observed.** `yoetz upgrade --accept` uses `uv tool install --upgrade`
-   with a Yoetz requirement bounded below by the invoking version. This replaces an old exact
+5. **Package success is observed.** `finishup upgrade --accept` uses `uv tool install --upgrade`
+   with a FinishUP requirement bounded below by the invoking version. This replaces an old exact
    version pin without permitting a downgrade and retains supported compatibility extras and
    the recorded Python selection.
    Custom uv resolution options, additional requirements, non-registry sources, source checkouts
@@ -163,7 +163,7 @@ no-side-by-side-runtime non-goal and the quiescence requirement for upgrades sta
    version is reported as unchanged; timeout or unreadable output is not upgrade success.
    `--writers-stopped` remains accepted and ignored for compatibility.
 6. **Cleanup cannot stop work.** Every serving generation holds a shared process lease. New
-   starts reclaim unused older copies under the manager lock; `yoetz upgrade --prune-runtimes`
+   starts reclaim unused older copies under the manager lock; `finishup upgrade --prune-runtimes`
    explicitly removes unused completed copies and reports how many remain in use. It never
    signals a process, follows a linked generation, or removes an unrecognized directory.
 7. **Coexistence remains a release obligation.** Later releases must keep shared local state
@@ -220,20 +220,20 @@ decision like the 2026-08-20 npm decision above; rendering an artifact locally c
 publication claim.
 
 **Issue #150 implementation detail.** The first portable projection's exact members are
-`plugin.json`, `skills/yoetz/SKILL.md`, and the five canonical guidance references; `mcp.json` and
+`plugin.json`, `skills/finishup/SKILL.md`, and the five canonical guidance references; `mcp.json` and
 the Codex-specific skill manifest are absent. The Agent Plugins `plugin.schema.json` and
 `mcp.schema.json` bytes are vendored under `support/agent-plugins/1.0.0/` at the ADR-023 digests,
-and the neutral skill wrapper is owned at `skills/portable/yoetz/SKILL.md`. All three enter the
+and the neutral skill wrapper is owned at `skills/portable/finishup/SKILL.md`. All three enter the
 reviewed resource inventory and wheel/sdist through `sync_resource_ripple.py`. Runtime rendering
 uses only those packaged bytes, so clean-install rendering and installed guidance parity are
 covered by the packaging gates without an upstream fetch.
 
 **Claude Code native amendment (2026-08-27, issue #154).** Claude Code is a native dual target,
 not an Agent Plugins consumer. The generated project-marketplace source contains exactly a strict
-`.claude-plugin/marketplace.json`, `plugins/yoetz/.claude-plugin/plugin.json`, the shared skill and
+`.claude-plugin/marketplace.json`, `plugins/finishup/.claude-plugin/plugin.json`, the shared skill and
 five byte-identical references, the exact tested hook file, and optional plugin-owned `.mcp.json`.
 Claude Code `2.1.241` copies the plugin into
-`<CLAUDE_CONFIG_DIR>/plugins/cache/yoetz-local/yoetz/<manifest-version>`; Yoetz records the source,
+`<CLAUDE_CONFIG_DIR>/plugins/cache/finishup-local/finishup/<manifest-version>`; FinishUP records the source,
 render, marketplace, installed-cache, and executable digests separately. An unchanged manifest
 version cannot be used to claim updated active bytes. Update success proves new cache bytes only;
 reload/new-session activation is a separate proof facet.
@@ -244,8 +244,8 @@ marketplace only. It admits only exactly proven Claude versions (currently `2.1.
 validation behavior first exist, but a version above it is still refused until its native contract
 is proven), uses Claude's project
 install/update/enable/disable/uninstall commands, and verifies each outcome by list/settings/cache
-read-back. Uninstall is qualified as `yoetz@yoetz-local`, uses `--scope project --keep-data`, and
+read-back. Uninstall is qualified as `finishup@finishup-local`, uses `--scope project --keep-data`, and
 removes the private marketplace source only after exact managed-marker validation. Claude plugin
-data, Yoetz ledgers, vault/keyring/provider configuration, privacy receipts, credentials, foreign
+data, FinishUP ledgers, vault/keyring/provider configuration, privacy receipts, credentials, foreign
 marketplaces, other scopes, modified sources, and orphaned caches are never inferred to be safe to
 delete. Public marketplace publication remains a separate release decision.

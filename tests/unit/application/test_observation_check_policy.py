@@ -6,12 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.application.observation_check_policy import (
+from finishup.application.observation_check_policy import (
     ObservationCheckPolicyAbsent,
     load_observation_check_policy,
     parse_observation_check_policy,
 )
-from yoetz.protocol.errors import ProtocolValueError
+from finishup.protocol.errors import ProtocolValueError
 
 
 def _policy(*, argv: str = '["/usr/bin/true"]') -> bytes:
@@ -49,13 +49,13 @@ def test_policy_reader_rejects_symlinked_policy_directory(tmp_path: Path) -> Non
     (outside / "checks.toml").write_bytes(_policy())
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / ".yoetz").symlink_to(outside, target_is_directory=True)
+    (workspace / ".finishup").symlink_to(outside, target_is_directory=True)
     with pytest.raises(ProtocolValueError):
         load_observation_check_policy(workspace)
 
 
 def test_policy_reader_accepts_fixed_in_workspace_file(tmp_path: Path) -> None:
-    policy_dir = tmp_path / ".yoetz"
+    policy_dir = tmp_path / ".finishup"
     policy_dir.mkdir()
     (policy_dir / "checks.toml").write_bytes(_policy())
     policy, raw = load_observation_check_policy(tmp_path)
@@ -68,7 +68,7 @@ def test_policy_reader_reports_missing_policy_as_absent_not_invalid(
     tmp_path: Path, make_dir: bool
 ) -> None:
     if make_dir:
-        (tmp_path / ".yoetz").mkdir()
+        (tmp_path / ".finishup").mkdir()
     with pytest.raises(ObservationCheckPolicyAbsent) as caught:
         load_observation_check_policy(tmp_path)
     # Still the invalid-policy failure for callers that only need "no usable policy".
@@ -77,7 +77,7 @@ def test_policy_reader_reports_missing_policy_as_absent_not_invalid(
 
 
 def test_policy_reader_keeps_present_but_broken_policy_invalid(tmp_path: Path) -> None:
-    policy_dir = tmp_path / ".yoetz"
+    policy_dir = tmp_path / ".finishup"
     policy_dir.mkdir()
     (policy_dir / "checks.toml").write_bytes(b"not = [valid")
     with pytest.raises(ProtocolValueError) as caught:
@@ -91,16 +91,16 @@ def test_policy_reader_treats_non_directory_policy_dir_as_invalid(
     tmp_path: Path, kind: str
 ) -> None:
     if kind == "file":
-        (tmp_path / ".yoetz").write_bytes(b"")
+        (tmp_path / ".finishup").write_bytes(b"")
     else:
-        (tmp_path / ".yoetz").symlink_to(tmp_path / "missing-dir")
+        (tmp_path / ".finishup").symlink_to(tmp_path / "missing-dir")
     with pytest.raises(ProtocolValueError) as caught:
         load_observation_check_policy(tmp_path)
     assert not isinstance(caught.value, ObservationCheckPolicyAbsent)
 
 
 def test_policy_reader_treats_dangling_policy_symlink_as_invalid(tmp_path: Path) -> None:
-    policy_dir = tmp_path / ".yoetz"
+    policy_dir = tmp_path / ".finishup"
     policy_dir.mkdir()
     (policy_dir / "checks.toml").symlink_to(tmp_path / "missing.toml")
     with pytest.raises(ProtocolValueError) as caught:

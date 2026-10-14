@@ -5,14 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from yoetz.adapters.integrations.claude_code_integration import (
+from finishup.adapters.integrations.claude_code_integration import (
     ClaudeCodeMcpSource,
     observe_claude_code_activation_cues,
 )
 
 
 def _launcher(tmp_path: Path) -> tuple[str, ...]:
-    exe = tmp_path / "bin" / "yoetz"
+    exe = tmp_path / "bin" / "finishup"
     exe.parent.mkdir()
     exe.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     exe.chmod(0o700)
@@ -20,7 +20,7 @@ def _launcher(tmp_path: Path) -> tuple[str, ...]:
 
 
 def _mcp_entry(command: str, args: list[str]) -> dict[str, object]:
-    return {"mcpServers": {"yoetz": {"args": args, "command": command, "type": "stdio"}}}
+    return {"mcpServers": {"finishup": {"args": args, "command": command, "type": "stdio"}}}
 
 
 def _session_start_hook(command: str) -> dict[str, object]:
@@ -52,7 +52,7 @@ def test_a_bare_mcp_entry_in_the_user_config_has_no_session_start_cue(tmp_path: 
         encoding="utf-8",
     )
     cues = observe_claude_code_activation_cues(
-        project_root=project, claude_config_root=config, yoetz_launcher=launcher
+        project_root=project, claude_config_root=config, finishup_launcher=launcher
     )
     assert cues.mcp_mode == "bare_mcp"
     assert cues.mcp_source is ClaudeCodeMcpSource.USER
@@ -91,7 +91,7 @@ def test_the_user_config_file_is_located_the_way_claude_code_locates_it(tmp_path
     config.mkdir()
     project.mkdir()
     (tmp_path / ".claude.json").write_text(
-        json.dumps(_mcp_entry("yoetz", ["mcp", "serve"])), encoding="utf-8"
+        json.dumps(_mcp_entry("finishup", ["mcp", "serve"])), encoding="utf-8"
     )
     (config / ".claude.json").write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
     default_root = observe_claude_code_activation_cues(
@@ -110,7 +110,7 @@ def test_the_user_config_file_is_located_the_way_claude_code_locates_it(tmp_path
     custom = tmp_path / "custom"
     custom.mkdir()
     (custom / ".claude.json").write_text(
-        json.dumps(_mcp_entry("yoetz", ["mcp", "serve", "--semantic", "off"])), encoding="utf-8"
+        json.dumps(_mcp_entry("finishup", ["mcp", "serve", "--semantic", "off"])), encoding="utf-8"
     )
     explicit_root = observe_claude_code_activation_cues(
         project_root=project, claude_config_root=custom, home=tmp_path, environ={}
@@ -123,7 +123,7 @@ def test_the_user_config_file_is_located_the_way_claude_code_locates_it(tmp_path
 def test_a_legacy_bare_route_reports_the_generic_initialize_body(tmp_path: Path) -> None:
     config, project = _roots(tmp_path)
     (config / ".claude.json").write_text(
-        json.dumps(_mcp_entry("yoetz", ["mcp", "serve"])), encoding="utf-8"
+        json.dumps(_mcp_entry("finishup", ["mcp", "serve"])), encoding="utf-8"
     )
     cues = observe_claude_code_activation_cues(project_root=project, claude_config_root=config)
     assert cues.mcp_mode == "bare_mcp"
@@ -137,7 +137,7 @@ def test_a_plugin_managed_registration_carries_the_rendered_session_start_hook(
 ) -> None:
     launcher = _launcher(tmp_path)
     config, project = _roots(tmp_path)
-    plugin_root = config / "plugins" / "marketplaces" / "yoetz-local" / "plugins" / "yoetz"
+    plugin_root = config / "plugins" / "marketplaces" / "finishup-local" / "plugins" / "finishup"
     (plugin_root / "hooks").mkdir(parents=True)
     (plugin_root / ".mcp.json").write_text(
         json.dumps(
@@ -154,7 +154,7 @@ def test_a_plugin_managed_registration_carries_the_rendered_session_start_hook(
         encoding="utf-8",
     )
     cues = observe_claude_code_activation_cues(
-        project_root=project, claude_config_root=config, yoetz_launcher=launcher
+        project_root=project, claude_config_root=config, finishup_launcher=launcher
     )
     assert cues.mcp_mode == "plugin_managed"
     assert cues.mcp_source is ClaudeCodeMcpSource.PLUGIN
@@ -164,10 +164,10 @@ def test_a_plugin_managed_registration_carries_the_rendered_session_start_hook(
     assert cues.cue_sources == ("plugin_hooks",)
     # A bare entry beside the plugin entry is the dual state the runbook already documents.
     (project / ".mcp.json").write_text(
-        json.dumps(_mcp_entry("yoetz", ["mcp", "serve"])), encoding="utf-8"
+        json.dumps(_mcp_entry("finishup", ["mcp", "serve"])), encoding="utf-8"
     )
     dual = observe_claude_code_activation_cues(
-        project_root=project, claude_config_root=config, yoetz_launcher=launcher
+        project_root=project, claude_config_root=config, finishup_launcher=launcher
     )
     assert dual.mcp_mode == "dual"
     assert dual.session_start_cue == "installed"
@@ -191,7 +191,7 @@ def test_settings_hooks_count_as_cues_and_unreadable_files_are_reported(tmp_path
         "session_start_cue": "absent",
     }
     (config / "settings.json").write_text(
-        json.dumps(_session_start_hook("/opt/yoetz/bin/yoetz hooks claude-observe")),
+        json.dumps(_session_start_hook("/opt/finishup/bin/finishup hooks claude-observe")),
         encoding="utf-8",
     )
     (project / ".claude").mkdir()
@@ -199,7 +199,7 @@ def test_settings_hooks_count_as_cues_and_unreadable_files_are_reported(tmp_path
         json.dumps(_session_start_hook("echo unrelated")), encoding="utf-8"
     )
     (project / ".claude" / "settings.local.json").write_text(
-        json.dumps(_session_start_hook("/opt/yoetz/bin/yoetz hooks claude-observe")),
+        json.dumps(_session_start_hook("/opt/finishup/bin/finishup hooks claude-observe")),
         encoding="utf-8",
     )
     cues = observe_claude_code_activation_cues(project_root=project, claude_config_root=config)
@@ -220,7 +220,7 @@ def test_a_foreign_project_entry_is_named_not_counted(tmp_path: Path) -> None:
     config, project = _roots(tmp_path)
     (project / ".mcp.json").write_text(
         json.dumps(
-            {"mcpServers": {"yoetz": {"args": ["-c", "x"], "command": "sh", "type": "stdio"}}}
+            {"mcpServers": {"finishup": {"args": ["-c", "x"], "command": "sh", "type": "stdio"}}}
         ),
         encoding="utf-8",
     )

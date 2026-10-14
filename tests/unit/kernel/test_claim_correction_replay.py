@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from yoetz.domain.events import (
+from finishup.domain.events import (
     AcceptedEvent,
     ActionKind,
     ActionRecordedPayload,
@@ -34,7 +34,7 @@ from yoetz.domain.events import (
     encode_payload,
     media_type_for,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     Actor,
     ActorType,
     ClaimId,
@@ -54,10 +54,10 @@ from yoetz.domain.values import (
     timestamp_from_string,
     writer_id,
 )
-from yoetz.kernel.claims import effective_claim_ids
-from yoetz.kernel.reducers import replay
-from yoetz.protocol.canonical import canonical_digest, canonical_encode, entry_digest
-from yoetz.protocol.coverage import (
+from finishup.kernel.claims import effective_claim_ids
+from finishup.kernel.reducers import replay
+from finishup.protocol.canonical import canonical_digest, canonical_encode, entry_digest
+from finishup.protocol.coverage import (
     AuthorshipAssurance,
     PublicationChannel,
     coverage_for_channel,

@@ -7,7 +7,7 @@ from pathlib import Path
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.sqlite.migrations import (
     BUNDLE_MIGRATIONS,
     current_schema_version,
     run_migrations,

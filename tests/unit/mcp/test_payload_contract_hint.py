@@ -11,9 +11,9 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from yoetz.mcp.errors import safe_validation_locations
-from yoetz.mcp.server import invalid_request_message
-from yoetz.protocol.models import PublishWorkRequest
+from finishup.mcp.errors import safe_validation_locations
+from finishup.mcp.server import invalid_request_message
+from finishup.protocol.models import PublishWorkRequest
 
 _BASE: dict[str, object] = {
     "protocol_version": "0.1",

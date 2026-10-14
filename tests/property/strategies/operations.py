@@ -21,9 +21,9 @@ from builders.operations import (
     start_request,
     status_request,
 )
+from finishup.domain.events import ClientKind, IntegrationKind, encode_payload
+from finishup.domain.values import ActorType
 from property.strategies.events import event_schema_version_for, strategy_valid_event_payloads
-from yoetz.domain.events import ClientKind, IntegrationKind, encode_payload
-from yoetz.domain.values import ActorType
 
 __all__ = [
     "strategy_check_requests",

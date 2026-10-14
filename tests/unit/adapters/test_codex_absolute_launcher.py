@@ -13,13 +13,13 @@ from pathlib import Path
 import anyio
 import pytest
 
-from yoetz.adapters.integrations import codex_launcher
-from yoetz.adapters.integrations.codex_launcher import installed_launcher
-from yoetz.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
-from yoetz.application.applied_mcp_route import read_applied_route
-from yoetz.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
-from yoetz.config.paths import PathSafetyError
-from yoetz.ports.harness_mcp import (
+from finishup.adapters.integrations import codex_launcher
+from finishup.adapters.integrations.codex_launcher import installed_launcher
+from finishup.adapters.integrations.codex_mcp import CodexMcpAdapter, CommandOutput
+from finishup.application.applied_mcp_route import read_applied_route
+from finishup.application.harness_mcp import HarnessMcpService, McpRegistrationConfirmation
+from finishup.config.paths import PathSafetyError
+from finishup.ports.harness_mcp import (
     HarnessBinary,
     McpRegistrationAction,
     McpRegistrationCommand,
@@ -27,7 +27,7 @@ from yoetz.ports.harness_mcp import (
     McpRegistrationReason,
     McpRegistrationState,
 )
-from yoetz.ports.integrations import HarnessId
+from finishup.ports.integrations import HarnessId
 
 _BINARY = HarnessBinary(HarnessId.CODEX, "/test/codex", "0.150.1", "supported")
 
@@ -42,11 +42,11 @@ def private_root() -> Iterator[Path]:
 @pytest.fixture
 def launcher(private_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = private_root
-    script = root / "yoetz"
-    raw = b"#!/test/python\nfrom yoetz.cli.app import main\nmain()\n"
+    script = root / "finishup"
+    raw = b"#!/test/python\nfrom finishup.cli.app import main\nmain()\n"
     script.write_bytes(raw)
     script.chmod(0o700)
-    record = PackagePath("yoetz")
+    record = PackagePath("finishup")
     record.hash = FileHash(
         "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()
     )
@@ -64,10 +64,12 @@ def launcher(private_root: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     def scripts(_name: str) -> str:
         return str(root)
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_launcher.distribution", package)
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_launcher.sysconfig.get_path", scripts)
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_mcp.isolated_root", lambda: root)
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_launcher.read_runtime_pin", lambda: None)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_launcher.distribution", package)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_launcher.sysconfig.get_path", scripts)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_mcp.isolated_root", lambda: root)
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_launcher.read_runtime_pin", lambda: None
+    )
     assert installed_launcher() is not None
     return script
 
@@ -76,11 +78,11 @@ def test_absolute_registration_is_owned(launcher: Path) -> None:
     entry = {
         "command": str(launcher),
         "args": ["mcp", "serve", "--host", "codex"],
-        "env": {"YOETZ_ISOLATED_ROOT": str(launcher.parent)},
+        "env": {"FINISHUP_ISOLATED_ROOT": str(launcher.parent)},
     }
     adapter = CodexMcpAdapter(lambda _: CommandOutput(0, json.dumps(entry).encode()))
     observed = anyio.run(lambda: adapter.observe_registration(_BINARY))
-    assert observed.state is McpRegistrationState.YOETZ_OWNED
+    assert observed.state is McpRegistrationState.FINISHUP_OWNED
     assert observed.route_profile == "policy"
     assert observed.isolation_binding == "isolated_exact"
 
@@ -123,7 +125,7 @@ def test_absolute_lifecycle_preserves_command_and_applied_route(launcher: Path) 
     result = anyio.run(
         lambda: service.register(_BINARY, confirmation, _state=launcher.parent / "store")
     )
-    assert result.state_after is McpRegistrationState.YOETZ_OWNED
+    assert result.state_after is McpRegistrationState.FINISHUP_OWNED
     record = read_applied_route(_state=launcher.parent / "store")
     assert record is not None
     assert record["applied_serve_command"] == list(preview.serve_command)
@@ -162,11 +164,12 @@ def test_absolute_lifecycle_preserves_command_and_applied_route(launcher: Path) 
 @pytest.mark.parametrize("legacy", [False, True])
 def test_bare_compatibility_migrates_to_proven_absolute(launcher: Path, legacy: bool) -> None:
     host = Host(
-        {"command": "yoetz", "args": ["mcp", "serve"] + ([] if legacy else ["--host", "codex"])}
+        {"command": "finishup", "args": ["mcp", "serve"] + ([] if legacy else ["--host", "codex"])}
     )
     adapter = CodexMcpAdapter(host)
     assert (
-        anyio.run(lambda: adapter.status_registration(_BINARY)) is McpRegistrationState.YOETZ_OWNED
+        anyio.run(lambda: adapter.status_registration(_BINARY))
+        is McpRegistrationState.FINISHUP_OWNED
     )
     preview = anyio.run(lambda: adapter.preview_registration(_BINARY))
     assert preview.action is McpRegistrationAction.REREGISTER
@@ -193,7 +196,7 @@ def test_unsafe_absolute_entries_are_preserved(launcher: Path, change: str) -> N
     entry: dict[str, object] = {
         "command": str(launcher),
         "args": ["mcp", "serve", "--host", "codex"],
-        "env": {"YOETZ_ISOLATED_ROOT": str(launcher.parent)},
+        "env": {"FINISHUP_ISOLATED_ROOT": str(launcher.parent)},
     }
     if change == "modified":
         launcher.write_bytes(b"#!/bin/sh\nexit 0\n")
@@ -208,7 +211,7 @@ def test_unsafe_absolute_entries_are_preserved(launcher: Path, change: str) -> N
     elif change == "same_name":
         other_dir = launcher.parent / "foreign"
         other_dir.mkdir()
-        other = other_dir / "yoetz"
+        other = other_dir / "finishup"
         other.write_bytes(launcher.read_bytes())
         other.chmod(0o700)
         entry["command"] = str(other)
@@ -217,7 +220,7 @@ def test_unsafe_absolute_entries_are_preserved(launcher: Path, change: str) -> N
     elif change == "environment":
         entry["env"] = {"PYTHONPATH": "/other"}
     elif change == "root":
-        entry["env"] = {"YOETZ_ISOLATED_ROOT": str(launcher.parent / "other")}
+        entry["env"] = {"FINISHUP_ISOLATED_ROOT": str(launcher.parent / "other")}
     elif change == "cwd":
         entry["cwd"] = "/other"
     elif change == "dual_transport":
@@ -261,7 +264,7 @@ def test_absolute_preview_rejects_route_drift(launcher: Path, removal: bool) -> 
     "change", ["missing_hash", "unsupported_hash", "duplicate", "missing_entry", "size"]
 )
 def test_record_must_supply_unique_matching_identity(launcher: Path, change: str) -> None:
-    package = codex_launcher.distribution("yoetz")
+    package = codex_launcher.distribution("finishup")
     entries = package.files
     assert entries
     if change == "missing_hash":
@@ -299,7 +302,7 @@ def test_preview_binds_a_replaced_but_valid_installed_script(launcher: Path) -> 
     preview = anyio.run(lambda: adapter.preview_registration(_BINARY))
     raw = launcher.read_bytes() + b"# new installation\n"
     launcher.write_bytes(raw)
-    entries = codex_launcher.distribution("yoetz").files
+    entries = codex_launcher.distribution("finishup").files
     assert entries
     entries[0].hash = FileHash(
         "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).rstrip(b"=").decode()

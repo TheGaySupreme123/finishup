@@ -13,9 +13,9 @@ from typing import cast
 
 import pytest
 
-import yoetz.mcp.server as bridge
-from yoetz.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
-from yoetz.protocol.errors import PublicErrorCode
+import finishup.mcp.server as bridge
+from finishup.observability.diagnostics import append_diagnostic_record, lookup_diagnostic_records
+from finishup.protocol.errors import PublicErrorCode
 
 _SERVICE_CORRELATION = "err_dddddddd-dddd-4ddd-8ddd-dddddddddddd"
 _REQUEST = "req_eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
@@ -28,7 +28,7 @@ def anyio_backend() -> str:
 
 @pytest.fixture(autouse=True)
 def diagnostic_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    import yoetz.observability.diagnostics as diagnostics
+    import finishup.observability.diagnostics as diagnostics
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
     return tmp_path

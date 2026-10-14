@@ -18,8 +18,8 @@ from typing import cast
 import apsw
 import pytest
 
+import finishup.application.check as check_module
 import integration.service.test_semantic_non_dispatch as non_dispatch
-import yoetz.application.check as check_module
 from builders.ledger_adapters import (
     FixedIds,
     MemoryObjects,
@@ -32,32 +32,32 @@ from builders.multi_agent import MultiAgentService, multi_agent_service
 from builders.policy_cases import BASE_COVERAGE
 from builders.privacy_policies import minimal_external_policy
 from builders.start_application import MemoryStartRuntime, StartTestClock, start_composition
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.adapters.memory.ledger import MemoryLedgerAdapter
-from yoetz.adapters.providers.openai_responses_factory import OpenAIResponsesExternalFactory
-from yoetz.adapters.repository_identity import resolve_repository_privacy_context
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.egress import SemanticEgressSuccess
-from yoetz.application.privacy_policy import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.adapters.memory.ledger import MemoryLedgerAdapter
+from finishup.adapters.providers.openai_responses_factory import OpenAIResponsesExternalFactory
+from finishup.adapters.repository_identity import resolve_repository_privacy_context
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.egress import SemanticEgressSuccess
+from finishup.application.privacy_policy import (
     DecidePrivacyPolicyRequest,
     PolicyDecisionRequired,
     ProposePrivacyPolicyRequest,
     decide_privacy_policy,
     privacy_propose_policy,
 )
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import (
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import (
     ClientProjectionContext,
     ControlProjectionBinding,
     ProjectionRenderMode,
     UnprojectedControlBody,
     VerificationPolicy,
 )
-from yoetz.application.start import execute_start
-from yoetz.config.models import YoetzConfig
-from yoetz.config.write import fireworks_provider
-from yoetz.domain.findings import Finding, SamplingParams, SemanticDispatchKind
-from yoetz.domain.privacy import (
+from finishup.application.start import execute_start
+from finishup.config.models import FinishUpConfig
+from finishup.config.write import fireworks_provider
+from finishup.domain.findings import Finding, SamplingParams, SemanticDispatchKind
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -67,36 +67,36 @@ from yoetz.domain.privacy import (
     ReviewContextProfile,
     ReviewSelectionPolicy,
 )
-from yoetz.domain.task_statement import RecordedTaskStatement, specification_preflight
-from yoetz.domain.values import JsonObject, event_id
-from yoetz.kernel.deterministic_checks import DeterministicAssessment, DeterministicCase
-from yoetz.kernel.lineage import LineageEvaluation
-from yoetz.ports.control import (
+from finishup.domain.task_statement import RecordedTaskStatement, specification_preflight
+from finishup.domain.values import JsonObject, event_id
+from finishup.kernel.deterministic_checks import DeterministicAssessment, DeterministicCase
+from finishup.kernel.lineage import LineageEvaluation
+from finishup.ports.control import (
     ControlClientKind,
     ControlMethod,
     RepositoryPrivacyContext,
     WorkspaceLocator,
 )
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort
-from yoetz.ports.keys import MacKeyPurpose
-from yoetz.ports.ledger import CheckPolicyExecution, FrozenCase
-from yoetz.ports.privacy import (
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort
+from finishup.ports.keys import MacKeyPurpose
+from finishup.ports.ledger import CheckPolicyExecution, FrozenCase
+from finishup.ports.privacy import (
     EffectivePrivacyPolicy,
     HumanAuthorityCapability,
     HumanPolicyDecision,
 )
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
-from yoetz.ports.semantic import (
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.ports.secret_memory import HumanAuthorizationProof, SecretPurpose
+from finishup.ports.semantic import (
     ProviderAttemptProvenance,
     SemanticJudgment,
     SemanticResultSuccess,
 )
-from yoetz.ports.start_catalog import StartCatalogPort, TaskRoute
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.ports.start_catalog import StartCatalogPort, TaskRoute
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     CheckResultModel,
     PublishWorkRequest,
@@ -108,7 +108,7 @@ from yoetz.protocol.models import (
     StatusRequest,
     StatusResultModel,
 )
-from yoetz.service.vault import provider_credential_profile_binding
+from finishup.service.vault import provider_credential_profile_binding
 
 pytestmark = pytest.mark.anyio
 
@@ -153,15 +153,15 @@ class _SharedStartRuntime(MemoryStartRuntime):
         self.sqlite_connections: list[apsw.Connection] = []
 
     async def provision_start(self, command: object) -> TaskRuntime:
-        from yoetz.ports.runtime import BundleProvisionCommand
+        from finishup.ports.runtime import BundleProvisionCommand
 
         assert type(command) is BundleProvisionCommand
         self.provisions.append(command)
         resources = self.resources.get(command.task_id)
         if resources is None:
             if self.adapter == "memory":
-                from yoetz.adapters.memory.importer import MemoryImportState
-                from yoetz.adapters.memory.ledger import MemoryLedgerState
+                from finishup.adapters.memory.importer import MemoryImportState
+                from finishup.adapters.memory.ledger import MemoryLedgerState
 
                 objects = MemoryObjects(self.ids)
                 ledger = MemoryLedgerAdapter(
@@ -280,7 +280,7 @@ class _PublicCheckApp:
             required=True,
         )
         if frozen.case.task_statement is None:
-            from yoetz.domain.values import review_input_continuation
+            from finishup.domain.values import review_input_continuation
 
             return FinalSemanticEvaluation(
                 SemanticStatus.AWAITING_HUMAN,
@@ -407,7 +407,7 @@ async def test_missing_statement_pauses_full_spec_review_before_provider_calls()
     assert result.reason is SemanticReason.HUMAN_APPROVAL_REQUIRED
     assert result.continuation is not None
     assert result.continuation.kind == "review_input_required"
-    assert result.continuation.command == ("yoetz", "publish-work", "--input", "PATH")
+    assert result.continuation.command == ("finishup", "publish-work", "--input", "PATH")
     assert result.continuation.request_id == frozen.lease.operation_id
     assert result.specification_preflight is not None
     assert result.specification_preflight.status == "missing"
@@ -617,7 +617,7 @@ async def test_ready_same_request_recovery_after_statement_plan_amendment(
     workspace = (tmp_path / "review-input-workspace").resolve()
     workspace.mkdir()
     provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="local-openai",
         provider=provider,
     )
@@ -1011,7 +1011,7 @@ async def test_paused_and_recovered_check_project_for_mcp_clients(
     workspace = (tmp_path / "review-input-workspace").resolve()
     workspace.mkdir()
     provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="local-openai",
         provider=provider,
     )
@@ -1281,7 +1281,7 @@ async def test_review_after_statement_revision_with_carried_obligation_commits(
     workspace = (tmp_path / "review-input-workspace").resolve()
     workspace.mkdir()
     provider = fireworks_provider(model="accounts/fireworks/models/minimax-m3")
-    config = YoetzConfig(
+    config = FinishUpConfig(
         profile="local-openai",
         provider=provider,
     )

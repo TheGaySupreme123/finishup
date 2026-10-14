@@ -12,7 +12,7 @@ and the privacy protocol own outbound data authorization.
 
 ## Context
 
-The earlier draft treated `yoetz mcp serve` as a long-lived application owner and allowed a
+The earlier draft treated `finishup mcp serve` as a long-lived application owner and allowed a
 standalone CLI command to open the same local state when MCP was absent. That made the integration
 surface the trust boundary, required each process to acquire keys, made safe passphrase operation
 through MCP impractical, and produced different behavior depending on which client started first.
@@ -21,7 +21,7 @@ through MCP impractical, and produced different behavior depending on which clie
 
 | Component | Trust and authority |
 |---|---|
-| Per-user local Yoetz service | Trusted local authority. Sole owner of vault keys, decrypted state, catalog/task writers, provider gateway, and application facade. |
+| Per-user local FinishUP service | Trusted local authority. Sole owner of vault keys, decrypted state, catalog/task writers, provider gateway, and application facade. |
 | Confidential human helper or future trusted desktop prompt | Narrowly trusted for one exact YZH1 ceremony and, when required, delivery of one YZS1 initialization, unlock, recovery, provider-credential, or reauthentication secret. It has no workflow, storage, provider-dispatch, policy, or long-lived key authority. |
 | CLI, MCP bridge, future ordinary UI | Untrusted control/rendering clients. They may submit validated requests and receive bounded results; they cannot open storage, access key handles, unlock the vault, or weaken policy. |
 | Agent, LLM, plugin, repository, imported transcript, provider | Untrusted content or external execution. Never receives an unlock secret or vault capability. |
@@ -113,7 +113,7 @@ setup already provisioned auto-unlock. It does **not** unlock after `explicit_lo
 for hard reasons (`passphrase_required`, `auto_unlock_*`, `vault_uninitialized`, `unlock_failed`,
 `keyring_locked` when the backend will not load), and never accepts a secret from MCP, ordinary
 control, argv, env, config, or stdin. The trusted foreground helper may also submit the scoped
-entry through the existing unlock ceremony so `yoetz service unlock` stays silent when that entry
+entry through the existing unlock ceremony so `finishup service unlock` stays silent when that entry
 is valid.
 
 `monitor_lost` is deliberately excluded (2026-08-05 correction). The three reasons above describe
@@ -232,19 +232,19 @@ Terminal ownership alone is not user-identity evidence. The helper rejects redir
 environment/config/argument input, and noninteractive execution; establishes a
 separately typed peer-authenticated connection; and erase mutable buffers best-effort after the
 service consumes them. No MCP registry, `ServiceClient`, or public application method can reach
-this channel. **Amendment (ADR-015/016, 2026-07-31):** `yoetz consent review` may use this
+this channel. **Amendment (ADR-015/016, 2026-07-31):** `finishup consent review` may use this
 trusted-console boundary for `vault_initialize`, `provider_credential_set`, and
 `provider_credential_rotate` only after independently authenticated, action-bound OS user
 presence. The current runtime has no production presence adapter and fails closed before console
 open or pending claim. Initialization accepts only its helper-generated,
 credential-store-verified passphrase; provider secrets are entered inside the confidential
 ceremony. **Amendment (issue #164, 2026-08-09):** after an explicit current-chat instruction, an
-allowlisted first-party agent may run `yoetz consent authorize` for exact prepared
+allowlisted first-party agent may run `finishup consent authorize` for exact prepared
 `vault_initialize`, `vault_passphrase_rotate`, `provider_credential_set|rotate`, and
 `repository_privacy_grant` without the
 trusted console. Vault initialization generates and credential-store-verifies its secret wholly
-inside Yoetz; the agent supplies no secret material. The
-agent assertion binds the pending digests but is not independently authenticated by Yoetz; a
+inside FinishUP; the agent supplies no secret material. The
+agent assertion binds the pending digests but is not independently authenticated by FinishUP; a
 compromised agent can forge it. One-shot provider credential bytes may enter the same YZS1 ingress
 from authorize stdin after warning acknowledgement and are overwritten best-effort. Provider
 credentials become opaque adapter-scoped handles in the service vault; provider adapters and
@@ -265,12 +265,12 @@ proof that automation is impossible, and public documentation must say so.
 ## Platform evidence and claim limits
 
 The selected boundary is grounded in platform capabilities, but the existence of an API is not by
-itself a Yoetz support claim:
+itself a FinishUP support claim:
 
 - Apple documents Keychain as storage for passwords, keys, certificates, and other small secret
   data protected by access controls and data-protection classes
   ([Apple Platform Security](https://support.apple.com/guide/security/keychain-data-protection-secb0694df1a/web)).
-  Yoetz still has to verify the exact backend, accessibility class, user-presence behavior, and
+  FinishUP still has to verify the exact backend, accessibility class, user-presence behavior, and
   locked-session behavior in each advertised macOS release cell.
 - The Freedesktop Secret Service protocol explicitly models locked items/collections and an
   implementation-specific prompt path for unlocking
@@ -324,7 +324,7 @@ repair. A pristine headless install cannot auto-select keyring mode or create pa
 auto-unlock without verified local setup authority.
 
 **Amendment (ADR-015/016, 2026-07-31):** elevated vault initialization and provider credential
-set/rotate require action-bound OS user presence before `yoetz consent review` may use
+set/rotate require action-bound OS user presence before `finishup consent review` may use
 `TrustedForegroundConsole`. The current runtime has no production presence adapter and returns
 `human_authority_unavailable` before pending claim. Vault initialization generates
 the high-entropy passphrase inside the helper and round-trips it through the scoped credential
@@ -436,7 +436,7 @@ it spawned, escalates to a group kill when necessary, and verifies group disappe
 answer without verified cleanup is not success.
 
 Login/status/logout are separate content-free structural operations. Codex owns its dedicated
-home's credential file. Yoetz may create the exact nonsecret config and retain the home path, but
+home's credential file. FinishUP may create the exact nonsecret config and retain the home path, but
 must not read, parse, hash, copy, export, log, or place credential bytes in the vault. Rollback
-removes only the Yoetz binding; disconnect first requires Codex to confirm logout and otherwise
+removes only the FinishUP binding; disconnect first requires Codex to confirm logout and otherwise
 fails honestly.

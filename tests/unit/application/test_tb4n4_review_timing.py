@@ -17,11 +17,11 @@ from typing import Any, cast
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger, command_identity_for
-from yoetz.application.check import (
+from finishup.application.check import (
     _review_deferred_before_first_edit,  # pyright: ignore[reportPrivateUsage]
     _review_skip_gaps,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -32,26 +32,26 @@ from yoetz.domain.events import (
     PlanPublishedPayload,
     ResultOutcome,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     SEMANTIC_REVIEW_DEFERRED_BEFORE_FIRST_EDIT_GAP,
     SEMANTIC_REVIEW_SKIPPED_INSUFFICIENT_PACKET_GAP,
 )
-from yoetz.domain.values import action_id, claim_id, obligation_id
-from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
-from yoetz.kernel.finding_resolution import SEMANTIC_ONLY_GAPS
-from yoetz.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
-from yoetz.kernel.observed_failures import (
+from finishup.domain.values import action_id, claim_id, obligation_id
+from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, build_deterministic_case
+from finishup.kernel.finding_resolution import SEMANTIC_ONLY_GAPS
+from finishup.kernel.gap_effect import GapContext, GapEffectKind, gap_effect
+from finishup.kernel.observed_failures import (
     observed_action_description,
     observed_event_ids_from_records,
 )
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     cooperative_event_ids_from_records,
     material_edit_recorded,
     register_command_identity_key,
 )
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.ledger import CheckPhase
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.ledger import CheckPhase
 
 pytestmark = pytest.mark.anyio
 

@@ -11,19 +11,19 @@ import pytest
 
 from builders import ids
 from builders.ledger_adapters import FixedClock, FixedIds, MemoryObjects, ownership_fence
-from yoetz.adapters.importers.codex_jsonl import (
+from finishup.adapters.importers.codex_jsonl import (
     CODEX_JSONL_MAPPING_VERSION,
     CodexMappingContext,
     parse_codex_jsonl,
     plan_codex_mapping,
     profile_for_codex_version,
 )
-from yoetz.adapters.memory.importer import (
+from finishup.adapters.memory.importer import (
     ImportPlanMaterial,
     MemoryImporter,
     MemoryImportState,
 )
-from yoetz.application.import_review import (
+from finishup.application.import_review import (
     Application,
     ImportCodexJsonlRequest,
     ImportReportInternal,
@@ -31,14 +31,14 @@ from yoetz.application.import_review import (
     execute_import_codex_jsonl,
     import_request_from_control,
 )
-from yoetz.domain.values import Frontier, Timestamp, request_id, session_id, writer_id
-from yoetz.ports.clock import ClockPort
-from yoetz.ports.ids import IdPort
-from yoetz.ports.importer import ImportAllocation, ImportCaptureInput, PreparedImportPlan
-from yoetz.ports.ledger import LedgerPort
-from yoetz.ports.objects import ObjectRef, ObjectStorePort
-from yoetz.protocol.coverage import PublicationChannel, coverage_for_channel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.domain.values import Frontier, Timestamp, request_id, session_id, writer_id
+from finishup.ports.clock import ClockPort
+from finishup.ports.ids import IdPort
+from finishup.ports.importer import ImportAllocation, ImportCaptureInput, PreparedImportPlan
+from finishup.ports.ledger import LedgerPort
+from finishup.ports.objects import ObjectRef, ObjectStorePort
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
 
 pytestmark = pytest.mark.anyio
 

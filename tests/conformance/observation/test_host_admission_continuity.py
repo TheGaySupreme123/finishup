@@ -16,29 +16,29 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe_hooks
-from yoetz.cli.observe_hooks import ServiceConnector, handle_observe
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe_hooks
+from finishup.cli.observe_hooks import ServiceConnector, handle_observe
+from finishup.domain.observation import (
     OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
     ObservationIngestDisposition,
     ObservationIngestResult,
     observation_cursor_from_json,
     observation_ingest_result_to_json,
 )
-from yoetz.domain.values import JsonObject, JsonValue
-from yoetz.ports.control import ControlClientKind
-from yoetz.protocol.errors import PublicErrorCode
-from yoetz.protocol.models import OperationFailureModel, StartRequest
+from finishup.domain.values import JsonObject, JsonValue
+from finishup.ports.control import ControlClientKind
+from finishup.protocol.errors import PublicErrorCode
+from finishup.protocol.models import OperationFailureModel, StartRequest
 
 pytestmark = pytest.mark.anyio
 
 
 _TASK_A = "tsk_4b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5b"
 _TASK_B = "tsk_5b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5b"
-_OLD_YOETZ_SESSION = "ses_4b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5c"
+_OLD_FINISHUP_SESSION = "ses_4b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5c"
 _OLD_WRITER = "wri_4b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5d"
-_SUCCESSOR_YOETZ_SESSION = "ses_5b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5c"
+_SUCCESSOR_FINISHUP_SESSION = "ses_5b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5c"
 _SUCCESSOR_WRITER = "wri_5b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5d"
 
 
@@ -56,7 +56,7 @@ def _persist_mapping(
         observe_hooks.mapping_from_start_ids(
             codex_session_id=host_session,
             yoetz_task_id=task_id,
-            yoetz_session_id=_OLD_YOETZ_SESSION,
+            yoetz_session_id=_OLD_FINISHUP_SESSION,
             yoetz_writer_id=_OLD_WRITER,
             last_frontier=None,
         ),
@@ -94,14 +94,14 @@ class _ContinuityClient:
                 }
             )
         assert request.mode == "attach"
-        # The attach selector is the persisted Yoetz session id; the host
+        # The attach selector is the persisted FinishUP session id; the host
         # predecessor id remains the route key for the pending observation row.
-        assert request.session_id == _OLD_YOETZ_SESSION
+        assert request.session_id == _OLD_FINISHUP_SESSION
         return SimpleNamespace(
             ok=True,
             frontier=SimpleNamespace(sequence="4", head_digest="sha256:" + "b" * 64),
             task_id=self.task_id,
-            session_id=_SUCCESSOR_YOETZ_SESSION,
+            session_id=_SUCCESSOR_FINISHUP_SESSION,
             writer_id=_SUCCESSOR_WRITER,
         )
 
@@ -153,7 +153,7 @@ def _persist_pending_predecessor(
         observe_hooks.mapping_from_start_ids(
             codex_session_id=host_session,
             yoetz_task_id=_TASK_A,
-            yoetz_session_id=_OLD_YOETZ_SESSION,
+            yoetz_session_id=_OLD_FINISHUP_SESSION,
             yoetz_writer_id=_OLD_WRITER,
             last_frontier=None,
         ),
@@ -282,7 +282,7 @@ def test_persisted_predecessor_pending_row_drains_after_successor_attach(tmp_pat
     # goes directly through the typed attach route.  A create attempt here
     # would risk opening a second task before the pending row is recovered.
     assert [request.mode for request in client.start_requests] == ["attach"]
-    assert client.start_requests[0].session_id == _OLD_YOETZ_SESSION
+    assert client.start_requests[0].session_id == _OLD_FINISHUP_SESSION
     assert client.start_requests[0].workspace_ref == locator
     # SessionStart itself is one durable observation; the predecessor row is
     # the second delivery and must remain addressable by its original host
@@ -299,7 +299,7 @@ def test_persisted_predecessor_pending_row_drains_after_successor_attach(tmp_pat
     predecessor_mapping = observe_hooks.load_mapping(predecessor, _state=tmp_path)
     assert successor_mapping is not None
     assert successor_mapping.yoetz_task_id == _TASK_A
-    assert successor_mapping.yoetz_session_id == _SUCCESSOR_YOETZ_SESSION
+    assert successor_mapping.yoetz_session_id == _SUCCESSOR_FINISHUP_SESSION
     assert predecessor_mapping is not None
-    assert predecessor_mapping.yoetz_session_id == _SUCCESSOR_YOETZ_SESSION
+    assert predecessor_mapping.yoetz_session_id == _SUCCESSOR_FINISHUP_SESSION
     assert predecessor_mapping.yoetz_writer_id == _SUCCESSOR_WRITER

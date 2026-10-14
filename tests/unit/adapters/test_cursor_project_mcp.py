@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from yoetz.adapters.integrations.cursor_project_mcp import (
+from finishup.adapters.integrations.cursor_project_mcp import (
     CursorProjectMcpError,
     CursorProjectMcpTarget,
     apply_cursor_project_mcp,
@@ -18,8 +18,8 @@ from yoetz.adapters.integrations.cursor_project_mcp import (
     status_cursor_project_mcp,
 )
 
-LAUNCHER = ("/opt/yoetz-test/bin/yoetz", "--runtime")
-OTHER_LAUNCHER = ("/opt/other-yoetz/bin/yoetz", "--runtime")
+LAUNCHER = ("/opt/finishup-test/bin/finishup", "--runtime")
+OTHER_LAUNCHER = ("/opt/other-finishup/bin/finishup", "--runtime")
 
 
 def _secure_directory(path: Path) -> Path:
@@ -48,7 +48,7 @@ def _user_config(target: CursorProjectMcpTarget) -> Path:
 
 
 def _plugin_config(target: CursorProjectMcpTarget) -> Path:
-    return target.cursor_config_root / "plugins" / "local" / "yoetz" / "mcp.json"
+    return target.cursor_config_root / "plugins" / "local" / "finishup" / "mcp.json"
 
 
 def _write_json(path: Path, document: object) -> None:
@@ -86,7 +86,7 @@ def _entry(
         "args": args,
     }
     if isolation_root is not None:
-        result["env"] = {"YOETZ_ISOLATED_ROOT": isolation_root}
+        result["env"] = {"FINISHUP_ISOLATED_ROOT": isolation_root}
     return result
 
 
@@ -188,7 +188,7 @@ def test_install_preserves_unrelated_project_json_and_binds_exact_launcher_and_r
     unrelated_servers = unrelated["mcpServers"]
     assert isinstance(unrelated_servers, dict)
     assert servers["other"] == unrelated_servers["other"]
-    assert servers["yoetz"] == _entry(isolation_root=root, project_root=target.project_root)
+    assert servers["finishup"] == _entry(isolation_root=root, project_root=target.project_root)
     assert applied["config_digest_after"] == (
         "sha256:" + hashlib.sha256(project.read_bytes()).hexdigest()
     )
@@ -250,7 +250,7 @@ def test_strict_route_is_preserved_when_route_is_none_and_can_be_changed_explici
         preview_digest=str(changed["preview_digest"]),
         accept=True,
     )
-    assert _read_json(project)["mcpServers"]["yoetz"] == _entry(
+    assert _read_json(project)["mcpServers"]["finishup"] == _entry(
         isolation_root=root, project_root=target.project_root
     )
 
@@ -259,7 +259,7 @@ def test_legacy_project_entry_is_owned_for_upgrade_and_emits_the_selector(tmp_pa
     target = _target(tmp_path)
     root = _isolation_root(tmp_path)
     project = _project_config(target)
-    _write_json(project, {"mcpServers": {"yoetz": _legacy_entry(isolation_root=root)}})
+    _write_json(project, {"mcpServers": {"finishup": _legacy_entry(isolation_root=root)}})
 
     status = status_cursor_project_mcp(target, launcher=LAUNCHER, isolation_root=root)
     assert status["source"] == "project"
@@ -285,7 +285,7 @@ def test_legacy_project_entry_is_owned_for_upgrade_and_emits_the_selector(tmp_pa
         accept=True,
     )
     assert applied["state_after"] == "yoetz_owned"
-    assert _read_json(project)["mcpServers"]["yoetz"] == _entry(
+    assert _read_json(project)["mcpServers"]["finishup"] == _entry(
         isolation_root=root, project_root=target.project_root
     )
 
@@ -317,7 +317,7 @@ def test_changed_launcher_or_isolation_root_is_not_treated_as_owned(
     )
 
 
-def test_remove_unregisters_only_yoetz_and_repeating_remove_is_noop(
+def test_remove_unregisters_only_finishup_and_repeating_remove_is_noop(
     tmp_path: Path,
 ) -> None:
     target = _target(tmp_path)
@@ -348,7 +348,7 @@ def test_remove_unregisters_only_yoetz_and_repeating_remove_is_noop(
     assert removed["state_after"] == "absent"
     after_remove = _read_json(project)
     assert after_remove["mcpServers"] == {
-        key: value for key, value in document["mcpServers"].items() if key != "yoetz"
+        key: value for key, value in document["mcpServers"].items() if key != "finishup"
     }
     assert status_cursor_project_mcp(target, launcher=LAUNCHER, isolation_root=root)["state"] == (
         "absent"
@@ -423,7 +423,7 @@ def test_same_bytes_recreated_after_preview_are_stale_by_file_identity(tmp_path:
     # Keep the previewed file's inode allocated. A freed inode number is handed straight back to
     # the next file (297 of 300 recreates on the CI-equivalent box), and on kernels before 6.13
     # timestamps tick once per jiffy (1 ms there), so an unpinned recreate lands on the same
-    # (device, inode, size, mtime, ctime) as the original. The bytes are the same too, so Yoetz has
+    # (device, inode, size, mtime, ctime) as the original. The bytes are the same too, so FinishUP has
     # nothing to distinguish; pinning the old inode makes "recreated" a fact instead of a race.
     held = tmp_path / "previewed-inode"
     os.link(project, held)
@@ -520,7 +520,7 @@ def test_refuses_unrelated_user_plugin_and_dual_sources(tmp_path: Path) -> None:
     root = _isolation_root(tmp_path)
     user_entry = _entry(isolation_root=root)
 
-    _write_json(_user_config(target), {"mcpServers": {"yoetz": user_entry}})
+    _write_json(_user_config(target), {"mcpServers": {"finishup": user_entry}})
     _assert_fixed_reason(
         lambda: preview_cursor_project_mcp(
             target,
@@ -535,7 +535,7 @@ def test_refuses_unrelated_user_plugin_and_dual_sources(tmp_path: Path) -> None:
     )
 
     _user_config(target).unlink()
-    _write_json(_plugin_config(target), {"mcpServers": {"yoetz": user_entry}})
+    _write_json(_plugin_config(target), {"mcpServers": {"finishup": user_entry}})
     _assert_fixed_reason(
         lambda: preview_cursor_project_mcp(
             target,
@@ -549,7 +549,7 @@ def test_refuses_unrelated_user_plugin_and_dual_sources(tmp_path: Path) -> None:
         "plugin"
     )
 
-    _write_json(_project_config(target), {"mcpServers": {"yoetz": _entry(isolation_root=root)}})
+    _write_json(_project_config(target), {"mcpServers": {"finishup": _entry(isolation_root=root)}})
     status = status_cursor_project_mcp(target, launcher=LAUNCHER, isolation_root=root)
     assert status["source"] == "none"
     assert status["state"] == "multiple_sources"
@@ -571,7 +571,9 @@ def test_foreign_project_entry_is_refused_instead_of_overwritten(tmp_path: Path)
         project,
         {
             "settings": {"keep": True},
-            "mcpServers": {"yoetz": {"type": "stdio", "command": "foreign", "args": ["--owned"]}},
+            "mcpServers": {
+                "finishup": {"type": "stdio", "command": "foreign", "args": ["--owned"]}
+            },
         },
     )
     before = project.read_bytes()
@@ -593,7 +595,7 @@ def test_symlink_hardlink_and_malformed_configs_are_rejected(tmp_path: Path) -> 
     root = _isolation_root(tmp_path)
     project = _project_config(target)
     outside = tmp_path / "outside.json"
-    _write_json(outside, {"mcpServers": {"yoetz": {"command": "foreign"}}})
+    _write_json(outside, {"mcpServers": {"finishup": {"command": "foreign"}}})
     project.parent.mkdir(parents=True, exist_ok=True)
     project.parent.chmod(0o700)
     project.symlink_to(outside)
@@ -648,7 +650,7 @@ def test_rejects_unsafe_target_root_and_invalid_launcher_without_leaking_os_erro
         lambda: preview_cursor_project_mcp(
             target,
             action="install",
-            launcher=("relative-yoetz",),
+            launcher=("relative-finishup",),
             route_profile="policy",
             isolation_root=root,
         )
@@ -669,7 +671,7 @@ def test_apply_rejects_a_project_replaced_after_atomic_write(
         isolation_root=root,
     )
 
-    from yoetz.adapters.integrations import cursor_project_mcp as adapter
+    from finishup.adapters.integrations import cursor_project_mcp as adapter
 
     original_write = getattr(adapter, "_write")
 
@@ -711,7 +713,7 @@ def test_apply_rejects_project_replacement_between_precheck_and_write(
         isolation_root=root,
     )
 
-    from yoetz.adapters.integrations import cursor_project_mcp as adapter
+    from finishup.adapters.integrations import cursor_project_mcp as adapter
 
     original_write = getattr(adapter, "_write")
 
@@ -756,7 +758,7 @@ def test_apply_rejects_project_config_directory_replacement_between_precheck_and
         isolation_root=root,
     )
 
-    from yoetz.adapters.integrations import cursor_project_mcp as adapter
+    from finishup.adapters.integrations import cursor_project_mcp as adapter
 
     original_write = getattr(adapter, "_write")
 
@@ -800,7 +802,7 @@ def test_apply_rejects_a_user_source_appearing_after_project_write(
         isolation_root=root,
     )
 
-    from yoetz.adapters.integrations import cursor_project_mcp as adapter
+    from finishup.adapters.integrations import cursor_project_mcp as adapter
 
     original_write = getattr(adapter, "_write")
 
@@ -811,7 +813,7 @@ def test_apply_rejects_a_user_source_appearing_after_project_write(
         **kwargs: Any,
     ) -> None:
         original_write(write_target, before, after, **kwargs)
-        _write_json(_user_config(write_target), {"mcpServers": {"yoetz": _entry()}})
+        _write_json(_user_config(write_target), {"mcpServers": {"finishup": _entry()}})
 
     monkeypatch.setattr(adapter, "_write", add_external_source)
     with pytest.raises(CursorProjectMcpError) as raised:
@@ -825,21 +827,21 @@ def test_apply_rejects_a_user_source_appearing_after_project_write(
             accept=True,
         )
     assert raised.value.reason == "cursor_project_mcp_write_failed"
-    assert _read_json(project)["mcpServers"]["yoetz"] == _entry(
+    assert _read_json(project)["mcpServers"]["finishup"] == _entry(
         isolation_root=root, project_root=target.project_root
     )
-    assert _read_json(_user_config(target))["mcpServers"]["yoetz"] == _entry()
+    assert _read_json(_user_config(target))["mcpServers"]["finishup"] == _entry()
 
 
 def test_placeholder_registration_upgrades_to_exact_project_and_remains_runtime_verifiable(
     tmp_path: Path,
 ) -> None:
-    from yoetz.adapters.integrations.cursor_project_mcp import inspect_project_mcp_registration
+    from finishup.adapters.integrations.cursor_project_mcp import inspect_project_mcp_registration
 
     target = _target(tmp_path)
     root = _isolation_root(tmp_path)
     config = _project_config(target)
-    _write_json(config, {"mcpServers": {"yoetz": _entry(isolation_root=root)}})
+    _write_json(config, {"mcpServers": {"finishup": _entry(isolation_root=root)}})
     # Existing IDE registrations remain valid until an explicitly accepted upgrade.
     inspect_project_mcp_registration(
         target.project_root, launcher=LAUNCHER, route_profile="policy", isolation_root=root
@@ -857,7 +859,7 @@ def test_placeholder_registration_upgrades_to_exact_project_and_remains_runtime_
         preview_digest=str(preview["preview_digest"]),
         accept=True,
     )
-    actual = _read_json(config)["mcpServers"]["yoetz"]
+    actual = _read_json(config)["mcpServers"]["finishup"]
     assert "${workspaceFolder}" not in actual["args"]
     assert str(target.project_root) in actual["args"]
     inspect_project_mcp_registration(
@@ -867,7 +869,7 @@ def test_placeholder_registration_upgrades_to_exact_project_and_remains_runtime_
     actual["args"] = [
         str(tmp_path) if arg == str(target.project_root) else arg for arg in actual["args"]
     ]
-    _write_json(config, {"mcpServers": {"yoetz": actual}})
+    _write_json(config, {"mcpServers": {"finishup": actual}})
     with pytest.raises(CursorProjectMcpError, match="foreign_present"):
         inspect_project_mcp_registration(
             target.project_root, launcher=LAUNCHER, route_profile="policy", isolation_root=root

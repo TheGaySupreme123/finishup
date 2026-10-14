@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from yoetz.domain.privacy import ProviderDataUseProfile
+from finishup.domain.privacy import ProviderDataUseProfile
 
 _NOW = datetime(2026, 8, 5, tzinfo=UTC)
 _DIGEST = "sha256:" + "1" * 64

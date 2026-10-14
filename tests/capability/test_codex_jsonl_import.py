@@ -1,7 +1,7 @@
 """Observed Codex JSONL import capability evidence from reviewed fixtures.
 
 Non-live cells feed exact fixture bytes through the installed importer under multiple chunk
-boundaries. Live capture from ``codex exec --json`` is opt-in via ``YOETZ_LIVE_CODEX=1``.
+boundaries. Live capture from ``codex exec --json`` is opt-in via ``FINISHUP_LIVE_CODEX=1``.
 """
 
 from __future__ import annotations
@@ -21,14 +21,14 @@ from capability.evidence import (
     record_and_write,
     runtime_capability_context,
 )
-from fixture_loader import FixtureLoader
-from yoetz.adapters.importers.codex_jsonl import (
+from finishup.adapters.importers.codex_jsonl import (
     parse_codex_jsonl,
     profile_for_codex_version,
     sanitize_codex_argv,
 )
-from yoetz.ports.importer import ImportLineStatus
-from yoetz.protocol.canonical import JsonValue, canonical_digest
+from finishup.ports.importer import ImportLineStatus
+from finishup.protocol.canonical import JsonValue, canonical_digest
+from fixture_loader import FixtureLoader
 
 _TEST_REVISION = bytes_digest(Path(__file__).read_bytes())
 _PROFILE_VERSION = "0.139.0"

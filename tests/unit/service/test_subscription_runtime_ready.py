@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.providers import codex_app_server as runtime_module
-from yoetz.adapters.providers.codex_app_server import (
+from finishup.adapters.providers import codex_app_server as runtime_module
+from finishup.adapters.providers.codex_app_server import (
     CODEX_APP_SERVER_SCHEMA_SHA256,
     CODEX_EVALUATOR_CAPABILITY_CELL_SHA256,
     CODEX_EVALUATOR_CAPABILITY_PROFILE,
@@ -18,9 +18,9 @@ from yoetz.adapters.providers.codex_app_server import (
     CODEX_EVALUATOR_EVIDENCE_EXPIRES_AT,
     CodexAppServerProfile,
 )
-from yoetz.config.models import ExternalRuntimeProfileConfig
-from yoetz.config.write import codex_subscription_runtime
-from yoetz.service.ready_composition import subscription_runtime_structurally_ready
+from finishup.config.models import ExternalRuntimeProfileConfig
+from finishup.config.write import codex_subscription_runtime
+from finishup.service.ready_composition import subscription_runtime_structurally_ready
 
 
 def _binding(executable: Path, home: Path) -> ExternalRuntimeProfileConfig:
@@ -166,7 +166,7 @@ async def test_repeated_structural_readiness_hashes_once_off_the_event_loop(
 ) -> None:
     import threading
 
-    from yoetz.service.ready_composition import SubscriptionReadinessMemo
+    from finishup.service.ready_composition import SubscriptionReadinessMemo
 
     binding, hashes = retained
     memo = SubscriptionReadinessMemo()
@@ -186,7 +186,7 @@ async def test_repeated_structural_readiness_hashes_once_off_the_event_loop(
 async def test_a_changed_retained_file_forces_a_rehash(
     retained: tuple[ExternalRuntimeProfileConfig, _Hashes], change: str
 ) -> None:
-    from yoetz.service.ready_composition import SubscriptionReadinessMemo
+    from finishup.service.ready_composition import SubscriptionReadinessMemo
 
     binding, hashes = retained
     memo = SubscriptionReadinessMemo()

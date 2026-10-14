@@ -14,9 +14,9 @@ from typing import Any
 
 import pytest
 
-from yoetz.ports.control import ControlCallRequest, ControlError, ControlMethod
-from yoetz.protocol.models import CheckRequest
-from yoetz.service.daemon import ServiceDaemon
+from finishup.ports.control import ControlCallRequest, ControlError, ControlMethod
+from finishup.protocol.models import CheckRequest
+from finishup.service.daemon import ServiceDaemon
 
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-0000000000b1"
 _RPC_ID = "rpc_00000000-0000-4000-8000-0000000000b2"

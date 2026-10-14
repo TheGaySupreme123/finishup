@@ -13,15 +13,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
-from yoetz.cli.hooks import intake_cue_text
-from yoetz.mcp.resources import read_resource
+from finishup.cli.hooks import intake_cue_text
+from finishup.mcp.resources import read_resource
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CANONICAL = _REPO_ROOT / "guidance" / "agent-instructions.md"
-_PACKAGED = _REPO_ROOT / "src" / "yoetz" / "resources" / "guidance" / "agent-instructions.md"
+_PACKAGED = _REPO_ROOT / "src" / "finishup" / "resources" / "guidance" / "agent-instructions.md"
 _INTAKE_WINDOW = 512
 _MATERIAL_TRIGGER = (
-    b"Use Yoetz for material multi-step, delegated, resumable, or verification-heavy work."
+    b"Use FinishUP for material multi-step, delegated, resumable, or verification-heavy work."
 )
 _START_CUE = b"then `start` before substantive work."
 _NEW_SESSION_CUE = b"New session: read guidance/discover schemas"
@@ -30,7 +30,7 @@ _START_FAIL_CUE = (
 )
 _TRIVIAL_EXCLUSION = b"Skip trivial questions or edits; never invent a ledger task."
 _CADENCE_CUE = b"Cadence: `start` once, `publish_work` per material transition; `receipt` last."
-_NO_FALSE_ACTIVATION = b"Never claim Yoetz is active until `start` returns."
+_NO_FALSE_ACTIVATION = b"Never claim FinishUP is active until `start` returns."
 _CUE_SENTENCES: Final = (
     _MATERIAL_TRIGGER,
     _START_CUE,
@@ -60,7 +60,7 @@ def test_packaged_agent_instructions_front_load_intake_cue() -> None:
     packaged = _PACKAGED.read_bytes()
     assert packaged == _CANONICAL.read_bytes()
     _assert_intake_cue_within_first_512(packaged)
-    assert packaged == read_resource("yoetz://guidance/agent-instructions.md")
+    assert packaged == read_resource("finishup://guidance/agent-instructions.md")
 
 
 def test_intake_cue_ends_on_a_finished_sentence_not_a_heading() -> None:
@@ -90,20 +90,21 @@ def test_agent_instructions_say_not_to_list_resources() -> None:
     text = _CANONICAL.read_text(encoding="utf-8")
     collapsed = " ".join(text.split())
     assert (
-        "Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance" in collapsed
+        "Do not call `resources/list` or `list_mcp_resources` to find FinishUP guidance"
+        in collapsed
     )
     assert "a list failure is not a missing server or reason to read product source" in collapsed
     assert "call `read_guidance` with the same URI" in collapsed
     assert "Only if that result is also empty" in collapsed
     assert collapsed.index("# Guidance catalog") > collapsed.index(
-        "Yoetz is not an enforcement system"
+        "FinishUP is not an enforcement system"
     )
     read_more = text.split("# Read more", 1)[1]
     for uri in (
-        "yoetz://guidance/agent-instructions.md",
-        "yoetz://guidance/workflow.md",
-        "yoetz://guidance/publication-policy.md",
-        "yoetz://guidance/coverage-and-receipts.md",
-        "yoetz://guidance/request-templates.md",
+        "finishup://guidance/agent-instructions.md",
+        "finishup://guidance/workflow.md",
+        "finishup://guidance/publication-policy.md",
+        "finishup://guidance/coverage-and-receipts.md",
+        "finishup://guidance/request-templates.md",
     ):
         assert f"`{uri}`" in read_more

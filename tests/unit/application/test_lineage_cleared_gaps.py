@@ -7,7 +7,7 @@ from typing import Any
 
 import tests.unit.kernel.test_receipt_builder as receipt_tests
 
-from yoetz.application import lineage_coordinator
+from finishup.application import lineage_coordinator
 
 _check_record: Any = getattr(receipt_tests, "_check_record")
 _cleared: Any = getattr(lineage_coordinator, "_cleared_retained_gaps")

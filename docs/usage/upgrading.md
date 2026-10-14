@@ -1,10 +1,10 @@
-# Upgrade Yoetz
+# Upgrade FinishUP
 
-Ask your agent: **“Update Yoetz to the newest version and keep my current settings.”**
+Ask your agent: **“Update FinishUP to the newest version and keep my current settings.”**
 The agent can use the upgrade guide:
 
 ```text
-yoetz upgrade
+finishup upgrade
 ```
 
 This command shows the package, data, host refresh, and verification stages without changing
@@ -16,7 +16,7 @@ For an ordinary installation managed by `uv tool`, you do not need to quit your 
 anything first. The package step is:
 
 ```text
-yoetz upgrade --accept
+finishup upgrade --accept
 ```
 
 This installs the newest eligible version through uv, replacing an old version pin and keeping
@@ -29,10 +29,10 @@ command is reported without claiming success; inspect the installed version befo
 Your agent can run it from inside the session you are using. Running processes keep their own
 release files while the installed package changes. That session, and any other session
 that is already open, keeps working on the previous version. When you next reopen your agent app
-or start a new session, its first Yoetz call retires the previous Yoetz service and starts the new
-one. You do not need to stop or restart anything to make that happen; `yoetz service restart`
+or start a new session, its first FinishUP call retires the previous FinishUP service and starts the new
+one. You do not need to stop or restart anything to make that happen; `finishup service restart`
 switches immediately if you do not want to wait. A process from before the update never replaces
-the newer service. If a still-open older session later reports that Yoetz was updated, reopen that
+the newer service. If a still-open older session later reports that FinishUP was updated, reopen that
 session.
 
 Upgrading **from 0.2.x** is the exception: 0.2's own upgrade command still asks you to stop hosts,
@@ -40,12 +40,12 @@ hooks, and the service first, because 0.2 cannot safely share the newer local ob
 Follow that procedure once; later updates do not need it.
 
 Unused old runtime copies are cleaned up automatically when a new process starts. For explicit
-cleanup, `yoetz upgrade --prune-runtimes` removes only copies no process is using. It does not stop
-sessions or remove settings, task data or credentials. Before uninstalling Yoetz, close its host
+cleanup, `finishup upgrade --prune-runtimes` removes only copies no process is using. It does not stop
+sessions or remove settings, task data or credentials. Before uninstalling FinishUP, close its host
 sessions, stop its service through the supported lifecycle, and run this cleanup so unused release
 copies do not remain after the package manager removes the launcher.
 
-Run `yoetz upgrade` again with the same host target options to continue with host refresh. Do not
+Run `finishup upgrade` again with the same host target options to continue with host refresh. Do not
 repeat `--accept` just to continue. Package replacement does not itself refresh host files. When
 the package and the existing data are a supported pair, the first controlled startup of the new
 service performs the backup-first data upgrade before the service becomes ready. It preserves
@@ -93,12 +93,12 @@ AI-powered review still runs. When Codex with a ChatGPT subscription is set up, 
 ends with a check that starts no Codex process and does not check your sign-in:
 
 ```text
-yoetz provider codex-subscription runtime status --json
+finishup provider codex-subscription runtime status --json
 ```
 
-If it names a next command, usually `yoetz provider codex-subscription repair` after Yoetz adopted
+If it names a next command, usually `finishup provider codex-subscription repair` after FinishUP adopted
 a newer reviewed capability identity or after your everyday Codex was replaced, review that
 command's preview before applying it. Repair keeps your ChatGPT sign-in, model, reasoning effort,
 timeout, retries, and privacy permissions, and never signs in again on its own. Updating your
-everyday Codex later does not affect the evaluator: Yoetz uses its own verified copy of the admitted
+everyday Codex later does not affect the evaluator: FinishUP uses its own verified copy of the admitted
 release. See [Providers](providers.md#keeping-the-evaluator-working-when-codex-updates).

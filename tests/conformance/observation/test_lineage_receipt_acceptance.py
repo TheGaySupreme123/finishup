@@ -20,38 +20,38 @@ import pytest
 
 from builders.multi_agent import multi_agent_service, private_service_root
 from builders.review_manifests import provider_bound_manifest
-from yoetz.adapters.sqlite.connection import open_read_only
-from yoetz.adapters.sqlite.repository import SqliteLedger
-from yoetz.application.check import FinalSemanticEvaluation
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.receipt import (  # pyright: ignore[reportPrivateUsage]
+from finishup.adapters.sqlite.connection import open_read_only
+from finishup.adapters.sqlite.repository import SqliteLedger
+from finishup.application.check import FinalSemanticEvaluation
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.receipt import (  # pyright: ignore[reportPrivateUsage]
     _context,  # pyright: ignore[reportPrivateUsage]
     _replay_result,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.start import StartInternalResult
-from yoetz.config.models import YoetzConfig
-from yoetz.domain.coordination import SessionHealth, WorkState
-from yoetz.domain.findings import SemanticDispatchKind, SemanticProvenance
-from yoetz.domain.receipts import receipt_document_from_json, receipt_document_to_json
-from yoetz.kernel.deterministic_checks import build_deterministic_case
-from yoetz.kernel.receipt_builder import build_receipt
-from yoetz.kernel.reducers import replay
-from yoetz.ports.control import RepositoryPrivacyContext
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.ledger import CheckCommitResult
-from yoetz.ports.objects import ObjectRef, ObjectStorePort
-from yoetz.ports.runtime import (
+from finishup.application.start import StartInternalResult
+from finishup.config.models import FinishUpConfig
+from finishup.domain.coordination import SessionHealth, WorkState
+from finishup.domain.findings import SemanticDispatchKind, SemanticProvenance
+from finishup.domain.receipts import receipt_document_from_json, receipt_document_to_json
+from finishup.kernel.deterministic_checks import build_deterministic_case
+from finishup.kernel.receipt_builder import build_receipt
+from finishup.kernel.reducers import replay
+from finishup.ports.control import RepositoryPrivacyContext
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.ledger import CheckCommitResult
+from finishup.ports.objects import ObjectRef, ObjectStorePort
+from finishup.ports.runtime import (
     OwnershipFence,
     RouteAccess,
     RouteCommand,
     TaskRuntime,
 )
-from yoetz.ports.semantic import SamplingParams, SemanticJudgment
-from yoetz.ports.start_catalog import TaskRouteState
-from yoetz.protocol.canonical import JsonValue, canonical_digest, canonical_encode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.models import (
+from finishup.ports.semantic import SamplingParams, SemanticJudgment
+from finishup.ports.start_catalog import TaskRouteState
+from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.models import (
     CheckRequest,
     PublishWorkRequest,
     ReceiptInclude,
@@ -62,7 +62,7 @@ from yoetz.protocol.models import (
     StartRequest,
     StatusRequest,
 )
-from yoetz.service.ready_composition import IdPort
+from finishup.service.ready_composition import IdPort
 
 pytestmark = pytest.mark.anyio
 
@@ -74,10 +74,10 @@ def anyio_backend() -> str:
     return "asyncio"
 
 
-def _clean_config() -> YoetzConfig:
+def _clean_config() -> FinishUpConfig:
     """Use the normal optional semantic policy with a local scripted evaluator below."""
 
-    return YoetzConfig()
+    return FinishUpConfig()
 
 
 _DIGEST = "sha256:" + "7" * 64

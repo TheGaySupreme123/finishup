@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.observability.diagnostics as diagnostics
-import yoetz.service.loop_health as loop_health
-from yoetz.domain.values import parse_rfc3339_millis
-from yoetz.observability.diagnostics import diagnostic_log_path
-from yoetz.service.loop_health import ControlPlaneWatchdog
+import finishup.observability.diagnostics as diagnostics
+import finishup.service.loop_health as loop_health
+from finishup.domain.values import parse_rfc3339_millis
+from finishup.observability.diagnostics import diagnostic_log_path
+from finishup.service.loop_health import ControlPlaneWatchdog
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ def test_watchdog_emit_never_waits_on_the_stderr_logging_handler(
     """A wedged stderr sink must not stall the one thread still able to report the stall."""
 
     monkeypatch.setattr(diagnostics, "log_dir", lambda: tmp_path)
-    logger = logging.getLogger("yoetz.service.daemon")
+    logger = logging.getLogger("finishup.service.daemon")
     wedged = threading.Lock()
 
     class _Wedged(logging.Handler):
@@ -106,7 +106,7 @@ def test_watchdog_emit_never_waits_on_the_stderr_logging_handler(
         watchdog.sample()
         finished.set()
 
-    sampler = threading.Thread(target=sample_once, name="yoetz-control-plane-watchdog")
+    sampler = threading.Thread(target=sample_once, name="finishup-control-plane-watchdog")
     sampler.start()
     try:
         assert finished.wait(timeout=5)
@@ -129,7 +129,7 @@ def test_watchdog_emit_never_waits_on_the_stderr_logging_handler(
 def test_watchdog_thread_retries_after_one_sampling_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import yoetz.service.loop_health as loop_health
+    import finishup.service.loop_health as loop_health
 
     monkeypatch.setattr(loop_health, "_WATCHDOG_SAMPLE_SECONDS", 0.01)
     calls = 0

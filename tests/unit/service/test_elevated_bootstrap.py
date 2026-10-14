@@ -19,12 +19,12 @@ from tests.builders.privacy_policies import (
     minimal_external_policy,
 )
 
-import yoetz.service.elevated_bootstrap as elevated_bootstrap
-from yoetz.cli.privacy_setup import build_candidate_policy, recipe_answers
-from yoetz.domain.privacy import AuthorizationScope, AuthorizationScopeKind, ProviderBinding
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.schemas import validate_schema_instance
-from yoetz.service.elevated_bootstrap import (
+import finishup.service.elevated_bootstrap as elevated_bootstrap
+from finishup.cli.privacy_setup import build_candidate_policy, recipe_answers
+from finishup.domain.privacy import AuthorizationScope, AuthorizationScopeKind, ProviderBinding
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.schemas import validate_schema_instance
+from finishup.service.elevated_bootstrap import (
     ElevatedBootstrapError,
     PendingElevatedConsent,
     catalog_payload,
@@ -127,7 +127,7 @@ def test_catalog_is_review_only_and_agent_safe() -> None:
     assert by_name["import_publication"]["implemented"] is True
     assert by_name["import_publication"]["risk_class"] == "review_only"
     assert by_name["import_publication"]["agent_chat_authorize_allowed"] is True
-    assert by_name["import_publication"]["prepare_hint"].startswith("yoetz import")
+    assert by_name["import_publication"]["prepare_hint"].startswith("finishup import")
     assert by_name["backup_execute"]["implemented"] is False
     assert by_name["backup_execute"]["risk_class"] == "review_only"
     assert by_name["plugin_artifact_apply"]["implemented"] is True
@@ -156,8 +156,8 @@ def test_prepare_projection_contains_only_agent_safe_review_fields(tmp_path: Pat
         "target_digest",
     }
     assert projection["schema"] == "yoetz.consent.pending-agent/6"
-    assert projection["review_command"] == ["yoetz", "consent", "review"]
-    assert projection["authorize_command"] == ["yoetz", "consent", "authorize"]
+    assert projection["review_command"] == ["finishup", "consent", "review"]
+    assert projection["authorize_command"] == ["finishup", "consent", "authorize"]
     assert projection["repository_privacy_recipe"] is None
     assert projection["repository_privacy_preview"] is None
     assert projection["import_publication_preview"] is None
@@ -249,7 +249,7 @@ def test_concurrent_loser_cannot_consume_atomic_review_claim(tmp_path: Path) -> 
             return "error", exc.reason
 
     with patch(
-        "yoetz.service.elevated_bootstrap.os.link",
+        "finishup.service.elevated_bootstrap.os.link",
         side_effect=pause_winner_after_atomic_claim,
     ):
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -281,7 +281,7 @@ def test_public_name_cleanup_cannot_revoke_atomic_review_claim(tmp_path: Path) -
         Path(source).unlink()
 
     with patch(
-        "yoetz.service.elevated_bootstrap.os.link",
+        "finishup.service.elevated_bootstrap.os.link",
         side_effect=remove_public_name_after_atomic_claim,
     ):
         claimed = claim_pending_for_review(_state=tmp_path)
@@ -341,9 +341,9 @@ def test_expiry_reprepare_cannot_replace_claimed_record(
             return "error", exc.reason
 
     with (
-        patch("yoetz.service.elevated_bootstrap.time.time", side_effect=clock),
+        patch("finishup.service.elevated_bootstrap.time.time", side_effect=clock),
         patch(
-            "yoetz.service.elevated_bootstrap._load_pending_path",
+            "finishup.service.elevated_bootstrap._load_pending_path",
             side_effect=pause_claim_load,
         ),
         ThreadPoolExecutor(max_workers=2) as pool,
@@ -387,7 +387,7 @@ def test_legacy_pending_record_is_invalidated_not_migrated(tmp_path: Path, versi
     path.write_text(
         json.dumps(
             {
-                "schema": f"yoetz.elevated-bootstrap.pending/{version}",
+                "schema": f"finishup.elevated-bootstrap.pending/{version}",
                 "confirmation_phrase": "reusable value",
             }
         )
@@ -414,7 +414,7 @@ def test_legacy_claim_marker_remains_owned_and_blocks_replacement(
     marker.write_text(
         json.dumps(
             {
-                "schema": f"yoetz.elevated-bootstrap.pending/{version}",
+                "schema": f"finishup.elevated-bootstrap.pending/{version}",
                 "pending_id": "possibly-live-owner",
             }
         )
@@ -429,9 +429,9 @@ def test_legacy_claim_marker_remains_owned_and_blocks_replacement(
 
 
 def test_expiry_consumes_before_review(tmp_path: Path) -> None:
-    with patch("yoetz.service.elevated_bootstrap.time.time", return_value=1_000):
+    with patch("finishup.service.elevated_bootstrap.time.time", return_value=1_000):
         prepare_pending("vault_initialize", target_digest=_TARGET, _state=tmp_path)
-    with patch("yoetz.service.elevated_bootstrap.time.time", return_value=1_901):
+    with patch("finishup.service.elevated_bootstrap.time.time", return_value=1_901):
         with pytest.raises(ElevatedBootstrapError) as exc:
             claim_pending_for_review(_state=tmp_path)
     assert exc.value.reason == "pending_absent"
@@ -523,7 +523,7 @@ def test_repository_grant_is_repository_bound(tmp_path: Path) -> None:
     assert grant_projection["repository_privacy_recipe"] == "expanded_review"
     assert grant_projection["repository_privacy_preview"]["recipe"] == "expanded_review"
     assert grant_projection["repository_privacy_preview"]["changes"]
-    assert grant_projection["authorize_command"] == ["yoetz", "consent", "authorize"]
+    assert grant_projection["authorize_command"] == ["finishup", "consent", "authorize"]
     assert load_pending(_state=tmp_path) == pending
     assert (
         grant_target_digest(
@@ -652,7 +652,7 @@ def test_status_contains_nullable_pending_and_catalog(tmp_path: Path) -> None:
     )
     prepared = cast(dict[str, Any], status_payload(_state=tmp_path))
     assert prepared["pending"]["operation"] == "provider_credential_set"
-    assert prepared["pending"]["authorize_command"] == ["yoetz", "consent", "authorize"]
+    assert prepared["pending"]["authorize_command"] == ["finishup", "consent", "authorize"]
     assert prepared["pending"]["schema"] == "yoetz.consent.pending-agent/7"
     assert prepared["pending"]["coordination_binding"] is None
     _assert_agent_safe(prepared)

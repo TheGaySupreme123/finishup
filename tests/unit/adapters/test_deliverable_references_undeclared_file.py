@@ -14,12 +14,12 @@ from pathlib import Path
 import pytest
 
 from builders.observed_runs import ObservedLedger
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
-from yoetz.application.check_change import (
+from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.application.check_change import (
     requested_output_states,
     undeclared_references,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     EventSchema,
     ObligationPublishedPayload,
     ObligationStatus,
@@ -28,10 +28,10 @@ from yoetz.domain.events import (
     RequestedItemKind,
     RequestedItemRole,
 )
-from yoetz.domain.values import obligation_id
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.reducers import replay
-from yoetz.ports.change_capture import CheckWorkspaceSource
+from finishup.domain.values import obligation_id
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.reducers import replay
+from finishup.ports.change_capture import CheckWorkspaceSource
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 _REQUEST = "req_00000000-0000-4000-8000-000000000001"
@@ -76,9 +76,9 @@ def _repository(tmp_path: Path, files: dict[str, str]) -> tuple[Path, object]:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -263,9 +263,9 @@ def test_an_untracked_file_the_task_started_with_is_not_an_undeclared_dependency
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -300,9 +300,9 @@ def test_a_created_file_inside_a_nested_repository_is_an_undeclared_dependency(
     _git(
         api,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -424,7 +424,7 @@ def test_acknowledged_not_done_obligation_is_skipped(tmp_path: Path) -> None:
 
 
 def test_adapter_returns_index_pairs_only_and_refuses_unsafe_paths(tmp_path: Path) -> None:
-    from yoetz.ports.change_capture import ChangeCaptureUnavailable
+    from finishup.ports.change_capture import ChangeCaptureUnavailable
 
     repository, _base = _cracker(tmp_path)
     adapter = GitChangeCaptureAdapter()
@@ -445,7 +445,7 @@ def test_adapter_returns_index_pairs_only_and_refuses_unsafe_paths(tmp_path: Pat
 def test_only_the_first_bounded_prefix_is_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import yoetz.adapters.git_change_capture as capture_module
+    import finishup.adapters.git_change_capture as capture_module
 
     repository, _base = _cracker(tmp_path, "#" * 64 + "\nload('english_model.npz')\n")
     adapter = GitChangeCaptureAdapter()

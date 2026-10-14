@@ -20,36 +20,36 @@ from pydantic import ValidationError
 from tests.builders.privacy_policies import INSTALLATION_ID, local_only_policy
 from typer.testing import CliRunner
 
-from yoetz.cli import elevated
-from yoetz.cli.app import app
-from yoetz.cli.privacy_setup import (
+from finishup.cli import elevated
+from finishup.cli.app import app
+from finishup.cli.privacy_setup import (
     ProviderBindingRequiredError,
     build_candidate_policy,
     recipe_answers,
 )
-from yoetz.cli.trusted_console import TrustedForegroundConsole
-from yoetz.config.models import ConfigError
-from yoetz.domain.privacy import (
+from finishup.cli.trusted_console import TrustedForegroundConsole
+from finishup.config.models import ConfigError
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     PrivacyPolicy,
     ProviderBinding,
 )
-from yoetz.protocol.canonical import canonical_digest
-from yoetz.protocol.chat_user_authority import ChatUserAttestationModel
-from yoetz.protocol.consent import ConsentReviewResultModel
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
-from yoetz.service.confidential_client import (
+from finishup.protocol.canonical import canonical_digest
+from finishup.protocol.chat_user_authority import ChatUserAttestationModel
+from finishup.protocol.consent import ConsentReviewResultModel
+from finishup.protocol.ids import IdKind, new_id
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.service.confidential_client import (
     ConfidentialClientError,
     ConfidentialResultUnconfirmed,
 )
-from yoetz.service.confidential_protocol import (
+from finishup.service.confidential_protocol import (
     PrivacyDecisionResult,
     ProviderCredentialResult,
     VaultStateResult,
 )
-from yoetz.service.elevated_bootstrap import (
+from finishup.service.elevated_bootstrap import (
     ElevatedBootstrapError,
     audit_path,
     consume_import_publication_authorization,
@@ -94,17 +94,17 @@ class _Console:
 
 
 def _patch_state(tmp_path: Path) -> Any:
-    return patch("yoetz.service.elevated_bootstrap.state_dir", return_value=tmp_path)
+    return patch("finishup.service.elevated_bootstrap.state_dir", return_value=tmp_path)
 
 
 def _patch_verified_presence() -> Any:
     """Admit post-presence behavior in unit tests; production remains fail-closed."""
 
-    return patch("yoetz.cli.elevated._require_action_bound_user_presence", return_value=None)
+    return patch("finishup.cli.elevated._require_action_bound_user_presence", return_value=None)
 
 
 def _read_stdin_secret_for_test(maximum: int) -> bytearray:
-    module = importlib.import_module("yoetz.cli.app")
+    module = importlib.import_module("finishup.cli.app")
     reader = cast(Callable[[int], bytearray], getattr(module, "_read_bounded_stdin_secret"))
     return reader(maximum)
 
@@ -199,7 +199,7 @@ def test_chat_user_attestation_is_closed_and_schema_bound() -> None:
 def test_bounded_stdin_secret_reads_directly_into_mutable_storage(
     raw: bytes, expected: bytes
 ) -> None:
-    with patch("yoetz.cli.app.sys.stdin", SimpleNamespace(buffer=io.BytesIO(raw))):
+    with patch("finishup.cli.app.sys.stdin", SimpleNamespace(buffer=io.BytesIO(raw))):
         secret = _read_stdin_secret_for_test(32)
     assert isinstance(secret, bytearray)
     assert bytes(secret) == expected
@@ -208,7 +208,7 @@ def test_bounded_stdin_secret_reads_directly_into_mutable_storage(
 @pytest.mark.parametrize("raw", [b"", b"a\nb", b"a\r", b"a\x00b", b"x" * 33])
 def test_bounded_stdin_secret_rejects_invalid_or_oversized_input(raw: bytes) -> None:
     with (
-        patch("yoetz.cli.app.sys.stdin", SimpleNamespace(buffer=io.BytesIO(raw))),
+        patch("finishup.cli.app.sys.stdin", SimpleNamespace(buffer=io.BytesIO(raw))),
         pytest.raises(ValueError, match="provider_credential_invalid"),
     ):
         _read_stdin_secret_for_test(32)
@@ -219,7 +219,7 @@ def test_prepare_repository_grant_maps_privacy_snapshot_failure() -> None:
         raise RuntimeError("private internal detail")
 
     with patch(
-        "yoetz.cli.privacy_setup.get_privacy_setup_snapshot",
+        "finishup.cli.privacy_setup.get_privacy_setup_snapshot",
         side_effect=fail_snapshot,
     ):
         result = CliRunner().invoke(
@@ -229,7 +229,7 @@ def test_prepare_repository_grant_maps_privacy_snapshot_failure() -> None:
     assert result.exit_code == 2
     assert "elevated_bootstrap: repository_privacy_scope_unavailable" in result.stderr
     # The bare token alone left operators with nothing to run; the remediation half must follow it.
-    assert "yoetz --privacy" in result.stderr
+    assert "finishup --privacy" in result.stderr
     assert "private internal detail" not in result.stderr
 
 
@@ -243,9 +243,9 @@ def test_prepare_expanded_review_returns_exact_agent_safe_policy_diff(tmp_path: 
 
     with (
         _patch_state(tmp_path),
-        patch("yoetz.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
+        patch("finishup.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
         patch(
-            "yoetz.cli.privacy_setup.configured_bindings",
+            "finishup.cli.privacy_setup.configured_bindings",
             return_value=(_GRANT_EXTERNAL, None),
         ),
     ):
@@ -288,7 +288,7 @@ def test_prepare_expanded_review_returns_exact_agent_safe_policy_diff(tmp_path: 
         "endpoint_version:1.0.0",
         "transport:external",
     }
-    assert prepared["pending"]["authorize_command"] == ["yoetz", "consent", "authorize"]
+    assert prepared["pending"]["authorize_command"] == ["finishup", "consent", "authorize"]
     validate_schema_instance("prepare-result", "6.0.0", prepared)
 
 
@@ -302,9 +302,9 @@ def test_prepare_unknown_repository_recipe_is_a_bounded_failure(tmp_path: Path) 
 
     with (
         _patch_state(tmp_path),
-        patch("yoetz.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
+        patch("finishup.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
         patch(
-            "yoetz.cli.privacy_setup.configured_bindings",
+            "finishup.cli.privacy_setup.configured_bindings",
             return_value=(_GRANT_EXTERNAL, None),
         ),
     ):
@@ -335,9 +335,9 @@ def test_prepare_repository_grant_config_error_is_a_bounded_failure(tmp_path: Pa
 
     with (
         _patch_state(tmp_path),
-        patch("yoetz.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
+        patch("finishup.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
         patch(
-            "yoetz.cli.privacy_setup.configured_bindings",
+            "finishup.cli.privacy_setup.configured_bindings",
             side_effect=ConfigError("unknown_config_key"),
         ),
     ):
@@ -377,7 +377,7 @@ def test_catalog_prepare_hint_names_only_the_caller_supplied_provider_flags() ->
     # agents hunting for internals they cannot know.
     for derived in ("--purpose", "--scope-digest", "--purpose-digest"):
         assert derived not in hint
-    assert hints["vault_initialize"] == "yoetz consent prepare vault_initialize"
+    assert hints["vault_initialize"] == "finishup consent prepare vault_initialize"
 
 
 def test_chat_user_authorize_consumes_exact_provider_request_and_wipes_input(
@@ -402,7 +402,7 @@ def test_chat_user_authorize_consumes_exact_provider_request_and_wipes_input(
             assert pending is not None
             secret = bytearray(b"chat-secret")
             with patch(
-                "yoetz.cli.elevated._complete_provider_credential_supplied",
+                "finishup.cli.elevated._complete_provider_credential_supplied",
                 side_effect=complete,
             ):
                 result = cast(
@@ -452,14 +452,14 @@ def test_agent_chat_authorize_uses_real_supplied_credential_path(tmp_path: Path)
             secret = bytearray(b"chat-secret")
             with (
                 patch(
-                    "yoetz.cli.privacy_setup.get_privacy_setup_snapshot",
+                    "finishup.cli.privacy_setup.get_privacy_setup_snapshot",
                     side_effect=privacy_snapshot,
                 ),
                 patch(
-                    "yoetz.cli.elevated._load_auto_unlock_passphrase",
+                    "finishup.cli.elevated._load_auto_unlock_passphrase",
                     return_value=bytearray(b"local-reauth"),
                 ),
-                patch("yoetz.cli.elevated.run_human_ceremony", side_effect=ceremony),
+                patch("finishup.cli.elevated.run_human_ceremony", side_effect=ceremony),
             ):
                 result = cast(
                     dict[str, Any],
@@ -499,11 +499,11 @@ def test_agent_chat_authorize_fails_closed_without_local_reauthentication(
             secret = bytearray(b"chat-secret")
             with (
                 patch(
-                    "yoetz.cli.privacy_setup.get_privacy_setup_snapshot",
+                    "finishup.cli.privacy_setup.get_privacy_setup_snapshot",
                     side_effect=privacy_snapshot,
                 ),
-                patch("yoetz.cli.elevated._load_auto_unlock_passphrase", return_value=None),
-                patch("yoetz.cli.elevated.run_human_ceremony") as ceremony,
+                patch("finishup.cli.elevated._load_auto_unlock_passphrase", return_value=None),
+                patch("finishup.cli.elevated.run_human_ceremony") as ceremony,
             ):
                 with pytest.raises(ElevatedBootstrapError) as exc:
                     await elevated.authorize_elevated(
@@ -523,7 +523,7 @@ def test_chat_user_authorize_denial_is_single_shot_for_repository_grant(tmp_path
             elevated.prepare_elevated("repository_privacy_grant", grant_binding=_GRANT_BINDING)
             pending = load_pending(_state=tmp_path)
             assert pending is not None
-            with patch("yoetz.cli.elevated._complete_repository_privacy_grant") as complete:
+            with patch("finishup.cli.elevated._complete_repository_privacy_grant") as complete:
                 result = cast(
                     dict[str, Any],
                     await elevated.authorize_elevated(
@@ -609,20 +609,20 @@ def _repository_grant_patches(
         return "ppr_00000000-0000-4000-8000-000000000519"
 
     with (
-        patch("yoetz.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
+        patch("finishup.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
         patch(
-            "yoetz.cli.privacy_setup.configured_bindings",
+            "finishup.cli.privacy_setup.configured_bindings",
             return_value=(external, None),
         ),
         patch(
-            "yoetz.cli.privacy_setup.propose_privacy_candidate",
+            "finishup.cli.privacy_setup.propose_privacy_candidate",
             side_effect=default_propose if propose is None else propose,
         ),
         patch(
-            "yoetz.cli.elevated._load_auto_unlock_passphrase",
+            "finishup.cli.elevated._load_auto_unlock_passphrase",
             return_value=bytearray(b"scoped-reauth"),
         ),
-        patch("yoetz.cli.privacy_control.decide_policy", side_effect=decide) as decide_mock,
+        patch("finishup.cli.privacy_control.decide_policy", side_effect=decide) as decide_mock,
     ):
         yield decide_mock
 
@@ -700,7 +700,7 @@ def test_repository_grant_tightening_reports_tightened_without_a_decision(
                     decide, propose=tightening_propose, composed_policy=_GRANT_CANDIDATE
                 ) as decide_mock,
                 patch(
-                    "yoetz.cli.elevated._load_auto_unlock_passphrase",
+                    "finishup.cli.elevated._load_auto_unlock_passphrase",
                     side_effect=AssertionError("a tightening needs no reauthentication"),
                 ),
             ):
@@ -748,7 +748,7 @@ def test_repository_grant_carried_denied_result_stays_a_bounded_failure(tmp_path
 def test_repository_grant_post_decision_ambiguity_is_typed_unconfirmed(tmp_path: Path) -> None:
     """A submitted decision with no result must not be reported as a failed grant."""
 
-    from yoetz.cli.privacy_control import PrivacyDecisionUnconfirmed
+    from finishup.cli.privacy_control import PrivacyDecisionUnconfirmed
 
     async def decide(*_args: object, **_kwargs: object) -> object:
         raise PrivacyDecisionUnconfirmed("ambiguous")
@@ -879,7 +879,9 @@ def test_chat_user_authorize_requires_advertised_capability_before_claim(tmp_pat
             )
             pending = load_pending(_state=tmp_path)
             assert pending is not None
-            with patch("yoetz.cli.elevated.agent_chat_attestation_supported", return_value=False):
+            with patch(
+                "finishup.cli.elevated.agent_chat_attestation_supported", return_value=False
+            ):
                 with pytest.raises(ElevatedBootstrapError) as exc:
                     await elevated.authorize_elevated(_chat_attestation(pending))
                 assert exc.value.reason == "agent_chat_attestation_unsupported"
@@ -897,7 +899,7 @@ def test_chat_user_authorize_requires_one_warning_before_secret_ingress(tmp_path
             pending = load_pending(_state=tmp_path)
             assert pending is not None
             secret = bytearray(b"chat-secret")
-            with patch("yoetz.cli.elevated._complete_provider_credential_supplied") as complete:
+            with patch("finishup.cli.elevated._complete_provider_credential_supplied") as complete:
                 with pytest.raises(ElevatedBootstrapError) as exc:
                     await elevated.authorize_elevated(
                         _chat_attestation(pending, warning=False), provider_credential=secret
@@ -962,7 +964,7 @@ def test_agent_chat_authorize_initializes_vault_and_rejects_missing_or_forbidden
             vault_pending = load_pending(_state=vault_state)
             assert vault_pending is not None
             with patch(
-                "yoetz.cli.elevated._complete_vault_initialize_generated",
+                "finishup.cli.elevated._complete_vault_initialize_generated",
                 return_value={"state": "ready", "reason": "succeeded"},
             ) as initialize:
                 vault_result = await elevated.authorize_elevated(_chat_attestation(vault_pending))
@@ -1021,7 +1023,7 @@ def test_catalog_and_prepare_are_agent_safe(tmp_path: Path) -> None:
         prepared = cast(dict[str, Any], elevated.prepare_elevated("vault_initialize"))
     assert catalog["schema"] == "yoetz.consent.catalog/7"
     assert prepared["schema"] == "yoetz.elevated-bootstrap.prepare-result/6"
-    assert prepared["pending"]["review_command"] == ["yoetz", "consent", "review"]
+    assert prepared["pending"]["review_command"] == ["finishup", "consent", "review"]
     validate_schema_instance("prepare-result", "6.0.0", prepared)
     rendered = json.dumps({"catalog": catalog, "prepared": prepared})
     for forbidden in (
@@ -1108,7 +1110,7 @@ def test_trusted_import_review_displays_the_structural_preview(tmp_path: Path) -
             )
             with (
                 _patch_verified_presence(),
-                patch("yoetz.cli.elevated.TrustedForegroundConsole", return_value=console),
+                patch("finishup.cli.elevated.TrustedForegroundConsole", return_value=console),
             ):
                 await elevated.review_elevated()
 
@@ -1194,8 +1196,8 @@ def test_review_approval_consumes_pending_and_returns_no_secret(tmp_path: Path) 
             elevated.prepare_elevated("vault_initialize")
             with (
                 _patch_verified_presence(),
-                patch("yoetz.cli.elevated.TrustedForegroundConsole", return_value=console),
-                patch("yoetz.cli.elevated._complete_approved", side_effect=complete),
+                patch("finishup.cli.elevated.TrustedForegroundConsole", return_value=console),
+                patch("finishup.cli.elevated._complete_approved", side_effect=complete),
             ):
                 return cast(dict[str, Any], await elevated.review_elevated())
 
@@ -1214,7 +1216,7 @@ def test_review_denial_and_cancellation_are_single_shot(tmp_path: Path) -> None:
             with (
                 _patch_verified_presence(),
                 patch(
-                    "yoetz.cli.elevated.TrustedForegroundConsole",
+                    "finishup.cli.elevated.TrustedForegroundConsole",
                     return_value=_Console(b"deny"),
                 ),
             ):
@@ -1236,7 +1238,7 @@ def test_review_denial_and_cancellation_are_single_shot(tmp_path: Path) -> None:
             with (
                 _patch_verified_presence(),
                 patch(
-                    "yoetz.cli.elevated.TrustedForegroundConsole",
+                    "finishup.cli.elevated.TrustedForegroundConsole",
                     return_value=console,
                 ),
             ):
@@ -1254,10 +1256,10 @@ def test_pty_like_console_cannot_authorize_without_os_presence(tmp_path: Path) -
             elevated.prepare_elevated("vault_initialize")
             with (
                 patch(
-                    "yoetz.cli.elevated.TrustedForegroundConsole",
+                    "finishup.cli.elevated.TrustedForegroundConsole",
                     return_value=_Console(b"approve"),
                 ) as console,
-                patch("yoetz.cli.elevated._complete_approved") as complete,
+                patch("finishup.cli.elevated._complete_approved") as complete,
             ):
                 with pytest.raises(ElevatedBootstrapError) as exc:
                     await elevated.review_elevated()
@@ -1289,9 +1291,10 @@ def test_console_project_grant_refuses_before_claim_or_authorization(
             with (
                 _patch_verified_presence(),
                 patch(
-                    "yoetz.cli.elevated.TrustedForegroundConsole", return_value=_Console(decision)
+                    "finishup.cli.elevated.TrustedForegroundConsole",
+                    return_value=_Console(decision),
                 ),
-                patch("yoetz.cli.elevated._complete_approved") as complete,
+                patch("finishup.cli.elevated._complete_approved") as complete,
             ):
                 with pytest.raises(ElevatedBootstrapError) as error:
                     await elevated.review_elevated()
@@ -1352,7 +1355,7 @@ class _StagedInitStore:
 
     @contextmanager
     def staged_initialization_guard(self) -> Generator[None]:
-        from yoetz.adapters.keys.os_keyring import OSKeyringError
+        from finishup.adapters.keys.os_keyring import OSKeyringError
 
         assert not self.guard_held, "the guard is exclusive"
         if self.guard_reason is not None:
@@ -1372,7 +1375,7 @@ class _StagedInitStore:
         }
 
     def stage_for_initialization(self) -> bytearray:
-        from yoetz.adapters.keys.os_keyring import OSKeyringError
+        from finishup.adapters.keys.os_keyring import OSKeyringError
 
         if self.active:
             raise OSKeyringError("entry_exists")
@@ -1383,7 +1386,7 @@ class _StagedInitStore:
         return self._generated
 
     def promote_staged_initialization(self) -> None:
-        from yoetz.adapters.keys.os_keyring import OSKeyringError
+        from finishup.adapters.keys.os_keyring import OSKeyringError
 
         if not self.staged:
             raise OSKeyringError("missing")
@@ -1413,9 +1416,9 @@ def test_generated_initialization_secret_is_submitted_then_overwritten() -> None
 
     async def run() -> dict[str, object]:
         with (
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
             patch(
-                "yoetz.cli.elevated.run_human_ceremony_on_terminal",
+                "finishup.cli.elevated.run_human_ceremony_on_terminal",
                 side_effect=ceremony,
             ),
         ):
@@ -1450,8 +1453,8 @@ def test_agent_generated_initialization_secret_never_enters_agent_result() -> No
 
     async def run() -> dict[str, object]:
         with (
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
-            patch("yoetz.cli.elevated.run_human_ceremony", side_effect=ceremony),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.cli.elevated.run_human_ceremony", side_effect=ceremony),
         ):
             return cast(
                 dict[str, object],
@@ -1480,9 +1483,9 @@ def test_ambiguous_initialize_outcome_keeps_staged_credential(tmp_path: Path) ->
 
     async def run() -> None:
         with (
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
-            patch("yoetz.cli.elevated._service_vault_state", side_effect=unprovable),
-            patch("yoetz.cli.elevated.run_human_ceremony", side_effect=ceremony),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.cli.elevated._service_vault_state", side_effect=unprovable),
+            patch("finishup.cli.elevated.run_human_ceremony", side_effect=ceremony),
         ):
             with pytest.raises(ElevatedBootstrapError) as exc:
                 await elevated._complete_vault_initialize_generated()  # pyright: ignore[reportPrivateUsage]
@@ -1508,9 +1511,9 @@ def test_retry_reconciles_orphaned_staged_credential_before_staging() -> None:
 
     async def run() -> dict[str, object]:
         with (
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
-            patch("yoetz.cli.elevated._service_vault_state", side_effect=uninitialized),
-            patch("yoetz.cli.elevated.run_human_ceremony", side_effect=ceremony),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.cli.elevated._service_vault_state", side_effect=uninitialized),
+            patch("finishup.cli.elevated.run_human_ceremony", side_effect=ceremony),
         ):
             return cast(
                 dict[str, object],
@@ -1535,8 +1538,8 @@ def test_unprovable_staged_leftover_fails_closed_without_entry_exists() -> None:
 
     async def run() -> None:
         with (
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
-            patch("yoetz.cli.elevated._service_vault_state", side_effect=committed),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.cli.elevated._service_vault_state", side_effect=committed),
         ):
             with pytest.raises(ElevatedBootstrapError) as exc:
                 await elevated._complete_vault_initialize_generated()  # pyright: ignore[reportPrivateUsage]
@@ -1554,7 +1557,7 @@ def test_missing_bundle_parent_is_a_distinct_bounded_failure_before_staging() ->
     store = _StagedInitStore(generated, guard_reason="bundle_parent_missing")
 
     async def run() -> None:
-        with patch("yoetz.cli.elevated._auto_unlock_store", return_value=store):
+        with patch("finishup.cli.elevated._auto_unlock_store", return_value=store):
             with pytest.raises(ElevatedBootstrapError) as exc:
                 await elevated._complete_vault_initialize_generated()  # pyright: ignore[reportPrivateUsage]
         assert exc.value.reason == "auto_unlock_bundle_parent_missing"
@@ -1583,9 +1586,9 @@ def test_trusted_review_never_falls_back_to_manual_passphrase_for_guard_failures
     async def run(reason: str) -> str:
         store = _StagedInitStore(generated, guard_reason=reason)
         with (
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
             patch(
-                "yoetz.cli.elevated.run_human_ceremony_on_terminal",
+                "finishup.cli.elevated.run_human_ceremony_on_terminal",
                 side_effect=ceremony,
             ),
         ):
@@ -1609,7 +1612,7 @@ def test_pre_existing_active_entry_is_still_refused() -> None:
     store.active = True
 
     async def run() -> None:
-        with patch("yoetz.cli.elevated._auto_unlock_store", return_value=store):
+        with patch("finishup.cli.elevated._auto_unlock_store", return_value=store):
             with pytest.raises(ElevatedBootstrapError) as exc:
                 await elevated._complete_vault_initialize_generated()  # pyright: ignore[reportPrivateUsage]
         assert exc.value.reason == "auto_unlock_entry_exists"
@@ -1621,7 +1624,7 @@ def test_pre_existing_active_entry_is_still_refused() -> None:
 def test_promotion_failure_after_committed_initialization_still_succeeds() -> None:
     """#511: the vault committed and activated; a keyring promotion failure must not fail it."""
 
-    from yoetz.adapters.keys.os_keyring import OSKeyringError
+    from finishup.adapters.keys.os_keyring import OSKeyringError
 
     generated = bytearray(b"w" * 64)
     store = _StagedInitStore(generated)
@@ -1636,8 +1639,8 @@ def test_promotion_failure_after_committed_initialization_still_succeeds() -> No
 
     async def run() -> dict[str, object]:
         with (
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
-            patch("yoetz.cli.elevated.run_human_ceremony", side_effect=ceremony),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.cli.elevated.run_human_ceremony", side_effect=ceremony),
         ):
             return cast(
                 dict[str, object],
@@ -1680,8 +1683,8 @@ def test_agent_generated_rotation_uses_only_local_store_bytes_and_promotes() -> 
 
     async def run() -> dict[str, object]:
         with (
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
-            patch("yoetz.cli.elevated.run_human_ceremony", side_effect=ceremony),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.cli.elevated.run_human_ceremony", side_effect=ceremony),
         ):
             return cast(
                 dict[str, object],
@@ -1722,9 +1725,9 @@ def test_agent_authorized_non_ready_vault_result_fails_before_approval(tmp_path:
             pending = load_pending(_state=tmp_path)
             assert pending is not None
             with (
-                patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
-                patch("yoetz.cli.elevated._service_vault_state", side_effect=uninitialized),
-                patch("yoetz.cli.elevated.run_human_ceremony", side_effect=ceremony),
+                patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
+                patch("finishup.cli.elevated._service_vault_state", side_effect=uninitialized),
+                patch("finishup.cli.elevated.run_human_ceremony", side_effect=ceremony),
             ):
                 with pytest.raises(ElevatedBootstrapError) as exc:
                     await elevated.authorize_elevated(_chat_attestation(pending))
@@ -1770,8 +1773,8 @@ def test_non_ready_rotation_result_never_promotes_staged_secret() -> None:
 
     async def run() -> None:
         with (
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
-            patch("yoetz.cli.elevated.run_human_ceremony", side_effect=ceremony),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.cli.elevated.run_human_ceremony", side_effect=ceremony),
         ):
             with pytest.raises(ElevatedBootstrapError) as exc:
                 await elevated._complete_vault_passphrase_rotate_generated()  # pyright: ignore[reportPrivateUsage]
@@ -1792,7 +1795,7 @@ def test_schema_rejected_result_is_bounded_and_never_recorded_approved(tmp_path:
             pending = load_pending(_state=tmp_path)
             assert pending is not None
             with patch(
-                "yoetz.cli.elevated._complete_vault_initialize_generated",
+                "finishup.cli.elevated._complete_vault_initialize_generated",
                 return_value={"state": "locked", "reason": "throttle_record_exists"},
             ):
                 with pytest.raises(ElevatedBootstrapError) as exc:
@@ -1823,11 +1826,11 @@ def test_trusted_review_non_ready_vault_result_is_consumed_as_failed(tmp_path: P
             elevated.prepare_elevated("vault_initialize")
             with (
                 _patch_verified_presence(),
-                patch("yoetz.cli.elevated.TrustedForegroundConsole", return_value=_Console()),
-                patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
-                patch("yoetz.cli.elevated._service_vault_state", side_effect=uninitialized),
+                patch("finishup.cli.elevated.TrustedForegroundConsole", return_value=_Console()),
+                patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
+                patch("finishup.cli.elevated._service_vault_state", side_effect=uninitialized),
                 patch(
-                    "yoetz.cli.elevated.run_human_ceremony_on_terminal",
+                    "finishup.cli.elevated.run_human_ceremony_on_terminal",
                     side_effect=ceremony,
                 ),
             ):
@@ -1859,9 +1862,9 @@ def test_authorize_cli_projects_the_bounded_vault_failure_reason(tmp_path: Path)
         pending = load_pending(_state=tmp_path)
         assert pending is not None
         with (
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
-            patch("yoetz.cli.elevated._service_vault_state", side_effect=uninitialized),
-            patch("yoetz.cli.elevated.run_human_ceremony", side_effect=ceremony),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.cli.elevated._service_vault_state", side_effect=uninitialized),
+            patch("finishup.cli.elevated.run_human_ceremony", side_effect=ceremony),
         ):
             result = CliRunner().invoke(
                 app,
@@ -1885,7 +1888,7 @@ def test_authorize_cli_projects_the_bounded_vault_failure_reason(tmp_path: Path)
             )
     assert result.exit_code == 2
     assert "elevated_bootstrap: vault_result_throttle_record_exists" in result.stderr
-    assert "yoetz consent prepare" in result.stderr
+    assert "finishup consent prepare" in result.stderr
     assert "authorize_failed" not in result.stderr
 
 
@@ -1906,7 +1909,7 @@ def test_trusted_review_displays_exact_provider_binding(tmp_path: Path) -> None:
             elevated.prepare_elevated("provider_credential_set", provider_binding=binding)
             with (
                 _patch_verified_presence(),
-                patch("yoetz.cli.elevated.TrustedForegroundConsole", return_value=console),
+                patch("finishup.cli.elevated.TrustedForegroundConsole", return_value=console),
             ):
                 await elevated.review_elevated()
 
@@ -1999,11 +2002,11 @@ def test_provider_secret_ingress_uses_only_the_trusted_review_ceremony(
     async def run() -> dict[str, object]:
         with (
             patch(
-                "yoetz.cli.elevated.run_human_ceremony_on_terminal",
+                "finishup.cli.elevated.run_human_ceremony_on_terminal",
                 side_effect=ceremony,
             ),
             patch(
-                "yoetz.cli.privacy_setup.get_privacy_setup_snapshot",
+                "finishup.cli.privacy_setup.get_privacy_setup_snapshot",
                 side_effect=privacy_snapshot,
             ),
         ):
@@ -2045,7 +2048,7 @@ def test_provider_credential_command_needs_no_flags_and_binds_the_installed_prof
 ) -> None:
     """Seven mandatory options made the documented command unusable by hand."""
 
-    from yoetz.service.vault import provider_credential_profile_binding
+    from finishup.service.vault import provider_credential_profile_binding
 
     observed: list[tuple[Any, bytearray | None, bytearray | None]] = []
 
@@ -2058,16 +2061,16 @@ def test_provider_credential_command_needs_no_flags_and_binds_the_installed_prof
         return ProviderCredentialResult(cast(Any, action), 4, "stored")
 
     with (
-        patch("yoetz.config.load.load_config", return_value=_configured_provider()),
+        patch("finishup.config.load.load_config", return_value=_configured_provider()),
         patch(
-            "yoetz.cli.privacy_setup.get_privacy_setup_snapshot",
+            "finishup.cli.privacy_setup.get_privacy_setup_snapshot",
             side_effect=_bound_privacy_snapshot,
         ),
         patch(
-            "yoetz.cli.unlock.load_auto_unlock_reauthentication",
+            "finishup.cli.unlock.load_auto_unlock_reauthentication",
             return_value=bytearray(b"scoped-reauth"),
         ),
-        patch(f"yoetz.cli.unlock.{function_name}", side_effect=ceremony),
+        patch(f"finishup.cli.unlock.{function_name}", side_effect=ceremony),
     ):
         result = CliRunner().invoke(app, ["provider", "credential", action])
 
@@ -2106,13 +2109,13 @@ def test_provider_credential_command_still_accepts_explicit_overrides() -> None:
         return ProviderCredentialResult("set", 1, "stored")
 
     with (
-        patch("yoetz.config.load.load_config", return_value=_configured_provider()),
+        patch("finishup.config.load.load_config", return_value=_configured_provider()),
         patch(
-            "yoetz.cli.privacy_setup.get_privacy_setup_snapshot",
+            "finishup.cli.privacy_setup.get_privacy_setup_snapshot",
             side_effect=_bound_privacy_snapshot,
         ),
-        patch("yoetz.cli.unlock.load_auto_unlock_reauthentication", return_value=None),
-        patch("yoetz.cli.unlock.set_provider_credential", side_effect=ceremony),
+        patch("finishup.cli.unlock.load_auto_unlock_reauthentication", return_value=None),
+        patch("finishup.cli.unlock.set_provider_credential", side_effect=ceremony),
     ):
         result = CliRunner().invoke(
             app,
@@ -2149,14 +2152,14 @@ def test_provider_credential_command_without_a_configured_provider_names_the_set
     None
 ):
     with (
-        patch("yoetz.config.load.load_config", return_value=SimpleNamespace(provider=None)),
-        patch("yoetz.cli.unlock.set_provider_credential") as ceremony,
+        patch("finishup.config.load.load_config", return_value=SimpleNamespace(provider=None)),
+        patch("finishup.cli.unlock.set_provider_credential") as ceremony,
     ):
         result = CliRunner().invoke(app, ["provider", "credential", "set"])
 
     assert result.exit_code == 2
     assert "provider_not_configured" in result.stderr
-    assert "yoetz --set" in result.stderr
+    assert "finishup --set" in result.stderr
     ceremony.assert_not_called()
 
 
@@ -2165,18 +2168,18 @@ def test_provider_credential_command_without_privacy_scope_names_the_privacy_com
         raise RuntimeError("private internal detail")
 
     with (
-        patch("yoetz.config.load.load_config", return_value=_configured_provider()),
+        patch("finishup.config.load.load_config", return_value=_configured_provider()),
         patch(
-            "yoetz.cli.privacy_setup.get_privacy_setup_snapshot",
+            "finishup.cli.privacy_setup.get_privacy_setup_snapshot",
             side_effect=fail_snapshot,
         ),
-        patch("yoetz.cli.unlock.set_provider_credential") as ceremony,
+        patch("finishup.cli.unlock.set_provider_credential") as ceremony,
     ):
         result = CliRunner().invoke(app, ["provider", "credential", "set"])
 
     assert result.exit_code == 2
     assert "repository_privacy_scope_unavailable" in result.stderr
-    assert "yoetz --privacy" in result.stderr
+    assert "finishup --privacy" in result.stderr
     assert "private internal detail" not in result.stderr
     ceremony.assert_not_called()
 
@@ -2184,7 +2187,7 @@ def test_provider_credential_command_without_privacy_scope_names_the_privacy_com
 def test_menu_credential_ceremony_supplies_the_scoped_reauthentication_secret() -> None:
     """A Keychain-provisioned vault must not ask the menu user for an unseen passphrase."""
 
-    from yoetz.cli import menu
+    from finishup.cli import menu
 
     observed: list[tuple[Any, bytearray | None, bytearray | None]] = []
 
@@ -2197,17 +2200,17 @@ def test_menu_credential_ceremony_supplies_the_scoped_reauthentication_secret() 
         return ProviderCredentialResult("set", 2, "stored")
 
     with (
-        patch("yoetz.cli.menu._ask", return_value="2"),
-        patch("yoetz.config.load.load_config", return_value=_configured_provider()),
+        patch("finishup.cli.menu._ask", return_value="2"),
+        patch("finishup.config.load.load_config", return_value=_configured_provider()),
         patch(
-            "yoetz.cli.privacy_setup.get_privacy_setup_snapshot",
+            "finishup.cli.privacy_setup.get_privacy_setup_snapshot",
             side_effect=_bound_privacy_snapshot,
         ),
         patch(
-            "yoetz.cli.unlock.load_auto_unlock_reauthentication",
+            "finishup.cli.unlock.load_auto_unlock_reauthentication",
             return_value=bytearray(b"scoped-reauth"),
         ),
-        patch("yoetz.cli.unlock.set_provider_credential", side_effect=ceremony),
+        patch("finishup.cli.unlock.set_provider_credential", side_effect=ceremony),
     ):
         menu._provider_menu()  # pyright: ignore[reportPrivateUsage]
 
@@ -2241,7 +2244,7 @@ def test_service_down_preserves_pending_then_same_request_succeeds(
         with (
             _patch_state(tmp_path),
             _patch_verified_presence(),
-            patch("yoetz.cli.elevated.TrustedForegroundConsole", return_value=_Console()),
+            patch("finishup.cli.elevated.TrustedForegroundConsole", return_value=_Console()),
         ):
             pending = prepare_pending("vault_initialize", target_digest="sha256:" + "a" * 64)
 
@@ -2278,7 +2281,7 @@ def test_service_loss_after_claim_consumes_approval(
         with (
             _patch_state(tmp_path),
             _patch_verified_presence(),
-            patch("yoetz.cli.elevated.TrustedForegroundConsole", return_value=_Console()),
+            patch("finishup.cli.elevated.TrustedForegroundConsole", return_value=_Console()),
         ):
             pending = prepare_pending("vault_initialize", target_digest="sha256:" + "a" * 64)
             with pytest.raises(ElevatedBootstrapError, match="ceremony_service_unavailable"):
@@ -2307,7 +2310,7 @@ def test_denial_does_not_require_running_service(
         with (
             _patch_state(tmp_path),
             _patch_verified_presence(),
-            patch("yoetz.cli.elevated.TrustedForegroundConsole", return_value=_Console(b"deny")),
+            patch("finishup.cli.elevated.TrustedForegroundConsole", return_value=_Console(b"deny")),
         ):
             pending = prepare_pending("vault_initialize", target_digest="sha256:" + "a" * 64)
             result = (
@@ -2350,9 +2353,9 @@ def test_grant_prepare_classifies_provider_binding_only(
     )
     with (
         _patch_state(tmp_path),
-        patch("yoetz.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
-        patch("yoetz.cli.privacy_setup.configured_bindings", return_value=(None, None)),
-        patch("yoetz.cli.privacy_setup.recipe_answers", side_effect=exception),
+        patch("finishup.cli.privacy_setup.get_privacy_setup_snapshot", side_effect=snapshot),
+        patch("finishup.cli.privacy_setup.configured_bindings", return_value=(None, None)),
+        patch("finishup.cli.privacy_setup.recipe_answers", side_effect=exception),
     ):
         result = CliRunner().invoke(
             app, ["consent", "prepare", "repository_privacy_grant", "--recipe", "expanded_review"]
@@ -2362,7 +2365,7 @@ def test_grant_prepare_classifies_provider_binding_only(
         assert load_pending() is None
         assert "private exception text" not in result.stderr
         if reason == "provider_binding_required":
-            assert "yoetz --set" in result.stderr
+            assert "finishup --set" in result.stderr
 
 
 @pytest.mark.parametrize("channel", ["chat", "terminal"])
@@ -2375,7 +2378,7 @@ def test_expiry_during_preflight_does_not_leave_reusable_approval(
         with (
             _patch_state(tmp_path),
             _patch_verified_presence(),
-            patch("yoetz.cli.elevated.TrustedForegroundConsole", return_value=_Console()),
+            patch("finishup.cli.elevated.TrustedForegroundConsole", return_value=_Console()),
         ):
             pending = prepare_pending("vault_initialize", target_digest="sha256:" + "a" * 64)
 

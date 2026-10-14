@@ -1,4 +1,4 @@
-"""Installed-Codex regression for Yoetz observing its own MCP workflow (#564).
+"""Installed-Codex regression for FinishUP observing its own MCP workflow (#564).
 
 Offline replay through the exact hook command the rendered Codex plugin installs.
 It is not a live Codex run (those stay ``@pytest.mark.live``): it proves that the
@@ -17,17 +17,17 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.codex_plugin import parse_hooks_json, render_plugin_tree
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe as observe_cli
-from yoetz.cli.observe_hooks import handle_observe
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.codex_plugin import parse_hooks_json, render_plugin_tree
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe as observe_cli
+from finishup.cli.observe_hooks import handle_observe
+from finishup.domain.observation import (
     ObservationGapCode,
     ObservationIngestDisposition,
     ObservationIngestResult,
     observation_ingest_result_to_json,
 )
-from yoetz.protocol.canonical import JsonValue
+from finishup.protocol.canonical import JsonValue
 
 _CODEX_VERSION = "0.150.1"
 _SESSION = "01a013c1-2222-4222-8222-000000000564"
@@ -83,18 +83,18 @@ def _workflow() -> list[dict[str, JsonValue]]:
     lifecycle = {"session_id": _SESSION, "cwd": "/workspace/project"}
     return [
         {**lifecycle, "hook_event_name": "SessionStart", "source": "startup"},
-        *_tool_call("mcp__yoetz__start", "call-start"),
-        *_tool_call("mcp__yoetz__status", "call-status-1"),
+        *_tool_call("mcp__finishup__start", "call-start"),
+        *_tool_call("mcp__finishup__status", "call-status-1"),
         *_tool_call("shell", "call-shell", exit_status=0, tool_output="tests passed"),
-        *_tool_call("mcp__yoetz__status", "call-status-2"),
+        *_tool_call("mcp__finishup__status", "call-status-2"),
         *_tool_call("apply_patch", "call-patch", exit_status=0),
-        *_tool_call("mcp__yoetz__status", "call-status-3"),
-        *_tool_call("mcp__yoetz__check", "call-check"),
-        *_tool_call("mcp__yoetz__status", "call-status-4"),
-        *_tool_call("mcp__yoetz__respond", "call-respond"),
-        *_tool_call("mcp__yoetz__status", "call-status-5"),
-        *_tool_call("mcp__yoetz__receipt", "call-receipt"),
-        *_tool_call("mcp__yoetz__read_guidance", "call-guidance"),
+        *_tool_call("mcp__finishup__status", "call-status-3"),
+        *_tool_call("mcp__finishup__check", "call-check"),
+        *_tool_call("mcp__finishup__status", "call-status-4"),
+        *_tool_call("mcp__finishup__respond", "call-respond"),
+        *_tool_call("mcp__finishup__status", "call-status-5"),
+        *_tool_call("mcp__finishup__receipt", "call-receipt"),
+        *_tool_call("mcp__finishup__read_guidance", "call-guidance"),
         {**lifecycle, "hook_event_name": "Stop", "message": "done"},
         {**lifecycle, "hook_event_name": "SessionEnd", "reason": "exit"},
     ]
@@ -118,8 +118,8 @@ def _replay(root: Path, payloads: list[dict[str, JsonValue]]) -> None:
 def test_installed_codex_ingress_is_the_observe_command_this_replay_exercises() -> None:
     commands = _installed_ingress_commands()
     assert commands == {
-        "PreToolUse": "yoetz hooks observe --workspace . --event PreToolUse",
-        "PostToolUse": "yoetz hooks observe --workspace . --event PostToolUse",
+        "PreToolUse": "finishup hooks observe --workspace . --event PreToolUse",
+        "PostToolUse": "finishup hooks observe --workspace . --event PostToolUse",
     }
 
 
@@ -141,16 +141,16 @@ def test_complete_workflow_enqueues_only_distinct_evidence_and_retains_every_hoo
         for row in store.list_pending_outbox_rows(workspace)
     ]
     # 27 hook invocations; before #564 every one became an outbox row (27) and each
-    # Yoetz PostToolUse also captured Yoetz's own result bytes. Distinct evidence:
+    # FinishUP PostToolUse also captured FinishUP's own result bytes. Distinct evidence:
     assert pending == [
         ("SessionStart", None),
-        ("PostToolUse", "mcp__yoetz__start"),
+        ("PostToolUse", "mcp__finishup__start"),
         ("PreToolUse", "shell"),
         ("PostToolUse", "shell"),
         ("PreToolUse", "apply_patch"),
         ("PostToolUse", "apply_patch"),
-        ("PostToolUse", "mcp__yoetz__check"),
-        ("PostToolUse", "mcp__yoetz__respond"),
+        ("PostToolUse", "mcp__finishup__check"),
+        ("PostToolUse", "mcp__finishup__respond"),
         ("Stop", None),
         ("SessionEnd", None),
     ]
@@ -164,7 +164,7 @@ def test_complete_workflow_enqueues_only_distinct_evidence_and_retains_every_hoo
         assert ObservationGapCode.UNPAIRED_EVENT.value not in row.envelope.gap_codes
 
 
-def test_failed_yoetz_calls_in_the_workflow_still_ship(tmp_path: Path) -> None:
+def test_failed_finishup_calls_in_the_workflow_still_ship(tmp_path: Path) -> None:
     store = LocalObservationStore(_state=tmp_path)
     workspace = store.workspace_commitment(str(tmp_path.resolve()))
     store.grant_consent(workspace)
@@ -172,9 +172,9 @@ def test_failed_yoetz_calls_in_the_workflow_still_ship(tmp_path: Path) -> None:
     _replay(
         tmp_path,
         [
-            *_tool_call("mcp__yoetz__status", "call-status-ok"),
-            *_tool_call("mcp__yoetz__status", "call-status-failed", success=False),
-            *_tool_call("mcp__yoetz__check", "call-check-failed", exit_status=1),
+            *_tool_call("mcp__finishup__status", "call-status-ok"),
+            *_tool_call("mcp__finishup__status", "call-status-failed", success=False),
+            *_tool_call("mcp__finishup__check", "call-check-failed", exit_status=1),
         ],
     )
 
@@ -185,8 +185,8 @@ def test_failed_yoetz_calls_in_the_workflow_still_ship(tmp_path: Path) -> None:
         )
         for row in store.list_pending_outbox_rows(workspace)
     ] == [
-        ("PostToolUse", "mcp__yoetz__status"),
-        ("PostToolUse", "mcp__yoetz__check"),
+        ("PostToolUse", "mcp__finishup__status"),
+        ("PostToolUse", "mcp__finishup__check"),
     ]
 
 

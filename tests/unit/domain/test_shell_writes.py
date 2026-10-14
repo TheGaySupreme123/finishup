@@ -17,11 +17,11 @@ from collections.abc import Sequence
 import pytest
 
 from builders.shell_write_vectors import VECTORS, ShellWriteVector
-from yoetz.domain import shell_writes
-from yoetz.domain.observation import (
+from finishup.domain import shell_writes
+from finishup.domain.observation import (
     _MAX_OBSERVED_COMMAND_CHARS,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.shell_writes import MAX_SHELL_WRITE_CHARS, shell_write_paths, shell_write_scope
+from finishup.domain.shell_writes import MAX_SHELL_WRITE_CHARS, shell_write_paths, shell_write_scope
 
 _DEADLINE_SECONDS = 2.0
 

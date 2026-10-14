@@ -3,7 +3,7 @@ requires = ["uv_build>=0.11.29,<0.12"]
 build-backend = "uv_build"
 
 [project]
-name = "yoetz"
+name = "finishup"
 version = "0.3.0"
 description = "A local-first evidence ledger and review engine for agent work"
 readme = "README.md"
@@ -49,14 +49,14 @@ semantic-openai = [
 ]
 
 [project.scripts]
-yoetz = "yoetz.cli.entry:main"
+finishup = "finishup.cli.entry:main"
 
 [project.urls]
-Homepage = "https://yoetz.dev"
-Documentation = "https://github.com/TheGaySupreme123/yoetz/tree/main/docs"
-Repository = "https://github.com/TheGaySupreme123/yoetz"
-Issues = "https://github.com/TheGaySupreme123/yoetz/issues"
-Changelog = "https://github.com/TheGaySupreme123/yoetz/blob/main/CHANGELOG.md"
+Homepage = "https://finishup.dev"
+Documentation = "https://github.com/TheGaySupreme123/finishup/tree/main/docs"
+Repository = "https://github.com/TheGaySupreme123/finishup"
+Issues = "https://github.com/TheGaySupreme123/finishup/issues"
+Changelog = "https://github.com/TheGaySupreme123/finishup/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [

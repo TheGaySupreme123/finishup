@@ -1,15 +1,15 @@
 # Codex integration runbook
 
-For setup prerequisites, use `yoetz setup status --next --host codex` with the same
+For setup prerequisites, use `finishup setup status --next --host codex` with the same
 executable, configuration root and project. `--operation connection` inspects installation without
 provider sign-in; `local` and `review` inspect their respective vault/privacy prerequisites.
-Storage-only continuation is `yoetz setup vault` in a trusted terminal. This shared #737 path adds
+Storage-only continuation is `finishup setup vault` in a trusted terminal. This shared #737 path adds
 no new native-session capability; Linux/WSL first-use and storage acceptance remain bounded by
 [the platform runbook](linux-and-wsl.md#setup-and-vault-acceptance-still-owned-by-737).
 
 ## Guided desktop connection (issue #767)
 
-`yoetz setup run --host codex` exposes the existing project-skill, plugin, activation and MCP
+`finishup setup run --host codex` exposes the existing project-skill, plugin, activation and MCP
 composition through the common desktop connection plan. Discovery offers the installation;
 `--host-path`, `--host-config-root`, and `--project` select exact alternatives. An agent requests
 `--non-interactive --json`, presents the changes, then repeats the returned request ID and preview
@@ -17,7 +17,7 @@ digest with `--accept`. The selected home remains bound through every Codex prob
 The historical `--codex-path`/`--codex-home` wizard remains a compatibility path.
 
 `setup status|disconnect --host codex` uses the same target options. Disconnect removes activation,
-the owned MCP entry and exact project skill, retaining inactive plugin sources and Yoetz data.
+the owned MCP entry and exact project skill, retaining inactive plugin sources and FinishUP data.
 Modified or foreign integration state is refused. Record native installation, fresh-session
 discovery/start, disconnect and reconnect for macOS, Linux and WSL 2 separately in #767. Desktop
 app availability and CLI availability remain distinct; an untested version/platform does not
@@ -54,7 +54,7 @@ The Codex skill routes to the existing five MCP guidance URIs with installed ref
 The server initializes only a compact summary of the safety floor, which names all five URIs and
 says to read `agent-instructions.md` before the first `start` (see
 [code-mode host profile](#code-mode-host-profile-issue-918)). Consumer source-inspection
-restrictions do not prohibit developing or debugging Yoetz itself against isolated test state.
+restrictions do not prohibit developing or debugging FinishUP itself against isolated test state.
 
 A new Codex session reads guidance and discovers tool schemas before calling MCP `start` as
 its first workflow operation, before substantive research, commands, edits, or delegation.
@@ -64,7 +64,7 @@ SessionStart context directs cooperative `start mode=attach` before `status` wit
 ids; unmapped context directs `start` before material work. Same-session compaction uses held
 current ids for `status`. Both startup messages route failures through exact continuations,
 same-request recovery, and a named one-time repair before a blocked-startup user handoff.
-A first non-retryable failure alone does not permit continuing without Yoetz; see
+A first non-retryable failure alone does not permit continuing without FinishUP; see
 [startup failure precedence](../../guidance/coverage-and-receipts.md#startup-failure-precedence).
 Codex has no demonstrated PreToolUse deny gate; instruction delivery is not enforcement (#692).
 `--startup-mode required` is refused for Codex. The [native Claude/Cursor gate](required-startup.md)
@@ -79,7 +79,7 @@ Design basis, checked 2026-09-09: OpenAI's
 assumes Codex is capable and recommends task-specific constraints, precise discovery metadata,
 and conditional references. Its
 [PR comment skill](https://github.com/openai/skills/blob/main/skills/.curated/gh-address-comments/SKILL.md)
-uses a short operational sequence and a helper for repetitive mechanics. Yoetz keeps its exact
+uses a short operational sequence and a helper for repetitive mechanics. FinishUP keeps its exact
 MCP read fallback and bounded closure composer because those address demonstrated authoring
 failures; generic host-identification instructions are unnecessary. The five protocol references
 retain one canonical owner and are copied into each installed skill.
@@ -92,22 +92,22 @@ locking; Cursor-only response fields and server identities are normalized only i
 adapter. The Codex lifecycle and observation regression tests remain the compatibility check.
 
 This runbook guides you through previewing, installing, checking, replacing, and removing the
-canonical Yoetz Codex skill in one explicitly trusted project, while preserving any files you have
+canonical FinishUP Codex skill in one explicitly trusted project, while preserving any files you have
 modified. It also separates four facts that are easy to conflate: skill/source installation, Codex
 plugin activation, MCP registration, and Codex's tested capability for a given Codex version.
 
 ## 1. What integration installs — and does not
 
-The standalone `yoetz integrate skill` surface installs only the canonical `SKILL.md`, its named
+The standalone `finishup integrate skill` surface installs only the canonical `SKILL.md`, its named
 references/compatibility data, and a nonsecret managed marker, at exactly:
 
 ```text
-<explicit-trusted-project>/.agents/skills/yoetz/
+<explicit-trusted-project>/.agents/skills/finishup/
 ```
 
 It does **not** edit Codex's global or project configuration, register or start the MCP server,
-install or update Yoetz or Codex, touch your Git index/ignore/remote/branch, scan your repository
-contents, install globally, manage any other skill, or make Yoetz mandatory for your project. The
+install or update FinishUP or Codex, touch your Git index/ignore/remote/branch, scan your repository
+contents, install globally, manage any other skill, or make FinishUP mandatory for your project. The
 project root must be explicitly supplied and trusted by you — there is no current-directory,
 parent-directory, fuzzy discovery, or symlink-target resolution.
 
@@ -116,16 +116,16 @@ only versions and sorted digests — never a path, username, timestamp, or repos
 
 ADR-023 (issue #149) accepts a portable Agent Plugins carrier design. Issue #150 implements its
 skills-only renderer and whole-directory migration/rollback at the same
-`.agents/plugins/yoetz` root; see the
+`.agents/plugins/finishup` root; see the
 [portable plugin authoring runbook](portable-plugin-authoring.md). Until that projection is
 capability-proven and explicitly approved by a later host cell, the native behavior in this
 runbook remains the shipping control and nothing here changes.
 
 Issue #151 adds an optional generated plugin-managed MCP mode to that portable artifact. It is not
 the default rollout and does not change the native control. If selected by a later proven host
-cell, preflight must show no external/global `yoetz` registration, bind strict or policy before
+cell, preflight must show no external/global `finishup` registration, bind strict or policy before
 preview, and install the full digest-bound artifact without invoking `codex mcp add`. Dual,
-foreign, or unobservable ownership stops the operation. `yoetz provider status --json` reports
+foreign, or unobservable ownership stops the operation. `finishup provider status --json` reports
 `owner_source`, `ownership_state`, and the observed route profile; only one exclusively observed
 policy owner can make `agent_route_semantic_ready` true. If more than one Codex executable is
 discovered, provide `--codex-path <exact-executable>` so the report can inspect one selected
@@ -147,7 +147,7 @@ Hook auto-attachment uses the same service path; a hook deadline may expire befo
 wait finishes, so a lost response remains an exact-request recovery case, never proof of failure.
 These runtime tests do not qualify a new native Codex version or prove source-content delivery.
 
-Check `yoetz version --json`, the installed resource set, and the current compatibility/capability
+Check `finishup version --json`, the installed resource set, and the current compatibility/capability
 matrix. Confirm owner permissions on the target project, that you trust this repository, and the
 expected Codex version. Codex support is the exact tested set in the packaged manifest; an empty
 set means no Codex release currently carries automatic-activation support evidence. A version
@@ -159,7 +159,7 @@ That parser proof is what lets an isolated dogfood run advertise the `session_st
 that exact release; it is not host support, and it says nothing about skills, MCP, hooks, or
 activation. Any other release is admitted under the structural compatibility profile
 (`codex-rollout-jsonl/compatible/v1`, ADR-005 structural admission amendment, issue #656): the
-version is recorded as provenance, lines whose wrapper/item structure Yoetz already understands
+version is recorded as provenance, lines whose wrapper/item structure FinishUP already understands
 are observed, and unknown or malformed lines stay bounded `unsupported_event` gaps. The reconcile
 result reports `admission` as `structurally_supported` (exact profile, every line understood),
 `partially_understood` (compatible profile or any unknown line, with `admission_reasons` naming
@@ -175,7 +175,7 @@ backpressure.
 Always run status first:
 
 ```text
-yoetz integrate codex skill status --json
+finishup integrate codex skill status --json
 ```
 
 Destination states: `absent`, `installed_exact`, `modified`/`unmanaged`, `partial`, `unsafe`.
@@ -188,8 +188,8 @@ does **not** by itself prove Codex has discovered the skill or that MCP is avail
 ## 4. First install
 
 ```text
-yoetz integrate codex skill preview --json
-yoetz integrate codex skill install --json
+finishup integrate codex skill preview --json
+finishup integrate codex skill install --json
 ```
 
 1. Preview shows the fixed destination and scope, the source skill/protocol/resource/Codex-tested
@@ -215,10 +215,10 @@ Replacement stages and swaps the **whole directory**, never merging individual f
 interrupted, ambiguous old/new state remains preserved and requires a fresh `status`/preview and
 manual review — never delete staged or rollback content blindly.
 
-## 6. Verify Codex discovery and Yoetz availability
+## 6. Verify Codex discovery and FinishUP availability
 
 After an exact install, launch the exact tested Codex version in this trusted project and
-explicitly invoke `$yoetz` (implicit discovery is not assumed unless the current capability matrix
+explicitly invoke `$finishup` (implicit discovery is not assumed unless the current capability matrix
 advertises it). Confirm the skill is recognized, its version is compatible, and the workflow
 guidance appears. **Installation alone is not evidence of discovery.**
 
@@ -227,8 +227,8 @@ guidance appears. **Installation alone is not evidence of discovery.**
 MCP registration is a separate step from skill installation:
 
 ```text
-codex mcp get yoetz --json
-codex mcp add yoetz -- yoetz mcp serve --host codex
+codex mcp get finishup --json
+codex mcp add finishup -- finishup mcp serve --host codex
 ```
 
 Codex uses the explicit `--host codex` serving identity. This declaration binds route-drift
@@ -238,29 +238,29 @@ supported here — the same bounded text `Reason:` clause as Claude Code names f
 and `field` on `EVENT_INVALID`, because this host also relies on the privacy-minimized summary
 rather than a full JSON text copy.
 
-Run `codex mcp get yoetz --json` first. A nonzero result does not prove absence: Yoetz follows it
-with `codex mcp list --json` and continues only when that command succeeds with no `yoetz` entry.
+Run `codex mcp get finishup --json` first. A nonzero result does not prove absence: FinishUP follows it
+with `codex mcp list --json` and continues only when that command succeeds with no `finishup` entry.
 A failed/malformed list or duplicate matching names fails closed; a single matching entry is
 classified by its exact command. Strict parsing also rejects duplicate JSON keys, nonstandard
 constants, and truncated output. If an entry already exists, preserve it and stop unless a
-separately reviewed operation proves it is the exact Yoetz-owned registration being intentionally
+separately reviewed operation proves it is the exact FinishUP-owned registration being intentionally
 replaced. Current Codex `mcp add` behavior replaces a same-name global entry, so this positive
 absence check matters. Codex exposes no compare-and-add token: keep other MCP configuration writers
-quiescent during an accepted apply, because Yoetz cannot atomically exclude a non-cooperating write
+quiescent during an accepted apply, because FinishUP cannot atomically exclude a non-cooperating write
 inside the final subprocess window.
 
 The registration check-then-add flow is available as
-`yoetz integrate codex mcp status|preview|install` and is what `yoetz setup run` performs after
+`finishup integrate codex mcp status|preview|install` and is what `finishup setup run` performs after
 Codex discovery (ADR-012). The separate removal check-then-remove flow is
-`yoetz integrate codex mcp preview-remove|remove`. Both flows are gated by an explicit
+`finishup integrate codex mcp preview-remove|remove`. Both flows are gated by an explicit
 digest-bound confirmation, preserve entries already observed as foreign, and verify the final
 state by re-reading it. A "registered" result still never implies Codex will successfully connect
 at runtime.
 
 ### Code-mode host profile (issue #918)
 
-Codex `0.157.1` runs in code mode: the model has one `exec` tool and calls Yoetz from JavaScript as
-`tools.mcp__yoetz__<tool>(...)`. Raw MCP results stay in the script sandbox; only what the script
+Codex `0.157.1` runs in code mode: the model has one `exec` tool and calls FinishUP from JavaScript as
+`tools.mcp__finishup__<tool>(...)`. Raw MCP results stay in the script sandbox; only what the script
 prints reaches the model. Each `ALL_TOOLS` entry's description is composed by Codex from the
 initialize instructions, the tool description and a generated declaration, so the instructions
 are charged once per advertised tool (eight copies on the current surface). The `--host codex` profile keeps every
@@ -282,12 +282,12 @@ ceremony step and makes each one cheaper:
   gate; `tests/unit/mcp/test_compact_host_instructions.py` and an import-time lint pin the cap,
   those rules and the shared tail. A legacy registration without `--host codex` keeps the generic
   body.
-- **Code-mode section in the skill.** `skills/codex/yoetz/SKILL.md` shows a declaration-only
+- **Code-mode section in the skill.** `skills/codex/finishup/SKILL.md` shows a declaration-only
   `ALL_TOOLS` discovery helper, reading guidance from `structuredContent.text`, a UUIDv4 helper
-  that works without `crypto`, and `yield_time_ms` sized to the bridge deadline of the Yoetz call in
+  that works without `crypto`, and `yield_time_ms` sized to the bridge deadline of the FinishUP call in
   that cell (`check` 300,000 ms; `respond` and `receipt` 50,000 ms; `start`, `publish_work` and
   `status` 30,000 ms; see [response and receipt timeout recovery](#response-and-receipt-timeout-recovery)).
-  The yield guidance is scoped to Yoetz cells; builds and tests keep their own cells. The helper
+  The yield guidance is scoped to FinishUP cells; builds and tests keep their own cells. The helper
   takes the strongest entropy the cell has: `crypto.randomUUID()`, then `crypto.getRandomValues()`
   with the version-4 and RFC 4122 variant bits set, and only without `crypto` a `Math.random()`
   fallback that the snippet labels as not cryptographic. A collision on that fallback can make two
@@ -302,7 +302,7 @@ ceremony step and makes each one cheaper:
   `structuredContent` and the output schema are unchanged. Outside code mode, Codex hands the
   model the serialized `structuredContent` and ignores `content` whenever `structuredContent` is
   present (upstream `CallToolResult::as_function_call_output_payload`, read 2026-09-30 on the
-  `main` branch, not pinned to `0.157.1`), as it already does for every other Yoetz result, so the
+  `main` branch, not pinned to `0.157.1`), as it already does for every other FinishUP result, so the
   pointer is not the model-visible copy there either. This is the lowest-priority item and is
   revertible: if a Codex dogfood run shows additional guidance re-read turns, restore the full
   text in `content`. The other items stand alone.
@@ -332,7 +332,7 @@ results are unchanged; the Cursor decision is recorded in the Cursor runbook.
 Under `approval_mode = auto` (the default), Codex needs approval for an MCP call iff
 `destructiveHint == true`, else never for `readOnlyHint`, else
 `destructive.unwrap_or(true) || open_world.unwrap_or(true)` (`codex-rs/core/src/mcp_tool_call.rs`).
-Applied to Yoetz's frozen descriptors, only the policy-route `check` (`openWorldHint: true`)
+Applied to FinishUP's frozen descriptors, only the policy-route `check` (`openWorldHint: true`)
 needs approval; with `approvals_reviewer = "auto_review"` that approval goes to the guardian,
 whose bundled policy requires authorization for sensitive egress to name payload and destination
 "from trusted user content" — no descriptor wording can satisfy it. `approval_mode = "approve"`
@@ -347,21 +347,21 @@ lever.
 
 Host admission (issue #467) writes the per-tool override into the trusted project's
 `.codex/config.toml`, which Codex loads only when the project is trusted, deep-merges over the
-user-level `[mcp_servers.yoetz]` (`codex-rs/config/src/merge.rs`), and which cannot carry
+user-level `[mcp_servers.finishup]` (`codex-rs/config/src/merge.rs`), and which cannot carry
 provider or credential keys (`mcp_servers` is not on the project-layer denylist):
 
 ```toml
-[mcp_servers.yoetz.tools.check]
+[mcp_servers.finishup.tools.check]
 approval_mode = "approve"
 ```
 
-or, for a plugin-managed route, `[plugins."yoetz@yoetz".mcp_servers.yoetz.tools.check]`. The
-form follows the exclusively observed owner (`yoetz provider status --json`
+or, for a plugin-managed route, `[plugins."finishup@finishup".mcp_servers.finishup.tools.check]`. The
+form follows the exclusively observed owner (`finishup provider status --json`
 `mcp_route.ownership_state`):
 
 ```text
-yoetz integrate codex admission preview --project-root <project> --json
-yoetz integrate codex admission grant --project-root <project> --accept --preview-digest <digest>
+finishup integrate codex admission preview --project-root <project> --json
+finishup integrate codex admission grant --project-root <project> --accept --preview-digest <digest>
 ```
 
 A strict registered route, a missing or non-permitting grant, or an unreadable service refuses
@@ -372,7 +372,7 @@ applicable table instead of returning a false no-op. Removal strips every exact 
 form; a config that held nothing else is deleted.
 
 A mutating preview warns `host_config_not_compare_and_swap`; keep Codex and other settings writers
-quiescent during apply. Yoetz rechecks the exact preimage immediately before mutation and verifies
+quiescent during apply. FinishUP rechecks the exact preimage immediately before mutation and verifies
 the result, but an ordinary file cannot exclude a non-cooperating same-UID writer in the final
 syscall window.
 
@@ -388,7 +388,7 @@ a no-op, because the route state and the project admission state are independent
 
 Codex exposes no typed denial signal for a guardian refusal: its `PermissionRequest` hook fires
 before the decision and may allow, so it is not a denial. A held check is visible only as the
-#187 pause/approval flow in the transcript. This is a documented gap, not a Yoetz diagnostic.
+#187 pause/approval flow in the transcript. This is a documented gap, not a FinishUP diagnostic.
 For the same reason the host-hold advisory that Claude Code's `PermissionDenied` hook emits
 (issue #857: a first-hand grant notice for the user and a separate host retry cue)
 has no Codex carrier. The shipped skill and guidance require a current first-hand grant read
@@ -397,7 +397,7 @@ post-decision denial event, mirror the Claude ingress (`cli/host_hold_advisory.p
 The 2026-08-30 source read is not a live cell; the `auto_review` acceptance cell in issue #467
 remains to be run.
 
-The Codex session-start context can also name `yoetz integrate codex admission grant`
+The Codex session-start context can also name `finishup integrate codex admission grant`
 when a fresh repository-bound read confirms an external-review grant and project admission is
 absent. It reports a startup snapshot only: active MCP route and host approval remain unconfirmed.
 The shared path requires active observation consent, skips deferred/local-only work, preserves
@@ -406,9 +406,9 @@ cache, host subprocess, settings change or retry is introduced. A missing notice
 about consent. The stdout contract is regression-tested; new native macOS/Linux/WSL acceptance
 is still open on #857.
 
-## Upgrading Yoetz under a running service
+## Upgrading FinishUP under a running service
 
-The local-control handshake pins the exact schema-manifest digest, so after installing a new Yoetz
+The local-control handshake pins the exact schema-manifest digest, so after installing a new FinishUP
 build the previous build's service still owning the endpoint refuses the new bridge and CLI. The
 first MCP tool call (on-demand startup) replaces that service automatically: it asks the stale
 holder to shut down through its ordinary bounded path and starts this installation's service inside
@@ -417,10 +417,10 @@ the same 30-second budget. If that cannot complete, the tool returns `SERVICE_UN
 generation mismatch) and the repair command; run it on a local terminal:
 
 ```text
-yoetz service restart
+finishup service restart
 ```
 
-`yoetz service status` names the incompatible holder's pid, version, and manifest digest. Other
+`finishup service status` names the incompatible holder's pid, version, and manifest digest. Other
 hosts' sessions still running the previous build's bridge are refused after the switch until they
 restart; that is the intended outcome of an upgrade, not a defect. The cooperative MCP bridge
 latches that availability failure for the process and serializes the first on-demand attempt so
@@ -428,8 +428,8 @@ concurrent tool calls share one diagnostic (issues #469, #476); that behaviour i
 hosts that use this bridge, not Codex-specific.
 
 The accepted setup path composes four separately reported layers in order: it installs the project
-skill at `.agents/skills/yoetz`, installs managed structural plugin/hook sources at
-`.agents/plugins/yoetz`, applies an explicitly approved Codex activation, then verifies the MCP
+skill at `.agents/skills/finishup`, installs managed structural plugin/hook sources at
+`.agents/plugins/finishup`, applies an explicitly approved Codex activation, then verifies the MCP
 entry. The plugin source directory, marketplace entry, or enabled config table alone is not
 evidence that Codex activated a plugin.
 
@@ -443,10 +443,10 @@ inventory command runs before approval.
 
 The preview digest also binds the trusted project root, repository marketplace, and selected-home
 config preimages/proposals, managed source-tree digest, cache root
-`<selected-home>/plugins/cache/yoetz/yoetz`, cache preimage/intended install-tree digest, the
+`<selected-home>/plugins/cache/finishup/finishup`, cache preimage/intended install-tree digest, the
 temporary-private-home probe environment, the forced selected-home environment for mutation, and
-the exact post-consent commands `plugin list --marketplace yoetz --json` and
-`plugin add yoetz@yoetz --json`. Review the displayed targets, environments, commands/digests,
+the exact post-consent commands `plugin list --marketplace finishup --json` and
+`plugin add finishup@finishup --json`. Review the displayed targets, environments, commands/digests,
 resulting marketplace/config bytes, possible selected-home scratch/cache effects, and warning
 before approving; do not substitute a manual `plugin add` for that ceremony.
 
@@ -456,7 +456,7 @@ inventory/add, and validates its reported installed path/version. A later failur
 already-approved marketplace/config/cache partial state for an honest retry; it does not attempt a
 pathname rollback that could delete or overwrite a concurrent change. `active` means all of these
 agree: managed source installed, repository marketplace and selected-home config exact, canonical
-inventory says `yoetz@yoetz` is installed and enabled from this repository, and the installed
+inventory says `finishup@finishup` is installed and enabled from this repository, and the installed
 version cache is byte-identical to the host-specific render of the managed source. Other closed
 states are `installed_not_activated`, `not_installed`, and `foreign`. `not_installed` is source
 absence only; a modified or untrusted byte-present tree is `installed_not_activated` and is never
@@ -464,17 +464,17 @@ absence only; a modified or untrusted byte-present tree is `installed_not_activa
 `active`—proves a later Codex process loaded a hook or delivered an observation.
 
 Complete Codex's own trust step in a fresh native process before testing hook delivery. Open
-`/hooks`, review the commands from the intended Yoetz plugin, and approve those hooks through
+`/hooks`, review the commands from the intended FinishUP plugin, and approve those hooks through
 Codex's normal review UI. Confirm the hooks are active, then start a fresh session so its
 `SessionStart` runs with that trust. New or changed hooks can remain installed but inactive;
 the plugin's skill and MCP tools may still work in that state. A non-interactive run with no
-observation rows is therefore not, by itself, evidence of a Yoetz ingestion failure. Installation
+observation rows is therefore not, by itself, evidence of a FinishUP ingestion failure. Installation
 inspection reports hook trust as unknown because it does not inspect Codex's effective trust
 decision. Do not replace this check with a hook-trust bypass flag.
 
 Project trust is a separate gate for the project-local MCP admission table above. When a check
 returns `MCP tool call requires approval, but approval policy is never`, it was refused by Codex
-before Yoetz dispatched it. Confirm the project is trusted in the selected Codex home and test a
+before FinishUP dispatched it. Confirm the project is trusted in the selected Codex home and test a
 fresh process with the intended MCP owner and per-tool policy. An installed admission entry or
 `codex mcp get` output alone does not prove the running process applied that policy. A normal
 interactive process can present any remaining approval request without changing the sandbox.
@@ -485,22 +485,22 @@ cache, which apply seeds and verifies against the previewed install digest. Beca
 version stays constant while plugin content drifts, a previously activated home's cache can
 legitimately differ from the fresh render: a cache tree that carries a valid
 `.yoetz-plugin-install.json` marker and byte-matches that marker's own inventory is a prior
-yoetz-managed render, previewed as a same-version refresh and replaced atomically on apply.
+finishup-managed render, previewed as a same-version refresh and replaced atomically on apply.
 `destination_conflict` is reserved for foreign, marker-inconsistent, or modified cache trees —
 those still require the owner to resolve the conflict by hand.
 
 Registration also decides *which* route the agent gets. Both owned serve commands classify as
 `yoetz_owned`, so the state alone cannot tell a strict registration from a policy one. Read the
-route from `yoetz integrate codex mcp status --json` (`route_profile`) or from `yoetz provider
+route from `finishup integrate codex mcp status --json` (`route_profile`) or from `finishup provider
 status --json` (`mcp_route.registered_profile`). The route is explicit input: pass `--route-profile
-strict|policy` to `yoetz setup run` or `yoetz integrate codex mcp preview|install` to choose it.
-Without that flag an existing yoetz-owned registration keeps its current route (non-interactive
+strict|policy` to `finishup setup run` or `finishup integrate codex mcp preview|install` to choose it.
+Without that flag an existing finishup-owned registration keeps its current route (non-interactive
 `--accept` never changes it), and a route transition is shown in the preview and reported as
 `route_profile_before` → `route_profile`. Before running a session that will report a finding about
-Yoetz's AI-powered review behaviour, walk the [AI-powered review dogfood
+FinishUP's AI-powered review behaviour, walk the [AI-powered review dogfood
 runbook](semantic-dogfood.md) — it declares up front which claim the run is allowed to make, and
 refuses to score AI-powered review quality when no provider attempt happened. To measure whether
-feedback **changed the work product** (not merely whether Yoetz was healthy or authorable), use the
+feedback **changed the work product** (not merely whether FinishUP was healthy or authorable), use the
 [influence dogfood runbook](influence-dogfood.md).
 
 ### Applied-route record and registration drift (issue #537)
@@ -510,16 +510,16 @@ Decision for Codex: this host gets the state-root applied-route record. Every ac
 observation, and structural digests to the owner-only state-root record
 (`integrations/applied-mcp-routes.json`); later installs overwrite it, and `mcp remove`
 clears it — removal ends the install it recorded, so absence with no record reads as no
-drift and a later install writes a fresh record. `yoetz integrate codex mcp status --json` and `yoetz provider status --json`
+drift and a later install writes a fresh record. `finishup integrate codex mcp status --json` and `finishup provider status --json`
 (`mcp_route.applied_profile`, `mcp_route.drift_since_install`) join that record against the
 live host resolution, fail-soft: an unreadable record reads as no applied route and never
-reports drift. `yoetz setup status --json` stays discovery-only by design: it reports
+reports drift. `finishup setup status --json` stays discovery-only by design: it reports
 discovered binaries and live registration state without the applied-route drift join, which
 lives in `mcp status` and `provider status`. An accepted install that had nothing to write
 (`action: noop`) still refreshes the record, so a deliberate re-registration of the route the
 host already serves never leaves an earlier entry behind to report as drift.
 
-The MCP bridge (`yoetz mcp serve --host codex`) is the sole emitter of the closed `registration_drift`
+The MCP bridge (`finishup mcp serve --host codex`) is the sole emitter of the closed `registration_drift`
 hook diagnostic: at startup it compares its own serving argv against the applied record and
 records the mismatch under the `mcp_serve` event. The hook paths deliberately emit nothing.
 A hook process has no serving route of its own, so the only comparison available there is a
@@ -536,7 +536,7 @@ keeps the terminal ceiling wording. The drift gap is never carried onto a later
 local-only check: it is re-added fresh on the strict-ceiling path only, after reading
 the live record.
 
-If the host is configured with Yoetz as an optional server and it is unavailable, Codex work
+If the host is configured with FinishUP as an optional server and it is unavailable, Codex work
 continues and the skill discloses no live ledger/check/receipt data. If configured as required,
 server failure blocks only the Codex surfaces that the tested capability profile proves are
 affected. Installing the skill never itself changes MCP configuration or produces a receipt.
@@ -552,7 +552,7 @@ only from real observation evidence. `AdviceSnapshot` surfaces via nonblocking h
 path fails, use the ordinary manual resume/compaction procedure and cooperative publication; do not
 infer support from a different Codex version.
 
-Codex setup's consent step is a structural grant. It uses the same path from `yoetz setup`, host
+Codex setup's consent step is a structural grant. It uses the same path from `finishup setup`, host
 connection, and the terminal interface. When the workspace already has live consent (for example,
 from a Claude Code or Cursor connection), the step keeps that consent: the original grant time,
 every approved Claude Code or Cursor content profile, selection and capacity settings, and the
@@ -587,7 +587,7 @@ advice and frontier delivery are never redirected to the child.
 
 The supported Codex paths are the two above: parent `mode=delegate` before the spawn, or a
 cooperative child that self-registers with the parent session. A `SubagentStart` annotation stays
-`host_observed` and `pending` until one of those paths binds it. A helper that never calls Yoetz,
+`host_observed` and `pending` until one of those paths binds it. A helper that never calls FinishUP,
 and a second root created with `mode=create` in the same workspace, are not children. The
 executable fixture names and the native acceptance table are in
 [multi-agent-conformance.md](multi-agent-conformance.md#host-qualification-rows). A green fixture
@@ -684,7 +684,7 @@ cannot prove equivalence. Missing or malformed child identity is retained as a d
 `missing_subagent_identity` gap without also creating an annotation for that event.
 
 **2026-09-16 source-only repair boundary (#499/#507):** isolated source fixtures cover the
-lifecycle and correlation changes above. No native Codex process, Yoetz workflow, live receipt,
+lifecycle and correlation changes above. No native Codex process, FinishUP workflow, live receipt,
 or cooperative-child proof was produced during this repair phase. Fresh installed native
 validation with the corrected candidate and the requested independent semantic review remains
 required. E-013 and host capability cells are unchanged. The historical native records below
@@ -692,7 +692,7 @@ retain their original limits.
 
 ### Multi-agent v2 (0.153.4, #754)
 
-Codex `0.153.4` with `multi_agent_version=v2` expresses a delegation in two places, and Yoetz
+Codex `0.153.4` with `multi_agent_version=v2` expresses a delegation in two places, and FinishUP
 reads both:
 
 - the **parent** rollout carries `SubAgentActivity` nested in `event_msg` → `item_completed` →
@@ -703,7 +703,7 @@ reads both:
   so it opens no second annotation and is not an `unsupported_event` gap;
 - the **child** rollout's own `session_meta` header carries `thread_source: subagent`, `id` (the
   child thread), `parent_thread_id`, `agent_path`, `agent_nickname`, and `multi_agent_version`.
-  Its `session_id` is the *parent* thread, so only `id` is ever the child key. Yoetz maps that
+  Its `session_id` is the *parent* thread, so only `id` is ever the child key. FinishUP maps that
   header to a `SubagentStart` whose `subagent_id` is the child thread; both spellings of the
   spawning thread (`parent_thread_id` and `source.subagent.thread_spawn.parent_thread_id`) must
   agree, and a header naming itself is refused. A header that declares `thread_source: subagent`
@@ -729,11 +729,11 @@ admitted on the structural compatibility profile only). 0.153.4 also added fract
 ordinary rows — `internal_chat_message_metadata_passthrough.create_time` on every `response_item`
 and `rate_limits.*.used_percent` on `token_count`. The canonical value model has no float, so the
 parser normalizes such a leaf to `null` in the mapped record and keeps the line; before that, one
-fractional leaf refused the whole line as `json_profile_unsupported`. No structural field Yoetz
+fractional leaf refused the whole line as `json_profile_unsupported`. No structural field FinishUP
 maps is ever a float, and the line's commitment is still taken over its raw bytes.
 
 **2026-09-16 v2 observation cell (`multi_agent_v2=true`, read-only, not a certification).** Source
-`12796f74` (PR #752 head), wheel `yoetz-0.2.1`, pinned test instance `df507f`, Codex `0.153.4`,
+`12796f74` (PR #752 head), wheel `finishup-0.2.1`, pinned test instance `df507f`, Codex `0.153.4`,
 originator `Codex Desktop`. Read from the stopped instance's artifacts after the run:
 
 | Fact | Observed |
@@ -920,7 +920,7 @@ Installation, an object header, a successful structural receipt, and a typed MCP
 separate evidence; none proves that the provider selected native Codex bytes.
 
 The Codex hook capture arm is eligible only for content explicitly linked to the hook event and its
-exact task, workspace, host/Yoetz session, source generation, tool-call correlation, multipart set,
+exact task, workspace, host/FinishUP session, source generation, tool-call correlation, multipart set,
 object kind, and digest. Codex session-stream records remain outside the native ticket lane and are
 excluded from AI-powered review selection. Generic tool input and path/locator content are excluded from
 AI-powered review selection. Recognized `apply_patch` arguments are captured as workspace-diff
@@ -964,31 +964,31 @@ consume a pending delivery.
 still requires agent action, the `Stop` hook continues the agent once with `decision: block` and a
 `reason` naming what remains. Codex honours every Stop block in a turn and sets
 `stop_hook_active` on each Stop after the first (codex-rs `turn.rs`; its test
-`stop_hook_can_block_multiple_times_in_same_turn`), so the cap below is Yoetz's own: a
+`stop_hook_can_block_multiple_times_in_same_turn`), so the cap below is FinishUP's own: a
 single-turn `codex exec` run gets the gate once and at most one further continuation (an announced re-check or a withdrawn deliverable not yet voiced).
-Ordinary advice is withheld at Stop because Codex can only render it as `decision: block`. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`, read on the route the session's MCP server named on its last successful `status` or `check`, remembered across service restarts); it fires when `agent_actionable` holds open obligations, an unconfirmed blocker, an unrepaired receipt-blocking finding (agent work only), a finding the agent rejected that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`), a planned verification that was not observed, failed, or ran before the latest edit, an edit to the work after the last verification run (`edited_after_last_verification`; temporary scratch and Yoetz-owned writes such as a saved receipt never count, ADR-042), a git-ignored requested output, or a declared deliverable deleted or renamed away (`declared_output_removed`, ADR-035), or a declared deliverable that held content and is now empty or truncated (`declared_output_emptied`, ADR-041 and ADR-045: keyed on the file, not the obligation, so acknowledging or republishing the obligation does not clear it; the gate text says why from the file's recorded history and names the one exit, a `yoetz-assumption` decision that names the file; a standing `declared_output_content_moved` disclosure adds an informational note to gate text that fires anyway, never a token), or a delivered source file that loads a file the agent created and no requested item declares (`deliverable_references_undeclared_file`, #1044, ADR-035 amendment: the text names each such file, quoted and bounded, from `closure_readiness.undeclared_references` and tells the agent to embed it, rebuild it at run time or declare it as a delivered output; disclosing the dependency does not clear it, and no path is remembered), at most once per ledger frontier and session (owner-only `observation/closure-gate.json`). Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). Verification items (planned verification and edits after the last verification run) are dropped only while this task's own hook rows are still draining after the Stop drain, and the text says so only then. The text pushes repair first: a receipt-blocking finding the agent repaired but Yoetz cannot prove (a Yoetz limit) is self-verified and answered with `respond` `self_verified`; `acknowledged_not_done` is the last resort; a Yoetz limit is never a `yoetz-blocker`, and the blocker sentence appears only while obligations are open. An open obligation named by a `yoetz-blocker:<kind>` decision is not listed as work, but each new `<obligation id>:<kind>` is re-asked once: the re-check names the obligation and claimed kind from the `blocker` entries of `closure_readiness.rechecks`, says recoverable data, a failing test, an infeasible-looking result or a Yoetz limit is not a blocker (finish the obligation and disclose the limit), and only there tells the agent how to confirm a genuine one: publish the same line again in a later decision (the blocker offer never says so, and a confirmed row is never re-asked). Because blockers are usually published after the first gate, the re-check also runs on a Stop the host already continued: there it reads status, continues the agent only for a re-check key status announced that the gate has not asked, or a withdrawn deliverable not yet voiced (never for ordinary items), at most once per Stop and at most two gate continuations per turn (owner-only `observation/closure-gate-turns.json`, reset at every Stop the host did not continue; an unreadable counter counts as the cap), and lets the agent stop on any error, a short budget, or a memory write failure. Asked keys are remembered per session (owner-only `observation/closure-gate-blockers.json`, at most 64). Ordinary advice is never delivered at Stop; it waits for the next tool event or session start. Standing advice a Stop withheld rides the first later `PostToolUse`. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_active_stop_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_acceptance_rechecked`, `closure_gate_turn_end_after_continue` (an already-continued Stop that emitted nothing: the normal end of a continued turn, renamed from `closure_gate_loop_guard`), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `yoetz observe status`. The text also says an inherent verification limit or a best-effort choice is disclosed with a `yoetz-assumption:` or `yoetz-verification-limit:` decision line, never blocked, and names an obligation-level `acknowledged_not_done` as the last resort (#995, #997). Re-checks are not riders on other tokens (tb4n3 RC-8, #1031). Status announces them in `closure_readiness.rechecks` (acceptance, acknowledgement, blocker, premise, each with a content key; the same list `status`, `closure_prepare`, the CLI and the TUI show, and the status directive names it: "At Stop you will be asked once to re-read: ..."), and the gate asks exactly the announced ones, each once per session and key (`accept:<h8 of the resolved obligation ids>@<invite frontier>`, `ack:<obligation id>`, `<obligation id>:<kind>` for a blocker, `premise:<acknowledged count>`, all in the blocker-key file; closed items `acceptance_recheck`, `acknowledgement_recheck`, `blocker_recheck`, `premise_recheck`). A readiness without the list (a service older than the gate) announces none, so the gate asks none. The acceptance re-read (A-12) asks the agent to read each resolved obligation's acceptance_criteria against its final output and to republish an unmet one as `acknowledged_not_done`, or, when the criteria can only be checked outside this environment, to keep it resolved and record `yoetz-verification-limit:<obligation id>`. It costs one extra Stop turn at most once per resolved set; it is never offered beside open obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared dependency (it stays unasked and is asked at a later Stop), and an acknowledgement published after it is not challenged by the acknowledgement re-check. Where it rides alone it ends by saying that a pure confirmation needs no new record, check or receipt (#1050). Final message (#1050, ADR-033 amendment): Codex's Stop body carries `last_assistant_message`, so the re-read is asked only for the resolved obligations that message neither cites by id nor addresses (at least two thirds of the criterion's terms), and names them; one bounded `status view=obligations` read (750 ms) supplies the criteria and is trusted only when its resolved set matches the announced key; a fully addressed set is not asked and records `closure_gate_acceptance_covered`; a body over the trusted size carries no message and keeps the re-read for every resolved set. The message is read in the hook process only, never stored, sent or put in a diagnostic. Host decision: supported. The premise ask stays on Stops the host has not already continued; the acknowledgement and acceptance re-checks may continue an already-continued Stop within the same caps. A finding the agent rejected with a reason that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`) sends the agent to `check` with `final_review: true` and never offers acknowledgement; `receipt_findings_unresolved` counts agent-work findings only, and `self_verified` is offered only while `finding_counts.self_verify_eligible` is positive. A deliverable that held content and is now empty or gone (`declared_output_emptied`, `declared_output_removed`) is voiced once per key (`emptied:<h8 of the declaring obligation items>`) even on an already-continued Stop, with the rule and obligation ids and never a path (every Stop after the first gate is an already-continued Stop in a single-turn run). The premise and acknowledgement texts say that if the agent cannot finish the work it keeps the working deliverable: acknowledgement never requires withdrawing or emptying it. Host decision: supported, same code path (the gate, its texts, its re-check list and its memory are shared by the Codex, Claude Code and Cursor Stop handlers; the only difference is how an already-continued Stop is detected, `stop_hook_active`). See ADR-033 and issues #977, #984, #985, #1031.
+Ordinary advice is withheld at Stop because Codex can only render it as `decision: block`. The decision reads only the service's compact `status` for the mapped session (`closure_readiness`, read on the route the session's MCP server named on its last successful `status` or `check`, remembered across service restarts); it fires when `agent_actionable` holds open obligations, an unconfirmed blocker, an unrepaired receipt-blocking finding (agent work only), a finding the agent rejected that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`), a planned verification that was not observed, failed, or ran before the latest edit, an edit to the work after the last verification run (`edited_after_last_verification`; temporary scratch and FinishUP-owned writes such as a saved receipt never count, ADR-042), a git-ignored requested output, or a declared deliverable deleted or renamed away (`declared_output_removed`, ADR-035), or a declared deliverable that held content and is now empty or truncated (`declared_output_emptied`, ADR-041 and ADR-045: keyed on the file, not the obligation, so acknowledging or republishing the obligation does not clear it; the gate text says why from the file's recorded history and names the one exit, a `finishup-assumption` decision that names the file; a standing `declared_output_content_moved` disclosure adds an informational note to gate text that fires anyway, never a token), or a delivered source file that loads a file the agent created and no requested item declares (`deliverable_references_undeclared_file`, #1044, ADR-035 amendment: the text names each such file, quoted and bounded, from `closure_readiness.undeclared_references` and tells the agent to embed it, rebuild it at run time or declare it as a delivered output; disclosing the dependency does not clear it, and no path is remembered), at most once per ledger frontier and session (owner-only `observation/closure-gate.json`). Before that read the Stop pass drains this task's hook rows toward the current frontier (at most 2.5 s and 64 rows, keeping the gate's five-second reserve) and records `stop_drain_complete` or `stop_drain_incomplete`; rows of other tasks or unmapped sessions in the workspace do not hold the decision (#994). Verification items (planned verification and edits after the last verification run) are dropped only while this task's own hook rows are still draining after the Stop drain, and the text says so only then. The text pushes repair first: a receipt-blocking finding the agent repaired but FinishUP cannot prove (a FinishUP limit) is self-verified and answered with `respond` `self_verified`; `acknowledged_not_done` is the last resort; a FinishUP limit is never a `finishup-blocker`, and the blocker sentence appears only while obligations are open. An open obligation named by a `finishup-blocker:<kind>` decision is not listed as work, but each new `<obligation id>:<kind>` is re-asked once: the re-check names the obligation and claimed kind from the `blocker` entries of `closure_readiness.rechecks`, says recoverable data, a failing test, an infeasible-looking result or a FinishUP limit is not a blocker (finish the obligation and disclose the limit), and only there tells the agent how to confirm a genuine one: publish the same line again in a later decision (the blocker offer never says so, and a confirmed row is never re-asked). Because blockers are usually published after the first gate, the re-check also runs on a Stop the host already continued: there it reads status, continues the agent only for a re-check key status announced that the gate has not asked, or a withdrawn deliverable not yet voiced (never for ordinary items), at most once per Stop and at most two gate continuations per turn (owner-only `observation/closure-gate-turns.json`, reset at every Stop the host did not continue; an unreadable counter counts as the cap), and lets the agent stop on any error, a short budget, or a memory write failure. Asked keys are remembered per session (owner-only `observation/closure-gate-blockers.json`, at most 64). Ordinary advice is never delivered at Stop; it waits for the next tool event or session start. Standing advice a Stop withheld rides the first later `PostToolUse`. Every outcome is a hook diagnostic (`closure_gate_continued`, `closure_gate_blocker_rechecked`, `closure_gate_active_stop_rechecked`, `closure_gate_memory_unwritten`, `closure_gate_not_required`, `closure_gate_repeat_suppressed`, `closure_gate_acceptance_rechecked`, `closure_gate_turn_end_after_continue` (an already-continued Stop that emitted nothing: the normal end of a continued turn, renamed from `closure_gate_loop_guard`), `closure_gate_budget_exhausted`, `closure_gate_unavailable`) in `finishup observe status`. The text also says an inherent verification limit or a best-effort choice is disclosed with a `finishup-assumption:` or `finishup-verification-limit:` decision line, never blocked, and names an obligation-level `acknowledged_not_done` as the last resort (#995, #997). Re-checks are not riders on other tokens (tb4n3 RC-8, #1031). Status announces them in `closure_readiness.rechecks` (acceptance, acknowledgement, blocker, premise, each with a content key; the same list `status`, `closure_prepare`, the CLI and the TUI show, and the status directive names it: "At Stop you will be asked once to re-read: ..."), and the gate asks exactly the announced ones, each once per session and key (`accept:<h8 of the resolved obligation ids>@<invite frontier>`, `ack:<obligation id>`, `<obligation id>:<kind>` for a blocker, `premise:<acknowledged count>`, all in the blocker-key file; closed items `acceptance_recheck`, `acknowledgement_recheck`, `blocker_recheck`, `premise_recheck`). A readiness without the list (a service older than the gate) announces none, so the gate asks none. The acceptance re-read (A-12) asks the agent to read each resolved obligation's acceptance_criteria against its final output and to republish an unmet one as `acknowledged_not_done`, or, when the criteria can only be checked outside this environment, to keep it resolved and record `finishup-verification-limit:<obligation id>`. It costs one extra Stop turn at most once per resolved set; it is never offered beside open obligations, a rejected finding awaiting a ruling, a withdrawn deliverable or an undeclared dependency (it stays unasked and is asked at a later Stop), and an acknowledgement published after it is not challenged by the acknowledgement re-check. Where it rides alone it ends by saying that a pure confirmation needs no new record, check or receipt (#1050). Final message (#1050, ADR-033 amendment): Codex's Stop body carries `last_assistant_message`, so the re-read is asked only for the resolved obligations that message neither cites by id nor addresses (at least two thirds of the criterion's terms), and names them; one bounded `status view=obligations` read (750 ms) supplies the criteria and is trusted only when its resolved set matches the announced key; a fully addressed set is not asked and records `closure_gate_acceptance_covered`; a body over the trusted size carries no message and keeps the re-read for every resolved set. The message is read in the hook process only, never stored, sent or put in a diagnostic. Host decision: supported. The premise ask stays on Stops the host has not already continued; the acknowledgement and acceptance re-checks may continue an already-continued Stop within the same caps. A finding the agent rejected with a reason that awaits a reviewer ruling (`finding_rejection_awaiting_ruling`) sends the agent to `check` with `final_review: true` and never offers acknowledgement; `receipt_findings_unresolved` counts agent-work findings only, and `self_verified` is offered only while `finding_counts.self_verify_eligible` is positive. A deliverable that held content and is now empty or gone (`declared_output_emptied`, `declared_output_removed`) is voiced once per key (`emptied:<h8 of the declaring obligation items>`) even on an already-continued Stop, with the rule and obligation ids and never a path (every Stop after the first gate is an already-continued Stop in a single-turn run). The premise and acknowledgement texts say that if the agent cannot finish the work it keeps the working deliverable: acknowledgement never requires withdrawing or emptying it. Host decision: supported, same code path (the gate, its texts, its re-check list and its memory are shared by the Codex, Claude Code and Cursor Stop handlers; the only difference is how an already-continued Stop is detected, `stop_hook_active`). See ADR-033 and issues #977, #984, #985, #1031.
 
-Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `yoetz check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Codex: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
+Mid-session, the agent can ask `check` to wait for this task's hook rows instead of polling `status`: `await_observations: true` (MCP) or `finishup check --await-observations` wakes the service sweeper and waits at most about 3 s (and a tenth of the request deadline) for the rows already pending, then reports `observations_awaited` (`complete`, `bounded_timeout` with the pending count, or `unavailable`). The decision is the same for Codex: the wait reads the shared local outbox and lifecycle mappings, so it needs no host-specific hook; it never fails the check (ADR-029 amendment, #1012).
 
 Legacy synchronous `hooks spool` is a separate structural fast path. It only appends the owner-only
 structural spool record and returns; it does not normalize or pair the event, open the service, drain
 an outbox, or carry native content. The READY forwarder later consumes the spool and performs normal
 service-side normalization, pairing, and forwarding.
 
-Yoetz's own MCP tools fire these same `PreToolUse`/`PostToolUse` hooks, and the hook process that
+FinishUP's own MCP tools fire these same `PreToolUse`/`PostToolUse` hooks, and the hook process that
 records them also drains the outbox, so the prescribed start/status/check/respond/receipt workflow
 used to feed its own backlog: two rows plus a captured result per `status` read (issue #564). The
-ingress now delivers a Yoetz-owned call only as distinct evidence — an explicit host failure or
+ingress now delivers a FinishUP-owned call only as distinct evidence — an explicit host failure or
 denial in either phase, or the `PostToolUse` of `start`, `publish_work`, `check`, or `respond` —
-and keeps the pre-event of every Yoetz call and the post-event of a non-failed `status`, `receipt`,
-or `read_guidance` in the bounded local store only. Yoetz tool input/output is never captured as
+and keeps the pre-event of every FinishUP call and the post-event of a non-failed `status`, `receipt`,
+or `read_guidance` in the bounded local store only. FinishUP tool input/output is never captured as
 content. The same policy applies to the legacy spool replay and to the Codex session stream, so
 neither path reintroduces the rows. The shared host-spelling advice guard suppresses pending
-recommendation delivery on a Yoetz-owned hook without an explicit failure; no hook delivers a
+recommendation delivery on a FinishUP-owned hook without an explicit failure; no hook delivers a
 frontier-motion notice at all (issue #915). Explicit
 self-call failures stay retained, enqueued, and eligible for pending advice. Ordinary tools are
 unchanged. To confirm closure converged,
-run `yoetz observe drain --workspace . --json` after the agent stops and require
+run `finishup observe drain --workspace . --json` after the agent stops and require
 `terminal: drained` with `pending_after: 0`; `retry_pending` names the retryable head cause in
 `reasons` (a check barrier's `operation_pending` clears when the check completes), and
 `pass_limit` means a producer is still adding rows.
@@ -1000,7 +1000,7 @@ Codex versions older than `0.148.0-alpha.6` use a synchronous `hooks spool` comm
 structural-only append and must not connect to the service, drain an outbox, or hydrate the local
 observation store. The READY service forwards those records asynchronously through the normal
 fenced outbox path. The proposed (issue #362) host-visible budget is p95 `<=250ms`, with a hard
-`500ms` cap per synchronous leg including process startup. `yoetz observe status` reports pending
+`500ms` cap per synchronous leg including process startup. `finishup observe status` reports pending
 spool work as a coverage gap (`source_lag`). Every spool pass feeds the `sync_fallback_spool` entry
 of `hook_diagnostics.pass_timings`, which reads the p95 target and the hard cap against every pass
 (`p95_target_ms`, `hard_cap_ms`, `hard_cap_breach_count`); only a pass over the hard cap also keeps
@@ -1012,7 +1012,7 @@ claims.
 ### Hook cost and timing aggregates (issue #915)
 
 Every Codex observation hook pass (`hooks observe` and the legacy `hooks spool`) folds one sample
-into a bounded aggregate that `yoetz observe status --json` reports as
+into a bounded aggregate that `finishup observe status --json` reports as
 `hook_diagnostics.pass_timings` and the text form prints as `hook_pass_timing`. Entries are keyed
 by host, raw event and path (`codex PostToolUse observe`, `codex PreToolUse sync_fallback_spool`,
 ...) and carry `count`, `sum_ms`, `mean_ms`, `p50_ms_at_most`, `p95_ms_at_most`, `max_ms`, an
@@ -1047,7 +1047,7 @@ handler stays synchronous for now. The DeepSWE v2 run inferred about 0.6–0.9 s
 code-mode call from rollout timestamps; the aggregate is what confirms or refutes that on a
 product-side measurement, and the issue orders measurement before any registration change. The
 candidate change, async ingress behind the same `0.148.0-alpha.6` gate as `PreToolUse` plus a
-synchronous advice handler scoped to the Yoetz MCP tools or a minimal-import fast path, is not
+synchronous advice handler scoped to the FinishUP MCP tools or a minimal-import fast path, is not
 shipped: making both halves of a tool call async lets Codex run them concurrently, which can store
 a `PostToolUse` before its `PreToolUse`, and the `unpaired_event` contract that must absorb that
 belongs to #917. The frontier-motion notice no longer rides `PostToolUse`, so on a session with no
@@ -1057,31 +1057,31 @@ run are not recorded yet; that gap is owned by issue #915, together with the asy
 
 ### Capture and compare the live tool boundary
 
-When a supported Codex build renders a Yoetz argument as `unknown`, capture the client inventory
+When a supported Codex build renders a FinishUP argument as `unknown`, capture the client inventory
 before reading implementation source or changing a schema. Use a new scratch testing home; the
 `codex-testing` launcher derives its real `CODEX_HOME` from `CODEX_TESTING_HOME`, so setting only
 `CODEX_HOME` is not isolation.
 
 ```text
-YOETZ_CODEX_SCRATCH="$(mktemp -d /private/tmp/yoetz-codex-boundary.XXXXXX)"
+FINISHUP_CODEX_SCRATCH="$(mktemp -d /private/tmp/finishup-codex-boundary.XXXXXX)"
 
-CODEX_TESTING_HOME="$YOETZ_CODEX_SCRATCH" codex-testing mcp add \
-  --env UV_CACHE_DIR="$YOETZ_CODEX_SCRATCH/uv-cache" \
-  yoetz -- uv --directory /absolute/path/to/yoetz-core run yoetz mcp serve --host codex --semantic off
+CODEX_TESTING_HOME="$FINISHUP_CODEX_SCRATCH" codex-testing mcp add \
+  --env UV_CACHE_DIR="$FINISHUP_CODEX_SCRATCH/uv-cache" \
+  finishup -- uv --directory /absolute/path/to/finishup-core run finishup mcp serve --host codex --semantic off
 
-CODEX_TESTING_HOME="$YOETZ_CODEX_SCRATCH" codex-testing mcp get yoetz
+CODEX_TESTING_HOME="$FINISHUP_CODEX_SCRATCH" codex-testing mcp get finishup
 
 python scripts/capture_codex_mcp_surface.py \
   --codex-binary /absolute/path/to/codex-testing \
-  --codex-testing-home "$YOETZ_CODEX_SCRATCH" \
-  --output "$YOETZ_CODEX_SCRATCH/mcp-server-status.json"
+  --codex-testing-home "$FINISHUP_CODEX_SCRATCH" \
+  --output "$FINISHUP_CODEX_SCRATCH/mcp-server-status.json"
 ```
 
 Confirm `mcp get` names only the scratch registration before capturing. Record the exact Codex
-build, Yoetz commit or artifact digest, route profile, capture digest, and whether the evidence is
+build, FinishUP commit or artifact digest, route profile, capture digest, and whether the evidence is
 raw `mcpServerStatus` inventory, a declaration actually delivered to a model, or both. Compare
 `start`, `publish_work`, and `check` for local references, union-only array items, and conditionals
-in object-shape position. A raw inventory proves what Codex received from Yoetz; it does not by
+in object-shape position. A raw inventory proves what Codex received from FinishUP; it does not by
 itself prove what a model was shown. Keep before and after captures side by side and state that
 evidence boundary explicitly.
 
@@ -1094,7 +1094,7 @@ or supersede claims.
 ## Tool outcomes (issue #910)
 
 Codex states a tool call's outcome only inside the `PostToolUse` `tool_response`, never as a
-top-level field. For each tool family Yoetz reads only closed facts. It records them as the result's
+top-level field. For each tool family FinishUP reads only closed facts. It records them as the result's
 `outcome` and, when the host states one, its `exit_status` in the range `-1..255`:
 
 - **Shell and exec calls** (`Bash`, `exec_command`, `shell`, `local_shell`, including each nested
@@ -1107,7 +1107,7 @@ top-level field. For each tool family Yoetz reads only closed facts. It records 
   number is refused whole by the strict hook parser (`float_forbidden`); the recorded shapes send
   such results as text.
 - **`apply_patch`**: the `Exit code: N` header.
-- **MCP tools**, including Yoetz's own: only the protocol-level `isError`. The result body is
+- **MCP tools**, including FinishUP's own: only the protocol-level `isError`. The result body is
   tool-domain data.
 
 Output text is never searched for words such as `FAILED`, and conflicting facts resolve
@@ -1208,7 +1208,7 @@ These shapes are pinned by `fixtures/observations/codex-post-tool-outcomes-0.157
 which is derived from recorded Codex 0.157.1 rollouts. The benchmark that exposed the defect did not
 archive raw hook stdin, so a raw-stdin capture is still owed on a machine with Codex, owned by issue
 #910. It should cover a nested `exec_command` with exit 0 and non-zero, a direct shell call,
-`apply_patch` success and failure, and a Yoetz MCP call. Until that capture lands, the reader
+`apply_patch` success and failure, and a FinishUP MCP call. Until that capture lands, the reader
 accepts both the structured and the header forms. Source tests do not establish native Codex
 acceptance on macOS, Linux or Windows through WSL 2. Dogfood confirmation per platform is owed on
 the same issue.
@@ -1236,15 +1236,15 @@ nested rather than a top-level field. The selector and the summary builder share
 that proof; where they disagreed, the buffered account refused every Codex-shaped post and
 observation ingestion stopped for the rest of the session (issue #753). A refused summary now
 admits its reads individually with a `routine_summary_invalid` coverage gap, names the lane once in
-`yoetz observe status`, and records the bounded `routine_summary_invalid` hook reason instead of
+`finishup observe status`, and records the bounded `routine_summary_invalid` hook reason instead of
 the opaque `observe` token. The behavior is shared by every host ingress, not Codex-specific.
 
 Use the owner controls after an exact preview:
 
 ```text
-yoetz observe selection-preview --workspace /exact/project \
+finishup observe selection-preview --workspace /exact/project \
   --detail detailed --capacity larger --session-id <codex-session-id> --json
-yoetz observe selection-apply --workspace /exact/project \
+finishup observe selection-apply --workspace /exact/project \
   --detail detailed --capacity larger --session-id <codex-session-id> \
   --accept --preview-digest <preview-digest> --json
 ```
@@ -1258,7 +1258,7 @@ to fit the new target. Selection does not change Codex hook deadlines, session-s
 content consent, repository privacy, provider, or network authority.
 
 **Configurable capacity (issue #828) — Codex decision.** Codex uses the same local capacity path as
-every other host: `yoetz observe selection-preview` with `--capacity standard|larger|largest`,
+every other host: `finishup observe selection-preview` with `--capacity standard|larger|largest`,
 `--capacity custom --queue-count <64..8192>`, or `--capacity none`, then `selection-apply --accept
 --preview-digest`, or the terminal interface's `/observe`. There is no Codex-specific capacity
 control, and repository or plugin configuration cannot raise capacity. An agent may relay a change
@@ -1286,7 +1286,7 @@ To keep an upcoming read individually linked to a later claim, use the bounded n
 with an active consent and the exact current Codex session:
 
 ```text
-yoetz observe protect-read --workspace /exact/project \
+finishup observe protect-read --workspace /exact/project \
   --session-id <codex-session-id> --reference obl_<existing-id> --count 1 --json
 ```
 
@@ -1296,7 +1296,7 @@ bound. It grants no content or disclosure authority. Promotion is limited to a n
 still in the local buffer:
 
 ```text
-yoetz observe promote --workspace /exact/project \
+finishup observe promote --workspace /exact/project \
   --source-identity <source-identity> --json
 ```
 
@@ -1310,14 +1310,14 @@ selection. The workspace capture lane has independent limits of 512 staging/pend
 tickets and 128 MiB of captured content. A larger observation capacity does not raise those
 limits. The hook's bounded capture pass and service deadline still apply. If staging is partial,
 cancelled, times out, or lacks a complete post/content group, the event remains incomplete and
-does not become a successful routine summary; when the hook reaches the recording boundary Yoetz
+does not become a successful routine summary; when the hook reaches the recording boundary FinishUP
 records `content_capture_unavailable`. A host kill before authenticated staging can leave transient
 content without a durable gap. Capture configuration or a successful structural receipt is not
 proof that Codex bytes were captured, selected for a check, or used by a provider.
 
-The self-observation exception covers explicit Yoetz MCP workflow names. A Codex shell event such
-as `exec_command yoetz observe status`, `yoetz observe selection-status`, `yoetz observe
-selection-preview`, or `yoetz closure-prepare` has no authenticated executed-launcher identity in
+The self-observation exception covers explicit FinishUP MCP workflow names. A Codex shell event such
+as `exec_command finishup observe status`, `finishup observe selection-status`, `finishup observe
+selection-preview`, or `finishup closure-prepare` has no authenticated executed-launcher identity in
 the hook payload; a path written in the command text is still host input. It therefore remains an
 ordinary shell observation and may use the available structural, capture, or materialization
 budget. Failures, mutations, and ambiguous shell are never suppressed. This is a current support
@@ -1328,18 +1328,18 @@ account for the CLI read in coverage and capacity.
 
 The Codex hook ingress cap is 1 MiB (`MAX_HOOK_STDIN_BYTES`, shared by every host); a body at or
 under it is parsed in full and its captured content stays bounded by the content budget. It was
-256 KiB until tb4n1, where 96 PostToolUse rows were lost to it: 42 were Yoetz's own
+256 KiB until tb4n1, where 96 PostToolUse rows were lost to it: 42 were FinishUP's own
 `closure_prepare` replies (300 KB-1 MB, including nested code-mode calls, which reach the hook as
-`mcp__yoetz__closure_prepare`), most of the rest `view_image` results carrying base64 data URLs
+`mcp__finishup__closure_prepare`), most of the rest `view_image` results carrying base64 data URLs
 and large `cat` outputs. Each loss left its pre-event unpaired.
 
-The observe ingress (`yoetz hooks observe`) now skims a complete body up to 8 MiB
+The observe ingress (`finishup hooks observe`) now skims a complete body up to 8 MiB
 (`MAX_HOOK_SKIM_BYTES`) with the same safety rules as the full parse:
 
 - Image, audio, and video bytes (an `input_image` data URL, an MCP `image` block) are replaced
   with a fixed placeholder. If the body then fits the 1 MiB cap it is admitted whole, with its
   text and outcome, and records no gap.
-- A Yoetz MCP tool (`mcp__yoetz__*`, `closure_prepare` included) keeps a closed identity row:
+- A FinishUP MCP tool (`mcp__finishup__*`, `closure_prepare` included) keeps a closed identity row:
   session, turn, transcript, tool, call id, and outcome flags. Its content is never captured in
   any case, so the row is complete, pairs with its pre-event, and records no gap.
 - Any other body still over the cap keeps the same identity row with the
@@ -1347,10 +1347,10 @@ The observe ingress (`yoetz hooks observe`) now skims a complete body up to 8 Mi
   text and output are not retained; the row pairs with its pre-event instead of vanishing.
 
 A body over the skim cap, or a complete oversized body that fails the parse, is still refused
-before any row exists. The hook stays fail-open and the host continues. Yoetz records the bounded
-`codex_payload_too_large` reason against that event in `yoetz observe status` hook diagnostics,
+before any row exists. The hook stays fail-open and the host continues. FinishUP records the bounded
+`codex_payload_too_large` reason against that event in `finishup observe status` hook diagnostics,
 and notes the `payload_too_large` coverage gap on the consented workspace, where
-`yoetz observe status` shows it. That workspace gap does not yet reach task receipts: no row
+`finishup observe status` shows it. That workspace gap does not yet reach task receipts: no row
 exists, so a receipt simply has no evidence for the dropped event rather than naming the loss.
 The native `post-tool-use` (start correlation), `user-prompt-submit`, and `session-start` entry
 points parse the body themselves with the 1 MiB trusted cap and record the same reason above it.
@@ -1358,11 +1358,11 @@ The caps are fixed; raising them is not an operator control. A reader consumes a
 cap-plus-one bytes, so the true size of a refused body is never measured and never recorded. The
 refusal costs exactly that one event; the next ordinary event still ingests.
 
-Matcher decision (tb4n1 B5): the PostToolUse observe hook keeps matching every tool, Yoetz's own
+Matcher decision (tb4n1 B5): the PostToolUse observe hook keeps matching every tool, FinishUP's own
 included. Codex matchers are regular expressions without lookaround, so "every tool except
-`mcp__yoetz__*`" is not a clean matcher; excluding only the post-event would leave each Yoetz
-pre-event unpaired, and excluding both would drop the delivered record of Yoetz mutations and of
-any failed Yoetz call that self-observation deliberately keeps. The size problem is fixed in the
+`mcp__finishup__*`" is not a clean matcher; excluding only the post-event would leave each FinishUP
+pre-event unpaired, and excluding both would drop the delivered record of FinishUP mutations and of
+any failed FinishUP call that self-observation deliberately keeps. The size problem is fixed in the
 reader instead. `closure_prepare` reply size itself is owned by the closure work, not by this
 ingress.
 
@@ -1385,20 +1385,20 @@ the skill tree.
 ### Skill tree
 
 ```text
-yoetz integrate codex skill preview --json
-yoetz integrate codex skill remove --json
+finishup integrate codex skill preview --json
+finishup integrate codex skill remove --json
 ```
 
 Confirm the exact preview digest. Removal deletes only a valid managed marker plus its byte-exact
 file inventory. Modified, partial, or unmanaged content is refused and preserved — there is no
-force-remove in v0.1. Removal never uninstalls the Yoetz package, deletes MCP configuration, deletes
+force-remove in v0.1. Removal never uninstalls the FinishUP package, deletes MCP configuration, deletes
 ledger/key data, or touches other skills. Verify `status` shows `absent` afterward.
 
 ### Plugin, marketplace, and `config.toml`
 
 ```text
-yoetz integrate codex plugin preview --codex-home <home> --json
-yoetz integrate codex plugin remove --codex-home <home> --accept --preview-digest <digest> --json
+finishup integrate codex plugin preview --codex-home <home> --json
+finishup integrate codex plugin remove --codex-home <home> --accept --preview-digest <digest> --json
 ```
 
 `preview`, `status`, and `remove` are the whole Codex plugin command surface. The generic
@@ -1407,14 +1407,14 @@ yoetz integrate codex plugin remove --codex-home <home> --accept --preview-diges
 lifecycles; `--help` marks each command's hosts, and invoking one for Codex refuses with
 `codex_plugin_command_unsupported:<command> supported=preview,status,remove` (exit 2) before any
 binary discovery or mutation. Codex activation is the digest-bound setup/recommendation ceremony
-(`yoetz setup run`, ADR-012), not a standalone plugin command.
+(`finishup setup run`, ADR-012), not a standalone plugin command.
 
 The Codex plugin command uses the same preview → explicit accept → apply shape as Codex
 activation and MCP install: the mutation is bound to the exact preview digest. It does **not**
 consume the Cursor `plugin_artifact_apply` OS-presence cell; that cell remains the standalone
 portable-artifact authority and would fail closed on this host. Cache purge is default-off.
 `--purge-cache` additionally deletes other version directories under
-`<codex-home>/plugins/cache/yoetz/yoetz/<ver>` whose trees byte-match a yoetz render or their own
+`<codex-home>/plugins/cache/finishup/finishup/<ver>` whose trees byte-match a finishup render or their own
 valid `yoetz.codex-plugin-install/1` marker. Foreign or modified cache directories are refused
 (`remove_refused`, conflict `cache`) and left untouched. Preview and apply use the same no-follow,
 descriptor-relative 256-total-entry, 16-level, 4-KiB-relative-path, 64-file,
@@ -1428,8 +1428,8 @@ crossed the mutation boundary. Keep same-UID cache writers
 quiescent during removal because ordinary POSIX files provide no atomic compare-and-unlink token
 for the last content-write window.
 
-Apply runs `codex plugin remove yoetz@yoetz --json`, then `codex plugin marketplace remove yoetz
---json` when `[marketplaces.yoetz]` byte-matches the yoetz render, then deletes
+Apply runs `codex plugin remove finishup@finishup --json`, then `codex plugin marketplace remove finishup
+--json` when `[marketplaces.finishup]` byte-matches the finishup render, then deletes
 `<repo>/.agents/plugins/marketplace.json` only when a retained no-follow descriptor still byte- and
 inode-matches through a private quarantine rename, then
 deletes the bound current-version cache. Whole-table TOML edits are verified by re-parse. A second
@@ -1443,24 +1443,24 @@ started, any newly observed conflict reports `write_failed` (with the bounded co
 available) because the outcome may be partial; it is never mislabeled as a safe stale-preview
 retry.
 
-After a successful removal, `codex plugin list --marketplace yoetz --json` is empty and
-`config.toml` has no yoetz tables. `yoetz observe status` reports the existing activation
+After a successful removal, `codex plugin list --marketplace finishup --json` is empty and
+`config.toml` has no finishup tables. `finishup observe status` reports the existing activation
 classification: `installed_not_activated` when the managed plugin source at
-`.agents/plugins/yoetz` remains (issues #387 and #347), including a modified copy, or `not_installed` when that source is also absent.
+`.agents/plugins/finishup` remains (issues #387 and #347), including a modified copy, or `not_installed` when that source is also absent.
 The command reports whether the skill tree remains; it does not remove it. Consent records and the
 observation store are intentionally left in place.
 
 ### External MCP registration
 
 ```text
-yoetz integrate codex mcp preview-remove --json
-yoetz integrate codex mcp remove --accept --preview-digest <digest> --json
+finishup integrate codex mcp preview-remove --json
+finishup integrate codex mcp remove --accept --preview-digest <digest> --json
 ```
 
 The first command exposes the exact unregistration digest and current owned route without
 mutation. Noninteractive removal requires that digest plus `--accept`; `--accept` alone fails
-closed. Apply re-reads the current entry immediately before it runs `codex mcp remove yoetz` and
-refuses a foreign replacement or changed Yoetz route observed at that boundary. An
+closed. Apply re-reads the current entry immediately before it runs `codex mcp remove finishup` and
+refuses a foreign replacement or changed FinishUP route observed at that boundary. An
 already-absent entry is a no-op only after the same successful `mcp list --json` absence check.
 Interactive removal shows the exact command, route profile, warning tokens, and preview digest
 before requesting confirmation.
@@ -1474,7 +1474,7 @@ entry is not positively observed absent; a generic failed named lookup is not su
 Plugin-managed MCP is not this command: it goes away with the plugin artifact, not with `codex mcp
 remove`.
 
-After the removal command returns, Yoetz checks the selected home again even if Codex exited
+After the removal command returns, FinishUP checks the selected home again even if Codex exited
 nonzero. A successful structural list confirming absence completes removal with exit 0 and
 `removal.warnings=["host_remove_returned_nonzero"]`; a zero-exit removal has an empty warning
 list. Setup disconnect carries the same versioned outcome in `status.mcp_removal` and prints
@@ -1485,7 +1485,7 @@ Its report carries the observed owned/foreign state or null, `next_action=inspec
 and an exact `next_command` for the selected runtime, binary and home. Run that read-only command
 first. If absent, a newly accepted removal preview is a no-op and reconciles stale route metadata;
 if still owned, obtain and accept a fresh preview before retrying. Preserve foreign entries.
-Command exceptions also remain unverified. Yoetz never retries the mutation automatically.
+Command exceptions also remain unverified. FinishUP never retries the mutation automatically.
 
 This reconciliation applies to external Codex MCP removal on macOS, Linux and Windows through
 WSL 2; it does not establish native Windows support. Deterministic adapter coverage is separate
@@ -1498,12 +1498,12 @@ The import support command is Codex-only and local. It accepts the exact request
 files, add an MCP operation, hook event, or dedicated TUI screen, and it does not change
 external-review policy. The CLI import and consent commands are the owning terminal surfaces.
 
-The first `yoetz import --input <request> --json` call must stop with
+The first `finishup import --input <request> --json` call must stop with
 `PRIVACY_AUTHORITY_REQUIRED` after the source and plan are durable. Run
-`yoetz consent status --json` and review the `import_publication_preview`. The preview is
+`finishup consent status --json` and review the `import_publication_preview`. The preview is
 structural only: never copy source lines or excerpts into an agent chat. For agent-attested
 authorization, show the exact danger text and digests, wait for an explicit current-chat approve
-or deny instruction, then relay that exact pending item through `yoetz consent authorize` with
+or deny instruction, then relay that exact pending item through `finishup consent authorize` with
 `--warning-acknowledged`. Agent attestation is not independent proof. After approval, replay the
 identical import request; do not add an approval argument or mint a new request ID.
 
@@ -1521,23 +1521,23 @@ egress.
 | Resource invalid | Reinstall from a verified package artifact. |
 | Preview stale | Run `status`, then a fresh preview. |
 | Modified/partial content | Preserve and review manually; use `replace_modified` deliberately if desired. |
-| Compatibility is `unsupported` | Automatic activation is unprofiled; use a supported Yoetz/Codex version pair when capability evidence is required. Session-stream parsing is separate: a newer Codex release is still admitted structurally, and `observe reconcile` reports `admission: partially_understood` with the affected `admission_reasons` rather than `unsupported_format` (issue #656). |
+| Compatibility is `unsupported` | Automatic activation is unprofiled; use a supported FinishUP/Codex version pair when capability evidence is required. Session-stream parsing is separate: a newer Codex release is still admitted structurally, and `observe reconcile` reports `admission: partially_understood` with the affected `admission_reasons` rather than `unsupported_format` (issue #656). |
 | Write/swap interrupted | Run `status`; preserve any staged content; do not delete it yourself. |
-| Skill not discovered, or duplicate `$yoetz` names loaded | Check the exact scope, loaded skill roots, managed path, trust, version, and capability matrix; reload Codex. |
-| Setup reports `installed_not_activated` | Run `yoetz recommend list --codex-path <exact-executable> --codex-home <exact-home>`, then accept only the freshly shown target/preview digest. Historical acceptance cannot suppress an observed inactive target; a decline suppresses only its unchanged exact target. Review canonical inventory and the versioned cache; marketplace/config presence alone is insufficient. A marker-consistent stale cache is refreshed by an ordinary approved re-run. |
-| Activation reports `destination_conflict` | The versioned cache (or a config/marketplace surface) holds foreign, marker-inconsistent, or modified content. Review it by hand; setup only replaces trees that match their own Yoetz install marker. |
+| Skill not discovered, or duplicate `$finishup` names loaded | Check the exact scope, loaded skill roots, managed path, trust, version, and capability matrix; reload Codex. |
+| Setup reports `installed_not_activated` | Run `finishup recommend list --codex-path <exact-executable> --codex-home <exact-home>`, then accept only the freshly shown target/preview digest. Historical acceptance cannot suppress an observed inactive target; a decline suppresses only its unchanged exact target. Review canonical inventory and the versioned cache; marketplace/config presence alone is insufficient. A marker-consistent stale cache is refreshed by an ordinary approved re-run. |
+| Activation reports `destination_conflict` | The versioned cache (or a config/marketplace surface) holds foreign, marker-inconsistent, or modified content. Review it by hand; setup only replaces trees that match their own FinishUP install marker. |
 | Activation failed with an explicit `--codex-home` | Read the actual `reason` in `registration.plugin_activation`/`readiness.plugin_activation`; the bound home and config path are echoed there. `codex_home_required` appears only when no home was passed. |
-| Setup reports plugin source files but no Yoetz skill appears | Check `.agents/skills/yoetz`; source installation and plugin activation do not prove project-skill discovery. |
-| `list_mcp_resources` fails with `resources/list failed: Unexpected response type` | Codex's rmcp client is built with serde_json `arbitrary_precision`; before modelcontextprotocol/rust-sdk#1300 it cannot decode a fractional number in a buffered result, and the whole listing is dropped. Yoetz therefore lists guidance resources without the fractional `annotations.priority` on every host; an older Yoetz shows this symptom. Guidance never needs the listing: call `read_guidance` with a registered URI. |
+| Setup reports plugin source files but no FinishUP skill appears | Check `.agents/skills/finishup`; source installation and plugin activation do not prove project-skill discovery. |
+| `list_mcp_resources` fails with `resources/list failed: Unexpected response type` | Codex's rmcp client is built with serde_json `arbitrary_precision`; before modelcontextprotocol/rust-sdk#1300 it cannot decode a fractional number in a buffered result, and the whole listing is dropped. FinishUP therefore lists guidance resources without the fractional `annotations.priority` on every host; an older FinishUP shows this symptom. Guidance never needs the listing: call `read_guidance` with a registered URI. |
 | MCP name already present | Preserve it and review ownership rather than running `mcp add`. |
-| `setup` skipped MCP registration | Codex not on PATH, or the entry is foreign-owned; run `yoetz integrate codex mcp status --json` for the exact state. |
+| `setup` skipped MCP registration | Codex not on PATH, or the entry is foreign-owned; run `finishup integrate codex mcp status --json` for the exact state. |
 | MCP unavailable | Diagnose through separate MCP configuration/startup steps. |
 | Trigger absent or failed | Use the manual re-grounding procedure; never edit hook configuration through this integration. |
 | `observe status` shows no envelopes for a session | Read `hook_diagnostics.reasons`: `workspace_unresolvable` means the hook's `--workspace` locator could not be canonicalized; `workspace_unconsented` means the session's Git root carries no active consent (a session started in a subdirectory canonicalizes to the same root as the consent, so grant consent at the repository root); `paused` means consent is paused. A successful ingest records no diagnostic, so read `recent_count` together with the envelopes: no new envelopes and a zero `recent_count` means the hooks never reached the ingress or the runtime gate is disabled, not that a binding drop occurred. |
 | `observe status` shows `mapping_present: false` after a consented `SessionStart` | The hook sends `start mode=create_or_attach` with the canonical `--workspace` root as `workspace_ref` and `codex-session:<session_id>` as `external_ref`. Before automatic new-pair admission, it scans private local lifecycle mappings for an eligible ended same-host session. A unique mapping from a received `SessionEnd`, with every other bound session ended and the candidate bound only to this consented workspace, is selected before the ordinary request: the hook holds the workspace and predecessor lifecycle locks, revalidates ownership and state, and sends one `mode=attach` request carrying that selector plus the new pair. The catalog requires the selected root task to be active and non-quarantined, its canonical workspace and repository-privacy binding to match, and no start already pending for that selected route. Unrelated tasks in the same workspace do not block this recovery (#814); a pair already bound to another task remains a conflict. Delegated child routes require an authenticated attach handle or target selector. Recovery takes a nonblocking workspace reservation before pruning or scanning, then holds it with ordered locks for every eligible ended same-host session through full candidate revalidation, the service RPC, authorized rewrites, and pruning. The revalidation includes unmapped sessions, cross-workspace ownership, mapping identities, and mapping recency; a busy workspace reservation or candidate-lock contention or a changed snapshot returns `auto_attach_recovery_busy` rather than creating work from an unstable selector. A successful recovery rewrites every ended same-host predecessor mapping for that task to the rotated session and writer so pending predecessor rows drain on the successor route rather than being quarantined. With no usable persisted selector, automatic `create_or_attach` admits the new pair as independent work, including beside a dormant task. `workspace_task_exists` identifies only explicit `mode=create` colliding with an identical pair; workspace membership never selects a task. The candidate set is bounded (#549): a recovery unbinds the ended predecessors it consumed, and each `SessionStart` pass keeps at most the 32 most recently mapped ended bindings per workspace, pruning unmapped ended sessions first; a binding is never pruned while its session is live or while a pending or quarantined row still names it, so protected rows may keep the total above 32, ended unmapped rows still terminalize, and a pruned session that resumes re-binds on its next hook event. The public error reveals no selector; a hard crash without `SessionEnd` remains fail-closed rather than being guessed from age. Otherwise read `hook_diagnostics.reasons` for the typed cause: `auto_attach_workspace_unbound` (no paired request was legal), `auto_attach_request_invalid` (an authoring defect — file it), `auto_attach_conflict` / `auto_attach_refused` (the service answered and declined), `auto_attach_result_invalid`, `auto_attach_mapping_write_failed`, `privacy_authority_required`, `vault_locked`, `timeout`, `storage_unsafe` / `storage_corrupt`, `service_incompatible`, or `service_unavailable` (the daemon was still starting; `UserPromptSubmit` and `Stop` retry under the bounded budget; teardown `SessionEnd` records its lifecycle intent and drains without an auto-attach retry). An explicit MCP `start` remains the recovery path; for `vault_locked` on a never-initialized install, that `start` returns the typed `vault_initialization_required` continuation below rather than a dead end. |
-| `observe status` shows `mapping_stale` after every resume or compaction | Before issue #578 the `yoetz hooks session-start` status read connected without a workspace locator, so the daemon's repository fence refused every probe as `SESSION_CONFLICT` and a live mapping was reported stale. The rendered command now passes `--workspace .`, and the probe selects its locator in a fixed order (issue #659): an explicit project path other than the bare `.`, then the host payload's session `cwd` (a subdirectory resolves to the repository root), then the hook's own working directory. The host cwd outranks the bare `.` because Codex hook working directories are not stable across surfaces; an explicit path that cannot be canonicalized never falls through to another repository. `yoetz hooks observe --event SessionStart` and the shared mapped-session lane derive the probe locator the same way when no explicit workspace was consented. A fence refusal is `status_workspace_unbound` / `status_workspace_mismatch` with a keep-the-mapping advisory, and a companion diagnostic row names the locator source (`locator_source_explicit`, `locator_source_host_payload`, `locator_source_cwd`, `locator_absent`, or `locator_unresolvable`) so an absent context and a supplied one that failed to resolve are distinguishable; `mapping_stale` means the daemon actually reported the session replaced, and the advisory names the replacement ids. |
+| `observe status` shows `mapping_stale` after every resume or compaction | Before issue #578 the `finishup hooks session-start` status read connected without a workspace locator, so the daemon's repository fence refused every probe as `SESSION_CONFLICT` and a live mapping was reported stale. The rendered command now passes `--workspace .`, and the probe selects its locator in a fixed order (issue #659): an explicit project path other than the bare `.`, then the host payload's session `cwd` (a subdirectory resolves to the repository root), then the hook's own working directory. The host cwd outranks the bare `.` because Codex hook working directories are not stable across surfaces; an explicit path that cannot be canonicalized never falls through to another repository. `finishup hooks observe --event SessionStart` and the shared mapped-session lane derive the probe locator the same way when no explicit workspace was consented. A fence refusal is `status_workspace_unbound` / `status_workspace_mismatch` with a keep-the-mapping advisory, and a companion diagnostic row names the locator source (`locator_source_explicit`, `locator_source_host_payload`, `locator_source_cwd`, `locator_absent`, or `locator_unresolvable`) so an absent context and a supplied one that failed to resolve are distinguishable; `mapping_stale` means the daemon actually reported the session replaced, and the advisory names the replacement ids. |
 | A scoped `start` returns `SESSION_CONFLICT` with `repository_identity_required` or `repository_identity_mismatch` | `repository_identity_required` means the attach request omitted the trusted workspace/repository context; `repository_identity_mismatch` means the context resolved to a different repository than the bound route. Keep the selected `session_id`/`writer_id`, resolve the canonical repository root, and retry the same attach with that trusted context. The corrected request resumes the existing task (a rotated session/writer is allowed by the 0.3 recovery contract); it does not create a sibling. Never copy a commitment or infer a selector from a public workspace string. |
-| The agent created a sibling task instead of continuing the auto-attached one | The `SessionStart` context names the mapped `session_id` and `writer_id` and says to continue with `start mode=attach` by that session id; guidance and the `start` tool description name the canonical absolute repository root as `workspace_ref`, the value the hook commits (issue #580). The agent's successful scoped `start` re-binds the mapping through `yoetz hooks post-tool-use` from `structuredContent`; a scoped start that binds nothing records `start_bind_unparsed` / `start_bind_invalid_ids` / `start_bind_write_failed`. |
+| The agent created a sibling task instead of continuing the auto-attached one | The `SessionStart` context names the mapped `session_id` and `writer_id` and says to continue with `start mode=attach` by that session id; guidance and the `start` tool description name the canonical absolute repository root as `workspace_ref`, the value the hook commits (issue #580). The agent's successful scoped `start` re-binds the mapping through `finishup hooks post-tool-use` from `structuredContent`; a scoped start that binds nothing records `start_bind_unparsed` / `start_bind_invalid_ids` / `start_bind_write_failed`. |
 | `observe reconcile` of a child rollout reports `child_parent_unmapped` | The v2 child header names a spawning session that is not bound to the selected workspace alone with a lifecycle mapping. Reconcile or attach the parent session in its own workspace first, or select the workspace that owns it. Nothing was ingested (#841). |
 | `observe reconcile` of a child rollout reports `child_route_missing` | The spawning session is mapped, but no validated attach published a child lane for this child thread: the child's attach callback carried neither a host child alias nor its own transcript, or no hook reached the child thread. Read `hook_diagnostics.reasons` for `start_bind_child_lane_unbound`. The provisional annotation stays unbound; nothing is inferred from stream status or annotation counts (#841). |
 | `observe reconcile` of a child rollout reports `child_route_ambiguous` or `child_identity_invalid` | More than one route or workspace claims the child thread, or the header declares a delegated child without a usable distinct child and spawning thread. Nothing was ingested; the observation keeps its bounded gap (#841). |
@@ -1554,7 +1554,7 @@ ambiguous selector. A busy recovery reservation, candidate lock, or changed reco
 Busy host lifecycle changes are durable local work. State schema `/11` adds bounded pending
 session-lifecycle intents, and a READY or hook drain reconciles them under the workspace and
 session reservations before routing their rows; busy mapping writes use an atomic per-session
-handoff. Upgrade this state quiescently: stop the older Yoetz service and Codex hooks, install
+handoff. Upgrade this state quiescently: stop the older FinishUP service and Codex hooks, install
 the new runtime, then restart the service and all Codex integrations before writing `/11` state.
 Mixed old and new writers are unsupported because a `/10` writer ignores the new pairing fields and
 can erase a deferred intent when it saves.
@@ -1572,7 +1572,7 @@ a foreign entry, or another intervening change stops the write. Noninteractive c
 ## 11. Security, privacy, and prohibited actions
 
 Codex is the v0.1 allowlisted first-party client for exact current-chat consent attestation.
-It should guide Yoetz setup, installation, and settings changes in normal conversation: explain
+It should guide FinishUP setup, installation, and settings changes in normal conversation: explain
 each consequential choice, recommend one outcome with its trade-off, and preserve the user's
 explicit selection. When the user explicitly wants AI-powered review, recommend Expanded first
 for review depth and explain Assisted as the lower-disclosure AI-powered option. Do not silently
@@ -1587,7 +1587,7 @@ no-mutation failure; never prepare a replacement silently. Strict MCP routing, h
 provider readiness, physical dispatch, and receipts remain separate facts.
 
 For `vault_initialize` and `vault_passphrase_rotate`, it relays only the prepared pending ID,
-operation, danger digest, target digest, decision, and warning acknowledgement. Yoetz generates,
+operation, danger digest, target digest, decision, and warning acknowledgement. FinishUP generates,
 loads, stages, and submits vault secrets inside the local helper; Codex must never request or
 receive them. An ambiguous rotation preserves its staged entry for service-restart reconciliation.
 
@@ -1595,9 +1595,9 @@ First-run start continuation (issue #512): on a never-initialized install, the a
 `start` returns non-retryable `VAULT_LOCKED` carrying
 `safe_details.continuation: vault_initialization_required` with exact-literal `prepare_command`,
 `review_command`, `authorize_command`, the pending TTL, and `replay_request_id`. The Codex flow
-is: run `yoetz consent prepare vault_initialize`, show the returned danger text and digests in
+is: run `finishup consent prepare vault_initialize`, show the returned danger text and digests in
 chat, wait for the user's explicit current-chat approve or deny, relay exactly that decision via
-`yoetz consent authorize` with `--warning-acknowledged` (agent attestation is not independent
+`finishup consent authorize` with `--warning-acknowledged` (agent attestation is not independent
 proof), then replay the exact original `start` request ID and body once. Denial, expiry, and
 every ceremony failure remain their distinct bounded outcomes; a hard-locked initialized vault
 never carries this continuation and keeps the unlock/recovery paths.
@@ -1614,15 +1614,15 @@ state, source/installed/preview digests, the bounded reason token, and file-stat
 For a disposable-worktree integration run, use the [Codex dogfood parity runbook](codex-dogfood.md).
 The ordinary setup/AI-powered review checks above are necessary but do not prove exact-worktree
 activation, consent, host delivery, observation, rollback, or normal-target isolation. In
-particular, an isolated Codex home (`CODEX_TESTING_HOME`) does not isolate Yoetz: without
-`YOETZ_ISOLATED_ROOT` (ADR-026) exported to every tested process, the run's Yoetz clients and any
+particular, an isolated Codex home (`CODEX_TESTING_HOME`) does not isolate FinishUP: without
+`FINISHUP_ISOLATED_ROOT` (ADR-026) exported to every tested process, the run's FinishUP clients and any
 service they spawn resolve the normal singleton, state directory, and storage. Prove the mode with
-`yoetz service isolation --json` before launch; the parity gate's `service_isolation` facet fails
+`finishup service isolation --json` before launch; the parity gate's `service_isolation` facet fails
 closed on shared, ambient, or unknown identity.
 
-For the Yoetz-owned external registration, issue #561 makes this propagation a supported product
+For the FinishUP-owned external registration, issue #561 makes this propagation a supported product
 contract: an isolated preview displays and digest-binds the exact root, apply uses Codex's native
-`--env YOETZ_ISOLATED_ROOT=<exact-root>`, and status must report
+`--env FINISHUP_ISOLATED_ROOT=<exact-root>`, and status must report
 `isolation_binding=isolated_exact`. Ambient registration stores no environment. A missing or
 different known root on a bare registration requires re-registration; arbitrary environment keys, inherited-variable
 declarations, and malformed roots classify the same-name entry as foreign and are never replaced.
@@ -1632,18 +1632,18 @@ evidence.
 
 A pinned test instance (ADR-028, issue #604) is the second guard for the registered child: when the
 registration's `command` is the absolute launcher of a runtime created with
-`yoetz instance create --bind-runtime`, the child resolves that instance's root even if the `env`
+`finishup instance create --bind-runtime`, the child resolves that instance's root even if the `env`
 block is lost, and a different root in the environment is refused as `isolation_root_conflict`
 rather than obeyed. The `--env` binding, `isolation_binding=isolated_exact`, and the
 `mcp_child_isolation` facet remain required and unchanged. The everyday Codex registration must
-name the everyday launcher by absolute path: a bare `command = "yoetz"` resolves through `PATH`,
+name the everyday launcher by absolute path: a bare `command = "finishup"` resolves through `PATH`,
 and a test runtime earlier on `PATH` then reaches the everyday endpoint, answers
-`service_incompatible`, and its `yoetz service restart` advice supersedes the everyday service —
+`service_incompatible`, and its `finishup service restart` advice supersedes the everyday service —
 the failure recorded on issue #604. See [`test-instances.md`](test-instances.md).
 
 Absolute external launchers are managed by the same preview/install/status/remove flow (#654).
 Run that flow from the installation you intend Codex to use. Preview selects its console script
-from that interpreter's scripts directory and verifies its bytes against the installed Yoetz
+from that interpreter's scripts directory and verifies its bytes against the installed FinishUP
 RECORD; status recognizes only that exact absolute script, with recognized serving arguments
 and the reviewed root. A pinned instance must also have a matching pin and instance identity,
 current runtime provenance, and an unexpired lifetime. A basename, an executable bit, a different
@@ -1663,17 +1663,17 @@ existing native-carrier identity rules; this repair changes only Codex external 
 
 ## Subscription evaluator is a separate Codex role
 
-Codex may be both the host carrying Yoetz and the selected external AI-powered evaluator, but those
+Codex may be both the host carrying FinishUP and the selected external AI-powered evaluator, but those
 are independent cells. Host skill/plugin/MCP activation grants no ChatGPT evaluator login or
 privacy authority. Configure the evaluator only through
-`yoetz provider codex-subscription setup`; it binds a separate owner-private `CODEX_HOME` and exact
+`finishup provider codex-subscription setup`; it binds a separate owner-private `CODEX_HOME` and exact
 native `0.157.1` app-server cell. Never reuse the host's ambient home, environment, session, tools,
 instructions, or repository cwd for the evaluator.
 
-The evaluator binds Yoetz's own verified copy of that admitted release (issue #855), never the host
+The evaluator binds FinishUP's own verified copy of that admitted release (issue #855), never the host
 Codex installation. Updating the host Codex therefore changes neither the evaluator nor its
 binding. A binding stranded by an earlier host update or a capability-identity change is repaired
-with `yoetz provider codex-subscription repair`, which reuses the dedicated home's sign-in. Decision
+with `finishup provider codex-subscription repair`, which reuses the dedicated home's sign-in. Decision
 for this host: supported through the shared provider surfaces, with no Codex-specific step. Native
 Codex acceptance of a post-repair check is pending; see the
 [subscription evaluator runbook](codex-subscription-evaluator.md#evaluator-runtime-retention-and-repair).
@@ -1723,7 +1723,7 @@ attempt. Select a smaller claim/obligation scope for a new check. Shorter prose 
 structural capacity.
 
 For `coordinator_failure`, use the check's original request ID with
-`yoetz service diagnostics --request-id req_…` to read bounded failure stages. Dispatch entry can
+`finishup service diagnostics --request-id req_…` to read bounded failure stages. Dispatch entry can
 have an unknown outcome, even with null provenance. A missing record is a diagnostic coverage gap,
 not proof of non-dispatch. Preserve the original request/attempt identity and existing retry rules.
 These shared-path regressions do not certify a fresh installed native-host session.
@@ -1756,9 +1756,9 @@ explicit selection. It inventories one pinned status frontier or prepares one ex
 never appends, judges work, or claims completion. The complete response frame is bounded: an
 draft phases echo only the rows the selection names, and an oversized inventory returns
 `LIMIT_EXCEEDED` (`closure_result_too_large`) without partial data. When the declaration is absent,
-use `yoetz closure-prepare --session-id <returned-session> --writer-id <returned-writer>` with
+use `finishup closure-prepare --session-id <returned-session> --writer-id <returned-writer>` with
 `--output <file>` outside the repository. This shared route is supported through the local bridge
-on macOS, Linux, and WSL 2; native Windows has no supported Yoetz MCP route. MCP discovery,
+on macOS, Linux, and WSL 2; native Windows has no supported FinishUP MCP route. MCP discovery,
 activation, and native host dogfood remain separate evidence.
 
 ### Observation limitation findings and closure rechecks (issue #911)
@@ -1772,7 +1772,7 @@ incomplete or stale" advisory, including rows written by earlier builds) never c
 `unanswered_finding_count` or `findings_unanswered`, and acknowledging it once is optional and never
 supersedes a recorded check. It stays in `status view=findings` and on the receipt as a disclosed
 limitation and does not become resolvable. `refresh_observation` is an operator continuation: it
-remains in structured observation advice and `yoetz observe status` for real recoverable causes
+remains in structured observation advice and `finishup observe status` for real recoverable causes
 such as source lag, a stale cursor, a drain backlog, service unavailability, or a locked vault,
 but is never copied into Codex hook context. Hook context is reserved for work advice. The shared
 guidance and this host's skill give the closure order: answer unanswered findings before the final
@@ -1787,23 +1787,23 @@ and WSL 2 is not yet recorded. That gap is owned by issue #911.
 ### What follows the last check on Codex (tb4n3 RC-6, #1029)
 
 The records that follow a deterministic arm's final check are the `check` call's own hook
-observation (its post lands after `check_recorded`; the nested hook names `mcp__yoetz__check`)
+observation (its post lands after `check_recorded`; the nested hook names `mcp__finishup__check`)
 and the rollout's stream bookkeeping (`Opaque observation kind=event_msg|response_item|
 token_usage_record`, `Observed completion signal kind=...`), because #564 keeps a successful
 `status`, `receipt` or `read_guidance` post local-only. `kernel/later_material.later_material_class`
 reads them as `yoetz_own_call` and `no_tool_activity`, so `check_current_as_of_earlier_frontier`
-no longer appears for a check followed only by Yoetz calls and a receipt. The rollout's
-`McpToolCall` item keeps its `server` and is named as its hook names it (`mcp__yoetz__status`,
+no longer appears for a check followed only by FinishUP calls and a receipt. The rollout's
+`McpToolCall` item keeps its `server` and is named as its hook names it (`mcp__finishup__status`,
 #1038); an item without a server keeps its bare tool name (`status`), which is still read as
-Yoetz's own tool. An item whose server cannot be spelled that way (the server is not a plain
+FinishUP's own tool. An item whose server cannot be spelled that way (the server is not a plain
 token, for example it contains `__` or starts with `_` or `-`, or the scoped name is too long)
-names no tool when its tool has a Yoetz name, so it is never read as Yoetz's; any other tool name
+names no tool when its tool has a FinishUP name, so it is never read as FinishUP's; any other tool name
 under it is kept. A nested `apply_patch`, an `exec_command` that is
 not in the hook's `exploration` runner class and an unpaired stream output with no tool identity
 stay `other` and keep the
 disclosure; a `wait` poll (it only returns the output of a cell started earlier) is
 `no_tool_activity`; a nested deliverable or workspace `apply_patch` supersedes the check. A patch
-whose every path is `yoetz_receipt.*`, a Yoetz tree or scratch is `non_counting_write`. Tests:
+whose every path is `finishup_receipt.*`, a FinishUP tree or scratch is `non_counting_write`. Tests:
 `tests/unit/application/test_tb4n3_later_material_host_shapes.py` drives real Codex hook payloads
 through the ingress and the materializer.
 
@@ -1811,7 +1811,7 @@ Codex 0.159.3 names every response-item row itself (`custom_tool_call` `id: ctc_
 `id: ctco_...`; `fc_`/`fco_` for function calls) beside the `call_id` the call and its output share.
 The reader paired on `id`, so no code-mode cell output ever joined its call: it reached the ledger
 as an unpaired result with no tool identity (`unclassified_observed_evidence`, read as `other`),
-the #917 hold never applied, and in tb4n4's deterministic arm the agent's own `mcp__yoetz__*`
+the #917 hold never applied, and in tb4n4's deterministic arm the agent's own `mcp__finishup__*`
 cells kept `check_current_as_of_earlier_frontier` on 35 of 60 final receipts (#1038). A call and
 its output now pair on `call_id` (`id` only as a fallback), which also folds the stream copy of a
 hooked direct `function_call` into the hook's one action again instead of a second action and an
@@ -1824,19 +1824,19 @@ their own `exec` action, as #917 decided, and stay `other`. Whether such itemles
 the check in the tb4n4 exports, and so still bound some receipts, is for the replay of those
 exports to show.
 
-### Gaps Yoetz and the host made on every attempt (#1041)
+### Gaps FinishUP and the host made on every attempt (#1041)
 
-tb4n4's deterministic arm carried, on all 60 attempts, gaps that came from Yoetz or the host rather
+tb4n4's deterministic arm carried, on all 60 attempts, gaps that came from FinishUP or the host rather
 than the agent's work. Their dispositions:
 
 - **Held rollout tail.** A final line Codex has not finished writing (no newline yet, whether or
   not it already parses) is held and re-read on the next reconcile; the stream reader no longer
   reports it as `truncated_payload`. Lines over the 1 MiB bound and unreadable chunks still are.
-  Before this change the gap appeared only in the reconcile result (`yoetz observe reconcile
+  Before this change the gap appeared only in the reconcile result (`finishup observe reconcile
   --json`), not in task coverage.
 - **Shell `apply_patch <<EOF`.** A pre-only attempt closed by the observed `FileChange`; see
   [Reviewable native edits](#reviewable-native-edits).
-- **`HookPrompt`.** A Stop hook that continues the turn (Yoetz's closure gate) makes Codex 0.159.3
+- **`HookPrompt`.** A Stop hook that continues the turn (FinishUP's closure gate) makes Codex 0.159.3
   write an `event_msg.item_completed` item of type `HookPrompt`. The compatibility profile admits it
   as bookkeeping (it pairs with nothing and is read as `no_tool_activity` after a check), so it is
   no longer an `unsupported_event` gap. No exact profile admits it.
@@ -1845,7 +1845,7 @@ than the agent's work. Their dispositions:
   [Closure readiness and standing limitations](#closure-readiness-and-standing-limitations-913).
 - **Hook latency** (`drain_budget_exhausted`, `hook_followup_deferred`, `drain_connect_timeout`):
   not lossy, and unchanged. Its material effect was rows landing after a check; with cells paired on
-  `call_id` and Yoetz-only cells kept local whatever the hook timing (#1038), it is to be measured
+  `call_id` and FinishUP-only cells kept local whatever the hook timing (#1038), it is to be measured
   again on the next benchmark before any budget in `observe_hooks` is tuned.
 
 Per host: Claude Code and Cursor have no rollout stream, no code-mode cell and no intercepted
@@ -1854,8 +1854,8 @@ service-side and the same on every host.
 
 ### Inspection check on Codex (#1048)
 
-`check` with `"mode": "inspect"` is a read inside Yoetz: it records nothing, mints no finding, runs
-no review and needs no Yoetz disclosure decision, so a lost answer is answered by asking again with
+`check` with `"mode": "inspect"` is a read inside FinishUP: it records nothing, mints no finding, runs
+no review and needs no FinishUP disclosure decision, so a lost answer is answered by asking again with
 a fresh `request_id`. One call returns what is left to close (the `status` readiness split, then
 every unresolved obligation and finding with what it lacks and whose move it is), the
 hook-observed actions since the last check, and whether each obligation's resolution evidence links
@@ -1863,7 +1863,7 @@ to its declared deliverables or requested commands (`evidence_off_declared_items
 not). Use it instead of a series of `status` reads where Codex admits `check`; no status read or
 `dry_run` is required before `publish_work`. The startup read is the operating card
 (`agent-instructions.md`); the larger pages are read on demand. ADR-047. The MCP `check` tool
-(including code mode, where an inspection takes the 30,000 ms `status` deadline) and `yoetz check`
+(including code mode, where an inspection takes the 30,000 ms `status` deadline) and `finishup check`
 carry the mode.
 `apply_patch` edits are listed by write class, never by path.
 
@@ -1873,11 +1873,11 @@ policy route), so Codex gates it exactly as it gates any `check`
 ([Auto review and host admission](#auto-review-and-host-admission)). On the policy route it needs
 approval under `approval_mode = auto`, the guardian decides it under
 `approvals_reviewer = "auto_review"`, and under approval policy `never` Codex refuses it
-(`MCP tool call requires approval, but approval policy is never`) before Yoetz runs, unless the
+(`MCP tool call requires approval, but approval policy is never`) before FinishUP runs, unless the
 trusted project's admission (`approval_mode = "approve"` for `check`) applies. On the strict route
 (`openWorldHint: false`) Codex does not ask. `status` (`readOnlyHint: true`) needs no approval
 under that rule. Decision: supported behind the `check` gate. A held or refused inspection is a
-host hold with nothing pending in Yoetz and no review to protect, so the agent reads `status`
+host hold with nothing pending in FinishUP and no review to protect, so the agent reads `status`
 (readiness, `view=obligations`) instead and continues; the review-hold rules do not apply to it
 (guidance `review.md`). Capability gap, owner issue #1048: admission needs a policy route and a
 repository grant that permits external review, so on a policy route without that grant an
@@ -2011,7 +2011,7 @@ same-cause attempts; owner-action conditions such as a forbidden method or incom
 protocol stay pending until corrected. Retrying does not establish whether an earlier request
 committed; exact source/cursor identity supplies replay deduplication.
 
-`yoetz observe status --workspace . --json` includes `hook_diagnostics.drain_failures`: up to
+`finishup observe status --workspace . --json` includes `hook_diagnostics.drain_failures`: up to
 32 retained causal records with source/session commitments, generation and position, original
 control reason and retryability, adapter stage, final disposition and correlation ID when supplied.
 A `control` stage does not identify which side of the socket failed; `request_encode` and
@@ -2034,7 +2034,7 @@ synchronous spool writer takes no store lock; each wait
 is still capped at two seconds. A pass whose capture cannot take the lock in time still exits
 with the host's ordinary fail-open output, does not retain that input, and records a
 `store_lock_timeout` diagnostic naming the holder's role, store phase and hold time (listed
-under `store_lock_events` in `yoetz observe status`); holds of one second or more are recorded
+under `store_lock_events` in `finishup observe status`); holds of one second or more are recorded
 as `store_lock_long_hold`. Neither is reported as `observe` or `workspace_unconsented`.
 
 An unexpected exception in a pass is recorded as `observe_<exception class>`
@@ -2077,8 +2077,8 @@ deterministic tb4n3 runs overflowed it). The verdict, the `overall next` instruc
 status/reason and the frontier with its head digest are reserved first, so a closing check always
 reads. A text that cannot be built never fails a committed call: the clause is omitted and named
 (`summary_render_failed:<builder>.<clause>`), a service diagnostic records it, and the structured
-result is the call's result. Hook advice over Yoetz's own 2,000-character cap ends with a cut
-marker (no Codex document states a hook limit; the cap is Yoetz's own). No Codex-specific behavior is
+result is the call's result. Hook advice over FinishUP's own 2,000-character cap ends with a cut
+marker (no Codex document states a hook limit; the cap is FinishUP's own). No Codex-specific behavior is
 configured; it is the same on macOS, Linux and WSL 2.
 
 The observed Codex failure this covers: a `start` with `actor_id` `codex:/root` was rejected as
@@ -2112,7 +2112,7 @@ inventing session or writer IDs. `start_pending_same_identity` instead means a l
 wait up to 60 seconds before the one exact replay. If still busy or pending, retain the original
 request and report the unresolved start. These continuations do not authorize a new task.
 
-**CLI JSON (issue #741).** When an agent in this host runs `yoetz` in a shell with `--json`, a
+**CLI JSON (issue #741).** When an agent in this host runs `finishup` in a shell with `--json`, a
 CLI-owned JSON error body carries a `recovery` object resolved from the same registry. A workflow
 command (`start`, `publish-work`, `check`, `respond`, `status`, `receipt`) also prints JSON when
 stdout is not a TTY; its failure keeps the exact wire body on stdout and writes the directive
@@ -2122,7 +2122,7 @@ configured.
 ## Post-compaction recap (issue #1027, ADR-044)
 
 Decision for Codex: **supported.** When Codex starts the session again after a context compaction
-(`SessionStart`, `source: compact`), the `yoetz hooks session-start` re-ground hook (registered by the
+(`SessionStart`, `source: compact`), the `finishup hooks session-start` re-ground hook (registered by the
 plugin for `resume|compact`, 15 s timeout) reads the mapped session's compact `status`, then up to three
 bounded (1.5 s each, started within the hook's first four seconds) `obligations` pages for the declared
 deliverables of the current plan, and appends a receipt-style recap
@@ -2209,22 +2209,22 @@ their availability in the MCP and CLI check result; recheck only after supplying
 Each Codex tool call is one ledger action. An individually delivered `PreToolUse` becomes a
 pending action keyed on the call's `tool_use_id`; its `PostToolUse` links the result and captured
 output to that same action instead of recording a second one. A post whose pre never reached the
-ledger (a Yoetz `start`/`publish_work`/`check`/`respond` call, whose pre stays local, or a lost pre)
+ledger (a FinishUP `start`/`publish_work`/`check`/`respond` call, whose pre stays local, or a lost pre)
 still records its own action. In code mode the outer `exec` cell is decided per cell: its call is
 always kept in the local store, and its output stays local only when one of this session's tool
-hooks (`PreToolUse`/`PostToolUse`) was ingested after Yoetz read the call and its own triggered
+hooks (`PreToolUse`/`PostToolUse`) was ingested after FinishUP read the call and its own triggered
 reconcile completed before the output was read, so the hook fired while the cell ran and its nested
 `exec_command`, `apply_patch` and MCP calls are the ledger record. A hook of the next cell never
-counts for the previous one. This holds when `yoetz observe reconcile` reads the call before its
+counts for the previous one. This holds when `finishup observe reconcile` reads the call before its
 nested hook, and for a long-idle session the bounded hook map forgot. A cell's output also stays
 local when every nested tool item the rollout wrote between the cell's call and its output was one
-of Yoetz's own MCP calls (`McpToolCall` with the Yoetz server, or with no server and a Yoetz tool
-name, read as the later-material rule reads it; #1038): such a cell is Yoetz's own
+of FinishUP's own MCP calls (`McpToolCall` with the FinishUP server, or with no server and a FinishUP tool
+name, read as the later-material rule reads it; #1038): such a cell is FinishUP's own
 call, recorded by those calls, whatever the hook timing (the hooks landing after the whole cell
-was read, as tb4n4's hook latency showed, no longer leaves it a second `exec` action). A Yoetz
+was read, as tb4n4's hook latency showed, no longer leaves it a second `exec` action). A FinishUP
 item counts only while its cell is the session's only open cell; any other nested item, a rollout
-row the reader could not interpret, or a Yoetz item read while several cells are open removes the
-mark from every open cell, so no cell borrows another's Yoetz calls. Limit: after parallel cells,
+row the reader could not interpret, or a FinishUP item read while several cells are open removes the
+mark from every open cell, so no cell borrows another's FinishUP calls. Limit: after parallel cells,
 or in a session with a cell interrupted before its output (it stays open), later cells fall back to
 the hook rule alone. A cell whose tools fire
 no hook and leave no rollout item (only `tools.update_plan`, for example) delivers its output and is
@@ -2246,7 +2246,7 @@ receipt for the rest of the session, including after resume and restart. It no l
 "Observation coverage is incomplete or stale" advisory. The advisory names its cause as
 `cause:<gap>` and clears when source lag, a stale cursor, drain backlog, an unavailable service or
 a locked vault recovers. Unsupported rollout records (`unsupported_event`, `unsupported_format`)
-still raise it and do not clear in session; that classification is a follow-up. Instead the agent sees one "Yoetz notice (no response
+still raise it and do not clear in session; that classification is a follow-up. Instead the agent sees one "FinishUP notice (no response
 needed)" in hook `PostToolUse` context the first time a new source/session/generation scope has an
 orphan. It is not a finding: do not respond to it, recheck for it, or wait for it to clear. The
 same applies on macOS, Linux and Windows through WSL 2; native-host dogfood evidence for this
@@ -2311,7 +2311,7 @@ disable continue to stop admission through the existing shared controls.
 ### Check-time change
 
 When the review recipe selects diff excerpts (`assisted`, `expanded`, or a custom recipe that keeps
-the `diff` kind), each check carries a **check-time change** (ADR-031): the Yoetz service reads the
+the `diff` kind), each check carries a **check-time change** (ADR-031): the FinishUP service reads the
 task's repository once, when the check runs, and puts the result ahead of every other excerpt in the
 review packet. It covers committed and uncommitted changes to tracked files since the commit
 recorded when the task started, plus untracked files Git does not ignore (`.gitignore`,
@@ -2329,7 +2329,7 @@ shown. Script edits (`sed -i`, Python rewrites, `git apply <file>`), commits and
 fired are therefore reviewed even though no capture exists for them.
 
 The directory is the one the check's own connection named: the Codex MCP bridge's working directory,
-or the working directory of `yoetz check`. The service reads that directory only when it resolves to
+or the working directory of `finishup check`. The service reads that directory only when it resolves to
 the task's own repository, and never runs a shell, hook, filter, external diff, credential helper or
 network transport. The task-start commit is recorded when `start` creates the task. A task created
 before this version, or from a connection that named no workspace, has none; its first check pins
@@ -2354,13 +2354,13 @@ changing through three attempts to read it. A changed file, tracked or untracked
 has a second name is listed but neither its content nor its line counts are shown. Object files a
 local `git clone` hard-linked are read normally, because every Git object a shown diff uses must
 match its own name. Beside `check_time_change_unavailable` the check records a reason code such as
-`check_time_change_unavailable_changed_during_capture`, and the check result, `yoetz status` and the
+`check_time_change_unavailable_changed_during_capture`, and the check result, `finishup status` and the
 receipt each state that reason in one plain sentence. A later review clears an AI-powered finding
 despite these limits only when it saw each file the raising review saw, whole or through an
 identical view; for a file shown in part each check records a keyed commitment to where its
 redactions and hunks lay, never its content, so a moved redaction or hunk keeps the finding open. A
 replayed or resumed check reviews the change captured when it first ran, not the tree as it is
-later. `yoetz service diagnostics` counts the parts that reached the packet as
+later. `finishup service diagnostics` counts the parts that reached the packet as
 `semantic_check_change_parts_selected`.
 
 ### Caller digests and capture binding (#912)
@@ -2368,7 +2368,7 @@ later. `yoetz service diagnostics` counts the parts that reached the packet as
 A `content_digest` the agent publishes through ordinary publication is recorded as `caller_asserted`
 with `digest_only` (or `withheld`) availability. On this host, as on every host, it raises no local
 finding; the receipt's limitations name once, with a count, the cited evidence items whose
-caller-asserted digests Yoetz did not verify, keeping digest-only items (the bytes were not
+caller-asserted digests FinishUP did not verify, keeping digest-only items (the bytes were not
 retained) apart from withheld items (the publisher recorded the bytes as withheld). The
 service-side binding that would upgrade a caller digest matching captured bytes to verified
 provenance (#912 part (b)) is not implemented yet, so
@@ -2387,7 +2387,7 @@ is issue #912.
 Background review is on by default wherever AI-powered review is configured
 (`[verification] semantic` `required` or `optional`); an explicit `[observation]
 semantic_advice_enabled` always wins, and `false` turns it off (issue #888, maintainer decision
-2026-09-30). `yoetz provider status` (`background_advice`), `yoetz setup status --next`
+2026-09-30). `finishup provider status` (`background_advice`), `finishup setup status --next`
 (`facts.background_advice`) and the terminal interface status view show the effective state and
 its closed reason. When on,
 background review uses the shared service's routine budget, condition deduplication and durable
@@ -2415,8 +2415,8 @@ rendering is unchanged.
 The shared MCP bridge allows 50 seconds for `respond` and `receipt` by default, below the
 common 60-second host MCP tool limit; `start`, `publish_work` and `status` keep 30 seconds and
 `check` keeps 300 seconds (a `check` with `mode: inspect` is a read and takes the `status`
-deadline). Set `YOETZ_MCP_DEADLINE_MS_<TOOL>` (one tool) or
-`YOETZ_MCP_DEADLINE_MS` (every tool except `check`; an inspection follows the `status` variables) in
+deadline). Set `FINISHUP_MCP_DEADLINE_MS_<TOOL>` (one tool) or
+`FINISHUP_MCP_DEADLINE_MS` (every tool except `check`; an inspection follows the `status` variables) in
 the MCP server environment to change them;
 values are milliseconds, clamped to 1,000-900,000. Keep them below the host's own tool timeout.
 A timeout may follow a committed write. For `publish_work`, `respond` and `receipt` the bridge
@@ -2433,7 +2433,7 @@ This behavior is identical on macOS, Linux and Windows via WSL 2. CLI callers ma
 Decision for Codex: supported, service-side, identical on every host. `credential_heuristic` is a
 field of the current repository's privacy grant that the service applies only to external
 AI-reviewer egress; agent-context projection and the local model keep the filter. Codex needs no
-host-specific step and gets no write path: `yoetz privacy credential-heuristic disable` is a
+host-specific step and gets no write path: `finishup privacy credential-heuristic disable` is a
 widening that applies only after the trusted-terminal decision (walking the grant-creation
 ceremony when the repository has no grant), `enable` is an immediate per-repository tightening,
 and `--machine-default` moves only the default for new grants. MCP `status` carries
@@ -2443,14 +2443,14 @@ external receipt's `secret_scan.credential_heuristic`). No Codex capability gap.
 
 ## Privacy receipts listing (issue #921)
 
-`yoetz privacy receipts list` and `get` are host-agnostic: every host's sessions write receipts
+`finishup privacy receipts list` and `get` are host-agnostic: every host's sessions write receipts
 into the same local audit, and the operator reads them through the same CLI and control method.
 Pages over 64 KiB now cross the local control socket in bounded chunks, an unreadable stored
 receipt is skipped, counted and named (exit 40) instead of failing the page, and a store-side
 failure is `privacy_audit_unreadable` rather than `invalid_request`. In-process tests drive the
 real service, socket and client. Open evidence gap, owned by #921: a dogfood run on Codex
 (macOS, Linux and WSL 2) that completes an AI-powered review session and then shows that
-session's `network_egress` receipts in `yoetz privacy receipts list`.
+session's `network_egress` receipts in `finishup privacy receipts list`.
 
 ## Status page cost (issue #916)
 
@@ -2466,10 +2466,10 @@ Decision for Codex: nothing is host-specific, and the behaviour is identical on 
 The excerpt count is a privacy-policy and review-packet limit. It is enforced by the service, not by
 hook or MCP adapters. From privacy policy 1.2.0 the Expanded recipe allows up to 64 excerpts within
 its unchanged byte budget (16 KiB each, 128 KiB in total). An Expanded policy approved earlier keeps
-16 until the owner re-approves through `yoetz --privacy`. A packet above the approved count or bytes
+16 until the owner re-approves through `finishup --privacy`. A packet above the approved count or bytes
 is refused as `policy_denied`, never trimmed. A case that would exceed the per-case channel ceiling
 is planned with fewer excerpts and discloses `content_unselected` instead of being refused.
-`yoetz privacy show` shows the current limits beside
+`finishup privacy show` shows the current limits beside
 the proposed ones. To go back to 16, choose Assisted or propose the earlier Expanded limits; that is
 a narrowing, so it needs no new approval. The selection order within the budget (issue #907 Phase
 1a) is recorded separately.
@@ -2478,7 +2478,7 @@ a narrowing, so it needs no new approval. The selection order within the budget 
 
 Decision for Codex: supported through the agent-supplied field, identical on every host and OS.
 The agent passes the user's request verbatim as `start.task_statement` (MCP `start` or
-`yoetz start --task-statement-file`). To revise it, the agent calls `start` again with
+`finishup start --task-statement-file`). To revise it, the agent calls `start` again with
 `mode=attach`, the `session_id` it holds, a fresh `request_id` and the whole amended request; a CLI
 publisher may instead carry it in a `plan_revised` 1.1.0 payload. A resume that does not change the
 request omits the field, and the recorded statement stays current. The review packet carries it as
@@ -2490,7 +2490,7 @@ does not allow `task_description`, the check and receipt
 carry `task_statement_unavailable` with `task_statement_not_authorized`; with neither a statement
 nor a readable title they carry `task_statement_unavailable` with `task_statement_not_supplied`.
 
-Codex renders a `UserPromptSubmit` hook, but whether `codex exec` fires it for the initial prompt is **unverified** in this repository (not exercised by the dogfood or capability suites). Yoetz does not read captured prompt text for review in any case; see below.
+Codex renders a `UserPromptSubmit` hook, but whether `codex exec` fires it for the initial prompt is **unverified** in this repository (not exercised by the dogfood or capability suites). FinishUP does not read captured prompt text for review in any case; see below.
 
 Host-captured prompts (`host_captured_user_prompt`) are not used on any host in this version:
 captured prompt text never enters the packet, and the Expanded-only, explicit prompt-capture
@@ -2514,7 +2514,7 @@ other hosts. The Stop hook and the MCP `respond` tool take the shared path; a Co
   repair work. `kernel/limitation.limitation_standing` reads it; `finding_blocks_receipt` is false
   for it. The agent's answer decides what it means (owner decision 2026-10-12, ADR-040 and ADR-046
   amendments): one reasoned `respond` `acknowledged` (or `self_verified`) or a
-  `yoetz-verification-limit:<obligation id>` decision says the requirement may be met but cannot be
+  `finishup-verification-limit:<obligation id>` decision says the requirement may be met but cannot be
   verified here, and settles it as a disclosed verification limit with no recorded resolution
   attempt required (never clean, at best `insufficient_coverage`); `acknowledged_not_done` says the
   requirement is NOT met and keeps `unresolved_findings_remain` like any unmet requirement. When an

@@ -9,15 +9,15 @@ import pytest
 from pydantic import ValidationError
 
 from builders.replay import replay_records
-from yoetz.application.publish_work import (
+from finishup.application.publish_work import (
     Application,
     _draft_pointer,  # pyright: ignore[reportPrivateUsage]
     prepare_publication,
 )
-from yoetz.domain.events import EventPayload, encode_payload
-from yoetz.protocol.coverage import PublicationChannel
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import PublishWorkRequestModel
+from finishup.domain.events import EventPayload, encode_payload
+from finishup.protocol.coverage import PublicationChannel
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import PublishWorkRequestModel
 
 _ORDINARY = frozenset(
     {

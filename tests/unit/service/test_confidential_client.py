@@ -10,14 +10,14 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.control.unix_socket import AuthenticatedUnixStream
-from yoetz.service import confidential_protocol
-from yoetz.service.confidential_client import (
+from finishup.adapters.control.unix_socket import AuthenticatedUnixStream
+from finishup.service import confidential_protocol
+from finishup.service.confidential_client import (
     ConfidentialClientError,
     ConfidentialResultUnconfirmed,
     HumanControlClient,
 )
-from yoetz.service.confidential_protocol import (
+from finishup.service.confidential_protocol import (
     ClientOpenEnvelope,
     ConfidentialSecretPurpose,
     EmptyVaultTarget,
@@ -243,7 +243,7 @@ async def test_yzs_response_bytes_fail_closed_and_source_is_overwritten() -> Non
 def test_confidential_clients_have_no_raw_endpoint_or_secret_constructor() -> None:
     with pytest.raises(TypeError, match="constructor_private"):
         getattr(
-            __import__("yoetz.service.confidential_client", fromlist=["x"]),
+            __import__("finishup.service.confidential_client", fromlist=["x"]),
             "ConfidentialSecretClient",
         )(lambda: None, object(), _token=None)
     assert not hasattr(HumanControlClient, "connect_secret")
@@ -457,7 +457,7 @@ class _RefusingHumanStream(_HumanStream):
 @pytest.mark.anyio
 @pytest.mark.parametrize("code", ["kind_forbidden", "state_forbidden", "ceremony_unsupported"])
 async def test_a_refusal_at_open_reaches_the_caller_as_its_bounded_reason(code: str) -> None:
-    """tb4n1 A8: `yoetz service idle-relock disabled` under the production daemon printed
+    """tb4n1 A8: `finishup service idle-relock disabled` under the production daemon printed
     "service_unavailable: the confidential ceremony could not be completed" although the
     daemon answered kind_forbidden."""
 

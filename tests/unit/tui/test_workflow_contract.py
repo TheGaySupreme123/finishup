@@ -11,8 +11,8 @@ from typing import Any, cast
 import pytest
 
 from builders.readiness import with_checklist
-from yoetz.cli.render import render_human_status
-from yoetz.protocol.models import (
+from finishup.cli.render import render_human_status
+from finishup.protocol.models import (
     CheckAwaitingHumanModel,
     CheckRequestModel,
     ReceiptRequestModel,
@@ -22,8 +22,8 @@ from yoetz.protocol.models import (
     StatusResultModel,
     StatusSuccessModel,
 )
-from yoetz.tui.models import CheckMode
-from yoetz.tui.runtime import RuntimeError_, YoetzRuntime
+from finishup.tui.models import CheckMode
+from finishup.tui.runtime import FinishUpRuntime, RuntimeError_
 
 pytestmark = pytest.mark.anyio
 _SESSION = "ses_52000000-0000-4000-8000-000000000001"
@@ -175,11 +175,11 @@ async def test_exact_selector_and_returned_frontier_reach_check_and_receipt(
     client = _Client()
 
     @asynccontextmanager
-    async def connect(_runtime: YoetzRuntime) -> AsyncGenerator[_Client]:
+    async def connect(_runtime: FinishUpRuntime) -> AsyncGenerator[_Client]:
         yield client
 
-    monkeypatch.setattr(YoetzRuntime, "_client", connect)
-    runtime = YoetzRuntime(cwd=tmp_path)
+    monkeypatch.setattr(FinishUpRuntime, "_client", connect)
+    runtime = FinishUpRuntime(cwd=tmp_path)
     detail = await runtime.open_task(_SESSION)
     assert detail.item.subject_id == _TASK
     start = client.requests[0]
@@ -187,7 +187,7 @@ async def test_exact_selector_and_returned_frontier_reach_check_and_receipt(
     assert start.session_id == _SESSION
     assert start.mode == "attach"
     # The opened panel reads the service's closure checklist for the returned session (#913) and
-    # renders the same lines as `yoetz status`; nothing in it reads as verified.
+    # renders the same lines as `finishup status`; nothing in it reads as verified.
     readiness = client.requests[1]
     assert isinstance(readiness, StatusRequestModel)
     assert readiness.view == "compact"
@@ -217,11 +217,11 @@ async def test_lineage_view_reuses_cli_renderer_and_preserves_child_facts(
     client = _Client()
 
     @asynccontextmanager
-    async def connect(_runtime: YoetzRuntime) -> AsyncGenerator[_Client]:
+    async def connect(_runtime: FinishUpRuntime) -> AsyncGenerator[_Client]:
         yield client
 
-    monkeypatch.setattr(YoetzRuntime, "_client", connect)
-    runtime = YoetzRuntime(cwd=tmp_path)
+    monkeypatch.setattr(FinishUpRuntime, "_client", connect)
+    runtime = FinishUpRuntime(cwd=tmp_path)
     await runtime.open_task(_SESSION)
 
     rendered = await runtime.task_status(_SESSION, "lineage")
@@ -333,11 +333,11 @@ async def test_findings_view_shows_a_linked_duplicate_through_the_cli_renderer(
     client = _Client(status)
 
     @asynccontextmanager
-    async def connect(_runtime: YoetzRuntime) -> AsyncGenerator[_Client]:
+    async def connect(_runtime: FinishUpRuntime) -> AsyncGenerator[_Client]:
         yield client
 
-    monkeypatch.setattr(YoetzRuntime, "_client", connect)
-    runtime = YoetzRuntime(cwd=tmp_path)
+    monkeypatch.setattr(FinishUpRuntime, "_client", connect)
+    runtime = FinishUpRuntime(cwd=tmp_path)
     await runtime.open_task(_SESSION)
 
     rendered = await runtime.task_status(_SESSION, "findings")
@@ -353,11 +353,11 @@ async def test_findings_view_shows_each_items_final_state_through_the_cli_render
     client = _Client(_findings_status_result())
 
     @asynccontextmanager
-    async def connect(_runtime: YoetzRuntime) -> AsyncGenerator[_Client]:
+    async def connect(_runtime: FinishUpRuntime) -> AsyncGenerator[_Client]:
         yield client
 
-    monkeypatch.setattr(YoetzRuntime, "_client", connect)
-    runtime = YoetzRuntime(cwd=tmp_path)
+    monkeypatch.setattr(FinishUpRuntime, "_client", connect)
+    runtime = FinishUpRuntime(cwd=tmp_path)
     await runtime.open_task(_SESSION)
 
     rendered = await runtime.task_status(_SESSION, "findings")
@@ -386,7 +386,7 @@ async def test_findings_view_shows_each_items_final_state_through_the_cli_render
 
 
 async def test_title_cannot_select_another_task(tmp_path: Path) -> None:
-    runtime = YoetzRuntime(cwd=tmp_path)
+    runtime = FinishUpRuntime(cwd=tmp_path)
     with pytest.raises(RuntimeError_, match="session ID"):
         await runtime.open_task("An unrelated task title")
 
@@ -417,7 +417,7 @@ async def test_awaiting_human_replays_the_exact_request_even_if_picker_mode_chan
                         "semantic_reason": "human_approval_required",
                         "continuation": {
                             "kind": "repository_privacy_setup",
-                            "command": ["yoetz", "--privacy"],
+                            "command": ["finishup", "--privacy"],
                             "replay_request_id": request.request_id,
                             "instruction": "Complete the trusted review, then replay this request.",
                         },
@@ -445,15 +445,15 @@ async def test_awaiting_human_replays_the_exact_request_even_if_picker_mode_chan
     client = AwaitingClient()
 
     @asynccontextmanager
-    async def connect(_runtime: YoetzRuntime) -> AsyncGenerator[AwaitingClient]:
+    async def connect(_runtime: FinishUpRuntime) -> AsyncGenerator[AwaitingClient]:
         yield client
 
-    monkeypatch.setattr(YoetzRuntime, "_client", connect)
-    runtime = YoetzRuntime(cwd=tmp_path)
+    monkeypatch.setattr(FinishUpRuntime, "_client", connect)
+    runtime = FinishUpRuntime(cwd=tmp_path)
     await runtime.open_task(_SESSION)
     state, lines = await runtime.run_check(_SESSION, CheckMode.SEMANTIC_REQUIRED)
     assert state == "awaiting_human"
-    assert "yoetz --privacy" in "\n".join(lines)
+    assert "finishup --privacy" in "\n".join(lines)
     assert "No verdict yet" in "\n".join(lines)
     with pytest.raises(RuntimeError_, match="The task is busy"):
         await runtime.run_check(_SESSION, CheckMode.DETERMINISTIC_ONLY)

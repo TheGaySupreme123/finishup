@@ -137,7 +137,7 @@ def _tool_install(
         )
         result = _install(offline=True)
     assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
-    return bin_dir / "yoetz", env
+    return bin_dir / "finishup", env
 
 
 def _short_home(tag: str) -> Path:
@@ -178,17 +178,17 @@ def test_console_script_help_and_python_module_parity(
     root = tmp_path / "install"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
 
     console = subprocess.run(
-        [str(yoetz_exe), "--help"], capture_output=True, timeout=15, env=env, check=False
+        [str(finishup_exe), "--help"], capture_output=True, timeout=15, env=env, check=False
     )
     assert console.returncode == 0
 
-    tool_python = root / "tool" / "yoetz" / "bin" / "python"
+    tool_python = root / "tool" / "finishup" / "bin" / "python"
     assert tool_python.is_file()
     module_form = subprocess.run(
-        [str(tool_python), "-m", "yoetz", "--help"],
+        [str(tool_python), "-m", "finishup", "--help"],
         capture_output=True,
         timeout=15,
         env=env,
@@ -210,14 +210,18 @@ def test_version_json_reports_a_clean_installed_manifest(
     root = tmp_path / "install"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
 
     result = subprocess.run(
-        [str(yoetz_exe), "version", "--json"], capture_output=True, timeout=20, env=env, check=False
+        [str(finishup_exe), "version", "--json"],
+        capture_output=True,
+        timeout=20,
+        env=env,
+        check=False,
     )
     assert result.returncode == 0
     manifest = json.loads(result.stdout)
-    assert manifest["package_name"] == "yoetz"
+    assert manifest["package_name"] == "finishup"
     assert manifest["package_version"] == built_dist.wheel.name.split("-")[1]
     assert manifest["apsw_version"]["status"] == "present"
     assert manifest["sqlite_version"]["status"] == "present"
@@ -232,20 +236,20 @@ def test_no_ambient_config_or_global_module_contaminates_the_probe(
     root = tmp_path / "install"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
 
     # Explicitly starve the child of any PYTHONPATH/checkout leakage.
     scrubbed = {key: value for key, value in env.items() if key != "PYTHONPATH"}
     scrubbed["PYTHONDONTWRITEBYTECODE"] = "1"
     result = subprocess.run(
-        [str(yoetz_exe), "version", "--json"],
+        [str(finishup_exe), "version", "--json"],
         capture_output=True,
         timeout=20,
         env=scrubbed,
         check=False,
     )
     assert result.returncode == 0
-    assert not (home / ".yoetz").exists()
+    assert not (home / ".finishup").exists()
 
 
 def test_setup_run_loads_from_a_clean_installed_artifact(
@@ -254,11 +258,11 @@ def test_setup_run_loads_from_a_clean_installed_artifact(
     root = tmp_path / "install"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
 
     result = subprocess.run(
         [
-            str(yoetz_exe),
+            str(finishup_exe),
             "setup",
             "run",
             "--non-interactive",
@@ -333,7 +337,7 @@ def test_standard_install_and_portable_recovery_alias_both_include_argon2(
     home = root / "home"
     home.mkdir(parents=True)
     _, env = _tool_install(built_dist.directory, root, home, extras=("portable-recovery",))
-    tool_python = root / "tool" / "yoetz" / "bin" / "python"
+    tool_python = root / "tool" / "finishup" / "bin" / "python"
     probe = subprocess.run(
         [str(tool_python), "-c", "import argon2; print('argon2-present')"],
         capture_output=True,
@@ -348,7 +352,7 @@ def test_standard_install_and_portable_recovery_alias_both_include_argon2(
     base_home = base_root / "home"
     base_home.mkdir(parents=True)
     _, base_env = _tool_install(built_dist.directory, base_root, base_home)
-    base_python = base_root / "tool" / "yoetz" / "bin" / "python"
+    base_python = base_root / "tool" / "finishup" / "bin" / "python"
     base_probe = subprocess.run(
         [str(base_python), "-c", "import argon2; print('argon2-present')"],
         capture_output=True,
@@ -382,7 +386,7 @@ def test_standard_install_resolves_the_promoted_dependencies_at_their_exact_pins
     home = root / "home"
     home.mkdir(parents=True)
     _, env = _tool_install(built_dist.directory, root, home)
-    tool_python = root / "tool" / "yoetz" / "bin" / "python"
+    tool_python = root / "tool" / "finishup" / "bin" / "python"
     names = ("argon2-cffi", "httpx", "openai", "packaging")
     probe = subprocess.run(
         [
@@ -413,10 +417,10 @@ def test_mcp_initialize_and_tools_list_raw_handshake(
     root = tmp_path / "install"
     home = root / "home"
     home.mkdir(parents=True)
-    yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+    finishup_exe, env = _tool_install(built_dist.directory, root, home)
 
     proc = subprocess.Popen(
-        [str(yoetz_exe), "mcp", "serve"],
+        [str(finishup_exe), "mcp", "serve"],
         env=env,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
@@ -438,7 +442,7 @@ def test_mcp_initialize_and_tools_list_raw_handshake(
         proc.stdin.flush()
         init_line = proc.stdout.readline()
         init_response = json.loads(init_line)
-        assert init_response["result"]["serverInfo"]["name"] == "yoetz"
+        assert init_response["result"]["serverInfo"]["name"] == "finishup"
 
         proc.stdin.write(
             (
@@ -478,9 +482,9 @@ def test_mcp_initialize_and_tools_list_raw_handshake(
 # ---------------------------------------------------------------------------
 
 
-def _start_service(yoetz_exe: Path, env: dict[str, str]) -> subprocess.Popen[bytes]:
+def _start_service(finishup_exe: Path, env: dict[str, str]) -> subprocess.Popen[bytes]:
     proc = subprocess.Popen(
-        [str(yoetz_exe), "service", "run"],
+        [str(finishup_exe), "service", "run"],
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -491,7 +495,7 @@ def _start_service(yoetz_exe: Path, env: dict[str, str]) -> subprocess.Popen[byt
         if proc.poll() is not None:
             raise AssertionError("service exited during startup")
         status = subprocess.run(
-            [str(yoetz_exe), "service", "status", "--json"],
+            [str(finishup_exe), "service", "status", "--json"],
             capture_output=True,
             timeout=10,
             env=env,
@@ -520,15 +524,15 @@ def test_installed_client_bounds_an_accepted_but_silent_service(
     root = _short_home("silent-service")
     try:
         home = root / "h"
-        yoetz_exe, env = _tool_install(built_dist.directory, root, home)
-        tool_python = root / "tool" / "yoetz" / "bin" / "python"
+        finishup_exe, env = _tool_install(built_dist.directory, root, home)
+        tool_python = root / "tool" / "finishup" / "bin" / "python"
         listener = subprocess.Popen(
             [
                 str(tool_python),
                 "-c",
                 "import os, socket, time\n"
                 "from platformdirs import PlatformDirs\n"
-                "runtime = PlatformDirs(appname='yoetz', appauthor=False, roaming=False).user_runtime_path\n"
+                "runtime = PlatformDirs(appname='finishup', appauthor=False, roaming=False).user_runtime_path\n"
                 "runtime.mkdir(parents=True, exist_ok=True, mode=0o700)\n"
                 "os.chmod(runtime, 0o700)\n"
                 "path = runtime / 'control.sock'\n"
@@ -551,7 +555,7 @@ def test_installed_client_bounds_an_accepted_but_silent_service(
             assert listener.stdout.readline() == b"ready\n"
             started = time.monotonic()
             status = subprocess.run(
-                [str(yoetz_exe), "service", "status", "--json"],
+                [str(finishup_exe), "service", "status", "--json"],
                 capture_output=True,
                 timeout=9,
                 env=env,
@@ -580,16 +584,16 @@ def test_fresh_install_no_network_no_provider_secret_service_reports_locked(
     root = _short_home("clean-install")
     try:
         home = root / "h"
-        yoetz_exe, env = _tool_install(built_dist.directory, root, home)
+        finishup_exe, env = _tool_install(built_dist.directory, root, home)
         denied_env = {**env}
         for proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"):
             denied_env[proxy_var] = "http://127.0.0.1:1"
         denied_env.pop("OPENAI_API_KEY", None)
 
-        service = _start_service(yoetz_exe, denied_env)
+        service = _start_service(finishup_exe, denied_env)
         try:
             status = subprocess.run(
-                [str(yoetz_exe), "service", "status", "--json"],
+                [str(finishup_exe), "service", "status", "--json"],
                 capture_output=True,
                 timeout=10,
                 env=denied_env,
@@ -611,8 +615,8 @@ def test_six_workflow_operations_refuse_honestly_without_a_hidden_runtime(
     root = _short_home("clean-install-six-op")
     try:
         home = root / "h"
-        yoetz_exe, env = _tool_install(built_dist.directory, root, home)
-        service = _start_service(yoetz_exe, env)
+        finishup_exe, env = _tool_install(built_dist.directory, root, home)
+        service = _start_service(finishup_exe, env)
         marker = str(_REPO_ROOT).encode("utf-8")
         try:
             operations: tuple[tuple[str, ...], ...] = (
@@ -685,7 +689,11 @@ def test_six_workflow_operations_refuse_honestly_without_a_hidden_runtime(
             )
             for argv in operations:
                 result = subprocess.run(
-                    [str(yoetz_exe), *argv], capture_output=True, timeout=15, env=env, check=False
+                    [str(finishup_exe), *argv],
+                    capture_output=True,
+                    timeout=15,
+                    env=env,
+                    check=False,
                 )
                 assert result.returncode in _BOUNDED_EXIT_CODES, (argv[0], result.returncode)
                 assert marker not in result.stdout

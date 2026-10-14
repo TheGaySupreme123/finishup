@@ -1,12 +1,12 @@
-# The Yoetz terminal interface
+# The FinishUP terminal interface
 
-Running `yoetz` at a terminal opens a full-screen interface: a compact session header, a
-scrollable record of what Yoetz did, and a composer at the bottom where you type commands. When
-Yoetz needs an answer, a temporary view takes the composer's place; dismissing it puts your
+Running `finishup` at a terminal opens a full-screen interface: a compact session header, a
+scrollable record of what FinishUP did, and a composer at the bottom where you type commands. When
+FinishUP needs an answer, a temporary view takes the composer's place; dismissing it puts your
 half-typed line back exactly as it was.
 
 There is no settings dashboard, no sidebar, and no page counter. Every command is something the
-`yoetz` command tree already does, named in ordinary words.
+`finishup` command tree already does, named in ordinary words.
 
 See [ADR-017](../adr/ADR-017-full-screen-terminal-interface.md) for the decision and its limits.
 
@@ -18,19 +18,19 @@ The interface opens **only** when all of these hold:
 - `TERM` is set and is not `dumb`;
 - no CI marker is set (`CI`, `CONTINUOUS_INTEGRATION`, `BUILD_NUMBER`, `GITHUB_ACTIONS`,
   `GITLAB_CI`, `TEAMCITY_VERSION`);
-- `YOETZ_TUI` is not `0`;
-- the invocation is a bare `yoetz` or `yoetz menu`.
+- `FINISHUP_TUI` is not `0`;
+- the invocation is a bare `finishup` or `finishup menu`.
 
-Everything else behaves exactly as it did before: pipes, redirects, CI, `yoetz --help`, `--json`
-output, every named subcommand, `yoetz mcp serve`, and the protocol fixtures. A bare `yoetz` with
+Everything else behaves exactly as it did before: pipes, redirects, CI, `finishup --help`, `--json`
+output, every named subcommand, `finishup mcp serve`, and the protocol fixtures. A bare `finishup` with
 a redirected stream still prints help.
 
-Set `YOETZ_TUI=0` to always get the prompt-loop menu instead. If the rendering dependency is
-missing from an installation, Yoetz falls back to that menu on its own rather than failing.
+Set `FINISHUP_TUI=0` to always get the prompt-loop menu instead. If the rendering dependency is
+missing from an installation, FinishUP falls back to that menu on its own rather than failing.
 
 ## Reading the screen
 
-Six symbols carry all of Yoetz's certainty. They mean exactly what they say:
+Six symbols carry all of FinishUP's certainty. They mean exactly what they say:
 
 | Symbol | Meaning |
 |---|---|
@@ -69,15 +69,15 @@ Three rules are guaranteed, not conventions:
 
 ## First run
 
-The first `yoetz` on a new machine walks a linear path, each finished step collapsing into a short
+The first `finishup` on a new machine walks a linear path, each finished step collapsing into a short
 line above the active one:
 
-1. **Welcome and detection.** What Yoetz found: your agent installation, your project, whether
-   system secure storage is available, and whether Yoetz is connected yet.
+1. **Welcome and detection.** What FinishUP found: your agent installation, your project, whether
+   system secure storage is available, and whether FinishUP is connected yet.
 2. **Which installation** — only if more than one was found. Friendly names first; the executable
    path appears when the row is selected, and in full under `D`.
 3. **Project trust.** The canonical Git common root, and what allowing project-local guidance and hooks
-   actually permits. If you started Yoetz in a subfolder, it says so and names the root the trust
+   actually permits. If you started FinishUP in a subfolder, it says so and names the root the trust
    applies to.
 4. **The exact proposed change**, in words, with a `Safety` block stating what will *not* happen.
    `D` shows the executable path, managed paths, MCP command, preview digest, policy digest, and
@@ -85,10 +85,10 @@ line above the active one:
 5. **Installation activity**, step by step. A step is only reported as done once its postcondition
    was checked.
 6. **Secure storage** — system keyring (macOS Keychain, or a running Secret Service on Linux),
-   or a Yoetz passphrase entered on the trusted terminal (masked, re-prompted, 16–1024 UTF-8
-   bytes). When the keyring is unusable — no store loaded, or a backend Yoetz does not approve for
+   or a FinishUP passphrase entered on the trusted terminal (masked, re-prompted, 16–1024 UTF-8
+   bytes). When the keyring is unusable — no store loaded, or a backend FinishUP does not approve for
    the vault — the option is disabled with that reason and the passphrase is offered. Change it
-   later with `/service` or `yoetz service rotate-passphrase`.
+   later with `/service` or `finishup service rotate-passphrase`.
 7. **Review mode** — Local only, or Add AI-powered review.
 8. **AI-powered review setup, when selected** — an explicit choice between OpenAI API / compatible
    API and Codex with ChatGPT subscription, followed by the matching secure API-key or Codex-owned
@@ -99,7 +99,7 @@ You are never required to configure a provider: Local only is complete and usefu
 AI-powered review, setup does not claim completion until provider credentials and privacy approval
 finish.
 
-If an MCP entry named `yoetz` already exists and Yoetz does not own it, setup stops there. You can
+If an MCP entry named `finishup` already exists and FinishUP does not own it, setup stops there. You can
 inspect it, continue locally, or read manual resolution steps. **There is no force-replace option
 and there will not be one.**
 
@@ -121,8 +121,8 @@ Type `/` to open the filtered command list.
 | `/service` | manage the protected local service |
 | `/observe` | show observation selection and change local retention capacity |
 | `/doctor` | diagnose installation problems |
-| `/help` | show what Yoetz can do here |
-| `/quit` | leave Yoetz |
+| `/help` | show what FinishUP can do here |
+| `/quit` | leave FinishUP |
 
 ### `/status`
 
@@ -151,7 +151,7 @@ The last five are deliberately separate lines, because each can be true while th
   external LLM inference. Unknown when the policy could not be read; its detail line carries the
   policy summary.
 - **Privacy sends the task statement** — whether the policy lets your request, as the agent
-  transcribed it, reach the reviewer. The detail is the sentence `yoetz privacy show` prints;
+  transcribed it, reach the reviewer. The detail is the sentence `finishup privacy show` prints;
   unknown when the policy could not be read. Whether a given task recorded a statement, and what
   the reviewer had in its place, is on that task's receipt.
 - **Deeper review ready** — the installation reports `semantic_ready`: AI-powered review enabled, a
@@ -196,7 +196,7 @@ screen shows machine ceiling, exact repository grant, and legacy migration state
 whether the task statement is sent. It never uses task `workspace_ref` as privacy scope.
 
 This screen selects; it never authorizes. Choosing anything but *Keep current* suspends the
-interface and hands the controlling terminal to `yoetz privacy setup`, and that trusted ceremony is
+interface and hands the controlling terminal to `finishup privacy setup`, and that trusted ceremony is
 where the exact `before -> after` policy diff is rendered, where reauthentication happens, and where
 a widening is actually approved. If the terminal cannot be handed over, nothing changes and the
 interface prints the command to run.
@@ -214,7 +214,7 @@ Choose a preset — OpenAI, Fireworks AI, Anthropic, Google Gemini, OpenRouter, 
 AI Gateway, or a custom OpenAI-compatible HTTPS endpoint — or choose **Codex with ChatGPT
 subscription**.
 The same command also offers Codex subscription **status**, **disconnect**, **rollback**, and
-**switch account**. Yoetz shows the endpoint/runtime and privacy posture before asking for an API
+**switch account**. FinishUP shows the endpoint/runtime and privacy posture before asking for an API
 key or opening Codex login, and states plainly that storing a binding does not switch external
 review on.
 
@@ -223,12 +223,12 @@ subscription, `/provider` asks for the exact Codex executable, dedicated evaluat
 final-review reasoning effort, and routine-checkpoint reasoning effort; validates the supported digest-bound cell; shows destination, plan/terms notice,
 privacy boundary, disconnect, rollback, and optional account switch; then suspends the UI while
 Codex proves the existing sign-in or, when the home is not signed in, runs its browser flow. The
-result says which of the two happened. OAuth credentials never pass through a widget or Yoetz
+result says which of the two happened. OAuth credentials never pass through a widget or FinishUP
 vault. After setup,
 disconnect, or rollback, the local service is recomposed so a running daemon cannot keep the old
 cell.
 
-Afterwards Yoetz reports what it actually knows:
+Afterwards FinishUP reports what it actually knows:
 
 ```text
 ✓ Provider binding saved
@@ -248,7 +248,7 @@ readiness.
 ### `/work`, `/check`, `/receipt`
 
 `/work` opens a task by the title the agent used and shows its claims, evidence count, checks,
-coverage, findings, limitations, and whether a receipt is available. **Yoetz has no browsable
+coverage, findings, limitations, and whether a receipt is available. **FinishUP has no browsable
 task index** — the local service exposes no task-listing operation and this interface does not
 invent one — so tasks are reached by name.
 
@@ -275,7 +275,7 @@ coverage, open findings, limitations, whether deeper review contributed, freshne
 Stopping asks for confirmation with the cursor on *no*. Change passphrase uses the same trusted
 terminal handoff as first-time setup: input is masked with `*`, the helper states the 16–1024
 UTF-8 byte contract, and it re-prompts after invalid or mismatched input. The shell equivalent is
-`yoetz service rotate-passphrase`.
+`finishup service rotate-passphrase`.
 
 `/doctor` runs bounded read-only checks across runtime, package version, the platform cell
 (certified, or untested such as Linux aarch64), the approved-check sandbox (Seatbelt on macOS,
@@ -283,17 +283,17 @@ bubblewrap on Linux, with the install step named when it is missing or blocked),
 storage (with the reason when it is unusable), discovery, registration, managed files, hooks,
 consent, policy digest, service reachability, vault, provider, and privacy, then suggests safe
 next steps. When policy permits package update checks and a newer release is
-known, the package line is optional with remediation `uv tool upgrade yoetz`; when the check is
+known, the package line is optional with remediation `uv tool upgrade finishup`; when the check is
 allowed but fails, the line is unproven with "could not check for updates." **It never changes
 anything.**
 
 ### `/observe`
 
 `/observe` shows the selected and effective observation detail and capacity for the current
-workspace, the effective budget (which limit is closest to full), and whether No Yoetz cap is
+workspace, the effective budget (which limit is closest to full), and whether No FinishUP cap is
 available. It then asks **Change local retention capacity?** with the cursor on keeping the
 current setting. The other options are recommended (512), larger (2,048), largest (8,192), custom
-(type a queue count from 64 to 8,192), and No Yoetz cap. A choice changes the workspace default and
+(type a queue count from 64 to 8,192), and No FinishUP cap. A choice changes the workspace default and
 keeps the current detail mode.
 
 Before anything changes, `/observe` shows the current and proposed values, the scope, the possible
@@ -301,14 +301,14 @@ disk, memory, and CPU cost, what stays limited, and how to lower it, pause new o
 and resume it, then asks you to apply or cancel. An increase also says that the shared workspace
 queue follows the largest active selection, so it can raise the queue and state-document bounds for
 every session in the workspace. The commands it shows use `<workspace>` and `<session-id>`
-placeholders rather than your typed path. Cancelling or `Esc` changes nothing and says so. No Yoetz
+placeholders rather than your typed path. Cancelling or `Esc` changes nothing and says so. No FinishUP
 cap is not available for this queue: choosing it explains the 16 MiB state-document ceiling, names
 the largest supported capacity, and changes nothing. See [Observation
-selection](observation-selection.md) for the limits and the equivalent `yoetz observe` commands.
+selection](observation-selection.md) for the limits and the equivalent `finishup observe` commands.
 
 ## Secrets
 
-Yoetz never accepts a secret through this window.
+FinishUP never accepts a secret through this window.
 
 When a credential or passphrase is needed, the interface explains what is about to happen and asks
 for explicit consent. On approval it **suspends itself** and hands the terminal to the existing
@@ -320,17 +320,17 @@ No secret byte can reach the transcript, the interface's state, a log, a config 
 payload, MCP context, or a screenshot — because no secret byte ever enters this process's UI at
 all.
 
-If your environment cannot suspend, Yoetz says so and names the command to run instead. It does
+If your environment cannot suspend, FinishUP says so and names the command to run instead. It does
 not offer to take the secret through the window as a fallback.
 
 For an operation-specific next command outside the interface, run
-`yoetz setup status --next --operation local|review|connection` with the same selected project,
+`finishup setup status --next --operation local|review|connection` with the same selected project,
 host executable and configuration root. Local setup does not require a provider; connection-only
 setup does not require provider sign-in. AI-powered review needs the provider binding before its
 repository privacy grant. Secrets still belong only in the trusted terminal ceremony. See
 [setup order and recovery](install-and-first-run.md#find-the-next-setup-step).
 
-`yoetz setup vault` initializes or unlocks only the selected installation's storage using the
+`finishup setup vault` initializes or unlocks only the selected installation's storage using the
 existing protected terminal ceremony. It diagnoses credential-store availability, retains the
 explicit passphrase fallback where needed, and stops before provider selection or privacy grants.
 It requires a local interactive terminal; agents show that continuation without supplying secrets.

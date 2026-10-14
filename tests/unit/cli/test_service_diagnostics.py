@@ -7,8 +7,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from yoetz.cli.app import app
-from yoetz.observability.diagnostics import append_diagnostic_record
+from finishup.cli.app import app
+from finishup.observability.diagnostics import append_diagnostic_record
 
 _CORRELATION = "err_cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 _NOW = datetime(2026, 7, 27, 15, 30, 0, tzinfo=UTC)
@@ -17,7 +17,7 @@ _RUNNER = CliRunner()
 
 def test_service_diagnostics_resolves_correlation_id(tmp_path: Path, monkeypatch: object) -> None:
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.observability.diagnostics.log_dir",
+        "finishup.observability.diagnostics.log_dir",
         lambda: tmp_path,
     )
     append_diagnostic_record(
@@ -43,7 +43,7 @@ def test_service_diagnostics_unknown_correlation_exits_one(
     tmp_path: Path, monkeypatch: object
 ) -> None:
     monkeypatch.setattr(  # type: ignore[attr-defined]
-        "yoetz.observability.diagnostics.log_dir",
+        "finishup.observability.diagnostics.log_dir",
         lambda: tmp_path,
     )
     result = _RUNNER.invoke(
@@ -62,7 +62,7 @@ def test_service_diagnostics_unknown_correlation_exits_one(
 def test_request_selector_joins_multiple_failure_stages(
     tmp_path: Path, monkeypatch: object
 ) -> None:
-    monkeypatch.setattr("yoetz.observability.diagnostics.log_dir", lambda: tmp_path)  # type: ignore[attr-defined]
+    monkeypatch.setattr("finishup.observability.diagnostics.log_dir", lambda: tmp_path)  # type: ignore[attr-defined]
     request = "req_dddddddd-dddd-4ddd-8ddd-dddddddddddd"
     for suffix, operation in [
         (1, "semantic_attempt_dispatch_entered_failed"),

@@ -16,14 +16,14 @@ from typing import cast
 import pytest
 
 from builders.policy_cases import act, clm, evt, finding_record, fnd, obl
-from yoetz.domain.events import (
+from finishup.domain.events import (
     CheckChangePartialFile,
     CheckChangeShownFiles,
     CheckMode,
     CheckRecordedPayload,
     PolicyVersion,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     FINDING_KIND_TRAITS,
     CheckVerdict,
     Finding,
@@ -32,15 +32,15 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     CHECK_TIME_CHANGE_BASE_UNAVAILABLE_GAP,
     CHECK_TIME_CHANGE_GAPS,
     CHECK_TIME_CHANGE_REDACTED_GAP,
     CHECK_TIME_CHANGE_TRUNCATED_GAP,
     CHECK_TIME_CHANGE_UNAVAILABLE_GAP,
 )
-from yoetz.domain.values import FindingId, Frontier
-from yoetz.kernel.finding_resolution import (
+from finishup.domain.values import FindingId, Frontier
+from finishup.kernel.finding_resolution import (
     SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
     apply_check_resolution,
     finding_is_resolved,
@@ -49,8 +49,8 @@ from yoetz.kernel.finding_resolution import (
     reopen_findings_resolved_by,
     resolved_finding_ids,
 )
-from yoetz.kernel.plan_drift import PLAN_DRIFT_GAPS
-from yoetz.kernel.projections import (
+from finishup.kernel.plan_drift import PLAN_DRIFT_GAPS
+from finishup.kernel.projections import (
     MAX_CHECK_CHANGE_RAISING_CHECKS,
     FindingProjectionRecord,
     ProjectionState,
@@ -58,9 +58,9 @@ from yoetz.kernel.projections import (
     projection_from_snapshot,
     projection_snapshot,
 )
-from yoetz.ports.semantic import SamplingParams
-from yoetz.protocol.canonical import canonical_encode
-from yoetz.protocol.coverage import (
+from finishup.ports.semantic import SamplingParams
+from finishup.protocol.canonical import canonical_encode
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,
@@ -69,7 +69,7 @@ from yoetz.protocol.coverage import (
     LedgerFreshness,
     PublicationChannel,
 )
-from yoetz.protocol.models import (
+from finishup.protocol.models import (
     CheckPolicyExecutionModel,
     CheckScopeModel,
     SemanticReason,
@@ -218,7 +218,7 @@ def _changed_state(check: CheckRecordedPayload, *, recorded_at: int = 4) -> Proj
     """The pre-check projection with one new action recorded after the finding (issue #884)."""
 
     from builders.policy_cases import act, record
-    from yoetz.domain.events import ActionKind, ActionRecordedPayload
+    from finishup.domain.events import ActionKind, ActionRecordedPayload
 
     changed = record(ActionRecordedPayload(act(9), ActionKind.EDIT, "Repair"), recorded_at + 1)
     return replace(
@@ -347,7 +347,7 @@ def _test_edit_finding() -> Finding:
 
 
 def _statement_finding() -> Finding:
-    from yoetz.domain.task_statement import TASK_STATEMENT_UNMAPPED_SUMMARY
+    from finishup.domain.task_statement import TASK_STATEMENT_UNMAPPED_SUMMARY
 
     return replace(
         _finding(
@@ -412,7 +412,7 @@ def test_a_declared_empty_scope_never_traps_a_repaired_finding() -> None:
 def test_a_still_unmapped_statement_blocks_the_statement_finding() -> None:
     """Material that contradicts the repair keeps the statement finding open (TB4 D1)."""
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     gaps = ("instruction_requirement_unmapped", "semantic_review_not_requested")
     check = _check(coverage=_coverage(gaps=gaps))
@@ -433,7 +433,7 @@ def test_command_gaps_do_not_bound_findings_whose_basis_ignores_commands(gap: st
     command attempts keep the strict treatment.
     """
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     check = _check(coverage=_coverage(gaps=(gap, "semantic_review_not_requested")))
     for finding in (
@@ -458,13 +458,13 @@ def test_command_gaps_do_not_bound_findings_whose_basis_ignores_commands(gap: st
 
 def test_semantic_findings_tolerate_command_gaps_only_off_command_material() -> None:
     from builders.policy_cases import record, res
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ActionKind,
         ActionRecordedPayload,
         ResultOutcome,
         ResultRecordedPayload,
     )
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     state = _command_proof_state()
     coverage = _coverage(gaps=("command_attempt_uncorroborated",), semantic=True)
@@ -521,7 +521,7 @@ def test_registration_drift_check_resolves_deterministic_never_semantic() -> Non
     local proof — and still proves nothing about an AI-powered finding.
     """
 
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         OPTIONAL_SEMANTIC_REVIEW_BLOCKED_BY_POLICY_GAP,
         OPTIONAL_SEMANTIC_REVIEW_REGISTRATION_DRIFT_GAP,
     )
@@ -820,7 +820,7 @@ def test_resolution_explains_only_disqualifying_semantic_gaps(gap: str) -> None:
     tolerates it (issue #976 D4, ``test_a_fixed_ruling_resolves_despite_citations_the_fence_reduced``).
     """
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     check = _check(
@@ -848,7 +848,7 @@ def test_resolution_explains_only_disqualifying_semantic_gaps(gap: str) -> None:
 
 
 def test_resolution_explanation_preserves_scope_policy_suppression_and_refire() -> None:
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding()
     check = _check(
@@ -867,7 +867,7 @@ def test_resolution_explanation_preserves_scope_policy_suppression_and_refire() 
 
 def _command_proof_state() -> ProjectionState:
     from builders.policy_cases import act, make_case, obligation_record, plan_record, record, res
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ActionKind,
         ActionRecordedPayload,
         ObligationPublishedPayload,
@@ -911,7 +911,7 @@ def _command_proof_state() -> ProjectionState:
 
 @pytest.mark.parametrize("gap", ("command_attempt_uncorroborated", "command_attempt_mismatch"))
 def test_command_gap_only_allows_proven_independent_action_result(gap: str) -> None:
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(kind=FindingKind.ACTION_WITHOUT_RESULT, subject_refs=(evt(10),))
     check = _check(tested=100, coverage=_coverage(gaps=(gap,)))
@@ -924,7 +924,7 @@ def test_command_gap_only_allows_proven_independent_action_result(gap: str) -> N
 def test_command_gap_relation_through_resolution_result_blocks_independence() -> None:
     """A command obligation's result link is an explicit relation to the action too."""
     from builders.policy_cases import obligation_record, res
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     state = _command_proof_state()
     command_obligation = state.obligations[obl(2)]
@@ -950,11 +950,11 @@ def test_explanation_cache_is_scoped_to_the_candidate_check() -> None:
     from types import SimpleNamespace
     from typing import cast
 
-    from yoetz.domain.events import LedgerRecord
-    from yoetz.kernel.finding_resolution import (
+    from finishup.domain.events import LedgerRecord
+    from finishup.kernel.finding_resolution import (
         _historical_proof_state,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.kernel.projections import empty_projection_state
+    from finishup.kernel.projections import empty_projection_state
 
     replayed: list[tuple[int, ...]] = []
 
@@ -963,7 +963,7 @@ def test_explanation_cache_is_scoped_to_the_candidate_check() -> None:
         return empty_projection_state()
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr("yoetz.kernel.reducers.replay", fake_replay)
+    monkeypatch.setattr("finishup.kernel.reducers.replay", fake_replay)
     try:
         check = cast(
             CheckRecordedPayload,
@@ -1007,7 +1007,7 @@ def test_explanation_cache_is_scoped_to_the_candidate_check() -> None:
 )
 def test_command_partition_never_upgrades_weak_or_overlapping_proof(weakness: str) -> None:
     from builders.policy_cases import act, record, res
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     state = _command_proof_state()
     finding = _finding(kind=FindingKind.ACTION_WITHOUT_RESULT, subject_refs=(evt(10),))
@@ -1092,8 +1092,8 @@ def _coordination_explanation_state(
     from types import SimpleNamespace
 
     from builders.policy_cases import record
-    from yoetz.domain.coordination import CoordinationGapCode, OverlapKind
-    from yoetz.domain.events import CoordinationContextRecordedPayload
+    from finishup.domain.coordination import CoordinationGapCode, OverlapKind
+    from finishup.domain.events import CoordinationContextRecordedPayload
 
     context = CoordinationContextRecordedPayload(
         detection_id=evt(1),
@@ -1154,8 +1154,8 @@ def _coordination_explanation_state(
 def test_resolution_explanation_names_a_superseded_coordination_generation() -> None:
     from typing import cast
 
-    from yoetz.domain.events import LedgerRecord
-    from yoetz.kernel.finding_resolution import finding_resolution_explanation
+    from finishup.domain.events import LedgerRecord
+    from finishup.kernel.finding_resolution import finding_resolution_explanation
 
     state, records = _coordination_explanation_state(
         resolved_at=12, closure_at=10, kind=FindingKind.COORDINATION_OVERLAP
@@ -1175,8 +1175,8 @@ def test_resolution_before_the_closure_keeps_the_ordinary_explanation() -> None:
 
     from typing import cast
 
-    from yoetz.domain.events import LedgerRecord
-    from yoetz.kernel.finding_resolution import finding_resolution_explanation
+    from finishup.domain.events import LedgerRecord
+    from finishup.kernel.finding_resolution import finding_resolution_explanation
 
     state, records = _coordination_explanation_state(
         resolved_at=8, closure_at=10, kind=FindingKind.COORDINATION_OVERLAP
@@ -1190,8 +1190,8 @@ def test_resolution_before_the_closure_keeps_the_ordinary_explanation() -> None:
 def test_unresolved_superseded_finding_points_at_the_next_qualifying_check() -> None:
     from typing import cast
 
-    from yoetz.domain.events import LedgerRecord
-    from yoetz.kernel.finding_resolution import finding_resolution_explanation
+    from finishup.domain.events import LedgerRecord
+    from finishup.kernel.finding_resolution import finding_resolution_explanation
 
     state, records = _coordination_explanation_state(
         resolved_at=None, closure_at=10, kind=FindingKind.COORDINATION_OVERLAP
@@ -1215,8 +1215,8 @@ def test_supersession_wording_needs_a_closure_for_that_coordination_finding(
 ) -> None:
     from typing import cast
 
-    from yoetz.domain.events import LedgerRecord
-    from yoetz.kernel.finding_resolution import finding_resolution_explanation
+    from finishup.domain.events import LedgerRecord
+    from finishup.kernel.finding_resolution import finding_resolution_explanation
 
     state, records = _coordination_explanation_state(
         resolved_at=12, closure_at=closure_at, kind=kind
@@ -1282,7 +1282,7 @@ def test_completed_semantic_recheck_can_retain_original_readable_capture_limits(
     ],
 )
 def test_matching_material_gaps_never_become_semantic_absence_proof(gap: str) -> None:
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     coverage = _coverage(gaps=(gap,), semantic=True, freshness=LedgerFreshness.PARTIAL)
     original = replace(_finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED), coverage=coverage)
@@ -1329,8 +1329,8 @@ def test_redacted_freshness_from_a_recorded_captured_object_gap_is_a_baseline() 
 
 def test_semantic_resolution_needs_new_work_or_a_subject_revision() -> None:
     from builders.policy_cases import claim_record
-    from yoetz.domain.events import ClaimKind, ClaimRecordedPayload
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.domain.events import ClaimKind, ClaimRecordedPayload
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     original = _finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED, subject_refs=(clm(1),))
     later = replace(_check(semantic=_SEMANTIC_OK), semantic_conclusion="no_material_discrepancy")
@@ -1389,7 +1389,7 @@ def test_unassessable_conclusion_blocks_proof_even_without_a_coverage_gap() -> N
 def _ruled(
     check: CheckRecordedPayload, *rulings: tuple[int, str], conclusion: str
 ) -> CheckRecordedPayload:
-    from yoetz.domain.findings import PriorFindingVerdictRecord
+    from finishup.domain.findings import PriorFindingVerdictRecord
 
     return replace(
         check,
@@ -1409,7 +1409,7 @@ def test_a_fixed_ruling_resolves_even_when_the_packet_as_a_whole_was_insufficien
     not assess keeps the whole-packet veto and a sibling ruled unassessable is blocked by name.
     """
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     gapped = _coverage(
         gaps=("semantic_packet_insufficient",), semantic=True, freshness=LedgerFreshness.PARTIAL
@@ -1436,7 +1436,7 @@ def test_a_fixed_ruling_resolves_even_when_the_packet_as_a_whole_was_insufficien
 
 
 def test_a_fixed_ruling_never_bypasses_material_change_freshness_or_a_re_raise() -> None:
-    from yoetz.kernel.finding_resolution import issue_key, resolution_blockers
+    from finishup.kernel.finding_resolution import issue_key, resolution_blockers
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     check = _ruled(
@@ -1462,7 +1462,7 @@ def test_a_fixed_ruling_never_bypasses_material_change_freshness_or_a_re_raise()
 def test_any_other_ruling_blocks_its_own_finding_even_under_an_assessable_review(
     verdict: str,
 ) -> None:
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     check = _ruled(
@@ -1491,7 +1491,7 @@ def test_a_withdrawn_ruling_accepts_a_rejection_without_lifting_the_packet_veto(
     and it is no licence to resolve under a whole-packet ``insufficient_packet``.
     """
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     assessable = _ruled(
@@ -1527,7 +1527,7 @@ def test_named_missing_items_weigh_like_the_insufficient_packet_they_ride_beside
     ``fixed`` ruling still resolves its own finding, exactly as without the named items.
     """
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     coverage = _coverage(gaps=("semantic_packet_insufficient", gap), semantic=True)
     assert _resolves(_finding(), _check(semantic=_SEMANTIC_OK, coverage=coverage)) is True
@@ -1560,7 +1560,7 @@ def test_an_unruled_finding_the_review_may_not_have_assessed_never_resolves(gap:
     """Greptile P1 on #905: silence about a finding left out of the packet, or whose ruling was
     dropped, is not assessment. It blocks that finding; ruled siblings keep their own effect."""
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     incomplete = _coverage(gaps=(gap,), semantic=True, freshness=LedgerFreshness.PARTIAL)
     unruled = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
@@ -1587,7 +1587,7 @@ def test_an_unruled_finding_the_review_may_not_have_assessed_never_resolves(gap:
 
 
 def test_an_unruled_finding_still_follows_the_ordinary_rules_on_a_complete_review() -> None:
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     check = _ruled(_check(semantic=_SEMANTIC_OK), conclusion="no_material_discrepancy")
@@ -1605,7 +1605,7 @@ def test_a_cited_fixed_ruling_resolves_despite_excerpts_the_budget_cut() -> None
     ``content_unselected`` baseline; the repair check does. The explicit ruling still closes it.
     """
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     assert "content_unselected" not in finding.coverage.known_gaps
@@ -1644,7 +1644,7 @@ def test_silence_never_closes_an_ai_finding_over_excerpts_the_budget_cut() -> No
     ``still_present`` and ``unassessable`` keep it blocking, and a local finding is unaffected.
     """
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     cut = _coverage(gaps=("content_unselected",), semantic=True)
@@ -1696,7 +1696,7 @@ def test_task_facts_about_the_work_never_bound_a_fixed_ruling(gap: str) -> None:
     what the reviewer was shown, and the finding stayed open. Issue #1046 extends it to every
     environment fact (tb4n4: ``verification_only_as_root``)."""
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     coverage = _coverage(gaps=(gap,), semantic=True, freshness=LedgerFreshness.PARTIAL)
@@ -1742,7 +1742,7 @@ def test_facts_about_the_deliverable_still_bound_a_fixed_ruling(gap: str) -> Non
     """Issue #1046 stops at the environment family: a fixed ruling never outranks a fact about the
     deliverable, about what the reviewer could see, or about work the agent still owes."""
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     coverage = _coverage(gaps=(gap,), semantic=True, freshness=LedgerFreshness.PARTIAL)
@@ -1759,12 +1759,12 @@ def test_facts_about_the_deliverable_still_bound_a_fixed_ruling(gap: str) -> Non
 
 def test_a_fixed_ruling_resolution_names_the_environment_facts_it_did_not_wait_for() -> None:
     """Issue #1046: the resolved finding's explanation says the environment facts stay disclosed
-    on the receipt, so closing the finding never reads as Yoetz having verified them away."""
+    on the receipt, so closing the finding never reads as FinishUP having verified them away."""
 
     from types import SimpleNamespace
 
-    from yoetz.domain.events import LedgerRecord
-    from yoetz.kernel.finding_resolution import finding_resolution_explanation
+    from finishup.domain.events import LedgerRecord
+    from finishup.kernel.finding_resolution import finding_resolution_explanation
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     coverage = _coverage(
@@ -1812,7 +1812,7 @@ def test_a_fixed_ruling_resolves_despite_citations_the_fence_reduced() -> None:
     ``fixed`` ruling the gap still blocks (see the disqualifying-gap test above).
     """
 
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     finding = _finding(1, origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     reduced = _coverage(
@@ -1875,7 +1875,7 @@ def test_a_finding_raised_before_the_task_statement_resolves_within_that_baselin
 ) -> None:
     """Issue #908: pre-statement AI-powered findings are not trapped by the new gaps."""
 
-    from yoetz.kernel.finding_resolution import _raised_before_task_statement  # pyright: ignore
+    from finishup.kernel.finding_resolution import _raised_before_task_statement  # pyright: ignore
 
     finding = _finding(origin=FindingOrigin.SEMANTIC_MODEL_DERIVED)
     coverage = _coverage(
@@ -2493,7 +2493,7 @@ def test_legacy_raise_falls_back_and_is_reported_unverified() -> None:
 
 
 def test_view_commitment_round_trips_and_legacy_rows_still_decode() -> None:
-    from yoetz.domain.events import check_change_files_from_json, check_change_files_to_json
+    from finishup.domain.events import check_change_files_from_json, check_change_files_to_json
 
     committed = CheckChangeShownFiles((), (_viewed(100, 1, False, 20, _VIEW_1),), True)
     wire = check_change_files_to_json(committed)
@@ -2506,7 +2506,7 @@ def test_view_commitment_round_trips_and_legacy_rows_still_decode() -> None:
 
 
 def test_resolution_through_a_legacy_raise_is_marked_unverified() -> None:
-    from yoetz.kernel.finding_resolution import check_change_resolution_unverified
+    from finishup.kernel.finding_resolution import check_change_resolution_unverified
 
     legacy = _files(views=(_viewed(3_000, 1, True, 67, None),))
     findings = _raise_reraise(legacy, legacy)
@@ -2522,14 +2522,14 @@ def test_resolution_through_a_legacy_raise_is_marked_unverified() -> None:
 
 
 def test_receipt_discloses_a_resolution_through_a_legacy_raise() -> None:
-    from yoetz.application.receipt import (
+    from finishup.application.receipt import (
         _check_change_resolution_gaps,  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     )
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP,
         check_time_change_gap_sentence,
     )
-    from yoetz.kernel.receipt_builder import ReceiptFindingState
+    from finishup.kernel.receipt_builder import ReceiptFindingState
 
     legacy = _files(views=(_viewed(3_000, 1, True, 67, None),))
     findings = _raise_reraise(legacy, legacy)
@@ -2547,10 +2547,10 @@ def test_receipt_discloses_a_resolution_through_a_legacy_raise() -> None:
 
 
 def _legacy_resolved_projection(count: int) -> tuple[ProjectionState, tuple[object, ...]]:
-    from yoetz.domain.events import encode_payload
-    from yoetz.kernel.ranking import rank_key
-    from yoetz.kernel.receipt_builder import ReceiptFindingState
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.domain.events import encode_payload
+    from finishup.kernel.ranking import rank_key
+    from finishup.kernel.receipt_builder import ReceiptFindingState
+    from finishup.protocol.canonical import canonical_digest
 
     legacy = _files(views=(_viewed(3_000, 1, True, 67, None),))
     findings = _raise_reraise(legacy, legacy)
@@ -2576,12 +2576,12 @@ def _legacy_resolved_projection(count: int) -> tuple[ProjectionState, tuple[obje
 def test_legacy_disclosure_is_one_task_wide_gap_however_many_findings_it_covers() -> None:
     """65 affected findings still build a receipt: one gap row, never one per finding."""
 
-    from yoetz.application.receipt import (
+    from finishup.application.receipt import (
         _check_change_resolution_gaps,  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
     )
-    from yoetz.domain.receipts import CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP
-    from yoetz.kernel.finding_resolution import unverified_resolution_finding_ids
-    from yoetz.kernel.receipt_builder import ReceiptFindingState
+    from finishup.domain.receipts import CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP
+    from finishup.kernel.finding_resolution import unverified_resolution_finding_ids
+    from finishup.kernel.receipt_builder import ReceiptFindingState
 
     projection, states = _legacy_resolved_projection(65)
     typed_states = cast(tuple[ReceiptFindingState, ...], states)
@@ -2598,15 +2598,15 @@ def test_legacy_disclosure_is_one_task_wide_gap_however_many_findings_it_covers(
 def test_receipt_names_legacy_resolutions_boundedly_in_one_gap() -> None:
     """A receipt section holds at most 64 findings; 20 show the bounded id list."""
 
-    from yoetz.domain.receipts import (
+    from finishup.domain.receipts import (
         CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP,
         render_receipt_human,
     )
-    from yoetz.kernel.deterministic_checks import CaseAvailabilityFacts, CaseGap
-    from yoetz.kernel.receipt_builder import ReceiptBuildContext, ReceiptFindingState
+    from finishup.kernel.deterministic_checks import CaseAvailabilityFacts, CaseGap
+    from finishup.kernel.receipt_builder import ReceiptBuildContext, ReceiptFindingState
 
     projection, states = _legacy_resolved_projection(20)
-    from yoetz.protocol.coverage import weakest
+    from finishup.protocol.coverage import weakest
 
     coverage = _coverage(
         gaps=(CHECK_TIME_CHANGE_RESOLUTION_UNVERIFIED_GAP, "check_not_recorded"),
@@ -2700,7 +2700,7 @@ def _blockers(
     *,
     raised_under_reduced_scope: bool = False,
 ) -> tuple[str, ...]:
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     return resolution_blockers(
         finding,
@@ -3059,7 +3059,7 @@ def test_a_newly_appearing_real_limit_still_blocks_semantic_proof(gap: str) -> N
 def test_capture_failures_block_local_proof_too() -> None:
     """The interim tolerance is the selection code alone; truncation waits for its source test."""
 
-    from yoetz.kernel.finding_resolution import CAPTURE_FAILURE_GAPS
+    from finishup.kernel.finding_resolution import CAPTURE_FAILURE_GAPS
 
     for gap in sorted(CAPTURE_FAILURE_GAPS):
         later = _review_check(*_LONG_SESSION_REVIEW_GAPS, gap)
@@ -3067,9 +3067,9 @@ def test_capture_failures_block_local_proof_too() -> None:
 
 
 def test_selection_and_capture_failure_classes_are_disjoint_and_closed() -> None:
-    from yoetz.application.check import SEMANTIC_CASE_CONTENT_GAPS
-    from yoetz.domain.receipts import SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP
-    from yoetz.kernel.finding_resolution import (
+    from finishup.application.check import SEMANTIC_CASE_CONTENT_GAPS
+    from finishup.domain.receipts import SEMANTIC_CASE_CONTENT_OVER_ITEM_LIMIT_GAP
+    from finishup.kernel.finding_resolution import (
         CAPTURE_FAILURE_GAPS,
         REVIEW_SELECTION_GAPS,
         SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
@@ -3162,15 +3162,15 @@ def _answered_state(
     """
 
     from builders.policy_cases import evd, evidence_record, record, res
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         EvidenceKind,
         EvidenceRecordedPayload,
         ResponseRecordedPayload,
         ResultOutcome,
         ResultRecordedPayload,
     )
-    from yoetz.domain.findings import ResponseDisposition
-    from yoetz.domain.values import timestamp_from_string
+    from finishup.domain.findings import ResponseDisposition
+    from finishup.domain.values import timestamp_from_string
 
     state = _changed_state(check)
     evidence = evidence_record(
@@ -3243,7 +3243,7 @@ def test_a_reduced_review_without_the_repair_in_view_cannot_resolve_a_semantic_f
 
     # Without a material change the missing repair is the only thing named.
     assert _blockers(original, unrecorded)  # sanity: still blocked
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     unchanged = replace(_changed_state(unrecorded), actions={})
     assert resolution_blockers(original, 4, unrecorded, frozenset(), proof_state=unchanged) == (
@@ -3256,7 +3256,7 @@ def test_a_reduced_review_must_carry_the_repair_evidence_the_response_links(cite
     """Relevance includes the repair the agent answered with, not only the finding's subjects."""
 
     from builders.policy_cases import evd, res
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     original = _semantic_finding(
         "content_unselected", "host_outcome_unavailable", _SCOPE_REDUCED, "unpaired_event"
@@ -3280,8 +3280,8 @@ def test_a_reduced_review_must_carry_the_repair_evidence_the_response_links(cite
 
 
 def test_the_included_reference_record_is_bound_to_a_completed_reduced_review() -> None:
-    from yoetz.domain.events import EventSchema, decode_payload, encode_payload
-    from yoetz.protocol.errors import ProtocolValueError
+    from finishup.domain.events import EventSchema, decode_payload, encode_payload
+    from finishup.protocol.errors import ProtocolValueError
 
     reduced = _review_check(*_LONG_SESSION_REVIEW_GAPS)
     assert reduced.semantic_included_refs == _in_view(*_REPAIR_IN_VIEW)
@@ -3304,7 +3304,7 @@ def test_the_included_reference_record_is_bound_to_a_completed_reduced_review() 
 def test_an_unrecorded_sent_packet_is_disclosed_and_blocks_only_semantic_proof() -> None:
     """``semantic_included_refs_not_recorded`` limits the reduced review, never the local case."""
 
-    from yoetz.domain.events import SEMANTIC_INCLUDED_REFS_NOT_RECORDED_GAP
+    from finishup.domain.events import SEMANTIC_INCLUDED_REFS_NOT_RECORDED_GAP
 
     later = _review_check(
         *_LONG_SESSION_REVIEW_GAPS, SEMANTIC_INCLUDED_REFS_NOT_RECORDED_GAP, included=None
@@ -3344,7 +3344,7 @@ def _evicted_state(
     """
 
     from builders.policy_cases import claim_record, evd, evidence_record, record, res
-    from yoetz.domain.events import (
+    from finishup.domain.events import (
         ActionKind,
         ActionRecordedPayload,
         ClaimKind,
@@ -3356,8 +3356,8 @@ def _evicted_state(
         ResultOutcome,
         ResultRecordedPayload,
     )
-    from yoetz.domain.findings import ResponseDisposition
-    from yoetz.domain.values import timestamp_from_string
+    from finishup.domain.findings import ResponseDisposition
+    from finishup.domain.values import timestamp_from_string
 
     observed = timestamp_from_string("2026-01-01T00:00:00.000Z")
 
@@ -3445,7 +3445,7 @@ def _evicted_blockers(
     subjects: tuple[object, ...] = (evt(2), evt(3), clm(1)),
     state: ProjectionState | None = None,
 ) -> tuple[str, ...]:
-    from yoetz.kernel.finding_resolution import resolution_blockers
+    from finishup.kernel.finding_resolution import resolution_blockers
 
     original = replace(
         _semantic_finding(
@@ -3549,8 +3549,8 @@ def test_the_explanation_reads_the_newest_check_that_could_resolve_the_finding()
 
     from types import SimpleNamespace
 
-    from yoetz.domain.events import LedgerRecord
-    from yoetz.kernel.finding_resolution import finding_resolution_explanation
+    from finishup.domain.events import LedgerRecord
+    from finishup.kernel.finding_resolution import finding_resolution_explanation
 
     finding = _finding()
     state = replace(
@@ -3664,7 +3664,7 @@ def test_egress_item_withholding_bounds_only_the_ai_powered_review() -> None:
     code never vetoes local proof, and for AI-powered proof it is a recorded baseline only.
     """
 
-    from yoetz.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
+    from finishup.domain.receipts import SEMANTIC_REVIEW_ITEM_WITHHELD_GAP
 
     later = _review_check(SEMANTIC_REVIEW_ITEM_WITHHELD_GAP)
     assert _blockers(_finding(), later) == ()
@@ -3681,9 +3681,9 @@ def test_a_retired_capture_handoff_never_vetoes_deterministic_proof() -> None:
     only when the raising review ran under it too.
     """
 
-    from yoetz.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
-    from yoetz.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
-    from yoetz.kernel.finding_resolution import (
+    from finishup.kernel.closure_readiness import GAP_CLASSIFICATION, GapClass
+    from finishup.kernel.deterministic_scope import CLEAN_COMPATIBLE_GAPS
+    from finishup.kernel.finding_resolution import (
         DETERMINISTIC_PROOF_TOLERATED_GAPS,
         SEMANTIC_FINDING_CAPTURE_BASELINE_GAPS,
     )

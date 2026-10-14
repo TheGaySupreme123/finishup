@@ -33,11 +33,11 @@ the request names in `requested_items` (`item_kind` `file`, `command`, or `chang
 command's keyed commitment, never its text, so a requested command stays disclosed as
 `command_attempt_uncorroborated` on the receipt (a standing limitation, not a finding): also cite
 the observed run's `res_` id (`status view=results`) as the obligation's resolution evidence.
-Yoetz checks only that structural link, never the wording: a plan with obligations but none citing
+FinishUP checks only that structural link, never the wording: a plan with obligations but none citing
 the statement, or a completion claim on no plan or an explicit empty scope, returns an
 agent-actionable `task_requirement_unmet` finding naming the statement event id. When the request
 truly asks for no material work, answer it with a `decision_recorded` whose statement holds the
-exact line `yoetz-no-material-work:<statement event id>` and a rationale; it counts only while no
+exact line `finishup-no-material-work:<statement event id>` and a rationale; it counts only while no
 file changed. Then run `check` once on the plan before editing, and again after each material
 milestone.
 
@@ -54,16 +54,16 @@ cadence, startup failure precedence, selectors, and handoff table remain in
 
 ## Code mode
 
-Use one cell per Yoetz call. Discover the exact declaration before calling a tool:
+Use one cell per FinishUP call. Discover the exact declaration before calling a tool:
 
 ```js
-const decl=name=>{const d=ALL_TOOLS.find(t=>t.name===`mcp__yoetz__${name}`)?.description??"";const i=d.indexOf("exec tool declaration:");text(i<0?d:d.slice(i))};decl("start");
+const decl=name=>{const d=ALL_TOOLS.find(t=>t.name===`mcp__finishup__${name}`)?.description??"";const i=d.indexOf("exec tool declaration:");text(i<0?d:d.slice(i))};decl("start");
 ```
 
 Read a page through its structured result and verify its byte metadata before using it:
 
 ```js
-const g=await tools.mcp__yoetz__read_guidance({uri:"yoetz://guidance/workflow.md",page:"0",page_size:"1024"});const p=g.structuredContent;if(!p||p.ok!==true||typeof p.text!=="string")throw new Error("guidance page missing");const n=new TextEncoder().encode(p.text).length;if(n!==p.page_byte_count||p.revision!==p.digest||p.complete!==(Number(p.page)+1===Number(p.page_count)))throw new Error("guidance page metadata mismatch");text(JSON.stringify(p));
+const g=await tools.mcp__finishup__read_guidance({uri:"finishup://guidance/workflow.md",page:"0",page_size:"1024"});const p=g.structuredContent;if(!p||p.ok!==true||typeof p.text!=="string")throw new Error("guidance page missing");const n=new TextEncoder().encode(p.text).length;if(n!==p.page_byte_count||p.revision!==p.digest||p.complete!==(Number(p.page)+1===Number(p.page_count)))throw new Error("guidance page metadata mismatch");text(JSON.stringify(p));
 ```
 
 Mint every request or event id with this helper; its last branch is explicitly non-cryptographic:
@@ -75,10 +75,10 @@ b[6]=b[6]&15|64;b[8]=b[8]&63|128;const h=[...b].map(x=>x.toString(16).padStart(2
 
 Use the bridge deadline for each cell: `start`, `publish_work` and `status` 30000 each; `respond`
 and `receipt` 50000; `check` 300000, or 30000 with `mode: inspect` (a read). Set `yield_time_ms`
-at or above the call deadline; keep builds, tests and other non-Yoetz work in separate cells, not
+at or above the call deadline; keep builds, tests and other non-FinishUP work in separate cells, not
 a series of short waits.
 
 ```js
 // @exec: {"yield_time_ms": 300000}
-const request_id=newId("req");const r=await tools.mcp__yoetz__check({...checkRequest,request_id});text(JSON.stringify({ request_id, result: r.structuredContent }));
+const request_id=newId("req");const r=await tools.mcp__finishup__check({...checkRequest,request_id});text(JSON.stringify({ request_id, result: r.structuredContent }));
 ```

@@ -7,9 +7,9 @@ import sys
 
 import pytest
 
-from yoetz.adapters import mcp_stdio as transport
-from yoetz.adapters.mcp_stdio import MAX_JSON_NESTING_DEPTH, TransportFailure
-from yoetz.protocol.canonical import MAX_JSON_DEPTH
+from finishup.adapters import mcp_stdio as transport
+from finishup.adapters.mcp_stdio import MAX_JSON_NESTING_DEPTH, TransportFailure
+from finishup.protocol.canonical import MAX_JSON_DEPTH
 
 
 def _frame(params: object) -> bytes:

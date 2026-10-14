@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from yoetz.cli.render import render_human_check
-from yoetz.domain.findings import SemanticFailureClass
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check
-from yoetz.protocol.models import (
+from finishup.cli.render import render_human_check
+from finishup.domain.findings import SemanticFailureClass
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check
+from finishup.protocol.models import (
     CheckSuccessModel,
     CoverageModel,
     SemanticReason,
     SemanticStatus,
     SemanticWithheldItemModel,
 )
-from yoetz.protocol.recovery import (
+from finishup.protocol.recovery import (
     RECOVERY_DIRECTIVES,
     continuation_for_semantic_outcome,
     directive_for,
@@ -260,8 +260,8 @@ def test_human_check_names_opaque_heuristic_withheld_items_without_content() -> 
 def test_human_check_names_redacted_value_lines_and_the_fixed_agent_line() -> None:
     """PL2-1 (issue #982): refs and line numbers, the fixed agent line once, never a value."""
 
-    from yoetz.domain.receipts import SEMANTIC_REDACTED_VALUES_AGENT_LINE
-    from yoetz.protocol.models import SemanticRedactedValueModel
+    from finishup.domain.receipts import SEMANTIC_REDACTED_VALUES_AGENT_LINE
+    from finishup.protocol.models import SemanticRedactedValueModel
 
     result = CheckSuccessModel.model_construct(
         verdict="action_required",
@@ -302,8 +302,8 @@ def test_human_check_names_redacted_value_lines_and_the_fixed_agent_line() -> No
 
 
 def test_human_check_and_status_state_why_the_check_time_change_was_unavailable() -> None:
-    from yoetz.cli.render import render_human_status
-    from yoetz.protocol.models import StatusClosureReadinessModel, StatusSuccessModel
+    from finishup.cli.render import render_human_status
+    from finishup.protocol.models import StatusClosureReadinessModel, StatusSuccessModel
 
     gaps = ("check_time_change_unavailable", "check_time_change_unavailable_unsafe_root")
     result = CheckSuccessModel.model_construct(
@@ -357,10 +357,10 @@ def test_human_check_and_status_state_why_the_check_time_change_was_unavailable(
 
 
 def test_receipt_and_status_render_redacted_values_from_wire_and_skip_malformed() -> None:
-    from yoetz.cli.render import (
+    from finishup.cli.render import (
         _semantic_redacted_value_lines,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.domain.receipts import SEMANTIC_REDACTED_VALUES_AGENT_LINE
+    from finishup.domain.receipts import SEMANTIC_REDACTED_VALUES_AGENT_LINE
 
     lines = _semantic_redacted_value_lines(
         (

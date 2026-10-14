@@ -20,7 +20,7 @@ _REPO_ROOT: Final = Path(__file__).resolve().parents[3]
 _AGENT_INSTRUCTIONS: Final = _REPO_ROOT / "guidance" / "agent-instructions.md"
 _WORKFLOW: Final = _REPO_ROOT / "guidance" / "workflow.md"
 _SKILLS: Final = tuple(
-    _REPO_ROOT / "skills" / host / "yoetz" / "SKILL.md"
+    _REPO_ROOT / "skills" / host / "finishup" / "SKILL.md"
     for host in ("claude-code", "codex", "cursor", "portable")
 )
 _CHILD_SECTION: Final = "#### Child assignment and child closure"
@@ -43,13 +43,13 @@ def _section(path: Path, heading: str) -> str:
 def test_workflow_lists_what_a_child_assignment_carries() -> None:
     section = _section(_WORKFLOW, _CHILD_SECTION)
     for phrase in (
-        "A native helper learns its Yoetz role only from its assignment",
+        "A native helper learns its FinishUP role only from its assignment",
         "the complete `attach_handle`, to use before its `expires_at` and before other work",
         "the parent `session_id` for `parent_session_id` plus a stable child-specific "
         "`workspace_ref` + `external_ref` pair (the canonical root the child works in; never the "
         "parent's pair)",
         "a distinct child actor id, the bounded scope and write policy, and, after a "
-        "`terminal_unavailable` result, the `yoetz_availability` block",
+        "`terminal_unavailable` result, the `finishup_availability` block",
     ):
         assert phrase in section, phrase
 
@@ -72,7 +72,7 @@ def test_workflow_gives_the_child_its_own_closure_sequence_ending_in_work_closed
 def test_workflow_makes_the_no_selector_rule_a_parent_duty_covered_by_the_parent_task() -> None:
     section = _section(_WORKFLOW, _CHILD_SECTION)
     for phrase in (
-        "A helper that gets neither selector does no Yoetz work of its own",
+        "A helper that gets neither selector does no FinishUP work of its own",
         "its work is the parent's to account for: the parent's own obligations cover "
         "incorporating and verifying it, and the parent discloses what the helper did that the "
         "ledger does not show",
@@ -110,12 +110,12 @@ def test_safety_floor_routes_delegation_to_the_workflow_rules() -> None:
     # budget (the strict profile is within a few characters), so, like the #828 capacity rule, the
     # child-assignment rules live in the workflow procedure and every skill, which it points to.
     section = _section(_AGENT_INSTRUCTIONS, "# Multi-agent work")
-    assert "read the multi-agent sections of `yoetz://guidance/workflow.md`" in section
+    assert "read the multi-agent sections of `finishup://guidance/workflow.md`" in section
 
 
 @pytest.mark.parametrize("skill", _SKILLS, ids=lambda path: path.parts[-3])
 def test_every_skill_names_the_assignment_and_child_closure(skill: Path) -> None:
     text = _collapsed(skill)
-    assert "yoetz://guidance/workflow.md#start-and-resume" in text
+    assert "finishup://guidance/workflow.md#start-and-resume" in text
     assert "delegation" in text
     assert "closure" in text

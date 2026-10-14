@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check, summary_for_status
-from yoetz.protocol.canonical import JsonValue
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, summary_for_check, summary_for_status
+from finishup.protocol.canonical import JsonValue
 
 
 def test_project_summary_carries_generation_and_counts_without_content() -> None:

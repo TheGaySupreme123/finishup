@@ -10,17 +10,17 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     acquire_session_lock,
     load_mapping,
     mapping_from_start_ids,
     store_mapping,
 )
-from yoetz.adapters.integrations.cursor_integration import render_cursor_plugin
-from yoetz.cli import hooks, observe_hooks
-from yoetz.domain.observation_profiles import CURSOR_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.ports.plugin_artifacts import PluginFormatProfile
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.adapters.integrations.cursor_integration import render_cursor_plugin
+from finishup.cli import hooks, observe_hooks
+from finishup.domain.observation_profiles import CURSOR_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.ports.plugin_artifacts import PluginFormatProfile
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
 
 _START: dict[str, JsonValue] = {
     "ok": True,
@@ -35,7 +35,7 @@ _SESSION = "cursor:cursor-661"
 @pytest.mark.parametrize(
     "event,tool,field,server",
     [
-        ("afterMCPExecution", "start", "result_json", "yoetz"),
+        ("afterMCPExecution", "start", "result_json", "finishup"),
         ("postToolUse", "MCP:start", "tool_output", None),
     ],
 )
@@ -80,8 +80,8 @@ def _payload(event: str = "afterMCPExecution", **changes: JsonValue) -> dict[str
         "hook_event_name": event,
         "conversation_id": "cursor-661",
         "cursor_version": "3.20.0",
-        "tool_name": "start" if event == "afterMCPExecution" else "mcp__yoetz__start",
-        **({"mcp_server_name": "yoetz"} if event == "afterMCPExecution" else {}),
+        "tool_name": "start" if event == "afterMCPExecution" else "mcp__finishup__start",
+        **({"mcp_server_name": "finishup"} if event == "afterMCPExecution" else {}),
         response_field: json.dumps({"structuredContent": _START, "isError": False}),
         "tool_use_id": "call-661",
         **changes,
@@ -171,12 +171,12 @@ def test_ordinary_mcp_hook_binds_only_and_generic_hook_observes_once(
 @pytest.mark.parametrize(
     "name,server",
     [
-        ("start", "yoetz"),
-        ("start", "plugin-yoetz-yoetz"),
-        ("mcp__yoetz__start", "yoetz"),
-        ("mcp__plugin_yoetz_yoetz__start", "plugin-yoetz-yoetz"),
-        ("yoetz:start", "yoetz"),
-        ("plugin-yoetz-yoetz:start", "plugin-yoetz-yoetz"),
+        ("start", "finishup"),
+        ("start", "plugin-finishup-finishup"),
+        ("mcp__finishup__start", "finishup"),
+        ("mcp__plugin_finishup_finishup__start", "plugin-finishup-finishup"),
+        ("finishup:start", "finishup"),
+        ("plugin-finishup-finishup:start", "plugin-finishup-finishup"),
     ],
 )
 def test_exact_cursor_owner_names(tmp_path: Path, name: str, server: str) -> None:
@@ -189,17 +189,17 @@ def test_exact_cursor_owner_names(tmp_path: Path, name: str, server: str) -> Non
     [
         ("afterMCPExecution", "start", None),
         ("afterMCPExecution", "start", "foreign"),
-        ("afterMCPExecution", "start", "yoetz-extra"),
-        ("afterMCPExecution", "mcp__yoetz__start", "foreign"),
-        ("afterMCPExecution", "mcp__foreign__start", "yoetz"),
-        ("afterMCPExecution", "restart", "yoetz"),
-        ("afterMCPExecution", "yoetz:start", "plugin-yoetz-yoetz"),
-        ("postToolUse", "start", "yoetz"),
+        ("afterMCPExecution", "start", "finishup-extra"),
+        ("afterMCPExecution", "mcp__finishup__start", "foreign"),
+        ("afterMCPExecution", "mcp__foreign__start", "finishup"),
+        ("afterMCPExecution", "restart", "finishup"),
+        ("afterMCPExecution", "finishup:start", "plugin-finishup-finishup"),
+        ("postToolUse", "start", "finishup"),
         ("postToolUse", "MCP:start", None),
-        ("postToolUse", "MCP:start", "yoetz"),
+        ("postToolUse", "MCP:start", "finishup"),
         ("postToolUse", "mcp__foreign__start", None),
-        ("postToolUseFailure", "mcp__yoetz__start", None),
-        ("preToolUse", "mcp__yoetz__start", None),
+        ("postToolUseFailure", "mcp__finishup__start", None),
+        ("preToolUse", "mcp__finishup__start", None),
     ],
 )
 def test_foreign_ambiguous_or_non_success_carrier_cannot_bind(
@@ -345,12 +345,12 @@ def test_unexpected_binding_fault_does_not_drop_the_ordinary_observation(
 
 
 def test_ordinary_renderer_installs_the_owner_bearing_binding_hook(tmp_path: Path) -> None:
-    launcher = tmp_path / "yoetz"
+    launcher = tmp_path / "finishup"
     launcher.write_text("#!/bin/sh\nexit 0\n")
     launcher.chmod(0o700)
     rendered = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-        yoetz_launcher=(str(launcher),),
+        finishup_launcher=(str(launcher),),
         observation_profile="ordinary",
     )
     definition = json.loads(rendered.members["hooks/hooks.json"])["hooks"]

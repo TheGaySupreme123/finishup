@@ -1,6 +1,6 @@
-"""Drive one Yoetz trusted-console ceremony from a real pseudo-terminal.
+"""Drive one FinishUP trusted-console ceremony from a real pseudo-terminal.
 
-The trusted foreground console (``src/yoetz/cli/trusted_console.py``) requires stdin and stderr
+The trusted foreground console (``src/finishup/cli/trusted_console.py``) requires stdin and stderr
 to be the same terminal, ``/dev/tty`` to open, and the process to own the foreground process
 group. ``pty.fork`` gives the child exactly that, so an unattended CI lane can answer the
 passphrase, credential, privacy-decision, and PAM password prompts with run-scoped secrets that
@@ -17,7 +17,7 @@ Usage as a command::
 
     ceremony.py --secret-env DOGFOOD_VAULT_PASSPHRASE \\
         --reply 'Passphrase \\(=@secret' --reply 'Confirm passphrase=@secret' \\
-        -- /path/to/yoetz service initialize-passphrase --json
+        -- /path/to/finishup service initialize-passphrase --json
 
 Each ``--reply`` is ``REGEX=TEXT``; ``@secret`` in TEXT expands to the named environment
 variable. Every reply is used at most once, in whatever order its prompt appears.

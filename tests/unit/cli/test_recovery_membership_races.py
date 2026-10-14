@@ -12,18 +12,18 @@ from typing import Literal, cast
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     acquire_session_lock,
     acquire_workspace_recovery_lock,
 )
-from yoetz.adapters.integrations.observation_local import (
+from finishup.adapters.integrations.observation_local import (
     LocalObservationStore,
     PendingSessionLifecycle,
 )
-from yoetz.application.observation_drain import ObservationOutboxSweeper
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.observe_hooks import ServiceConnector, handle_observe
-from yoetz.domain.observation import (
+from finishup.application.observation_drain import ObservationOutboxSweeper
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.observe_hooks import ServiceConnector, handle_observe
+from finishup.domain.observation import (
     ObservationGapCode,
     ObservationIngestDisposition,
     ObservationIngestRequest,
@@ -31,7 +31,7 @@ from yoetz.domain.observation import (
     ObservationSource,
     observation_ingest_result_to_json,
 )
-from yoetz.protocol.models import StartRequest
+from finishup.protocol.models import StartRequest
 
 _START_IDS = {
     "task_id": "tsk_1b4e28ba-2fa1-4d3b-8f0a-0c1d2e3f4a5b",
@@ -151,20 +151,20 @@ def _payload(session_id: str, event: str, *, tool_name: str = "shell") -> bytes:
     ).encode()
 
 
-def _yoetz_mutation_tool(source: ObservationSource) -> str:
+def _finishup_mutation_tool(source: ObservationSource) -> str:
     if source is ObservationSource.CLAUDE_HOOK:
-        return "mcp__plugin_yoetz_yoetz__publish_work"
+        return "mcp__plugin_finishup_finishup__publish_work"
     if source is ObservationSource.CURSOR_HOOK:
-        return "yoetz:publish_work"
-    return "mcp__yoetz__publish_work"
+        return "finishup:publish_work"
+    return "mcp__finishup__publish_work"
 
 
-def _yoetz_read_tool(source: ObservationSource) -> str:
+def _finishup_read_tool(source: ObservationSource) -> str:
     if source is ObservationSource.CLAUDE_HOOK:
-        return "mcp__plugin_yoetz_yoetz__status"
+        return "mcp__plugin_finishup_finishup__status"
     if source is ObservationSource.CURSOR_HOOK:
-        return "yoetz:status"
-    return "mcp__yoetz__status"
+        return "finishup:status"
+    return "mcp__finishup__status"
 
 
 def _assert_retained_for_session(
@@ -379,7 +379,7 @@ def test_session_lock_owned_still_requires_workspace_reservation(
                                 _payload(
                                     session_id,
                                     "SessionStart",
-                                    tool_name=_yoetz_read_tool(source),
+                                    tool_name=_finishup_read_tool(source),
                                 )
                             ),
                             "source": "clear",
@@ -570,7 +570,7 @@ def test_session_start_reconciles_deferred_membership_and_drains_without_followu
             stdin_bytes=_payload(
                 session_id,
                 "PostToolUse",
-                tool_name=_yoetz_mutation_tool(source),
+                tool_name=_finishup_mutation_tool(source),
             ),
             stdout=io.BytesIO(),
             workspace=str(workspace_dir.resolve()),

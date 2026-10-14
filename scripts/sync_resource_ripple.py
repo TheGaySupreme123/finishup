@@ -24,12 +24,12 @@ _MAX_PASSES: Final = 5
 _VERSION_MANIFEST_SCHEMA: Final = "version/version-manifest-2.3.0.schema.json"
 _OWNED_ROOTS: Final = (
     "schemas",
-    "src/yoetz/resources",
-    ".agents/plugins/yoetz",
-    ".agents/skills/yoetz",
+    "src/finishup/resources",
+    ".agents/plugins/finishup",
+    ".agents/skills/finishup",
 )
 _OWNED_FILES: Final = (
-    "skills/codex/yoetz/manifest.json",
+    "skills/codex/finishup/manifest.json",
     "support/runtime-support.json",
 )
 _SEMANTIC_CHECK_SOURCE: Final = """\
@@ -38,8 +38,8 @@ import pathlib
 
 from jsonschema import Draft202012Validator
 
-from yoetz.protocol.schemas import load_schema_catalog
-from yoetz.version import build_version_manifest, version_manifest_json
+from finishup.protocol.schemas import load_schema_catalog
+from finishup.version import build_version_manifest, version_manifest_json
 
 # Matching source and mirror bytes can share a stale schema inventory. Exercise the same closed
 # catalog loader used by every public request before claiming the package is usable.
@@ -105,7 +105,7 @@ def _preflight(repo_root: Path) -> bool:
             sys.executable,
             "-c",
             "from verify_resource_manifest import load_inventory_config; "
-            "from yoetz.version import REVIEWED_RESOURCE_COUNT; "
+            "from finishup.version import REVIEWED_RESOURCE_COUNT; "
             "print(len(load_inventory_config().entries), REVIEWED_RESOURCE_COUNT)",
         ],
         cwd=repo_root / "scripts",
@@ -130,7 +130,7 @@ def _preflight(repo_root: Path) -> bool:
         "sync_resource_ripple: FAIL (reviewed_resource_count_mismatch)\n"
         f"  inventory entries: {actual_count}\n"
         f"  REVIEWED_RESOURCE_COUNT: {reviewed_count}\n"
-        "  review and update the single cardinality tripwire in src/yoetz/version.py first",
+        "  review and update the single cardinality tripwire in src/finishup/version.py first",
         file=sys.stderr,
     )
     return False

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.codex_lifecycle import (
+from finishup.adapters.integrations.codex_lifecycle import (
     acquire_session_lock,
     load_mapping,
     mapping_from_start_ids,
@@ -16,12 +16,12 @@ from yoetz.adapters.integrations.codex_lifecycle import (
     scoped_child_session_id,
     store_mapping,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli.hooks import bind_start_mapping_outcome, recover_pending_start_mapping
-from yoetz.cli.observe_hooks import handle_claude_observe, handle_observe
-from yoetz.domain.observation import ObservationSource
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.ids import IdKind, new_id
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli.hooks import bind_start_mapping_outcome, recover_pending_start_mapping
+from finishup.cli.observe_hooks import handle_claude_observe, handle_observe
+from finishup.domain.observation import ObservationSource
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.ids import IdKind, new_id
 
 
 @pytest.fixture(autouse=True)
@@ -67,7 +67,7 @@ def test_attribution_gap_without_child_alias_never_peeks_parent_delivery(
     payload = {
         "session_id": host_session,
         "hook_event_name": "PostToolUse",
-        "tool_name": "mcp__plugin_yoetz_yoetz__check",
+        "tool_name": "mcp__plugin_finishup_finishup__check",
         "tool_use_id": "child-check-call",
         "success": False,
     }
@@ -127,7 +127,7 @@ def test_unbound_child_callbacks_never_use_parent_delivery(
     payload: dict[str, object] = {
         "session_id": host_session,
         "hook_event_name": "PostToolUse",
-        "tool_name": "shell" if is_codex else "mcp__plugin_yoetz_yoetz__check",
+        "tool_name": "shell" if is_codex else "mcp__plugin_finishup_finishup__check",
         "tool_use_id": "unbound-child-call",
         "success": True,
     }
@@ -185,7 +185,7 @@ def test_standalone_start_in_child_preserves_parent_route(
     next_task = new_id(IdKind.TASK)
     payload: dict[str, JsonValue] = {
         "session_id": host_session,
-        "tool_name": "mcp__yoetz__start",
+        "tool_name": "mcp__finishup__start",
         "tool_response": {
             "structuredContent": {
                 "ok": True,
@@ -231,7 +231,7 @@ def test_claude_conflicting_nested_alias_does_not_persist_a_child_route(tmp_path
     payload = {
         "session_id": host_session,
         "hook_event_name": "PostToolUse",
-        "tool_name": "mcp__plugin_yoetz_yoetz__start",
+        "tool_name": "mcp__plugin_finishup_finishup__start",
         "tool_use_id": "conflicting-child-start",
         "agent_id": "native-child-a",
         "tool_input": {"agent_id": "native-child-b"},
@@ -285,7 +285,7 @@ def test_standalone_child_start_cannot_replace_a_locked_queued_parent(tmp_path: 
     payload: dict[str, JsonValue] = {
         "session_id": host_session,
         "agent_id": "queued-standalone-child",
-        "tool_name": "mcp__yoetz__start",
+        "tool_name": "mcp__finishup__start",
         "tool_response": {
             "structuredContent": {
                 "ok": True,

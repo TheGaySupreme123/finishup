@@ -5,7 +5,7 @@ from __future__ import annotations
 import apsw
 import pytest
 
-from yoetz.adapters.sqlite.migrations import (
+from finishup.adapters.sqlite.migrations import (
     CATALOG_MIGRATIONS,
     Migration,
     initialize_catalog,

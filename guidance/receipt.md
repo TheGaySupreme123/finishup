@@ -25,7 +25,7 @@ resolved-history counts. Never headline a bare “no findings”, “zero findin
 
 Do not save the receipt as a file in the task workspace or in any output directory: the ledger
 keeps it, and a stray file can break a grader that lists an output directory. Put its conclusion
-in your final message instead. Yoetz never counts its own receipt or export files as an edit.
+in your final message instead. FinishUP never counts its own receipt or export files as an edit.
 
 Keep `insufficient_coverage`, digest-only provenance, clipped or omitted evidence, unavailable
 provider review, and observation gaps explicit. A clean local check cannot strengthen a receipt past

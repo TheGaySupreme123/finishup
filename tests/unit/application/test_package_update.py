@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.privacy.update_checks import (
-    PYPI_YOETZ_JSON_URL,
+from finishup.adapters.privacy.update_checks import (
+    PYPI_FINISHUP_JSON_URL,
     UpdateChecksTransportError,
     parse_latest_version,
 )
-from yoetz.application.package_update import (
+from finishup.application.package_update import (
     PACKAGE_UPDATE_UPGRADE_COMMAND,
     build_package_update_advisory,
     compare_versions,
@@ -21,7 +21,7 @@ from yoetz.application.package_update import (
     resolve_package_update_advisory,
     store_package_update_cache,
 )
-from yoetz.domain.privacy import (
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     ChannelPolicy,
@@ -249,7 +249,7 @@ def test_parse_latest_version_rejects_bad_bodies() -> None:
 
 
 def test_allowlisted_url_constant() -> None:
-    assert PYPI_YOETZ_JSON_URL == "https://pypi.org/pypi/yoetz/json"
+    assert PYPI_FINISHUP_JSON_URL == "https://pypi.org/pypi/finishup/json"
 
 
 def test_is_update_checks_permitted_bits() -> None:
@@ -282,4 +282,4 @@ def test_update_tip_includes_complete_upgrade_guide() -> None:
     advisory = build_package_update_advisory(
         installed_version="0.2.0", latest_version="0.3.0", source="cache"
     )
-    assert any("yoetz upgrade" in line for line in advisory.tip_lines())
+    assert any("finishup upgrade" in line for line in advisory.tip_lines())

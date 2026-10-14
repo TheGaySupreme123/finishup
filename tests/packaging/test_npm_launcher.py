@@ -19,30 +19,30 @@ def _package() -> dict[str, object]:
 
 def test_package_shape_is_delegation_only() -> None:
     package = _package()
-    assert package["name"] == "yoetz"
+    assert package["name"] == "finishup"
     assert package["private"] is False
-    assert package["bin"] == {"yoetz": "./bin/yoetz.js"}
+    assert package["bin"] == {"finishup": "./bin/finishup.js"}
     # No runtime dependencies: the launcher may never bundle or fetch code itself.
     for forbidden in ("dependencies", "devDependencies", "optionalDependencies", "scripts"):
         assert forbidden not in package, forbidden
     assert package["license"] == "Apache-2.0"
-    assert package["homepage"] == "https://yoetz.dev"
+    assert package["homepage"] == "https://finishup.dev"
     assert package["repository"] == {
         "type": "git",
-        "url": "git+https://github.com/TheGaySupreme123/yoetz.git",
+        "url": "git+https://github.com/TheGaySupreme123/finishup.git",
     }
-    assert package["bugs"] == {"url": "https://github.com/TheGaySupreme123/yoetz/issues"}
+    assert package["bugs"] == {"url": "https://github.com/TheGaySupreme123/finishup/issues"}
     assert package["publishConfig"] == {"access": "public"}
 
 
 def test_version_stays_in_lockstep_with_the_python_distribution() -> None:
-    import yoetz
+    import finishup
 
-    assert _package()["version"] == yoetz.__version__
+    assert _package()["version"] == finishup.__version__
 
 
 def test_launcher_script_exists_and_is_executable() -> None:
-    script = _LAUNCHER_DIR / "bin" / "yoetz.js"
+    script = _LAUNCHER_DIR / "bin" / "finishup.js"
     assert script.is_file()
     assert os.access(script, os.X_OK)
     first_line = script.read_text(encoding="utf-8").splitlines()[0]
@@ -63,7 +63,7 @@ def test_launcher_delegates_to_pinned_uvx(tmp_path: Path) -> None:
     os.chmod(shim_dir / "uvx", 0o755)
 
     completed = subprocess.run(
-        (node, str(_LAUNCHER_DIR / "bin" / "yoetz.js"), "status", "--json"),
+        (node, str(_LAUNCHER_DIR / "bin" / "finishup.js"), "status", "--json"),
         env={**os.environ, "PATH": str(shim_dir)},
         capture_output=True,
         timeout=30,
@@ -74,12 +74,12 @@ def test_launcher_delegates_to_pinned_uvx(tmp_path: Path) -> None:
     version = _package()["version"]
     # Versionless: `uvx` then runs the tool environment installed just above rather than
     # resolving a possibly cache-backed environment for the same version.
-    assert record.read_text(encoding="utf-8").strip() == "--python 3.14 yoetz status --json"
+    assert record.read_text(encoding="utf-8").strip() == "--python 3.14 finishup status --json"
     # The same exact version is made a persistent uv tool first, so host hooks and MCP
     # entries bind a launcher that survives `uv cache clean` (issue #766).
     assert uv_record.read_text(encoding="utf-8").splitlines() == [
         "--version",
-        f"tool install --quiet --python 3.14 yoetz=={version}",
+        f"tool install --quiet --python 3.14 finishup=={version}",
     ]
 
 
@@ -102,7 +102,7 @@ def test_launcher_reports_a_failed_tool_install_and_never_runs_the_child(
     os.chmod(shim_dir / "uvx", 0o755)
 
     completed = subprocess.run(
-        (node, str(_LAUNCHER_DIR / "bin" / "yoetz.js"), "version"),
+        (node, str(_LAUNCHER_DIR / "bin" / "finishup.js"), "version"),
         env={**os.environ, "PATH": str(shim_dir)},
         capture_output=True,
         timeout=30,
@@ -123,7 +123,7 @@ def test_launcher_fails_with_guidance_when_uv_is_absent(tmp_path: Path) -> None:
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
     completed = subprocess.run(
-        (node, str(_LAUNCHER_DIR / "bin" / "yoetz.js")),
+        (node, str(_LAUNCHER_DIR / "bin" / "finishup.js")),
         env={**os.environ, "PATH": str(empty_dir)},
         capture_output=True,
         timeout=30,
@@ -145,7 +145,7 @@ def test_launcher_does_not_call_a_broken_uv_installation_missing(tmp_path: Path)
     os.chmod(shim_dir / "uv", 0o755)
 
     completed = subprocess.run(
-        (node, str(_LAUNCHER_DIR / "bin" / "yoetz.js")),
+        (node, str(_LAUNCHER_DIR / "bin" / "finishup.js")),
         env={**os.environ, "PATH": str(shim_dir)},
         capture_output=True,
         timeout=30,
@@ -167,7 +167,7 @@ def test_launcher_reports_signal_termination_as_the_conventional_exit_code(
 ) -> None:
     """A script that checks exit codes must see the same value either entry point gives.
 
-    `npx yoetz` has to be interchangeable with the Python console script, and an
+    `npx finishup` has to be interchangeable with the Python console script, and an
     interrupted interactive session exits 130 there.
     """
 
@@ -184,7 +184,7 @@ def test_launcher_reports_signal_termination_as_the_conventional_exit_code(
     os.chmod(shim_dir / "uvx", 0o755)
 
     completed = subprocess.run(
-        (node, str(_LAUNCHER_DIR / "bin" / "yoetz.js")),
+        (node, str(_LAUNCHER_DIR / "bin" / "finishup.js")),
         env={**os.environ, "PATH": str(shim_dir)},
         capture_output=True,
         timeout=30,
@@ -202,7 +202,7 @@ def test_launcher_guidance_names_the_runtime_and_a_concrete_install_command(
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
     completed = subprocess.run(
-        (node, str(_LAUNCHER_DIR / "bin" / "yoetz.js")),
+        (node, str(_LAUNCHER_DIR / "bin" / "finishup.js")),
         env={**os.environ, "PATH": str(empty_dir)},
         capture_output=True,
         timeout=30,
@@ -217,7 +217,7 @@ def test_launcher_guidance_names_the_runtime_and_a_concrete_install_command(
 def test_launcher_never_reimplements_setup_or_interface_logic() -> None:
     """The launcher stays a delegator: no TTY probing, no setup, no interface."""
 
-    source = (_LAUNCHER_DIR / "bin" / "yoetz.js").read_text(encoding="utf-8")
+    source = (_LAUNCHER_DIR / "bin" / "finishup.js").read_text(encoding="utf-8")
     for forbidden in ("isTTY", "readline", "prompt(", "createInterface", "pip install"):
         assert forbidden not in source, forbidden
     # stdio must be inherited so the child sees the real controlling terminal.

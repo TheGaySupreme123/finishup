@@ -1,4 +1,4 @@
-"""``yoetz privacy receipts`` renders the real decoded receipt values (issue #731).
+"""``finishup privacy receipts`` renders the real decoded receipt values (issue #731).
 
 The CLI's one result converter had no ``datetime`` case, so every successfully stored receipt --
 whose ``finished_at`` and ``dispatch_started_at`` are real ``datetime`` objects after the client
@@ -27,20 +27,20 @@ from tests.builders.privacy_receipts import (
     network_receipt_view,
 )
 
-from yoetz.application.privacy_control import (
+from finishup.application.privacy_control import (
     encode_privacy_receipt_page,
     encode_privacy_receipt_view,
 )
-from yoetz.cli import bootstrap
-from yoetz.cli.app import (
+from finishup.cli import bootstrap
+from finishup.cli.app import (
     _privacy_receipts_get,  # pyright: ignore[reportPrivateUsage]
     _privacy_receipts_list,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.domain.values import JsonObject, freeze_json
-from yoetz.ports.control import ControlError
-from yoetz.ports.privacy import PrivacyReceiptPage, PrivacyReceiptView
-from yoetz.protocol.canonical import JsonValue
-from yoetz.service.client import (
+from finishup.domain.values import JsonObject, freeze_json
+from finishup.ports.control import ControlError
+from finishup.ports.privacy import PrivacyReceiptPage, PrivacyReceiptView
+from finishup.protocol.canonical import JsonValue
+from finishup.service.client import (
     PrivacyReceiptGetResult,
     _receipt_get_from_wire,  # pyright: ignore[reportPrivateUsage]
     _receipt_page_from_wire,  # pyright: ignore[reportPrivateUsage]
@@ -100,13 +100,13 @@ def _install(monkeypatch: pytest.MonkeyPatch, client: _Client) -> _Client:
     async def build(**_kwargs: object) -> _Client:
         return client
 
-    monkeypatch.setattr("yoetz.cli.app.build_service_client", build)
+    monkeypatch.setattr("finishup.cli.app.build_service_client", build)
     return client
 
 
 def _captured_json(monkeypatch: pytest.MonkeyPatch) -> list[JsonValue]:
     emitted: list[JsonValue] = []
-    monkeypatch.setattr("yoetz.cli.app._stdout_json", emitted.append)
+    monkeypatch.setattr("finishup.cli.app._stdout_json", emitted.append)
     return emitted
 
 
@@ -360,7 +360,7 @@ def test_the_converter_renders_canonical_timestamps_without_a_catch_all() -> Non
 
 
 def test_a_non_canonical_timestamp_is_a_typed_refusal_not_an_invented_rendering() -> None:
-    from yoetz.protocol.errors import ProtocolValueError
+    from finishup.protocol.errors import ProtocolValueError
 
     with pytest.raises(ProtocolValueError):
         bootstrap.plain_json(datetime(2026, 9, 13, 12, 0))
@@ -369,6 +369,6 @@ def test_a_non_canonical_timestamp_is_a_typed_refusal_not_an_invented_rendering(
 def test_the_menu_shares_the_one_converter() -> None:
     """The byte-identical copy in ``cli/menu.py`` is why #731 had two homes."""
 
-    from yoetz.cli import menu
+    from finishup.cli import menu
 
     assert menu._plain(NOW) == _EXPECTED_TIMESTAMP  # pyright: ignore[reportPrivateUsage]

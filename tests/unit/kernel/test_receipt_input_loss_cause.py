@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from builders.observed_runs import ObservedLedger, receipt_limitations
-from yoetz.application.observation_materialize import materialize_selection_loss
-from yoetz.domain.events import EventSchema, EvidenceRecordedPayload
-from yoetz.domain.observation import ObservationSource
-from yoetz.domain.observation_loss import ObservationSelectionLoss
-from yoetz.domain.values import timestamp_from_string
+from finishup.application.observation_materialize import materialize_selection_loss
+from finishup.domain.events import EventSchema, EvidenceRecordedPayload
+from finishup.domain.observation import ObservationSource
+from finishup.domain.observation_loss import ObservationSelectionLoss
+from finishup.domain.values import timestamp_from_string
 
 _SESSION_COMMITMENT = "hmac-sha256:" + "a" * 64
 

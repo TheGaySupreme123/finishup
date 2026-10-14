@@ -26,9 +26,9 @@ from builders.start_application import (
     start_composition,
     start_request,
 )
-from yoetz.application.egress import PrivacyCoordinator
-from yoetz.application.publish_work import PublishWorkInternalResult
-from yoetz.application.service import (
+from finishup.application.egress import PrivacyCoordinator
+from finishup.application.publish_work import PublishWorkInternalResult
+from finishup.application.service import (
     Application,
     ClientProjectionContext,
     ControlProjectionBinding,
@@ -36,8 +36,8 @@ from yoetz.application.service import (
     UnprojectedControlBody,
     VerificationPolicy,
 )
-from yoetz.domain.events import RuntimeProfile
-from yoetz.domain.privacy import (
+from finishup.domain.events import RuntimeProfile
+from finishup.domain.privacy import (
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
@@ -52,19 +52,19 @@ from yoetz.domain.privacy import (
     ReceiptSecretScan,
     ReceiptTransformations,
 )
-from yoetz.domain.receipts import (
+from finishup.domain.receipts import (
     PolicyVersionEntry,
     ReceiptVersionSlice,
     SchemaVersionEntry,
 )
-from yoetz.domain.values import Frontier
-from yoetz.ports.control import ControlClientKind, ControlMethod
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.publish_response_catalog import PublishResponseCatalogPort
-from yoetz.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.models import (
+from finishup.domain.values import Frontier
+from finishup.ports.control import ControlClientKind, ControlMethod
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.publish_response_catalog import PublishResponseCatalogPort
+from finishup.ports.runtime import BundleRuntimePort, RouteCommand, TaskRuntime
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.models import (
     FrontierModel,
     PublishWorkRequest,
     StatusRequest,
@@ -79,7 +79,7 @@ _WORKSPACE = "hmac-sha256:" + "8" * 64
 
 class _IdleImporter:
     async def status(self, session: str) -> ImportStatusSnapshot:
-        from yoetz.domain.values import session_id
+        from finishup.domain.values import session_id
 
         return ImportStatusSnapshot(session_id(session), 0, 0, (), ())
 
@@ -208,7 +208,7 @@ class _BlockEverything:
 
 def _versions() -> ReceiptVersionSlice:
     return ReceiptVersionSlice(
-        package_name="yoetz",
+        package_name="finishup",
         package_version="0.1.0",
         protocol_version="0.1",
         engine_version="0.1.0",

@@ -11,7 +11,7 @@ obligation counters. ``assert_surfaces_agree`` is the merge gate: the same concl
 counters must appear on status JSON (every view), the MCP text, the CLI and terminal lines,
 closure_prepare, the check's next step and the receipt in JSON, markdown and text.
 
-Shapes: (a) a deterministic run clean except for Yoetz's own calls (music D, html D, payments D);
+Shapes: (a) a deterministic run clean except for FinishUP's own calls (music D, html D, payments D);
 (b) ks S, a rejection that awaits a reviewer ruling; (c) cargo D, acknowledged obligations and
 bookkeeping findings; (d) vpp S and ks S, a reviewer's limitation request (owner decisions Q4 and 2026-10-12): the agent's
 answer decides what it means, so the shape is driven with both answers (``acknowledged`` is a
@@ -36,20 +36,18 @@ import pytest
 import integration.application.test_respond_status_receipt as h
 from builders.observed_runs import INSTALLATION_KEY
 from builders.start_application import protocol_id, start_request
-from integration.application import test_tb4n3_own_calls_cross_surface as own_calls
-from integration.application.test_closure_readiness_checklist import _Session, public_status
-from yoetz.application import check_change
-from yoetz.application.check import CheckCommitResult, FinalSemanticEvaluation
-from yoetz.application.status import StatusInternalResult
-from yoetz.cli.closure import Selection, prepare_closure
-from yoetz.cli.render import render_closure_readiness_lines, render_human_status
-from yoetz.domain.findings import FindingKind
-from yoetz.domain.receipts import SchemaVersionEntry
-from yoetz.kernel.task_facts import RequestedOutputState, register_command_identity_key
-from yoetz.mcp.summaries import summary_for_closure_prepare, summary_for_status
-from yoetz.ports.semantic import ReviewerChallenge, SemanticJudgment
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import (
+from finishup.application import check_change
+from finishup.application.check import CheckCommitResult, FinalSemanticEvaluation
+from finishup.application.status import StatusInternalResult
+from finishup.cli.closure import Selection, prepare_closure
+from finishup.cli.render import render_closure_readiness_lines, render_human_status
+from finishup.domain.findings import FindingKind
+from finishup.domain.receipts import SchemaVersionEntry
+from finishup.kernel.task_facts import RequestedOutputState, register_command_identity_key
+from finishup.mcp.summaries import summary_for_closure_prepare, summary_for_status
+from finishup.ports.semantic import ReviewerChallenge, SemanticJudgment
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import (
     CheckRequest,
     ReceiptRequest,
     RespondRequest,
@@ -57,6 +55,8 @@ from yoetz.protocol.models import (
     StatusResultModel,
     StatusSuccessModel,
 )
+from integration.application import test_tb4n3_own_calls_cross_surface as own_calls
+from integration.application.test_closure_readiness_checklist import _Session, public_status
 
 pytestmark = pytest.mark.anyio
 
@@ -469,7 +469,7 @@ def assert_surfaces_agree(
                 assert f"Why {conclusion}" in text, (fmt, text)
 
 
-# -- Shape (a): a deterministic run clean except for Yoetz's own calls --------------------------
+# -- Shape (a): a deterministic run clean except for FinishUP's own calls --------------------------
 
 
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
@@ -894,7 +894,7 @@ async def test_a_resolved_obligation_whose_deliverable_is_emptied_is_agent_work(
         register_command_identity_key(None)
 
 
-async def test_a_yoetz_assumption_naming_the_path_returns_the_obligation_to_resolved(
+async def test_a_finishup_assumption_naming_the_path_returns_the_obligation_to_resolved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Owner default: an assumption that names the emptied path clears the fact.
@@ -915,7 +915,7 @@ async def test_a_yoetz_assumption_naming_the_path_returns_the_obligation_to_reso
             run.draft(
                 "decision_recorded",
                 {
-                    "statement": f"The solver is deliberately empty.\nyoetz-assumption:{protocol_id('obl_', 7001)}",
+                    "statement": f"The solver is deliberately empty.\nfinishup-assumption:{protocol_id('obl_', 7001)}",
                     "rationale": "The task statement says /app/solve.sage must be empty.",
                     "authority": "harness:codex",
                     "affected_obligation_ids": [protocol_id("obl_", 7001)],
@@ -1027,7 +1027,7 @@ async def test_control_lake_s_a_recheck_that_raises_nothing_new_keeps_the_label(
 
 
 async def test_control_cad_d_digest_only_evidence_keeps_a_deterministic_run_insufficient() -> None:
-    """cad D: evidence seen only by digest is not a Yoetz budget, so it bounds on every surface."""
+    """cad D: evidence seen only by digest is not a FinishUP budget, so it bounds on every surface."""
 
     run = await _begin(seed=75)
     evidence = protocol_id("evd_", 7301)

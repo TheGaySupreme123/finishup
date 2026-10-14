@@ -9,11 +9,11 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe_hooks as observe_hooks_module
-from yoetz.cli.observe_hooks import handle_observe
-from yoetz.domain.observation import ObservationSource
-from yoetz.domain.observation_profiles import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe_hooks as observe_hooks_module
+from finishup.cli.observe_hooks import handle_observe
+from finishup.domain.observation import ObservationSource
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
@@ -75,7 +75,7 @@ def test_contentless_native_rows_defer_service_drain(
         "session_id": session_id,
         "tool_name": "publish_work",
         "tool_call_id": "native-structural-only",
-        "tool_response": "Already recorded by the Yoetz service; do not recapture this output",
+        "tool_response": "Already recorded by the FinishUP service; do not recapture this output",
         "success": True,
     }
     code = handle_observe(

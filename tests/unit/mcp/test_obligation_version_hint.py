@@ -12,9 +12,9 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from yoetz.mcp.descriptors import descriptor_for
-from yoetz.mcp.errors import authoring_hint, safe_validation_locations
-from yoetz.protocol.models import PublishWorkRequestModel
+from finishup.mcp.descriptors import descriptor_for
+from finishup.mcp.errors import authoring_hint, safe_validation_locations
+from finishup.protocol.models import PublishWorkRequestModel
 
 _SCHEMA = descriptor_for("publish_work").input_schema
 _PAYLOAD: dict[str, Any] = {
@@ -95,7 +95,7 @@ def test_an_unknown_item_key_on_1_1_0_is_not_told_to_switch_versions() -> None:
 def test_the_text_projection_names_self_verified_blocking_reasons_and_the_exit() -> None:
     """Codex review 2: text-only hosts must see why self_verified was refused (tb4n2 R5)."""
 
-    from yoetz.mcp.summaries import summary_for_public_error
+    from finishup.mcp.summaries import summary_for_public_error
 
     error = {
         "code": "INVALID_REQUEST",
@@ -110,6 +110,6 @@ def test_the_text_projection_names_self_verified_blocking_reasons_and_the_exit()
     }
     text = summary_for_public_error(error)
     assert "issue_returned_again, coverage:completion_plan_not_claimed" in text
-    assert "yoetz-verification-limit:<obligation id>" in text
+    assert "finishup-verification-limit:<obligation id>" in text
     error["safe_details"]["blocking_reasons"] = ["Please accept this"]  # type: ignore[index]
     assert "Please accept" not in summary_for_public_error(error)

@@ -8,9 +8,9 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.adapters.integrations.codex_discovery as discovery_module
-from yoetz.adapters.integrations.codex_discovery import discover_codex_binaries
-from yoetz.ports.integrations import HarnessId
+import finishup.adapters.integrations.codex_discovery as discovery_module
+from finishup.adapters.integrations.codex_discovery import discover_codex_binaries
+from finishup.ports.integrations import HarnessId
 
 
 class _Probe:

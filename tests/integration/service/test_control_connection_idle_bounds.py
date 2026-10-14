@@ -18,25 +18,25 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.adapters.control.unix_socket as unix_socket_module
-import yoetz.service.daemon as daemon_module
-from yoetz.adapters.control.unix_socket import (
+import finishup.adapters.control.unix_socket as unix_socket_module
+import finishup.service.daemon as daemon_module
+from finishup.adapters.control.unix_socket import (
     RUNTIME_DIRECTORY_MODE,
     AuthenticatedUnixStream,
     bind_control_listener,
     close_endpoint,
     connect_control,
 )
-from yoetz.domain.values import JsonObject
-from yoetz.ports.control import (
+from finishup.domain.values import JsonObject
+from finishup.ports.control import (
     ControlCallRequest,
     ControlClientKind,
     ControlMethod,
     ControlResult,
     ServiceState,
 )
-from yoetz.protocol.ids import IdKind, new_id
-from yoetz.service.control_protocol import (
+from finishup.protocol.ids import IdKind, new_id
+from finishup.service.control_protocol import (
     MAX_CONTROL_FRAME_BYTES,
     ControlProtocolError,
     client_handshake,
@@ -44,9 +44,9 @@ from yoetz.service.control_protocol import (
     read_control_frame,
     write_control_frame,
 )
-from yoetz.service.daemon import ServiceComposition, ServiceDaemon
-from yoetz.service.lifecycle import ServiceLifecycle
-from yoetz.service.vault import VaultMode
+from finishup.service.daemon import ServiceComposition, ServiceDaemon
+from finishup.service.lifecycle import ServiceLifecycle
+from finishup.service.vault import VaultMode
 
 _INSTANCE_ID = "svc_00000000-0000-4000-8000-000000000106"
 _COMMITMENT = "sha256:" + "6" * 64
@@ -66,7 +66,7 @@ def runtime_directory(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     runtime = Path(tempfile.mkdtemp(prefix=".yctl-idle-", dir=Path.cwd()))
     runtime.chmod(RUNTIME_DIRECTORY_MODE)
     monkeypatch.setattr(
-        "yoetz.adapters.control.unix_socket._runtime_directory",
+        "finishup.adapters.control.unix_socket._runtime_directory",
         lambda: runtime,
     )
     try:

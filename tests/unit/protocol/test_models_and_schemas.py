@@ -16,11 +16,11 @@ from urllib.parse import urldefrag
 import pytest
 from pydantic import BaseModel, Field, ValidationError
 
-import yoetz.protocol.schemas as schemas_module
+import finishup.protocol.schemas as schemas_module
 from builders.readiness import with_checklist
-from yoetz.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import (
+from finishup.protocol.canonical import JsonValue, canonical_encode, strict_json_parse
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import (
     SCHEMA_MANIFEST_SCHEMA,
     SCHEMA_MANIFEST_VERSION,
     SCHEMA_MEMBER_COUNT,
@@ -48,7 +48,7 @@ _VALID_COVERAGE: dict[str, JsonValue] = {
     "check_types": ["none"],
     "known_gaps": [],
 }
-_SCHEMA_RESOURCE_ROOT = resources.files("yoetz").joinpath("resources").joinpath("schemas")
+_SCHEMA_RESOURCE_ROOT = resources.files("finishup").joinpath("resources").joinpath("schemas")
 _EXPECTED_PROTOCOL_VERSION = "0.1"
 _EXPECTED_SCHEMA_VERSION = "1.0.0"
 _EXPECTED_MAX_EVENTS_PER_BATCH = 100
@@ -179,7 +179,7 @@ _OPTIONAL_SEMANTIC_PROVENANCE_PAIRS = frozenset({("failed", "coordinator_failure
 
 
 def _models_module() -> Any:
-    return importlib.import_module("yoetz.protocol.models")
+    return importlib.import_module("finishup.protocol.models")
 
 
 def _schema_resource(rel_path: str) -> Any:
@@ -342,7 +342,7 @@ _RESULT_SUPPORT_MODEL_SPECS: tuple[tuple[str, str, str], ...] = (
     ("StartSuccessModel", "operations/start-result-1.1.0.schema.json", "success"),
     ("StartCompactViewModel", "operations/start-result-1.0.0.schema.json", "compact_view"),
     ("StartVersionSliceModel", "operations/start-result-1.0.0.schema.json", "version_slice"),
-    # 1.1.0 (unreleased) adds the optional yoetz-blocker notices (#985).
+    # 1.1.0 (unreleased) adds the optional finishup-blocker notices (#985).
     (
         "PublishWorkSuccessModel",
         "operations/publish-work-result-1.1.0.schema.json",
@@ -828,7 +828,7 @@ def _candidate_status_result_wire(*, omitted: bool = False) -> dict[str, JsonVal
 
 
 def test_human_status_renders_operation_continuation_and_exact_trusted_command() -> None:
-    from yoetz.cli.render import render_human_status
+    from finishup.cli.render import render_human_status
 
     models = _models_module()
     result = _status_result_wire()
@@ -845,7 +845,7 @@ def test_human_status_renders_operation_continuation_and_exact_trusted_command()
         "accepted_events": [],
         "continuation": {
             "kind": "repository_privacy_setup",
-            "command": ["yoetz", "--privacy"],
+            "command": ["finishup", "--privacy"],
             "replay_request_id": operation_request_id,
             "instruction": "Run the trusted repository privacy setup, then replay this request.",
         },
@@ -858,12 +858,12 @@ def test_human_status_renders_operation_continuation_and_exact_trusted_command()
     # ADR-046: no human surface prints "receipt-blocking" any more; the counters are the verdict.
     assert "Receipt-blocking" not in rendered
     assert "Continuation: repository_privacy_setup" in rendered
-    assert "Trusted command: yoetz --privacy" in rendered
+    assert "Trusted command: finishup --privacy" in rendered
     assert f"Replay request ID: {operation_request_id}" in rendered
 
 
 def test_human_status_reports_latest_check_test_edit_totals() -> None:
-    from yoetz.cli.render import render_human_status
+    from finishup.cli.render import render_human_status
 
     models = _models_module()
     result = _status_result_wire()
@@ -912,7 +912,7 @@ def test_human_status_reports_latest_check_test_edit_totals() -> None:
 
 @pytest.mark.parametrize("attempt_count", [0, 3, 64])
 def test_human_status_bounds_command_attempts_without_truncating_json(attempt_count: int) -> None:
-    from yoetz.cli.render import render_human_status
+    from finishup.cli.render import render_human_status
 
     models = _models_module()
     result = _status_result_wire()
@@ -946,7 +946,7 @@ def test_human_status_bounds_command_attempts_without_truncating_json(attempt_co
     rendered = render_human_status(parsed.root)
     assert rendered.count(" command item ") == min(attempt_count, 3)
     # tb4n4 (#1049): the open obligation's view states the resolution recipe, field included.
-    from yoetz.protocol.readiness_text import OBLIGATION_RESOLVE_RECIPE_VARIANTS
+    from finishup.protocol.readiness_text import OBLIGATION_RESOLVE_RECIPE_VARIANTS
 
     assert OBLIGATION_RESOLVE_RECIPE_VARIANTS[0] in rendered
     if attempt_count > 3:
@@ -961,7 +961,7 @@ def test_human_status_bounds_command_attempts_without_truncating_json(attempt_co
 def test_human_status_reports_unknown_readiness_counts_as_unavailable() -> None:
     """An unreadable compact singleton must not render as ``None`` or as a clean zero."""
 
-    from yoetz.cli.render import render_human_status
+    from finishup.cli.render import render_human_status
 
     models = _models_module()
     result = _status_result_wire()
@@ -987,8 +987,8 @@ def test_human_status_reports_unknown_readiness_counts_as_unavailable() -> None:
 def test_human_status_counts_acknowledged_obligations_apart() -> None:
     """#997 review item 2: an acknowledged obligation is shown once, never as open."""
 
-    from yoetz.cli.render import render_human_status
-    from yoetz.mcp.summaries import summary_for_status
+    from finishup.cli.render import render_human_status
+    from finishup.mcp.summaries import summary_for_status
 
     models = _models_module()
     result = _status_result_wire()
@@ -3134,7 +3134,7 @@ def _plain_object(data: bytes) -> dict[str, JsonValue]:
 
 
 def _schema_tree(tmp_path: Path, case: str) -> Path:
-    source = Path(__file__).resolve().parents[3] / "src" / "yoetz" / "resources" / "schemas"
+    source = Path(__file__).resolve().parents[3] / "src" / "finishup" / "resources" / "schemas"
     destination = tmp_path / case
     shutil.copytree(source, destination)
     return destination
@@ -3279,7 +3279,7 @@ def test_schema_catalog_record_shape_and_indexes_are_exact() -> None:
     with pytest.raises(FrozenInstanceError):
         catalog.documents[0].schema_name = "changed"  # type: ignore[misc]
 
-    root = resources.files("yoetz").joinpath("resources", "schemas")
+    root = resources.files("finishup").joinpath("resources", "schemas")
     manifest_bytes = root.joinpath("manifest.json").read_bytes()
     assert catalog.manifest_digest == f"sha256:{hashlib.sha256(manifest_bytes).hexdigest()}"
     assert (

@@ -10,31 +10,31 @@ from typing import cast
 
 import pytest
 
-from yoetz.adapters.integrations.claude_code_integration import (
+from finishup.adapters.integrations.claude_code_integration import (
     CLAUDE_CODE_ORDINARY_HOOK_EVENTS,
     render_claude_code_plugin,
 )
-from yoetz.adapters.integrations.cursor_integration import (
+from finishup.adapters.integrations.cursor_integration import (
     CURSOR_ORDINARY_HOOK_EVENTS,
     render_cursor_plugin,
 )
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.cli import observe as observe_cli
-from yoetz.cli import observe_hooks
-from yoetz.domain.observation import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.cli import observe as observe_cli
+from finishup.cli import observe_hooks
+from finishup.domain.observation import (
     ObservationControlCommand,
     ObservationRevokeCommand,
     ObservationSource,
 )
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_HOOK_MAPPING_VERSION,
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_HOOK_MAPPING_VERSION,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonObject, JsonValue
-from yoetz.ports.plugin_artifacts import PluginFormatProfile
-from yoetz.protocol.canonical import canonical_encode, strict_json_parse
+from finishup.domain.values import JsonObject, JsonValue
+from finishup.ports.plugin_artifacts import PluginFormatProfile
+from finishup.protocol.canonical import canonical_encode, strict_json_parse
 
 
 def test_content_profiles_are_independent_and_user_controls_are_reversible(
@@ -314,12 +314,12 @@ def test_cursor_ordinary_profile_uses_generic_tool_identity_and_events(
 
 
 def test_renderers_keep_old_default_and_emit_bounded_ordinary_subscriptions(tmp_path: Path) -> None:
-    launcher = tmp_path / "yoetz"
+    launcher = tmp_path / "finishup"
     launcher.write_text("#!/bin/sh\n", encoding="utf-8")
     launcher.chmod(0o700)
 
     claude = render_claude_code_plugin(
-        yoetz_launcher=launcher,
+        finishup_launcher=launcher,
         observation_profile="ordinary",
     )
     claude_hooks = json.loads(claude.members["hooks/hooks.json"])["hooks"]
@@ -335,7 +335,7 @@ def test_renderers_keep_old_default_and_emit_bounded_ordinary_subscriptions(tmp_
 
     cursor = render_cursor_plugin(
         PluginFormatProfile.CURSOR_PLUGIN_NATIVE,
-        yoetz_launcher=launcher,
+        finishup_launcher=launcher,
         observation_profile="ordinary",
     )
     cursor_hooks = json.loads(cursor.members["hooks/hooks.json"])["hooks"]
@@ -978,15 +978,15 @@ def test_claude_ordinary_posttooluse_event_success_preserves_unknown_boundaries(
         tool_response={"success": True},
     )
     pair(
-        "call-yoetz-accepted",
+        "call-finishup-accepted",
         {},
-        tool_name="mcp__plugin_yoetz_yoetz__publish_work",
+        tool_name="mcp__plugin_finishup_finishup__publish_work",
         tool_response={"outcome": "accepted"},
     )
     pair(
         "call-mcp-domain-rejection",
         {},
-        tool_name="mcp__plugin_yoetz_yoetz__publish_work",
+        tool_name="mcp__plugin_finishup_finishup__publish_work",
         tool_response={
             "success": False,
             "structuredContent": {"outcome": "rejected"},
@@ -995,7 +995,7 @@ def test_claude_ordinary_posttooluse_event_success_preserves_unknown_boundaries(
     pair(
         "call-mcp-error",
         {},
-        tool_name="mcp__plugin_yoetz_yoetz__publish_work",
+        tool_name="mcp__plugin_finishup_finishup__publish_work",
         tool_response={
             "isError": True,
             "structuredContent": {"outcome": "rejected"},
@@ -1035,11 +1035,11 @@ def test_claude_ordinary_posttooluse_event_success_preserves_unknown_boundaries(
     assert "success" not in host_status
     assert host_status["result_status"] == "unknown"
 
-    yoetz_accepted = envelopes[13].structural_payload
-    assert yoetz_accepted["action"] == "claude_tool_success"
-    assert yoetz_accepted["success"] is True
-    assert yoetz_accepted["result_status"] == "success"
-    assert "exit_status" not in yoetz_accepted
+    finishup_accepted = envelopes[13].structural_payload
+    assert finishup_accepted["action"] == "claude_tool_success"
+    assert finishup_accepted["success"] is True
+    assert finishup_accepted["result_status"] == "success"
+    assert "exit_status" not in finishup_accepted
 
     mcp_domain_rejection = envelopes[15].structural_payload
     assert mcp_domain_rejection["action"] == "claude_tool_success"

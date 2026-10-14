@@ -9,26 +9,26 @@ from pathlib import Path
 
 import pytest
 
-from yoetz.adapters.git_change_capture import GitChangeCaptureAdapter
-from yoetz.application.check_change import requested_output_states
-from yoetz.domain.events import (
+from finishup.adapters.git_change_capture import GitChangeCaptureAdapter
+from finishup.application.check_change import requested_output_states
+from finishup.domain.events import (
     ObligationPublishedPayload,
     ObligationStatus,
     PlanPublishedPayload,
     RequestedItem,
     RequestedItemKind,
 )
-from yoetz.domain.values import obligation_id
-from yoetz.kernel.projections import ProjectionState
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import (
+from finishup.domain.values import obligation_id
+from finishup.kernel.projections import ProjectionState
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import (
     REQUESTED_OUTPUT_GIT_IGNORED_GAP,
     REQUESTED_OUTPUT_IGNORED_BY_REPOSITORY_GAP,
     REQUESTED_OUTPUT_OUTSIDE_WORKSPACE_GAP,
     REQUESTED_OUTPUT_UNCHANGED_GAP,
     requested_output_facts,
 )
-from yoetz.ports.change_capture import CheckWorkspaceSource
+from finishup.ports.change_capture import CheckWorkspaceSource
 
 _OBLIGATION = obligation_id("obl_00000000-0000-4000-8000-000000000001")
 
@@ -71,9 +71,9 @@ def _repository(tmp_path: Path) -> Path:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -133,8 +133,8 @@ def test_probe_never_follows_a_link(tmp_path: Path) -> None:
 
 def _projection(*values: str, edited: tuple[str, ...] = ()) -> ProjectionState:
     from builders.observed_runs import ObservedLedger
-    from yoetz.domain.events import ActionKind, ActionRecordedPayload, EventSchema
-    from yoetz.domain.values import action_id
+    from finishup.domain.events import ActionKind, ActionRecordedPayload, EventSchema
+    from finishup.domain.values import action_id
 
     ledger = ObservedLedger()
     ledger.append(
@@ -259,9 +259,9 @@ def test_a_requested_directory_is_changed_by_new_files_under_it(tmp_path: Path) 
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",
@@ -354,8 +354,8 @@ def test_probe_reports_whether_a_directory_holds_a_file(tmp_path: Path) -> None:
 
 def _items_projection(*items: RequestedItem, edited: tuple[str, ...] = ()) -> ProjectionState:
     from builders.observed_runs import ObservedLedger
-    from yoetz.domain.events import ActionKind, ActionRecordedPayload, EventSchema
-    from yoetz.domain.values import action_id
+    from finishup.domain.events import ActionKind, ActionRecordedPayload, EventSchema
+    from finishup.domain.values import action_id
 
     ledger = ObservedLedger()
     ledger.append(
@@ -397,7 +397,7 @@ def test_roles_and_directories_at_check_time(tmp_path: Path) -> None:
     leaves untouched is reported without any edit action naming it.
     """
 
-    from yoetz.domain.events import RequestedItemRole
+    from finishup.domain.events import RequestedItemRole
 
     repository = _repository(tmp_path)
     (repository / "layout_spec.json").write_text("{}\n", encoding="utf-8")
@@ -405,9 +405,9 @@ def test_roles_and_directories_at_check_time(tmp_path: Path) -> None:
     _git(
         repository,
         "-c",
-        "user.name=Yoetz Test",
+        "user.name=FinishUP Test",
         "-c",
-        "user.email=yoetz@example.invalid",
+        "user.email=finishup@example.invalid",
         "commit",
         "--quiet",
         "-m",

@@ -1,4 +1,4 @@
-"""Host observation shapes of Yoetz's own calls and of edits, classified by ``later_material_class``.
+"""Host observation shapes of FinishUP's own calls and of edits, classified by ``later_material_class``.
 
 tb4n3 RC-6 (issue #1029): ``check_current_as_of_earlier_frontier`` was added for every record that
 followed the last check, so 17 of 17 tb4n3 receipts carried it and a post-check edit looked like a
@@ -8,11 +8,11 @@ rows that come out. Nothing here hand-writes an action description.
 
 Host decisions pinned here (and recorded in docs/runbooks/*-integration.md):
 
-* Codex: ``mcp__yoetz__<tool>`` from hooks and, since #1038, from the rollout's ``McpToolCall``
+* Codex: ``mcp__finishup__<tool>`` from hooks and, since #1038, from the rollout's ``McpToolCall``
   (its ``server`` is kept); the bare ``<tool>`` only from an item that names no server.
-* Claude Code: ``mcp__plugin_yoetz_yoetz__<tool>``.
-* Cursor: ``yoetz:<tool>`` / ``plugin-yoetz-yoetz:<tool>`` when the server is named; the ordinary
-  profile's generic ``MCP:<tool>`` names no server and is read by the closed Yoetz basenames.
+* Claude Code: ``mcp__plugin_finishup_finishup__<tool>``.
+* Cursor: ``finishup:<tool>`` / ``plugin-finishup-finishup:<tool>`` when the server is named; the ordinary
+  profile's generic ``MCP:<tool>`` names no server and is read by the closed FinishUP basenames.
 """
 
 # pyright: reportPrivateUsage=false
@@ -28,10 +28,10 @@ from typing import Any, cast
 import pytest
 
 from builders.observed_runs import INSTALLATION_KEY, ObservedLedger
-from yoetz.adapters.integrations.observation_local import LocalObservationStore
-from yoetz.application.observation_materialize import materialize_observation_envelope
-from yoetz.cli import observe_hooks
-from yoetz.domain.events import (
+from finishup.adapters.integrations.observation_local import LocalObservationStore
+from finishup.application.observation_materialize import materialize_observation_envelope
+from finishup.cli import observe_hooks
+from finishup.domain.events import (
     AcceptedEvent,
     ActionRecordedPayload,
     EventPayload,
@@ -39,16 +39,16 @@ from yoetz.domain.events import (
     EvidenceRecordedPayload,
     ResultRecordedPayload,
 )
-from yoetz.domain.observation import ObservationEnvelope
-from yoetz.domain.observation_profiles import (
+from finishup.domain.observation import ObservationEnvelope
+from finishup.domain.observation_profiles import (
     CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID,
     CURSOR_ORDINARY_OBSERVATION_PROFILE_ID,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.kernel.later_material import LaterMaterialClass, classify_later_material
-from yoetz.kernel.reducers import replay
-from yoetz.kernel.task_facts import register_command_identity_key
-from yoetz.protocol.canonical import canonical_encode
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.kernel.later_material import LaterMaterialClass, classify_later_material
+from finishup.kernel.reducers import replay
+from finishup.kernel.task_facts import register_command_identity_key
+from finishup.protocol.canonical import canonical_encode
 
 _TASK = "tsk_7a3f1c52-6a0e-4c1b-9d2e-8b5f4a3c2d10"
 _KEY = bytes(range(32))
@@ -128,23 +128,28 @@ _OK = {"content": [{"text": "ok", "type": "text"}], "isError": False}
 _CODEX_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
     (
         "codex check (a mutation: its post lands after check_recorded)",
-        _codex("mcp__yoetz__check", "call_c1", {"mode": "deterministic_only"}, _OK),
-        _C.YOETZ_OWN_CALL,
+        _codex("mcp__finishup__check", "call_c1", {"mode": "deterministic_only"}, _OK),
+        _C.FINISHUP_OWN_CALL,
     ),
     (
         "codex status read",
-        _codex("mcp__yoetz__status", "call_s1", {"view": "findings"}, _OK),
-        _C.YOETZ_OWN_CALL,
+        _codex("mcp__finishup__status", "call_s1", {"view": "findings"}, _OK),
+        _C.FINISHUP_OWN_CALL,
     ),
     (
         "codex read_guidance",
-        _codex("mcp__yoetz__read_guidance", "call_g1", {"uri": "yoetz://guidance/receipt.md"}, _OK),
-        _C.YOETZ_OWN_CALL,
+        _codex(
+            "mcp__finishup__read_guidance",
+            "call_g1",
+            {"uri": "finishup://guidance/receipt.md"},
+            _OK,
+        ),
+        _C.FINISHUP_OWN_CALL,
     ),
     (
         "codex receipt",
-        _codex("mcp__yoetz__receipt", "call_r1", {"format": "json"}, _OK),
-        _C.YOETZ_OWN_CALL,
+        _codex("mcp__finishup__receipt", "call_r1", {"format": "json"}, _OK),
+        _C.FINISHUP_OWN_CALL,
     ),
     (
         "codex wait (a poll of a code-mode cell started earlier)",
@@ -172,11 +177,13 @@ _CODEX_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
         _C.EDIT_OR_WRITE,
     ),
     (
-        "codex apply_patch saving yoetz_receipt.md",
+        "codex apply_patch saving finishup_receipt.md",
         _codex(
             "apply_patch",
             "call_p2",
-            {"command": "*** Begin Patch\n*** Add File: /app/yoetz_receipt.md\n+x\n*** End Patch"},
+            {
+                "command": "*** Begin Patch\n*** Add File: /app/finishup_receipt.md\n+x\n*** End Patch"
+            },
             "Exit code: 0\nWall time: 0.1 seconds\nOutput:\nSuccess.",
         ),
         _C.NON_COUNTING_WRITE,
@@ -184,12 +191,20 @@ _CODEX_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
 )
 
 _CLAUDE_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
-    ("claude check", _claude("mcp__plugin_yoetz_yoetz__check", {}, "toolu_c"), _C.YOETZ_OWN_CALL),
-    ("claude status", _claude("mcp__plugin_yoetz_yoetz__status", {}, "toolu_s"), _C.YOETZ_OWN_CALL),
+    (
+        "claude check",
+        _claude("mcp__plugin_finishup_finishup__check", {}, "toolu_c"),
+        _C.FINISHUP_OWN_CALL,
+    ),
+    (
+        "claude status",
+        _claude("mcp__plugin_finishup_finishup__status", {}, "toolu_s"),
+        _C.FINISHUP_OWN_CALL,
+    ),
     (
         "claude receipt",
-        _claude("mcp__plugin_yoetz_yoetz__receipt", {}, "toolu_r"),
-        _C.YOETZ_OWN_CALL,
+        _claude("mcp__plugin_finishup_finishup__receipt", {}, "toolu_r"),
+        _C.FINISHUP_OWN_CALL,
     ),
     (
         "claude Read (native read tool)",
@@ -204,8 +219,8 @@ _CLAUDE_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
         _C.EDIT_OR_WRITE,
     ),
     (
-        "claude Write of yoetz_receipt.md",
-        _claude("Write", {"file_path": "/app/yoetz_receipt.md", "content": "x"}, "toolu_w"),
+        "claude Write of finishup_receipt.md",
+        _claude("Write", {"file_path": "/app/finishup_receipt.md", "content": "x"}, "toolu_w"),
         _C.NON_COUNTING_WRITE,
     ),
     (
@@ -218,16 +233,16 @@ _CLAUDE_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
 _CURSOR_HOOKS: tuple[tuple[str, _Hook, _C], ...] = (
     (
         "cursor server-scoped check",
-        _cursor("plugin-yoetz-yoetz:check", {}, "cur_c"),
-        _C.YOETZ_OWN_CALL,
+        _cursor("plugin-finishup-finishup:check", {}, "cur_c"),
+        _C.FINISHUP_OWN_CALL,
     ),
-    ("cursor yoetz: status", _cursor("yoetz:status", {}, "cur_s"), _C.YOETZ_OWN_CALL),
+    ("cursor finishup: status", _cursor("finishup:status", {}, "cur_s"), _C.FINISHUP_OWN_CALL),
     (
-        "cursor generic MCP:check (no server named; read by the closed Yoetz basenames)",
+        "cursor generic MCP:check (no server named; read by the closed FinishUP basenames)",
         _cursor("MCP:check", {}, "cur_gc"),
-        _C.YOETZ_OWN_CALL,
+        _C.FINISHUP_OWN_CALL,
     ),
-    ("cursor generic MCP:status", _cursor("MCP:status", {}, "cur_gs"), _C.YOETZ_OWN_CALL),
+    ("cursor generic MCP:status", _cursor("MCP:status", {}, "cur_gs"), _C.FINISHUP_OWN_CALL),
     (
         "cursor generic MCP tool of another name stays disclosed",
         _cursor("MCP:fetch_rows", {}, "cur_gf"),
@@ -280,7 +295,7 @@ def _ingest(
             == 0
         )
     # ``list_envelopes`` includes the envelopes the self-observation policy (#564) keeps local, so
-    # the classification of a Yoetz read is exercised even though it is never delivered.
+    # the classification of a FinishUP read is exercised even though it is never delivered.
     return tuple(replace(item, receipt_time=_RECEIPT) for item in store.list_envelopes(commitment))
 
 
@@ -353,7 +368,7 @@ def test_cursor_hook_calls(
             "Routine-read summary observed calls=3 inputs=3 member_digest=x content_scope=none",
             _C.EXPLORATION,
         ),
-        # A stream kind Yoetz does not know could carry anything: it stays disclosed.
+        # A stream kind FinishUP does not know could carry anything: it stays disclosed.
         ("Opaque observation kind=brand_new_wrapper", _C.OTHER),
         ("Unpaired observed tool result exit=0", _C.OTHER),
         ("Observed post-only tool result", _C.OTHER),
@@ -363,9 +378,9 @@ def test_cursor_hook_calls(
 def test_stream_evidence_rows(description: str, expected: _C) -> None:
     """The evidence rows the materializer writes for items that name no tool call."""
 
-    from yoetz.domain.events import EvidenceKind
-    from yoetz.domain.values import evidence_id
-    from yoetz.protocol.coverage import EvidenceImmutability
+    from finishup.domain.events import EvidenceKind
+    from finishup.domain.values import evidence_id
+    from finishup.protocol.coverage import EvidenceImmutability
 
     ledger = ObservedLedger()
     ledger.append(
@@ -383,19 +398,29 @@ def test_stream_evidence_rows(description: str, expected: _C) -> None:
     assert classify_later_material(records[0], replay(records)).material_class is expected
 
 
-def test_bare_stream_tool_name_is_yoetz_own() -> None:
+def test_bare_stream_tool_name_is_finishup_own() -> None:
     """An ``McpToolCall`` item without a ``server`` names its tool alone (``status``)."""
 
-    from yoetz.domain.yoetz_tools import yoetz_tool_spelling
+    from finishup.domain.finishup_tools import finishup_tool_spelling
 
-    assert yoetz_tool_spelling("status") == "bare"
-    assert yoetz_tool_spelling("MCP:read_guidance") == "generic_mcp"
-    assert yoetz_tool_spelling("mcp__yoetz__publish_work") == "server_scoped"
-    assert yoetz_tool_spelling("mcp__plugin_yoetz_yoetz__closure_prepare") == "server_scoped"
-    assert yoetz_tool_spelling("plugin-yoetz-yoetz:respond") == "server_prefixed"
-    # Another server's tool, a longer name, or a non-string is never Yoetz's.
-    for other in ("mcp__other__status", "status_check", "yoetz:rm_rf", "MCP:statusx", "", 7, None):
-        assert yoetz_tool_spelling(other) is None
+    assert finishup_tool_spelling("status") == "bare"
+    assert finishup_tool_spelling("MCP:read_guidance") == "generic_mcp"
+    assert finishup_tool_spelling("mcp__finishup__publish_work") == "server_scoped"
+    assert (
+        finishup_tool_spelling("mcp__plugin_finishup_finishup__closure_prepare") == "server_scoped"
+    )
+    assert finishup_tool_spelling("plugin-finishup-finishup:respond") == "server_prefixed"
+    # Another server's tool, a longer name, or a non-string is never FinishUP's.
+    for other in (
+        "mcp__other__status",
+        "status_check",
+        "finishup:rm_rf",
+        "MCP:statusx",
+        "",
+        7,
+        None,
+    ):
+        assert finishup_tool_spelling(other) is None
 
 
 def test_the_one_class_vocabulary() -> None:
@@ -412,19 +437,21 @@ def test_the_one_class_vocabulary() -> None:
     assert AcceptedEvent  # imported for the type used by the helpers above
 
 
-def test_every_spelling_the_delivery_policy_calls_yoetz_owned_is_classified_yoetz_own() -> None:
-    """The delivery policy (#564) and the later-material rule read one meaning of "Yoetz's own".
+def test_every_spelling_the_delivery_policy_calls_finishup_owned_is_classified_finishup_own() -> (
+    None
+):
+    """The delivery policy (#564) and the later-material rule read one meaning of "FinishUP's own".
 
     ``observation_local`` keeps its own prefix table; a spelling it adds without teaching
-    ``domain.yoetz_tools`` would be local-only there yet counted as later material here.
+    ``domain.finishup_tools`` would be local-only there yet counted as later material here.
     """
 
-    from yoetz.adapters.integrations.observation_local import YOETZ_OWNED_TOOL_NAMES
-    from yoetz.domain.yoetz_tools import YOETZ_MCP_TOOL_NAMES, yoetz_tool_spelling
+    from finishup.adapters.integrations.observation_local import FINISHUP_OWNED_TOOL_NAMES
+    from finishup.domain.finishup_tools import FINISHUP_MCP_TOOL_NAMES, finishup_tool_spelling
 
-    assert YOETZ_OWNED_TOOL_NAMES
-    for name in sorted(YOETZ_OWNED_TOOL_NAMES):
-        assert yoetz_tool_spelling(name) is not None, name
+    assert FINISHUP_OWNED_TOOL_NAMES
+    for name in sorted(FINISHUP_OWNED_TOOL_NAMES):
+        assert finishup_tool_spelling(name) is not None, name
     # The support tool is advertised through MCP too (closure_prepare is read-only).
-    assert "closure_prepare" in YOETZ_MCP_TOOL_NAMES
-    assert yoetz_tool_spelling("mcp__yoetz__closure_prepare") == "server_scoped"
+    assert "closure_prepare" in FINISHUP_MCP_TOOL_NAMES
+    assert finishup_tool_spelling("mcp__finishup__closure_prepare") == "server_scoped"

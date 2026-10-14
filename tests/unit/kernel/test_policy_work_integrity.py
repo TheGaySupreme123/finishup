@@ -23,7 +23,7 @@ from builders.policy_cases import (
     record,
     res,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ActionKind,
     ActionRecordedPayload,
     ClaimKind,
@@ -46,7 +46,7 @@ from yoetz.domain.events import (
     ResultOutcome,
     ResultRecordedPayload,
 )
-from yoetz.domain.findings import (
+from finishup.domain.findings import (
     Finding,
     FindingKind,
     FindingOrigin,
@@ -54,31 +54,31 @@ from yoetz.domain.findings import (
     SemanticDispatchKind,
     SemanticProvenance,
 )
-from yoetz.domain.values import (
+from finishup.domain.values import (
     SubjectStateRef,
     actor_id,
     object_id,
     timestamp_from_string,
 )
-from yoetz.kernel.deterministic_checks import (
+from finishup.kernel.deterministic_checks import (
     REQUESTED_OUTPUT_ABSENT_FACT,
     CaseGap,
     DeterministicCase,
     render_deterministic_finding_text,
     run_deterministic_policies,
 )
-from yoetz.kernel.policies.work_integrity import (
+from finishup.kernel.policies.work_integrity import (
     WORK_INTEGRITY_POLICY_PACK,
     reportable_absent_outputs,
     work_integrity_findings,
 )
-from yoetz.kernel.projections import (
+from finishup.kernel.projections import (
     ContradictionKey,
     ContradictionRecord,
     DecisionProjectionRecord,
 )
-from yoetz.protocol.coverage import EvidenceImmutability
-from yoetz.protocol.models import SemanticReason, SemanticStatus
+from finishup.protocol.coverage import EvidenceImmutability
+from finishup.protocol.models import SemanticReason, SemanticStatus
 
 _NOW = timestamp_from_string("2026-01-01T00:00:00.000Z")
 _DIGEST_A = "sha256:" + "1" * 64
@@ -86,8 +86,8 @@ _DIGEST_B = "sha256:" + "2" * 64
 
 
 def _decision_record(payload: DecisionRecordedPayload) -> DecisionProjectionRecord:
-    from yoetz.domain.events import encode_payload
-    from yoetz.protocol.canonical import canonical_digest
+    from finishup.domain.events import encode_payload
+    from finishup.protocol.canonical import canonical_digest
 
     return DecisionProjectionRecord(
         payload=payload,
@@ -490,7 +490,7 @@ def test_blocked_obligation_raises_no_requested_item_finding() -> None:
     obligation = _open_obligation(1, requested="item-1")
     plan = PlanPublishedPayload(1, "Plan", (obl(1),))
     blocker = DecisionRecordedPayload(
-        statement="yoetz-blocker:credential",
+        statement="finishup-blocker:credential",
         rationale="The registry token is the operator's.",
         authority=actor_id("agt_codex"),
         affected_obligation_ids=(obl(1),),

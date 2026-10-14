@@ -14,8 +14,8 @@ from typing import cast
 
 import pytest
 
-from yoetz.mcp import server as bridge
-from yoetz.mcp.descriptors import (
+from finishup.mcp import server as bridge
+from finishup.mcp.descriptors import (
     CLAUDE_CODE_INITIALIZE_INSTRUCTIONS,
     COMPACT_INITIALIZE_INSTRUCTIONS,
     COMPACT_INSTRUCTIONS_BUDGET,
@@ -25,14 +25,14 @@ from yoetz.mcp.descriptors import (
     advertised_surface_metrics,
     server_instructions,
 )
-from yoetz.mcp.resources import GUIDANCE_RESOURCES, read_resource
-from yoetz.mcp.semantic_destination import (
+from finishup.mcp.resources import GUIDANCE_RESOURCES, read_resource
+from finishup.mcp.semantic_destination import (
     DISCLOSURE_PREFIX,
     MAX_DISCLOSURE_ENCODED_BYTES,
     SemanticDestinationDisclosure,
     disclose_semantic_destination,
 )
-from yoetz.ports.control import McpHostProfile
+from finishup.ports.control import McpHostProfile
 
 # The stated cap recorded on issue #918: the packaged compact body is at most 2 KB. The route tail
 # and the policy-route destination disclosure (#479) ride on top and are never trimmed to fit.
@@ -130,7 +130,7 @@ def test_the_route_and_disclosure_tail_is_composed_identically_for_every_body(
 
 def test_the_compact_body_says_when_to_call_start_and_never_to_claim_it_early() -> None:
     heading, _, body = COMPACT_INITIALIZE_INSTRUCTIONS.partition("\n\n")
-    assert heading == "# Yoetz: call start first"
+    assert heading == "# FinishUP: call start first"
     trigger = _collapsed(body.split("\n\n")[0])
     assert trigger.startswith(
         "If this session will edit files, run state-changing commands, or delegate, call "
@@ -153,11 +153,11 @@ def test_the_compact_body_names_every_guidance_document_and_how_to_read_it() -> 
     text = _collapsed(COMPACT_INITIALIZE_INSTRUCTIONS)
     # The compact body makes only the core mandatory before `start`; procedures are on demand.
     assert (
-        "Before the first `start`, call `read_guidance` on `yoetz://guidance/agent-instructions.md`"
+        "Before the first `start`, call `read_guidance` on `finishup://guidance/agent-instructions.md`"
         in text
     )
     assert "After `start`, read workflow" in text
-    assert "`yoetz://guidance/workflow.md`" in text
+    assert "`finishup://guidance/workflow.md`" in text
     for resource in GUIDANCE_RESOURCES:
         assert f"`{resource.uri}`" in text, resource.uri
         assert read_resource(resource.uri), resource.uri
@@ -185,7 +185,7 @@ def test_the_compact_body_keeps_cadence_consent_and_honesty_rules() -> None:
     assert "Recover through `status`" in text
     # Coverage-honest wording.
     assert (
-        "Yoetz records only what participants publish; a clean check does not mean the work is correct."
+        "FinishUP records only what participants publish; a clean check does not mean the work is correct."
         in text
     )
 

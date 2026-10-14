@@ -13,9 +13,9 @@ from typing import Any, Final
 import pytest
 from mcp import types
 
-from yoetz.mcp.server import result_from_public_model
-from yoetz.mcp.summaries import summary_for_check_awaiting
-from yoetz.protocol.models import CheckResultModel
+from finishup.mcp.server import result_from_public_model
+from finishup.mcp.summaries import summary_for_check_awaiting
+from finishup.protocol.models import CheckResultModel
 
 _REQUEST: Final = f"req_{uuid.uuid4()}"
 _PENDING: Final = f"ppr_{uuid.uuid4()}"
@@ -63,7 +63,7 @@ _INPUT = _body(
     "awaiting_input",
     {
         "kind": "review_input_required",
-        "command": ["yoetz", "publish-work", "--input", "PATH"],
+        "command": ["finishup", "publish-work", "--input", "PATH"],
         "replay_request_id": _REQUEST,
         "instruction": _INSTRUCTION,
     },
@@ -74,7 +74,7 @@ _HUMAN = _body(
         "kind": "privacy_disclosure_decision",
         "pending_id": _PENDING,
         "expires_at": "2026-08-05T13:00:00.000Z",
-        "command": ["yoetz", "privacy", "decide-disclosure", _PENDING],
+        "command": ["finishup", "privacy", "decide-disclosure", _PENDING],
         "replay_request_id": _REQUEST,
         "instruction": _INSTRUCTION,
     },
@@ -91,14 +91,14 @@ def test_awaiting_input_text_names_the_command_and_replay(host: str) -> None:
     assert isinstance(block, types.TextContent)
     first = block.text.splitlines()[0]
     assert first.startswith("Check state: awaiting_input (review_input_required); no verdict yet.")
-    assert "yoetz publish-work --input PATH" in first
+    assert "finishup publish-work --input PATH" in first
     assert f"replay the same check with request_id {_REQUEST}" in first
     assert _INSTRUCTION not in block.text
 
 
 def test_awaiting_human_text_names_the_pending_decision() -> None:
     text = summary_for_check_awaiting(CheckResultModel.model_validate(_HUMAN).model_dump())
-    assert f"yoetz privacy decide-disclosure {_PENDING}" in text
+    assert f"finishup privacy decide-disclosure {_PENDING}" in text
     assert "Expires at 2026-08-05T13:00:00.000Z." in text
     assert _REQUEST in text
 
@@ -107,7 +107,7 @@ def test_an_unrecognized_command_is_never_echoed() -> None:
     hostile = dict(_INPUT)
     hostile["continuation"] = {
         **_INPUT["continuation"],
-        "command": ["yoetz", "publish-work", "--input", "/etc/passwd; rm -rf ~"],
+        "command": ["finishup", "publish-work", "--input", "/etc/passwd; rm -rf ~"],
     }
     text = summary_for_check_awaiting(hostile)
     assert "passwd" not in text

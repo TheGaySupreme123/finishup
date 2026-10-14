@@ -10,6 +10,27 @@ from typing import cast
 
 import pytest
 
+from finishup.application.observation_drain import ObservationOutboxSweeper
+from finishup.application.observation_materialize import observation_content_identity
+from finishup.cli.observe_hooks import map_hook_payload_to_envelope
+from finishup.domain.observation import (
+    OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
+    ObservationContentChunk,
+    ObservationContentKind,
+    ObservationIngestDisposition,
+    ObservationIngestRequest,
+    ObservationRevokeCommand,
+    ObservationSource,
+)
+from finishup.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
+from finishup.ports.ledger import (
+    CheckAdmissionStage,
+    FrozenCase,
+    check_admission_refused,
+    check_admission_stage,
+)
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind
 from integration.application.test_check import (
     _App as _CheckApp,  # pyright: ignore[reportPrivateUsage]
 )
@@ -26,27 +47,6 @@ from integration.application.test_native_capture_pipeline import (
     _ids,  # pyright: ignore[reportPrivateUsage]
     _pipeline,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.observation_drain import ObservationOutboxSweeper
-from yoetz.application.observation_materialize import observation_content_identity
-from yoetz.cli.observe_hooks import map_hook_payload_to_envelope
-from yoetz.domain.observation import (
-    OBSERVATION_CONTENT_CAPTURE_PENDING_REASON,
-    ObservationContentChunk,
-    ObservationContentKind,
-    ObservationIngestDisposition,
-    ObservationIngestRequest,
-    ObservationRevokeCommand,
-    ObservationSource,
-)
-from yoetz.domain.observation_profiles import CLAUDE_CODE_ORDINARY_OBSERVATION_PROFILE_ID
-from yoetz.ports.ledger import (
-    CheckAdmissionStage,
-    FrozenCase,
-    check_admission_refused,
-    check_admission_stage,
-)
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind
 
 
 @pytest.mark.anyio
@@ -474,8 +474,8 @@ async def test_check_reconciles_once_after_capture_barrier_before_retrying_freez
 async def test_store_contention_during_capture_reconciliation_keeps_the_typed_refusal() -> None:
     """#689: a contended local store leaves the capture barrier's own retryable refusal."""
 
-    from yoetz.ports.ledger import CheckAdmissionStage, check_admission_refused
-    from yoetz.ports.observation import ObservationStoreLockTimeout
+    from finishup.ports.ledger import CheckAdmissionStage, check_admission_refused
+    from finishup.ports.observation import ObservationStoreLockTimeout
 
     app = _CheckApp()
     refusal = check_admission_refused(CheckAdmissionStage.CAPTURE_HANDOFF_PENDING)

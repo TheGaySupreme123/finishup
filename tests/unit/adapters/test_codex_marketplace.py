@@ -14,8 +14,8 @@ from typing import cast
 
 import pytest
 
-from yoetz import __version__
-from yoetz.adapters.integrations.codex_marketplace import (
+from finishup import __version__
+from finishup.adapters.integrations.codex_marketplace import (
     ActivationInspection,
     ActivationPreview,
     ActivationState,
@@ -24,27 +24,27 @@ from yoetz.adapters.integrations.codex_marketplace import (
     RemovalResult,
     resolve_codex_home_for_binary,
 )
-from yoetz.adapters.integrations.codex_marketplace import (
+from finishup.adapters.integrations.codex_marketplace import (
     apply_activation as _apply_activation,
 )
-from yoetz.adapters.integrations.codex_marketplace import (
+from finishup.adapters.integrations.codex_marketplace import (
     apply_removal as _apply_removal,
 )
-from yoetz.adapters.integrations.codex_marketplace import (
+from finishup.adapters.integrations.codex_marketplace import (
     inspect_activation as _inspect_activation,
 )
-from yoetz.adapters.integrations.codex_marketplace import (
+from finishup.adapters.integrations.codex_marketplace import (
     preview_activation as _preview_activation,
 )
-from yoetz.adapters.integrations.codex_marketplace import (
+from finishup.adapters.integrations.codex_marketplace import (
     preview_removal as _preview_removal,
 )
-from yoetz.adapters.integrations.codex_plugin import (
+from finishup.adapters.integrations.codex_plugin import (
     PluginHookPresence,
     inspect_plugin,
     install_plugin,
 )
-from yoetz.ports.integrations import (
+from finishup.ports.integrations import (
     IntegrationError,
     IntegrationReason,
     IntegrationScope,
@@ -103,26 +103,26 @@ class _FakeCodex:
                 stdout=f"codex-cli {self.codex_version}\n".encode("ascii"),
                 stderr=b"",
             )
-        elif args == ("plugin", "list", "--marketplace", "yoetz", "--json"):
+        elif args == ("plugin", "list", "--marketplace", "finishup", "--json"):
             body: object
             config = self.home / "config.toml"
-            cache = self.home / f"plugins/cache/yoetz/yoetz/{__version__}"
-            if not config.exists() or "marketplaces.yoetz" not in config.read_text(
+            cache = self.home / f"plugins/cache/finishup/finishup/{__version__}"
+            if not config.exists() or "marketplaces.finishup" not in config.read_text(
                 encoding="utf-8"
             ):
                 body = {"installed": [], "available": []}
             else:
                 installed = cache.is_dir()
                 row = {
-                    "pluginId": "yoetz@yoetz",
-                    "name": "yoetz",
-                    "marketplaceName": "yoetz",
+                    "pluginId": "finishup@finishup",
+                    "name": "finishup",
+                    "marketplaceName": "finishup",
                     "version": __version__,
                     "installed": installed,
                     "enabled": True,
                     "source": {
                         "source": "local",
-                        "path": str(self.project / ".agents/plugins/yoetz"),
+                        "path": str(self.project / ".agents/plugins/finishup"),
                     },
                     "marketplaceSource": {
                         "sourceType": "local",
@@ -131,28 +131,28 @@ class _FakeCodex:
                 }
                 body = {"installed" if installed else "available": [row]}
                 body["available" if installed else "installed"] = []
-        elif args == ("plugin", "add", "yoetz@yoetz", "--json"):
-            source = self.project / ".agents/plugins/yoetz"
-            destination = self.home / f"plugins/cache/yoetz/yoetz/{__version__}"
+        elif args == ("plugin", "add", "finishup@finishup", "--json"):
+            source = self.project / ".agents/plugins/finishup"
+            destination = self.home / f"plugins/cache/finishup/finishup/{__version__}"
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source, destination)
             body = {
-                "pluginId": "yoetz@yoetz",
-                "name": "yoetz",
-                "marketplaceName": "yoetz",
+                "pluginId": "finishup@finishup",
+                "name": "finishup",
+                "marketplaceName": "finishup",
                 "version": __version__,
                 "installedPath": str(destination),
             }
-        elif args == ("plugin", "remove", "yoetz@yoetz", "--json"):
-            destination = self.home / f"plugins/cache/yoetz/yoetz/{__version__}"
+        elif args == ("plugin", "remove", "finishup@finishup", "--json"):
+            destination = self.home / f"plugins/cache/finishup/finishup/{__version__}"
             if destination.is_dir():
                 shutil.rmtree(destination)
-            body = {"pluginId": "yoetz@yoetz"}
-        elif args == ("plugin", "marketplace", "remove", "yoetz", "--json"):
+            body = {"pluginId": "finishup@finishup"}
+        elif args == ("plugin", "marketplace", "remove", "finishup", "--json"):
             config = self.home / "config.toml"
             if config.exists():
                 text = config.read_text(encoding="utf-8")
-                marker = "[marketplaces.yoetz]\n"
+                marker = "[marketplaces.finishup]\n"
                 start = text.find(marker)
                 if start >= 0:
                     rest = text[start + len(marker) :]
@@ -168,12 +168,12 @@ class _FakeCodex:
             if self.repository_marketplace_conflict_after_remove:
                 marketplace = self.project / ".agents/plugins/marketplace.json"
                 marketplace.write_bytes(b'{"name":"foreign"}\n')
-            body = {"name": "yoetz"}
+            body = {"name": "finishup"}
         else:
             raise AssertionError(command)
         if self.error_after_mutation is not None and args in {
-            ("plugin", "remove", "yoetz@yoetz", "--json"),
-            ("plugin", "marketplace", "remove", "yoetz", "--json"),
+            ("plugin", "remove", "finishup@finishup", "--json"),
+            ("plugin", "marketplace", "remove", "finishup", "--json"),
         }:
             raise self.error_after_mutation
         if args in self.malformed_after_mutation:
@@ -181,7 +181,7 @@ class _FakeCodex:
         return subprocess.CompletedProcess(
             command,
             1
-            if self.fail_add_after_copy and args == ("plugin", "add", "yoetz@yoetz", "--json")
+            if self.fail_add_after_copy and args == ("plugin", "add", "finishup@finishup", "--json")
             else 0,
             stdout=json.dumps(body).encode(),
             stderr=b"failed after copy" if self.fail_add_after_copy else b"",
@@ -285,19 +285,19 @@ def test_inspect_preview_and_apply_activation(tmp_path: Path) -> None:
     document = json.loads(preview.marketplace_bytes)
     assert document["plugins"] == [
         {
-            "name": "yoetz",
-            "source": {"path": "./.agents/plugins/yoetz", "source": "local"},
+            "name": "finishup",
+            "source": {"path": "./.agents/plugins/finishup", "source": "local"},
         }
     ]
     assert f'source = "{project}"' in preview.config_toml_block
-    assert '[plugins."yoetz@yoetz"]' in preview.config_toml_block
+    assert '[plugins."finishup@finishup"]' in preview.config_toml_block
     assert preview.plugin_source_digest.startswith("sha256:")
     assert preview.codex_home == home
-    assert preview.plugin_install_path == home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    assert preview.plugin_install_path == home / f"plugins/cache/finishup/finishup/{__version__}"
     assert preview.plugin_install_digest.startswith("sha256:")
     assert preview.probe_command == ("--version",)
-    assert preview.inventory_command == ("plugin", "list", "--marketplace", "yoetz", "--json")
-    assert preview.install_command == ("plugin", "add", "yoetz@yoetz", "--json")
+    assert preview.inventory_command == ("plugin", "list", "--marketplace", "finishup", "--json")
+    assert preview.install_command == ("plugin", "add", "finishup@finishup", "--json")
 
     result = apply_activation(
         target,
@@ -307,8 +307,8 @@ def test_inspect_preview_and_apply_activation(tmp_path: Path) -> None:
     assert result == inspect_activation(target, codex_home=home)
     assert result.state is ActivationState.ACTIVE
     config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
-    assert config["marketplaces"]["yoetz"]["source"] == str(project)
-    assert config["plugins"]["yoetz@yoetz"]["enabled"] is True
+    assert config["marketplaces"]["finishup"]["source"] == str(project)
+    assert config["plugins"]["finishup@finishup"]["enabled"] is True
 
 
 def test_stable_codex_activation_serves_required_hooks_synchronously(tmp_path: Path) -> None:
@@ -333,7 +333,7 @@ def test_stable_codex_activation_serves_required_hooks_synchronously(tmp_path: P
 
     assert result.state is ActivationState.ACTIVE
     installed_hooks = json.loads(
-        (home / f"plugins/cache/yoetz/yoetz/{__version__}/hooks/hooks.json").read_bytes()
+        (home / f"plugins/cache/finishup/finishup/{__version__}/hooks/hooks.json").read_bytes()
     )
     for event in (
         "PreToolUse",
@@ -362,10 +362,10 @@ def test_canonical_source_activates_on_async_host_and_seeds_host_rendered_cache(
 
     target, project, home = _target(tmp_path)
     _install(target, codex_version=None)
-    source_hooks = (project / ".agents/plugins/yoetz/hooks/hooks.json").read_bytes()
+    source_hooks = (project / ".agents/plugins/finishup/hooks/hooks.json").read_bytes()
     source_tree_before = {
         path.relative_to(project).as_posix(): path.read_bytes()
-        for path in (project / ".agents/plugins/yoetz").rglob("*")
+        for path in (project / ".agents/plugins/finishup").rglob("*")
         if path.is_file()
     }
     runner = _FakeCodex(target, home, codex_version="0.148.0-alpha.6")
@@ -394,14 +394,14 @@ def test_canonical_source_activates_on_async_host_and_seeds_host_rendered_cache(
     # The committed source stays byte-stable in its canonical async-free form.
     source_tree_after = {
         path.relative_to(project).as_posix(): path.read_bytes()
-        for path in (project / ".agents/plugins/yoetz").rglob("*")
+        for path in (project / ".agents/plugins/finishup").rglob("*")
         if path.is_file()
     }
     assert source_tree_after == source_tree_before
     assert b'"async":true' not in source_hooks
     # The cache carries the host-specific render: async ingress hooks present.
     cache_hooks = json.loads(
-        (home / f"plugins/cache/yoetz/yoetz/{__version__}/hooks/hooks.json").read_bytes()
+        (home / f"plugins/cache/finishup/finishup/{__version__}/hooks/hooks.json").read_bytes()
     )
     handler = cache_hooks["hooks"]["PermissionRequest"][0]["hooks"][0]
     assert handler.get("async") is True
@@ -442,7 +442,7 @@ def test_modified_plugin_source_is_installed_not_activated(tmp_path: Path) -> No
 
     target, project, home = _target(tmp_path)
     _install(target, codex_version=None)
-    hooks = project / ".agents/plugins/yoetz/hooks/hooks.json"
+    hooks = project / ".agents/plugins/finishup/hooks/hooks.json"
     hooks.write_bytes(hooks.read_bytes() + b"\n")
 
     inspection = inspect_activation(target, codex_home=home)
@@ -458,13 +458,13 @@ def test_modified_plugin_source_is_installed_not_activated(tmp_path: Path) -> No
 def test_inventory_enabled_modified_source_never_reads_active(tmp_path: Path) -> None:
     target, project, home = _target(tmp_path)
     _install(target, codex_version=None)
-    (project / ".agents/plugins/yoetz/hooks/hooks.json").write_bytes(b"{}\n")
+    (project / ".agents/plugins/finishup/hooks/hooks.json").write_bytes(b"{}\n")
     (home / "config.toml").write_text(
-        '[marketplaces.yoetz]\nsource_type = "local"\n'
-        f'source = "{project}"\n\n[plugins."yoetz@yoetz"]\nenabled = true\n',
+        '[marketplaces.finishup]\nsource_type = "local"\n'
+        f'source = "{project}"\n\n[plugins."finishup@finishup"]\nenabled = true\n',
         encoding="utf-8",
     )
-    (home / f"plugins/cache/yoetz/yoetz/{__version__}").mkdir(parents=True, mode=0o700)
+    (home / f"plugins/cache/finishup/finishup/{__version__}").mkdir(parents=True, mode=0o700)
 
     inspection = inspect_activation(target, codex_home=home)
 
@@ -476,7 +476,7 @@ def test_inventory_enabled_modified_source_never_reads_active(tmp_path: Path) ->
 def test_same_version_cache_refresh_replaces_prior_managed_render(tmp_path: Path) -> None:
     """#388: a marker-identified prior cache render is replaceable, not a conflict."""
 
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     target, _project, home = _target(tmp_path)
     _install(target, codex_version=None)
@@ -491,9 +491,9 @@ def test_same_version_cache_refresh_replaces_prior_managed_render(tmp_path: Path
         approved_digest=first.preview_digest,
         _run=runner,
     )
-    cache = home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
     # Simulate content drift since the prior activation: overwrite the cache with
-    # the other renderer variant, which is exactly a prior yoetz-managed render.
+    # the other renderer variant, which is exactly a prior finishup-managed render.
     shutil.rmtree(cache)
     cache.mkdir(mode=0o700)
     for relative_path, payload in render_plugin_install_tree(codex_version=None).items():
@@ -525,7 +525,7 @@ def test_same_version_cache_refresh_replaces_prior_managed_render(tmp_path: Path
 def test_cache_refresh_between_preview_and_apply_is_stale(tmp_path: Path) -> None:
     """A cache that changes after preview must still refuse as ``preview_stale``."""
 
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     target, _project, home = _target(tmp_path)
     _install(target, codex_version=None)
@@ -540,7 +540,7 @@ def test_cache_refresh_between_preview_and_apply_is_stale(tmp_path: Path) -> Non
         approved_digest=first.preview_digest,
         _run=runner,
     )
-    cache = home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
     shutil.rmtree(cache)
     cache.mkdir(mode=0o700)
     for relative_path, payload in render_plugin_install_tree(codex_version=None).items():
@@ -587,7 +587,7 @@ def test_modified_or_foreign_cache_stays_destination_conflict(tmp_path: Path) ->
         approved_digest=first.preview_digest,
         _run=runner,
     )
-    cache = home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
     hooks = cache / "hooks/hooks.json"
     hooks.write_bytes(hooks.read_bytes() + b"# modified\n")
 
@@ -603,18 +603,18 @@ def test_stale_managed_source_render_is_previewed_but_fenced_until_source_refres
 ) -> None:
     """An older marker-consistent source render previews, but apply requires a refresh."""
 
-    from yoetz.adapters.integrations.codex_plugin import (
+    from finishup.adapters.integrations.codex_plugin import (
         _build_marker,  # pyright: ignore[reportPrivateUsage]
         render_plugin_tree,
     )
 
     target, project, home = _target(tmp_path)
     _install(target, codex_version=None)
-    source = project / ".agents/plugins/yoetz"
+    source = project / ".agents/plugins/finishup"
     # Rebuild the source as an older-guidance managed render: one member changes
     # and the marker is regenerated so the tree stays marker-consistent.
     members = dict(render_plugin_tree(codex_version=None))
-    members["skills/yoetz/SKILL.md"] = b"# an older guidance render\n"
+    members["skills/finishup/SKILL.md"] = b"# an older guidance render\n"
     for relative_path, payload in members.items():
         (source / relative_path).write_bytes(payload)
     (source / ".yoetz-plugin-install.json").write_bytes(_build_marker(members))
@@ -653,7 +653,7 @@ def test_apply_preserves_foreign_marketplace_entries_and_config(tmp_path: Path) 
     marketplace.write_text(
         json.dumps(
             {
-                "name": "yoetz",
+                "name": "finishup",
                 "interface": {"displayName": "Local tools"},
                 "plugins": [
                     {
@@ -670,7 +670,7 @@ def test_apply_preserves_foreign_marketplace_entries_and_config(tmp_path: Path) 
     apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
     document = json.loads(marketplace.read_bytes())
     assert document["interface"] == {"displayName": "Local tools"}
-    assert [row["name"] for row in document["plugins"]] == ["other", "yoetz"]
+    assert [row["name"] for row in document["plugins"]] == ["other", "finishup"]
     assert (home / "config.toml").read_text(encoding="utf-8").startswith('model = "gpt-5"\n')
 
 
@@ -681,10 +681,10 @@ def test_foreign_same_name_entry_is_refused(tmp_path: Path) -> None:
     marketplace.write_text(
         json.dumps(
             {
-                "name": "yoetz",
+                "name": "finishup",
                 "plugins": [
                     {
-                        "name": "yoetz",
+                        "name": "finishup",
                         "source": {"source": "local", "path": "./somewhere-else"},
                     }
                 ],
@@ -702,7 +702,7 @@ def test_foreign_config_source_is_refused(tmp_path: Path) -> None:
     target, _project, home = _target(tmp_path)
     _install(target)
     (home / "config.toml").write_text(
-        '[marketplaces.yoetz]\nsource_type = "local"\nsource = "/some/other/project"\n',
+        '[marketplaces.finishup]\nsource_type = "local"\nsource = "/some/other/project"\n',
         encoding="utf-8",
     )
     assert inspect_activation(target, codex_home=home).state is ActivationState.FOREIGN
@@ -745,25 +745,25 @@ def test_activation_refuses_symlinked_cache_ancestor_before_host_mutation(tmp_pa
 
 
 def test_cache_replacement_refuses_ancestor_swap_after_validation(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     home = tmp_path / "codex-home"
-    cache = home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
     cache.mkdir(parents=True)
     module._validate_descendant_ancestors(  # pyright: ignore[reportPrivateUsage]
         home,
-        Path("plugins/cache/yoetz/yoetz"),
+        Path("plugins/cache/finishup/finishup"),
     )
     outside = tmp_path / "outside-cache"
     (home / "plugins").rename(outside)
     (home / "plugins").symlink_to(outside, target_is_directory=True)
-    sentinel = outside / f"cache/yoetz/yoetz/{__version__}/sentinel.txt"
+    sentinel = outside / f"cache/finishup/finishup/{__version__}/sentinel.txt"
     sentinel.write_bytes(b"outside")
 
     with pytest.raises(IntegrationError) as caught:
         module._replace_cache_tree(  # pyright: ignore[reportPrivateUsage]
-            home / f"plugins/cache/yoetz/yoetz/{__version__}",
+            home / f"plugins/cache/finishup/finishup/{__version__}",
             render_plugin_install_tree(codex_version="0.148.0-alpha.6"),
             anchor_root=home,
         )
@@ -773,11 +773,11 @@ def test_cache_replacement_refuses_ancestor_swap_after_validation(tmp_path: Path
 
 
 def test_removal_preview_refuses_cache_ancestor_swap_after_validation(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     home = tmp_path / "codex-home"
-    cache_root = home / "plugins/cache/yoetz/yoetz"
+    cache_root = home / "plugins/cache/finishup/finishup"
     cache = cache_root / __version__
     cache.mkdir(parents=True)
     expected = render_plugin_install_tree(codex_version="0.148.0-alpha.6")
@@ -787,12 +787,12 @@ def test_removal_preview_refuses_cache_ancestor_swap_after_validation(tmp_path: 
         member.write_bytes(payload)
     module._validate_descendant_ancestors(  # pyright: ignore[reportPrivateUsage]
         home,
-        Path("plugins/cache/yoetz/yoetz"),
+        Path("plugins/cache/finishup/finishup"),
     )
     outside = tmp_path / "outside-cache"
     (home / "plugins").rename(outside)
     (home / "plugins").symlink_to(outside, target_is_directory=True)
-    sentinel = outside / f"cache/yoetz/yoetz/{__version__}/sentinel.txt"
+    sentinel = outside / f"cache/finishup/finishup/{__version__}/sentinel.txt"
     sentinel.write_bytes(b"outside")
 
     with pytest.raises(IntegrationError) as caught:
@@ -829,7 +829,7 @@ def test_second_file_stale_fence_preserves_approved_partial_write(
     preview = preview_activation(target, codex_home=home)
     config = home / "config.toml"
     real_assert = __import__(
-        "yoetz.adapters.integrations.codex_marketplace", fromlist=["_assert_snapshot"]
+        "finishup.adapters.integrations.codex_marketplace", fromlist=["_assert_snapshot"]
     )._assert_snapshot
 
     def race(path: Path, expected: bytes | None) -> None:
@@ -837,7 +837,7 @@ def test_second_file_stale_fence_preserves_approved_partial_write(
             config.write_text('model = "concurrent"\n', encoding="utf-8")
         real_assert(path, expected)
 
-    monkeypatch.setattr("yoetz.adapters.integrations.codex_marketplace._assert_snapshot", race)
+    monkeypatch.setattr("finishup.adapters.integrations.codex_marketplace._assert_snapshot", race)
     with pytest.raises(IntegrationError) as caught:
         apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
     assert caught.value.reason is IntegrationReason.PREVIEW_STALE
@@ -859,7 +859,7 @@ def test_apply_refuses_modified_plugin_source_before_activation(tmp_path: Path) 
     target, project, home = _target(tmp_path)
     _install(target)
     preview = preview_activation(target, codex_home=home)
-    (project / ".agents/plugins/yoetz/hooks/hooks.json").write_text("{}\n", encoding="utf-8")
+    (project / ".agents/plugins/finishup/hooks/hooks.json").write_text("{}\n", encoding="utf-8")
     with pytest.raises(IntegrationError) as caught:
         apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
     assert caught.value.reason is IntegrationReason.PARTIAL_INSTALL
@@ -872,7 +872,7 @@ def test_preview_refuses_extra_plugin_source_file_before_any_install_command(
 ) -> None:
     target, project, home = _target(tmp_path)
     _install(target)
-    (project / ".agents/plugins/yoetz/credential123").write_text("not managed", encoding="utf-8")
+    (project / ".agents/plugins/finishup/credential123").write_text("not managed", encoding="utf-8")
     runner = _FakeCodex(target, home)
     with pytest.raises(IntegrationError) as caught:
         _preview_activation(
@@ -907,7 +907,7 @@ def test_add_failure_after_copy_preserves_honest_partial_state_for_retry(
             _run=runner,
         )
     assert caught.value.reason is IntegrationReason.WRITE_FAILED
-    assert (home / f"plugins/cache/yoetz/yoetz/{__version__}").exists()
+    assert (home / f"plugins/cache/finishup/finishup/{__version__}").exists()
     assert (project / ".agents/plugins/marketplace.json").read_bytes() == preview.marketplace_bytes
     assert (home / "config.toml").is_file()
 
@@ -948,9 +948,9 @@ def test_final_plugin_fence_preserves_approved_partial_writes(
     target, project, home = _target(tmp_path)
     _install(target)
     preview = preview_activation(target, codex_home=home)
-    hook_path = project / ".agents/plugins/yoetz/hooks/hooks.json"
+    hook_path = project / ".agents/plugins/finishup/hooks/hooks.json"
     module = __import__(
-        "yoetz.adapters.integrations.codex_marketplace", fromlist=["_assert_plugin_source"]
+        "finishup.adapters.integrations.codex_marketplace", fromlist=["_assert_plugin_source"]
     )
     real_assert = module._assert_plugin_source
     calls = 0
@@ -974,7 +974,7 @@ def test_final_plugin_fence_preserves_approved_partial_writes(
         )
 
     monkeypatch.setattr(
-        "yoetz.adapters.integrations.codex_marketplace._assert_plugin_source",
+        "finishup.adapters.integrations.codex_marketplace._assert_plugin_source",
         mutate_at_final_fence,
     )
     with pytest.raises(IntegrationError) as caught:
@@ -1071,10 +1071,10 @@ def test_disabled_owner_authored_plugin_table_is_not_rewritten(tmp_path: Path) -
     target, project, home = _target(tmp_path)
     _install(target)
     (home / "config.toml").write_text(
-        "[marketplaces.yoetz]\n"
+        "[marketplaces.finishup]\n"
         'source_type = "local"\n'
         f'source = "{project}"\n\n'
-        '[plugins."yoetz@yoetz"]\n'
+        '[plugins."finishup@finishup"]\n'
         "enabled = false # owner explicitly accepts re-enable\n",
         encoding="utf-8",
     )
@@ -1142,10 +1142,10 @@ def test_non_bmp_project_path_activates_with_parseable_config(tmp_path: Path) ->
     result = apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
     assert result.state is ActivationState.ACTIVE
     config = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
-    assert config["marketplaces"]["yoetz"]["source"] == str(project)
-    assert config["plugins"]["yoetz@yoetz"]["enabled"] is True
+    assert config["marketplaces"]["finishup"]["source"] == str(project)
+    assert config["plugins"]["finishup@finishup"]["enabled"] is True
     document = json.loads((project / ".agents/plugins/marketplace.json").read_bytes())
-    assert document["name"] == "yoetz"
+    assert document["name"] == "finishup"
 
 
 def test_applied_config_parses_as_toml(tmp_path: Path) -> None:
@@ -1156,7 +1156,7 @@ def test_applied_config_parses_as_toml(tmp_path: Path) -> None:
     apply_activation(target, codex_home=home, approved_digest=preview.preview_digest)
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
     assert parsed["model"] == "gpt-5"
-    assert parsed["plugins"]["yoetz@yoetz"]["enabled"] is True
+    assert parsed["plugins"]["finishup@finishup"]["enabled"] is True
 
 
 def test_idempotent_reapply_keeps_exact_bytes(tmp_path: Path) -> None:
@@ -1174,7 +1174,7 @@ def test_idempotent_reapply_keeps_exact_bytes(tmp_path: Path) -> None:
 
 
 def test_unreadable_cache_member_normalizes_to_integration_error(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.codex_marketplace import (
+    from finishup.adapters.integrations.codex_marketplace import (
         _installed_cache_digest,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -1210,9 +1210,9 @@ def test_preview_and_apply_removal_of_managed_activation(tmp_path: Path) -> None
     assert not (project / ".agents/plugins/marketplace.json").exists()
     config = home / "config.toml"
     parsed = tomllib.loads(config.read_text(encoding="utf-8") if config.exists() else "")
-    assert "yoetz" not in parsed.get("marketplaces", {})
-    assert "yoetz@yoetz" not in parsed.get("plugins", {})
-    cache_root = home / "plugins/cache/yoetz/yoetz"
+    assert "finishup" not in parsed.get("marketplaces", {})
+    assert "finishup@finishup" not in parsed.get("plugins", {})
+    cache_root = home / "plugins/cache/finishup/finishup"
     assert not cache_root.exists() or not any(cache_root.iterdir())
     assert (
         inspect_activation(target, codex_home=home).state is ActivationState.INSTALLED_NOT_ACTIVATED
@@ -1224,7 +1224,7 @@ def test_preview_and_apply_removal_of_managed_activation(tmp_path: Path) -> None
 
 
 def test_removal_preview_digest_binds_the_exact_project_root(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.codex_marketplace import (
+    from finishup.adapters.integrations.codex_marketplace import (
         _canonical_marketplace_bytes,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -1282,7 +1282,7 @@ def test_post_host_mutation_config_conflict_is_write_failed(tmp_path: Path) -> N
 
     assert caught.value.reason is IntegrationReason.WRITE_FAILED
     assert caught.value.safe_details["conflict"] == "config_plugin"
-    assert not (home / f"plugins/cache/yoetz/yoetz/{__version__}").exists()
+    assert not (home / f"plugins/cache/finishup/finishup/{__version__}").exists()
 
 
 def test_post_host_mutation_marketplace_conflict_is_write_failed(tmp_path: Path) -> None:
@@ -1312,13 +1312,13 @@ def test_post_host_mutation_marketplace_conflict_is_write_failed(tmp_path: Path)
     assert caught.value.reason is IntegrationReason.WRITE_FAILED
     assert caught.value.safe_details["conflict"] == "repository_marketplace"
     assert marketplace.read_bytes() == b'{"name":"foreign"}\n'
-    assert not (home / f"plugins/cache/yoetz/yoetz/{__version__}").exists()
+    assert not (home / f"plugins/cache/finishup/finishup/{__version__}").exists()
 
 
 def test_post_host_mutation_config_read_error_is_write_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations import codex_marketplace as module
 
     target, _project, home = _target(tmp_path)
     _install(target)
@@ -1331,7 +1331,7 @@ def test_post_host_mutation_config_read_error_is_write_failed(
         codex_home=home,
         _run=runner,
     )
-    cache = home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
     config = home / "config.toml"
     real_current_bytes = module._current_bytes  # pyright: ignore[reportPrivateUsage]
 
@@ -1357,7 +1357,7 @@ def test_post_host_mutation_config_read_error_is_write_failed(
 
 
 def test_mutating_host_runner_error_is_write_failed(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations import codex_marketplace as module
 
     target, _project, home = _target(tmp_path)
     _install(target)
@@ -1370,7 +1370,7 @@ def test_mutating_host_runner_error_is_write_failed(tmp_path: Path) -> None:
         codex_home=home,
         _run=runner,
     )
-    cache = home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
     runner.error_after_mutation = module._error(  # pyright: ignore[reportPrivateUsage]
         IntegrationReason.TARGET_UNSAFE
     )
@@ -1397,7 +1397,7 @@ def test_mutating_host_malformed_json_is_write_failed(
     _install(target)
     activation = preview_activation(target, codex_home=home)
     apply_activation(target, codex_home=home, approved_digest=activation.preview_digest)
-    cache = home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
     if host_surface == "marketplace":
         shutil.rmtree(cache)
     runner = _FakeCodex(target, home)
@@ -1408,9 +1408,9 @@ def test_mutating_host_malformed_json_is_write_failed(
         _run=runner,
     )
     command = (
-        ("plugin", "remove", "yoetz@yoetz", "--json")
+        ("plugin", "remove", "finishup@finishup", "--json")
         if host_surface == "plugin"
-        else ("plugin", "marketplace", "remove", "yoetz", "--json")
+        else ("plugin", "marketplace", "remove", "finishup", "--json")
     )
     runner.malformed_after_mutation.add(command)
 
@@ -1428,14 +1428,14 @@ def test_mutating_host_malformed_json_is_write_failed(
         assert not cache.exists()
     else:
         config = home / "config.toml"
-        assert "marketplaces.yoetz" not in config.read_text(encoding="utf-8")
+        assert "marketplaces.finishup" not in config.read_text(encoding="utf-8")
 
 
 def test_repository_marketplace_replacement_during_quarantine_is_preserved(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations import codex_marketplace as module
 
     target, project, home = _target(tmp_path)
     _install(target)
@@ -1498,7 +1498,7 @@ def test_repository_marketplace_restore_never_clobbers_new_foreign_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations import codex_marketplace as module
 
     target, project, home = _target(tmp_path)
     _install(target)
@@ -1586,7 +1586,7 @@ def test_exact_empty_config_cleanup_preserves_a_replacement(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations import codex_marketplace as module
 
     parent = tmp_path / "codex"
     parent.mkdir(mode=0o700)
@@ -1690,12 +1690,12 @@ def test_cache_only_removal_preserves_write_failed_for_final_verification(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     target, project, home = _target(tmp_path)
     _install(target)
-    cache = home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
     expected = render_plugin_install_tree(codex_version="0.148.0-alpha.6")
     for relative, payload in expected.items():
         destination = cache / relative
@@ -1744,7 +1744,7 @@ def test_cache_only_removal_preserves_write_failed_for_final_verification(
     ["member_bytes", "file_count", "entry_count", "depth", "version_count"],
 )
 def test_removal_preview_bounds_cache_members(tmp_path: Path, overflow: str) -> None:
-    from yoetz.adapters.integrations.codex_marketplace import (
+    from finishup.adapters.integrations.codex_marketplace import (
         _MAX_MANAGED_CACHE_DEPTH,  # pyright: ignore[reportPrivateUsage]
         _MAX_MANAGED_CACHE_ENTRIES,  # pyright: ignore[reportPrivateUsage]
         _MAX_MANAGED_CACHE_FILES,  # pyright: ignore[reportPrivateUsage]
@@ -1755,7 +1755,7 @@ def test_removal_preview_bounds_cache_members(tmp_path: Path, overflow: str) -> 
     _install(target)
     activation = preview_activation(target, codex_home=home)
     apply_activation(target, codex_home=home, approved_digest=activation.preview_digest)
-    cache = home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
     if overflow == "member_bytes":
         os.truncate(cache / "hooks/hooks.json", _MAX_MANAGED_CACHE_MEMBER_BYTES + 1)
     elif overflow == "file_count":
@@ -1790,7 +1790,7 @@ def test_removal_preview_rejects_unrepresented_empty_cache_directory(tmp_path: P
     _install(target)
     activation = preview_activation(target, codex_home=home)
     apply_activation(target, codex_home=home, approved_digest=activation.preview_digest)
-    cache = home / f"plugins/cache/yoetz/yoetz/{__version__}"
+    cache = home / f"plugins/cache/finishup/finishup/{__version__}"
     empty = cache / "owner-empty"
     empty.mkdir()
 
@@ -1808,7 +1808,7 @@ def test_removal_refuses_foreign_marketplace_and_names_conflict(tmp_path: Path) 
     marketplace = project / ".agents/plugins/marketplace.json"
     marketplace.parent.mkdir(parents=True, exist_ok=True)
     marketplace.write_text(
-        '{"name":"other","plugins":[{"name":"yoetz","source":{"source":"local","path":"./"}}]}\n',
+        '{"name":"other","plugins":[{"name":"finishup","source":{"source":"local","path":"./"}}]}\n',
         encoding="utf-8",
     )
     with pytest.raises(IntegrationError) as caught:
@@ -1878,11 +1878,11 @@ def test_removal_refuses_marketplace_table_with_additional_field(tmp_path: Path)
 def test_cache_removal_revalidates_digest_immediately_before_delete(
     tmp_path: Path,
 ) -> None:
-    from yoetz.adapters.integrations.codex_marketplace import (
+    from finishup.adapters.integrations.codex_marketplace import (
         _delete_managed_cache_versions,  # pyright: ignore[reportPrivateUsage]
         _installed_cache_digest,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     root = tmp_path / "cache"
     version = root / "0.1.0"
@@ -1903,12 +1903,12 @@ def test_cache_removal_revalidates_digest_immediately_before_delete(
 
 
 def test_cache_removal_bounds_replaced_member_before_reading_to_eof(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.codex_marketplace import (
+    from finishup.adapters.integrations.codex_marketplace import (
         _MAX_MANAGED_CACHE_MEMBER_BYTES,  # pyright: ignore[reportPrivateUsage]
         _delete_managed_cache_versions,  # pyright: ignore[reportPrivateUsage]
         _installed_cache_digest,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     root = tmp_path / "cache"
     version = root / "0.1.0"
@@ -1930,12 +1930,12 @@ def test_cache_removal_bounds_replaced_member_before_reading_to_eof(tmp_path: Pa
 
 
 def test_cache_removal_bounds_aggregate_revalidation_bytes(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.codex_marketplace import (
+    from finishup.adapters.integrations.codex_marketplace import (
         _MAX_MANAGED_CACHE_TREE_BYTES,  # pyright: ignore[reportPrivateUsage]
         _delete_managed_cache_versions,  # pyright: ignore[reportPrivateUsage]
         _installed_cache_digest,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     root = tmp_path / "cache"
     version = root / "0.1.0"
@@ -1964,8 +1964,8 @@ def test_cache_removal_bounds_aggregate_revalidation_bytes(tmp_path: Path) -> No
 def test_cache_removal_does_not_reopen_replaced_quarantine_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     root = tmp_path / "cache"
     version = root / "0.1.0"
@@ -2027,8 +2027,8 @@ def test_cache_removal_revalidates_exact_quarantine_contents_before_delete(
     monkeypatch: pytest.MonkeyPatch,
     mutation: str,
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     root = tmp_path / "cache"
     version = root / "0.1.0"
@@ -2095,8 +2095,8 @@ def test_cache_removal_restores_quarantine_on_race_before_first_unlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     root = tmp_path / "cache"
     version = root / "0.1.0"
@@ -2154,8 +2154,8 @@ def test_cache_removal_keeps_write_failed_across_multiple_versions(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     root = tmp_path / "cache"
     expected = render_plugin_install_tree(codex_version="0.148.0-alpha.6")
@@ -2210,8 +2210,8 @@ def test_cache_removal_normalizes_missing_quarantine_after_rename(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     root = tmp_path / "cache"
     version = root / "0.1.0"
@@ -2252,11 +2252,11 @@ def test_cache_removal_normalizes_missing_quarantine_after_rename(
 
 
 def test_cache_removal_refuses_replaced_symlink_root(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.codex_marketplace import (
+    from finishup.adapters.integrations.codex_marketplace import (
         _delete_managed_cache_versions,  # pyright: ignore[reportPrivateUsage]
         _installed_cache_digest,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     root = tmp_path / "cache"
     version = root / "0.1.0"
@@ -2278,16 +2278,16 @@ def test_cache_removal_refuses_replaced_symlink_root(tmp_path: Path) -> None:
 
 
 def test_cache_removal_refuses_symlinked_ancestor_beneath_selected_home(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.codex_marketplace import (
+    from finishup.adapters.integrations.codex_marketplace import (
         _delete_managed_cache_versions,  # pyright: ignore[reportPrivateUsage]
         _installed_cache_digest,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     home = tmp_path / "codex-home"
     home.mkdir(mode=0o700)
     outside = tmp_path / "outside"
-    root = outside / "cache/yoetz/yoetz"
+    root = outside / "cache/finishup/finishup"
     version = root / "0.1.0"
     expected = render_plugin_install_tree(codex_version="0.148.0-alpha.6")
     for relative, payload in expected.items():
@@ -2300,7 +2300,7 @@ def test_cache_removal_refuses_symlinked_ancestor_beneath_selected_home(tmp_path
 
     with pytest.raises(IntegrationError) as caught:
         _delete_managed_cache_versions(
-            home / "plugins/cache/yoetz/yoetz",
+            home / "plugins/cache/finishup/finishup",
             (("0.1.0", digest),),
             expected,
             anchor_root=home,
@@ -2311,14 +2311,14 @@ def test_cache_removal_refuses_symlinked_ancestor_beneath_selected_home(tmp_path
 
 
 def test_cache_removal_accepts_host_removed_root_only_after_prior_mutation(tmp_path: Path) -> None:
-    from yoetz.adapters.integrations.codex_marketplace import (
+    from finishup.adapters.integrations.codex_marketplace import (
         _delete_managed_cache_versions,  # pyright: ignore[reportPrivateUsage]
     )
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     home = tmp_path / "codex-home"
     home.mkdir(mode=0o700)
-    root = home / "plugins/cache/yoetz/yoetz"
+    root = home / "plugins/cache/finishup/finishup"
     expected = render_plugin_install_tree(codex_version="0.148.0-alpha.6")
     assert _delete_managed_cache_versions(
         root,
@@ -2332,7 +2332,7 @@ def test_cache_removal_accepts_host_removed_root_only_after_prior_mutation(tmp_p
 def test_file_removal_refuses_symlinked_ancestor_beneath_selected_project(
     tmp_path: Path,
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations import codex_marketplace as module
 
     project = tmp_path / "project"
     project.mkdir(mode=0o700)
@@ -2340,7 +2340,7 @@ def test_file_removal_refuses_symlinked_ancestor_beneath_selected_project(
     plugins = outside / "plugins"
     plugins.mkdir(parents=True)
     marketplace = plugins / "marketplace.json"
-    expected = b'{"name":"yoetz"}\n'
+    expected = b'{"name":"finishup"}\n'
     marketplace.write_bytes(expected)
     (project / ".agents").symlink_to(outside, target_is_directory=True)
 
@@ -2365,8 +2365,8 @@ def test_cache_removal_normalizes_every_post_quarantine_error(
     monkeypatch: pytest.MonkeyPatch,
     reason: IntegrationReason,
 ) -> None:
-    from yoetz.adapters.integrations import codex_marketplace as module
-    from yoetz.adapters.integrations.codex_plugin import render_plugin_install_tree
+    from finishup.adapters.integrations import codex_marketplace as module
+    from finishup.adapters.integrations.codex_plugin import render_plugin_install_tree
 
     root = tmp_path / "cache"
     version = root / "0.1.0"
@@ -2407,8 +2407,8 @@ def test_purge_cache_deletes_other_managed_versions(tmp_path: Path) -> None:
     _install(target)
     activation = preview_activation(target, codex_home=home)
     apply_activation(target, codex_home=home, approved_digest=activation.preview_digest)
-    extra = home / "plugins/cache/yoetz/yoetz/0.0.1"
-    shutil.copytree(home / f"plugins/cache/yoetz/yoetz/{__version__}", extra)
+    extra = home / "plugins/cache/finishup/finishup/0.0.1"
+    shutil.copytree(home / f"plugins/cache/finishup/finishup/{__version__}", extra)
     with pytest.raises(IntegrationError) as caught:
         preview_removal(target, codex_home=home)
     assert caught.value.reason is IntegrationReason.REMOVE_REFUSED
@@ -2423,5 +2423,5 @@ def test_purge_cache_deletes_other_managed_versions(tmp_path: Path) -> None:
     )
     assert result.outcome is RemovalOutcome.REMOVE
     assert not extra.exists()
-    cache_root = home / "plugins/cache/yoetz/yoetz"
+    cache_root = home / "plugins/cache/finishup/finishup"
     assert not cache_root.exists() or not any(cache_root.iterdir())

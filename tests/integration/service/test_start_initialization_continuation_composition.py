@@ -19,7 +19,10 @@ from unittest.mock import patch
 
 import pytest
 
-import yoetz.mcp.server as bridge
+import finishup.mcp.server as bridge
+from finishup.cli import elevated
+from finishup.protocol.canonical import JsonValue
+from finishup.service.elevated_bootstrap import load_pending
 from integration.service.test_consent_vault_initialize_composition import (
     _approve_attestation,  # pyright: ignore[reportPrivateUsage]
     _approved_store,  # pyright: ignore[reportPrivateUsage]
@@ -30,19 +33,16 @@ from integration.service.test_consent_vault_initialize_composition import (
     _slot_accounts,  # pyright: ignore[reportPrivateUsage]
     runtime_directory,  # noqa: F401 - imported pytest fixture  # pyright: ignore[reportUnusedImport]
 )
-from yoetz.cli import elevated
-from yoetz.protocol.canonical import JsonValue
-from yoetz.service.elevated_bootstrap import load_pending
 
 _REQUEST = "req_00000000-0000-4000-8000-000000000512"
 
 _EXPECTED_CONTINUATION = {
-    "authorize_command": "yoetz consent authorize",
+    "authorize_command": "finishup consent authorize",
     "continuation": "vault_initialization_required",
     "pending_ttl_seconds": 900,
-    "prepare_command": "yoetz consent prepare vault_initialize",
+    "prepare_command": "finishup consent prepare vault_initialize",
     "replay_request_id": _REQUEST,
-    "review_command": "yoetz consent review",
+    "review_command": "finishup consent review",
 }
 
 
@@ -101,8 +101,8 @@ async def test_start_first_flow_reaches_a_session_through_initialization_and_exa
 
         # 2. The exact user decision: prepare, present, approve via the sanctioned ceremony.
         with (
-            patch("yoetz.service.elevated_bootstrap.state_dir", return_value=consent_state),
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.service.elevated_bootstrap.state_dir", return_value=consent_state),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
         ):
             elevated.prepare_elevated("vault_initialize")
             pending = load_pending(_state=consent_state)
@@ -153,8 +153,8 @@ async def test_denied_initialization_is_bounded_and_the_continuation_remains(
         assert first["safe_details"] == _EXPECTED_CONTINUATION
 
         with (
-            patch("yoetz.service.elevated_bootstrap.state_dir", return_value=consent_state),
-            patch("yoetz.cli.elevated._auto_unlock_store", return_value=store),
+            patch("finishup.service.elevated_bootstrap.state_dir", return_value=consent_state),
+            patch("finishup.cli.elevated._auto_unlock_store", return_value=store),
         ):
             elevated.prepare_elevated("vault_initialize")
             pending = load_pending(_state=consent_state)

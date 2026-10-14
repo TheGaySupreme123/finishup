@@ -6,7 +6,7 @@ from typing import cast
 
 import pytest
 
-from yoetz.domain.events import (
+from finishup.domain.events import (
     OBLIGATION_SCHEMA_VERSION,
     PAYLOAD_TYPES,
     EventSchema,
@@ -20,10 +20,10 @@ from yoetz.domain.events import (
     obligation_schema_admits,
     obligation_schema_version,
 )
-from yoetz.domain.values import freeze_json, obligation_id
-from yoetz.protocol.canonical import JsonValue, canonical_encode
-from yoetz.protocol.errors import ProtocolValueError
-from yoetz.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
+from finishup.domain.values import freeze_json, obligation_id
+from finishup.protocol.canonical import JsonValue, canonical_encode
+from finishup.protocol.errors import ProtocolValueError
+from finishup.protocol.schemas import SchemaInstanceInvalid, validate_schema_instance
 
 _OBLIGATION = obligation_id("obl_10020000-0000-4000-8000-000000000001")
 _V1_0 = EventSchema("obligation_published", "1.0.0")
@@ -100,7 +100,7 @@ def test_a_payload_without_additions_keeps_1_0_0_and_1_1_0_also_admits_it() -> N
     )
     assert decode_payload(_V1_0, wire) == payload
     assert not payload.requires_obligation_v1_1
-    # Yoetz drafts the lowest admitting version, so a plain obligation keeps its 1.0.0 bytes...
+    # FinishUP drafts the lowest admitting version, so a plain obligation keeps its 1.0.0 bytes...
     assert obligation_schema_version(payload) == "1.0.0"
     # ...but 1.1.0 is a superset (issue #1023): a feature-free 1.1.0 draft is admitted.
     assert decode_payload(_V1_1, wire) == payload
@@ -190,7 +190,7 @@ def test_the_publish_event_draft_admits_1_1_0() -> None:
 
 
 def test_the_status_obligations_item_shows_directory_and_role() -> None:
-    from yoetz.protocol.models import StatusRequestedItemModel
+    from finishup.protocol.models import StatusRequestedItemModel
 
     shown = StatusRequestedItemModel.model_validate(
         {"item_kind": "directory", "value": "src", "role": "output"}
@@ -201,8 +201,8 @@ def test_the_status_obligations_item_shows_directory_and_role() -> None:
 
 
 def test_mcp_publish_work_advertises_both_obligation_versions() -> None:
-    from yoetz.mcp.descriptors import descriptor_for
-    from yoetz.protocol.canonical import canonical_encode as encode
+    from finishup.mcp.descriptors import descriptor_for
+    from finishup.protocol.canonical import canonical_encode as encode
 
     publish = encode(
         cast(JsonValue, freeze_json(dict(descriptor_for("publish_work").input_schema)))

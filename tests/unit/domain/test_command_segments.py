@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from yoetz.domain.command_segments import (
+from finishup.domain.command_segments import (
     MAX_SEGMENT_COMMITMENTS,
     command_segment_commitments,
     command_segments,
     requested_command_shape,
 )
-from yoetz.domain.observation import normalize_observed_command, observed_command_commitment
-from yoetz.kernel.observed_failures import (
+from finishup.domain.observation import normalize_observed_command, observed_command_commitment
+from finishup.kernel.observed_failures import (
     command_identity,
     command_segment_identities,
     observed_command_field,

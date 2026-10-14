@@ -9,11 +9,11 @@ from typing import cast
 import pytest
 
 from builders.readiness import with_checklist
-from yoetz.cli import project as project_cli
-from yoetz.cli.render import render_human_status
-from yoetz.domain.values import JsonValue
-from yoetz.ports.control import ControlError
-from yoetz.protocol.models import StatusResultModel, StatusSuccessModel, public_model_to_wire
+from finishup.cli import project as project_cli
+from finishup.cli.render import render_human_status
+from finishup.domain.values import JsonValue
+from finishup.ports.control import ControlError
+from finishup.protocol.models import StatusResultModel, StatusSuccessModel, public_model_to_wire
 
 pytestmark = pytest.mark.anyio
 
@@ -134,7 +134,7 @@ async def test_project_status_json_omits_unset_optional_project_text(
     async def build(**_kwargs: object) -> _Client:
         return client
 
-    monkeypatch.setattr("yoetz.cli.app.build_service_client", build)
+    monkeypatch.setattr("finishup.cli.app.build_service_client", build)
 
     wire = await project_cli._invoke_status(  # pyright: ignore[reportPrivateUsage]
         {"project_id": PROJECT_ID},
@@ -196,7 +196,7 @@ def test_project_mutation_surfaces_generated_request_id_for_retry(
         return asyncio.run(factory())
 
     monkeypatch.setattr(project_cli, "_invoke", invoke)
-    monkeypatch.setattr("yoetz.cli.app.run_async", run_async)
+    monkeypatch.setattr("finishup.cli.app.run_async", run_async)
 
     with pytest.raises(project_cli.typer.Exit):
         project_cli._run(  # pyright: ignore[reportPrivateUsage]
@@ -227,7 +227,7 @@ def test_project_mutation_rejects_unsafe_request_id_before_connection(
         connections.append(factory)
         raise ControlError("request_timeout", retryable=True)
 
-    monkeypatch.setattr("yoetz.cli.app.run_async", run_async)
+    monkeypatch.setattr("finishup.cli.app.run_async", run_async)
     with pytest.raises(project_cli.typer.Exit) as caught:
         project_cli._run(  # pyright: ignore[reportPrivateUsage]
             {"operation": "dissolve", "project_id": PROJECT_ID, "request_id": request_id},

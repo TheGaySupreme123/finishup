@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import cast
 
-from yoetz.domain.privacy import PrivacyProfile, ReviewContextProfile
+from finishup.domain.privacy import PrivacyProfile, ReviewContextProfile
 
 _ROOT = Path(__file__).resolve().parents[3]
 

@@ -14,8 +14,8 @@ from typing import cast
 
 import pytest
 
-from yoetz.cli import app as app_module
-from yoetz.cli.render import (
+from finishup.cli import app as app_module
+from finishup.cli.render import (
     error_recovery_json,
     local_recovery_json,
     recovery_directive_json,
@@ -23,12 +23,12 @@ from yoetz.cli.render import (
     render_local_recovery_lines,
     render_recovery_directive_lines,
 )
-from yoetz.protocol.canonical import JsonValue
-from yoetz.protocol.models import StatusRequest, StatusResult
-from yoetz.protocol.recovery import RECOVERY_DIRECTIVES, directive_for
+from finishup.protocol.canonical import JsonValue
+from finishup.protocol.models import StatusRequest, StatusResult
+from finishup.protocol.recovery import RECOVERY_DIRECTIVES, directive_for
 
 _CORRELATION_ID = "err_00000000-0000-4000-8000-000000000001"
-_PREPARE = "yoetz consent prepare vault_initialize"
+_PREPARE = "finishup consent prepare vault_initialize"
 
 
 def _lines_from_json(recovery: dict[str, JsonValue]) -> list[str]:

@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.application import upgrade
-from yoetz.cli import codex_subscription
-from yoetz.cli import menu as menu_module
-from yoetz.tui.runtime import RuntimeError_, YoetzRuntime
+from finishup.application import upgrade
+from finishup.cli import codex_subscription
+from finishup.cli import menu as menu_module
+from finishup.tui.runtime import FinishUpRuntime, RuntimeError_
 
 
 def test_tui_defaults_offer_only_the_eligible_runtime_and_keep_the_effort(
@@ -27,14 +27,14 @@ def test_tui_defaults_offer_only_the_eligible_runtime_and_keep_the_effort(
         codex_subscription, "default_codex_subscription_reasoning_effort", lambda: "xhigh"
     )
 
-    executable, home, model, effort = YoetzRuntime(cwd=tmp_path).codex_subscription_defaults()
+    executable, home, model, effort = FinishUpRuntime(cwd=tmp_path).codex_subscription_defaults()
 
     # No admitted runtime: the field stays empty rather than offering a newer host binary.
     assert (executable, home, model, effort) == ("", str(tmp_path / "home"), "m", "xhigh")
 
     retained = tmp_path / "bundle" / "codex"
     monkeypatch.setattr(codex_subscription, "default_codex_evaluator_executable", lambda: retained)
-    assert YoetzRuntime(cwd=tmp_path).codex_subscription_defaults()[0] == str(retained)
+    assert FinishUpRuntime(cwd=tmp_path).codex_subscription_defaults()[0] == str(retained)
 
 
 @pytest.mark.anyio
@@ -47,11 +47,11 @@ async def test_tui_failures_carry_the_subscription_next_step(
     monkeypatch.setattr(codex_subscription, "codex_subscription_status", stranded)
 
     with pytest.raises(RuntimeError_) as raised:
-        await YoetzRuntime(cwd=tmp_path).codex_subscription_status()
+        await FinishUpRuntime(cwd=tmp_path).codex_subscription_status()
 
     assert raised.value.reason == "codex_runtime_executable_changed"
     (detail,) = raised.value.details
-    assert "yoetz provider codex-subscription repair" in detail
+    assert "finishup provider codex-subscription repair" in detail
 
 
 def test_tui_repair_plan_refusal_is_bounded(
@@ -63,7 +63,7 @@ def test_tui_repair_plan_refusal_is_bounded(
     monkeypatch.setattr(codex_subscription, "codex_subscription_repair_plan", refuse)
 
     with pytest.raises(RuntimeError_) as raised:
-        YoetzRuntime(cwd=tmp_path).codex_subscription_repair_plan()
+        FinishUpRuntime(cwd=tmp_path).codex_subscription_repair_plan()
 
     assert raised.value.reason == "codex_runtime_unavailable"
     assert "/private/path" not in " ".join((raised.value.message, *raised.value.details))
@@ -79,7 +79,7 @@ def test_menu_renders_the_exact_subscription_cause(
 
     stderr = capsys.readouterr().err
     assert stderr.startswith("codex_subscription: codex_runtime_profile_outdated: ")
-    assert "yoetz provider codex-subscription repair" in stderr
+    assert "finishup provider codex-subscription repair" in stderr
     assert "invalid_request" not in stderr
 
 
@@ -107,7 +107,7 @@ def test_menu_offers_repair_and_runtime_status(
     monkeypatch.setattr(codex_subscription, "codex_subscription_repair_plan", plan)
     monkeypatch.setattr(codex_subscription, "codex_subscription_repair", repair)
     monkeypatch.setattr(codex_subscription, "codex_evaluator_runtime_status", runtime_status)
-    monkeypatch.setattr("yoetz.cli.setup.restart_service_for_semantic_composition", restart)
+    monkeypatch.setattr("finishup.cli.setup.restart_service_for_semantic_composition", restart)
     answers = iter(["8", "9"])
 
     def ask(_choices: tuple[str, ...]) -> str:
@@ -129,14 +129,14 @@ def test_menu_offers_repair_and_runtime_status(
 
 
 def test_upgrade_plan_verifies_the_evaluator_after_activation() -> None:
-    from yoetz.cli.app import app
+    from finishup.cli.app import app
 
     steps = upgrade.build_upgrade_plan(["cursor"], {})
     titles = [step.title for step in steps]
     assert titles[-2:] == ["Activate and verify", "AI-powered review evaluator"]
     evaluator = steps[-1]
     assert evaluator.commands == (
-        ("yoetz", "provider", "codex-subscription", "runtime", "status", "--json"),
+        ("finishup", "provider", "codex-subscription", "runtime", "status", "--json"),
     )
     assert "does not check sign-in" in evaluator.detail
     assert "never signs in" in evaluator.detail

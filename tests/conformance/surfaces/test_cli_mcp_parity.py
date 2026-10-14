@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from yoetz.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
-from yoetz.protocol.canonical import JsonValue
+from finishup.mcp.summaries import MAX_SUMMARY_BYTES, render_safe_compact_summary
+from finishup.protocol.canonical import JsonValue
 
 
 def test_human_summary_is_weaker_than_structured_output() -> None:

@@ -5,19 +5,18 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, cast
 
-from fixture_loader import load_fixture_json
-from yoetz.application.observation_materialize import (
+from finishup.application.observation_materialize import (
     materialize_observation_envelope,
     materialize_observation_inspection_snapshot,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     EVIDENCE_SCHEMA_VERSION,
     EvidenceDigestProvenance,
     EvidenceImmutability,
     EvidenceRecordedPayload,
     ResultRecordedPayload,
 )
-from yoetz.domain.observation import (
+from finishup.domain.observation import (
     ObservationContentKind,
     ObservationContentManifest,
     ObservationCursor,
@@ -26,8 +25,9 @@ from yoetz.domain.observation import (
     ObservationInspectionSnapshot,
     ObservationSource,
 )
-from yoetz.domain.values import JsonObject, Timestamp
-from yoetz.protocol.coverage import ArtifactObservation, AuthorshipAssurance, PublicationChannel
+from finishup.domain.values import JsonObject, Timestamp
+from finishup.protocol.coverage import ArtifactObservation, AuthorshipAssurance, PublicationChannel
+from fixture_loader import load_fixture_json
 
 _FIXTURE = "canonical/OBS-001-captured-evidence.case.json"
 
@@ -198,7 +198,7 @@ def test_inspection_objects_materialize_as_separate_bounded_evidence() -> None:
 def test_multipart_result_refs_are_canonical_when_object_order_differs(
     monkeypatch: Any,
 ) -> None:
-    import yoetz.application.observation_materialize as materialize_module
+    import finishup.application.observation_materialize as materialize_module
 
     task_id, envelope, manifests = _inputs()
     first = replace(manifests[0], part_index=0, part_count=2)

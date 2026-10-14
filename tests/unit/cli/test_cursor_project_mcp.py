@@ -10,11 +10,11 @@ from typing import cast
 import pytest
 from typer.testing import CliRunner
 
-from yoetz.cli.app import app
+from finishup.cli.app import app
 
 _RUNNER = CliRunner()
-_INVOCATION = ("/smoke/bin/yoetz", "--from-test")
-_LAUNCHER = ("/pinned/venv/bin/yoetz", "--entrypoint")
+_INVOCATION = ("/smoke/bin/finishup", "--from-test")
+_LAUNCHER = ("/pinned/venv/bin/finishup", "--entrypoint")
 
 
 def _roots(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -50,7 +50,7 @@ def _patch_runtime(
     *,
     launcher: tuple[str, ...] = _LAUNCHER,
 ) -> list[object]:
-    import yoetz.cli.cursor_project_mcp as module
+    import finishup.cli.cursor_project_mcp as module
 
     calls: list[object] = []
     monkeypatch.setattr(module, "invoking_launcher", lambda: _INVOCATION)
@@ -59,7 +59,7 @@ def _patch_runtime(
         calls.append(candidate)
         return launcher
 
-    monkeypatch.setattr(module, "resolve_yoetz_launcher", resolve)
+    monkeypatch.setattr(module, "resolve_finishup_launcher", resolve)
     monkeypatch.setattr(module, "isolated_root", lambda: isolated)
     return calls
 
@@ -113,12 +113,12 @@ def test_mcp_serve_forwards_cursor_project_selector_to_the_bridge(
 
     fake_server = SimpleNamespace(main=fake_main)
 
-    import yoetz.cli.app as app_module
+    import finishup.cli.app as app_module
 
     real_import = app_module.importlib.import_module
 
     def import_module(name: str) -> object:
-        if name == "yoetz.mcp.server":
+        if name == "finishup.mcp.server":
             return fake_server
         return real_import(name)
 
@@ -145,7 +145,7 @@ def test_status_is_local_read_only_and_forwards_pinned_launcher_and_root(
     project, config, isolated = _roots(tmp_path)
     calls = _patch_runtime(monkeypatch, isolated)
 
-    import yoetz.cli.app as app_module
+    import finishup.cli.app as app_module
 
     def no_service(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("project MCP status must not connect to the service")
@@ -235,7 +235,7 @@ def test_preview_and_mutation_require_exact_preview_and_bind_launcher_route_and_
     assert result["state_after"] == "yoetz_owned"
     entry = json.loads((project / ".cursor" / "mcp.json").read_text(encoding="utf-8"))[
         "mcpServers"
-    ]["yoetz"]
+    ]["finishup"]
     assert entry == {
         "args": [
             "--entrypoint",
@@ -249,7 +249,7 @@ def test_preview_and_mutation_require_exact_preview_and_bind_launcher_route_and_
             "off",
         ],
         "command": _LAUNCHER[0],
-        "env": {"YOETZ_ISOLATED_ROOT": str(isolated)},
+        "env": {"FINISHUP_ISOLATED_ROOT": str(isolated)},
         "type": "stdio",
     }
     assert calls == [_INVOCATION, _INVOCATION, _INVOCATION, _INVOCATION]
@@ -308,11 +308,11 @@ def test_remove_strict_sweeps_admission_and_second_remove_is_noop(
     # entries afterwards to exercise the corresponding remove sweep.
     cursor = project / ".cursor"
     (cursor / "permissions.json").write_text(
-        json.dumps({"mcpAllowlist": ["yoetz:check", "other:read"]}), encoding="utf-8"
+        json.dumps({"mcpAllowlist": ["finishup:check", "other:read"]}), encoding="utf-8"
     )
     (cursor / "cli.json").write_text(
         json.dumps(
-            {"permissions": {"allow": ["Mcp(plugin-yoetz-yoetz:check)", "Mcp(other:read)"]}}
+            {"permissions": {"allow": ["Mcp(plugin-finishup-finishup:check)", "Mcp(other:read)"]}}
         ),
         encoding="utf-8",
     )
@@ -373,7 +373,7 @@ def test_remove_strict_sweeps_admission_and_second_remove_is_noop(
     )
     assert noop.exit_code == 0, noop.output
     assert _json(noop)["action"] == "noop"
-    assert not json.loads((cursor / "mcp.json").read_text())["mcpServers"].get("yoetz")
+    assert not json.loads((cursor / "mcp.json").read_text())["mcpServers"].get("finishup")
 
 
 def test_cli_binding_is_visible_digest_bound_preserved_and_reversible(
@@ -413,7 +413,7 @@ def test_cli_binding_is_visible_digest_bound_preserved_and_reversible(
         ),
     )
     assert installed.exit_code == 0, installed.output
-    entry = json.loads((project / ".cursor/mcp.json").read_text())["mcpServers"]["yoetz"]
+    entry = json.loads((project / ".cursor/mcp.json").read_text())["mcpServers"]["finishup"]
     assert entry["args"][-2:] == ["--project-binding", "registered-project"]
     preserved = _json(_RUNNER.invoke(app, _args(project, config, "preview")))
     assert preserved["action"] == "noop"
@@ -431,4 +431,4 @@ def test_cli_binding_is_visible_digest_bound_preserved_and_reversible(
         ),
     )
     assert removed.exit_code == 0, removed.output
-    assert "yoetz" not in json.loads((project / ".cursor/mcp.json").read_text())["mcpServers"]
+    assert "finishup" not in json.loads((project / ".cursor/mcp.json").read_text())["mcpServers"]

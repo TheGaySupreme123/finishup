@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from yoetz.domain.check_totals import CHECK_TOTAL_KEYS
-from yoetz.domain.findings import FINDING_KIND_TRAITS, Finding, FindingKind, FindingOrigin
-from yoetz.domain.values import Frontier, finding_id, obligation_id
-from yoetz.kernel.deterministic_scope import deterministic_scope_is_clean
-from yoetz.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
-from yoetz.protocol.coverage import (
+from finishup.domain.check_totals import CHECK_TOTAL_KEYS
+from finishup.domain.findings import FINDING_KIND_TRAITS, Finding, FindingKind, FindingOrigin
+from finishup.domain.values import Frontier, finding_id, obligation_id
+from finishup.kernel.deterministic_scope import deterministic_scope_is_clean
+from finishup.kernel.ranking import CheckCompleteness, RankingContext, rank_findings
+from finishup.protocol.coverage import (
     ArtifactObservation,
     AuthorshipAssurance,
     CheckType,

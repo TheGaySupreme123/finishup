@@ -11,19 +11,19 @@ from typing import cast
 import pytest
 from mcp import types
 
-from yoetz.mcp.descriptors import (
+from finishup.mcp.descriptors import (
     CLAUDE_CODE_INSTRUCTIONS_BUDGET,
     INITIALIZE_GUIDANCE_URIS,
     TOOL_DESCRIPTORS,
     server_instructions,
 )
-from yoetz.mcp.resources import GUIDANCE_RESOURCES
-from yoetz.mcp.resources import read_resource as read_guidance_resource
-from yoetz.mcp.semantic_destination import (
+from finishup.mcp.resources import GUIDANCE_RESOURCES
+from finishup.mcp.resources import read_resource as read_guidance_resource
+from finishup.mcp.semantic_destination import (
     DISCLOSURE_PREFIX,
     read_semantic_destination_disclosure,
 )
-from yoetz.mcp.server import BRIDGE_RUNTIME, list_resources, list_tools
+from finishup.mcp.server import BRIDGE_RUNTIME, list_resources, list_tools
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def _run_raw(
     semantic: str = "on",
     host: str = "generic",
 ) -> tuple[list[dict[str, object]], bytes]:
-    child = f"from yoetz.mcp.server import main; main(semantic={semantic!r}, host={host!r})"
+    child = f"from finishup.mcp.server import main; main(semantic={semantic!r}, host={host!r})"
     process = subprocess.Popen(
         [sys.executable, "-I", "-c", child],
         stdin=subprocess.PIPE,
@@ -147,26 +147,28 @@ async def test_static_inventory_is_exact_and_verified() -> None:
         item.uri for item in GUIDANCE_RESOURCES
     ]
     agent = (
-        read_guidance_resource("yoetz://guidance/agent-instructions.md").decode("utf-8").rstrip()
+        read_guidance_resource("finishup://guidance/agent-instructions.md").decode("utf-8").rstrip()
     )
-    workflow = read_guidance_resource("yoetz://guidance/workflow.md").decode("utf-8").rstrip()
+    workflow = read_guidance_resource("finishup://guidance/workflow.md").decode("utf-8").rstrip()
     coverage = (
-        read_guidance_resource("yoetz://guidance/coverage-and-receipts.md").decode("utf-8").rstrip()
+        read_guidance_resource("finishup://guidance/coverage-and-receipts.md")
+        .decode("utf-8")
+        .rstrip()
     )
-    assert INITIALIZE_GUIDANCE_URIS == ("yoetz://guidance/agent-instructions.md",)
+    assert INITIALIZE_GUIDANCE_URIS == ("finishup://guidance/agent-instructions.md",)
     assert BRIDGE_RUNTIME.instructions.startswith(agent)
     # #300: workflow.md and coverage-and-receipts.md are reached through the catalog and
     # read_guidance, not inlined here. Both URIs stay named so the agent can still find them.
     assert workflow not in BRIDGE_RUNTIME.instructions
     assert coverage not in BRIDGE_RUNTIME.instructions
-    assert "yoetz://guidance/workflow.md" in BRIDGE_RUNTIME.instructions
-    assert "yoetz://guidance/coverage-and-receipts.md" in BRIDGE_RUNTIME.instructions
+    assert "finishup://guidance/workflow.md" in BRIDGE_RUNTIME.instructions
+    assert "finishup://guidance/coverage-and-receipts.md" in BRIDGE_RUNTIME.instructions
     assert "Route profile: policy." in BRIDGE_RUNTIME.instructions
     # #479: the policy bridge names its startup-read AI-powered review destination (or states that it is
     # unknown or none); the strict route never carries the passage.
     assert DISCLOSURE_PREFIX in BRIDGE_RUNTIME.instructions
     assert DISCLOSURE_PREFIX not in server_instructions("strict")
-    assert "Do not call `resources/list` or `list_mcp_resources` to find Yoetz guidance" in (
+    assert "Do not call `resources/list` or `list_mcp_resources` to find FinishUP guidance" in (
         BRIDGE_RUNTIME.instructions
     )
 
@@ -187,7 +189,7 @@ def test_raw_initialize_for_the_claude_host_serves_the_capped_instructions() -> 
         host_profile="claude",
         semantic_destination=read_semantic_destination_disclosure(),
     )
-    assert instructions.startswith("# Yoetz: call start first\n\n")
+    assert instructions.startswith("# FinishUP: call start first\n\n")
     assert len(instructions) <= CLAUDE_CODE_INSTRUCTIONS_BUDGET["observed_host_cap_chars"]
     assert DISCLOSURE_PREFIX in instructions
     assert "Route profile: policy." in instructions

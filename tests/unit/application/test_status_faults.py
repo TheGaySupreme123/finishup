@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-import yoetz.observability.diagnostics as diagnostics
-from yoetz.application.projects import ProjectCommandError
-from yoetz.application.status_faults import (
+import finishup.observability.diagnostics as diagnostics
+from finishup.application.projects import ProjectCommandError
+from finishup.application.status_faults import (
     StatusFault,
     StatusFaultStage,
     classify_status_fault,
@@ -17,9 +17,9 @@ from yoetz.application.status_faults import (
     record_status_member_unavailable,
     status_stage,
 )
-from yoetz.domain.coordination import CoordinationError, CoordinationErrorCode
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.ids import IdKind, validate_id
+from finishup.domain.coordination import CoordinationError, CoordinationErrorCode
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.ids import IdKind, validate_id
 
 _REQUEST_ID = "req_00000000-0000-4000-8000-000000000840"
 _CANARY = "canary-status-fault"
@@ -36,7 +36,7 @@ def _records() -> tuple[Mapping[str, object], ...]:
 
 
 def _raised_in(stage: StatusFaultStage, message: str | None = None) -> StatusFault:
-    """Tag a real ``yoetz`` failure whose value carries the canary."""
+    """Tag a real ``finishup`` failure whose value carries the canary."""
 
     try:
         with status_stage(stage, message):
@@ -90,10 +90,10 @@ def test_each_stage_has_one_typed_public_error_and_a_joined_record(
     assert record["operation"] == f"status_project_{stage.value}_failed"
     assert record["phase"] == stage.value
     # The class token and origin describe the original exception, not the stage marker: the
-    # origin is the yoetz frame that raised, never the stage boundary that tagged it.
+    # origin is the finishup frame that raised, never the stage boundary that tagged it.
     assert record["reason"] == "exception_protocol_value_error"
     origin = record["origin"]
-    assert type(origin) is str and origin.startswith("yoetz.protocol.")
+    assert type(origin) is str and origin.startswith("finishup.protocol.")
     assert _CANARY not in repr(record)
 
 

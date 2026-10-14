@@ -14,22 +14,22 @@ from builders.ledger_adapters import (
     memory_adapter,
     ownership_fence,
 )
-from yoetz.application.import_review import (
+from finishup.application.import_review import (
     _publication_frontier,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.application.publish_work import Application, execute_publish_work
-from yoetz.application.status import Application as StatusApplication
-from yoetz.application.status import execute_status
-from yoetz.domain.events import ClaimRecordedPayload, ClaimRecordedPayloadV1_1
-from yoetz.domain.values import Frontier, session_id
-from yoetz.kernel.plan_scope import current_plan_scope
-from yoetz.ports.diagnostics import RuntimeCapability
-from yoetz.ports.importer import ImporterPort, ImportStatusSnapshot
-from yoetz.ports.ledger import ProjectionView
-from yoetz.ports.objects import ObjectKind, ObjectRef, ObjectStorePort, StagedObject
-from yoetz.ports.runtime import RouteCommand, TaskRuntime
-from yoetz.protocol.errors import PublicErrorCode, PublicOperationError
-from yoetz.protocol.models import (
+from finishup.application.publish_work import Application, execute_publish_work
+from finishup.application.status import Application as StatusApplication
+from finishup.application.status import execute_status
+from finishup.domain.events import ClaimRecordedPayload, ClaimRecordedPayloadV1_1
+from finishup.domain.values import Frontier, session_id
+from finishup.kernel.plan_scope import current_plan_scope
+from finishup.ports.diagnostics import RuntimeCapability
+from finishup.ports.importer import ImporterPort, ImportStatusSnapshot
+from finishup.ports.ledger import ProjectionView
+from finishup.ports.objects import ObjectKind, ObjectRef, ObjectStorePort, StagedObject
+from finishup.ports.runtime import RouteCommand, TaskRuntime
+from finishup.protocol.errors import PublicErrorCode, PublicOperationError
+from finishup.protocol.models import (
     PublishWorkDryRunModel,
     PublishWorkRequestModel,
     StatusHistoryPageModel,
@@ -1088,7 +1088,7 @@ async def test_obligation_resolution_mismatch_is_identical_on_dry_run_and_publis
         assert "evidence_expectation" in error.message
         assert "Shortened expectation" not in error.message
         assert "Close the loop" not in error.message
-        assert "yoetz://guidance/publication-policy.md" in error.message
+        assert "finishup://guidance/publication-policy.md" in error.message
 
     assert dict(dry.value.safe_details) == dict(durable.value.safe_details)
     assert dry.value.message == durable.value.message

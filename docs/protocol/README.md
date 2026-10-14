@@ -1,13 +1,13 @@
-# Yoetz protocol v0.1
+# FinishUP protocol v0.1
 
-This document is the first stop for anyone implementing a Yoetz client, importer, or independent
+This document is the first stop for anyone implementing a FinishUP client, importer, or independent
 reader of the ledger: what the protocol records, what it deliberately does not prove, the six
 public workflow operations, the event/identity model, canonical encoding and idempotency, coverage
 and findings, error handling, version discovery, and the minimum safe client workflow.
 
 ## Status and normative sources
 
-Yoetz v0.1 is a public alpha protocol. This page is explanatory. Where it repeats a frozen value —
+FinishUP v0.1 is a public alpha protocol. This page is explanatory. Where it repeats a frozen value —
 an enum member, a schema field, a canonical digest — the machine-readable source wins on conflict:
 [`docs/adr/`](../adr/) for architecture decisions, [`docs/INTERFACES.md`](../INTERFACES.md)
 for the shared vocabulary, and the JSON Schemas under [`schemas/`](../../schemas/) plus the golden
@@ -22,7 +22,7 @@ profile, a platform) is never read as unconditional compatibility on every axis.
 
 ## Trust model
 
-Yoetz is a local-first, append-only work ledger and completion-integrity layer. It is **not**:
+FinishUP is a local-first, append-only work ledger and completion-integrity layer. It is **not**:
 
 - an executor or orchestrator of the work it records;
 - a transcript recorder of everything an agent did;
@@ -54,7 +54,7 @@ the exact sufficient coverage that justifies it.
 
 ## Six public workflow operations
 
-Yoetz exposes exactly six mutating/reading workflow operations, as both MCP tools and CLI
+FinishUP exposes exactly six mutating/reading workflow operations, as both MCP tools and CLI
 commands (`start`, `publish-work`, `check`, `respond`, `status`, `receipt`). MCP also registers
 read-only `read_guidance`, which returns one packaged guidance document as tool text and is not a
 ledger operation:
@@ -85,7 +85,7 @@ adds a seventh operation to the wire protocol.
 
 ## Events, identities and accepted envelopes
 
-Yoetz records exactly sixteen event families, each independently schema-versioned starting at
+FinishUP records exactly sixteen event families, each independently schema-versioned starting at
 `1.0.0`: `session_opened`, `session_resumed`, `plan_published`, `obligation_published`,
 `assignment_recorded`, `decision_recorded`, `action_recorded`, `result_recorded`,
 `evidence_recorded`, `claim_recorded`, `plan_revised`, `finding_recorded`, `response_recorded`,
@@ -113,11 +113,11 @@ or database row ID.
 
 ## Canonicalization, digests and idempotency
 
-Every canonical byte sequence is RFC 8785 JCS restricted to the Yoetz value profile: UTF-8, strict
+Every canonical byte sequence is RFC 8785 JCS restricted to the FinishUP value profile: UTF-8, strict
 JSON parsing that rejects duplicate keys, floats, unsafe integers, and lone surrogates; sorted,
 domain-separated digests rendered `sha256:<64 lowercase hex>` and keyed commitments rendered
 `hmac-sha256:<64 lowercase hex>`. **Ordinary JSON serializer output — even
-`json.dumps(sort_keys=True)` — is not necessarily canonical Yoetz bytes.** Only the Yoetz-owned
+`json.dumps(sort_keys=True)` — is not necessarily canonical FinishUP bytes.** Only the FinishUP-owned
 canonicalizer produces bytes suitable for digesting or comparing against a published fixture.
 
 Every mutating request carries a stable operation identity (`request_id` plus, for
@@ -204,7 +204,7 @@ Each step uses a stable `request_id`; retries reuse it rather than minting a new
 
 ## Version and compatibility discovery
 
-`yoetz version --json` returns the full `VersionManifest`: package, protocol, storage, migration,
+`finishup version --json` returns the full `VersionManifest`: package, protocol, storage, migration,
 projection, policy, object format, resource, skill, and MCP identities, plus the exact
 tested/supported/denied capability sets for external tools. See
 [`compatibility.md`](compatibility.md) for what each axis means and how to diagnose a mismatch.

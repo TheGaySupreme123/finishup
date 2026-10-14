@@ -6,7 +6,7 @@ from collections.abc import Iterator
 
 import pytest
 
-import yoetz.cli.setup as cli_setup
+import finishup.cli.setup as cli_setup
 
 
 def _choose() -> str:

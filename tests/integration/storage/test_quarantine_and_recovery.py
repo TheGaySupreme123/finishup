@@ -8,8 +8,8 @@ from typing import Literal, cast
 
 import pytest
 
-import yoetz.adapters.sqlite.recovery as recovery_module
-from yoetz.adapters.sqlite.recovery import (
+import finishup.adapters.sqlite.recovery as recovery_module
+from finishup.adapters.sqlite.recovery import (
     RecoveryKeyState,
     RecoveryMarkerState,
     RecoveryObjectState,
@@ -22,9 +22,9 @@ from yoetz.adapters.sqlite.recovery import (
     recover_bundle,
     validate_recovery_tail,
 )
-from yoetz.domain.values import Frontier
-from yoetz.ports.maintenance import BackupManifest
-from yoetz.ports.runtime import OwnershipFence
+from finishup.domain.values import Frontier
+from finishup.ports.maintenance import BackupManifest
+from finishup.ports.runtime import OwnershipFence
 
 _DIGEST = "sha256:" + "0" * 64
 _TASK_ID = "tsk_00000000-0000-4000-8000-000000000001"

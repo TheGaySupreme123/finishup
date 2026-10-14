@@ -20,7 +20,7 @@ from builders.policy_cases import (
     plan_record,
     record,
 )
-from yoetz.domain.events import (
+from finishup.domain.events import (
     ClaimKind,
     ClaimRecordedPayload,
     EvidenceKind,
@@ -29,14 +29,14 @@ from yoetz.domain.events import (
     ObligationStatus,
     PlanPublishedPayload,
 )
-from yoetz.domain.values import ClaimId, EvidenceId, ObligationId, timestamp_from_string
-from yoetz.kernel.deterministic_checks import DeterministicCase
-from yoetz.kernel.projections import (
+from finishup.domain.values import ClaimId, EvidenceId, ObligationId, timestamp_from_string
+from finishup.kernel.deterministic_checks import DeterministicCase
+from finishup.kernel.projections import (
     ClaimProjectionRecord,
     EvidenceProjectionRecord,
     ObligationProjectionRecord,
 )
-from yoetz.protocol.coverage import EvidenceImmutability
+from finishup.protocol.coverage import EvidenceImmutability
 
 __all__ = ["large_case"]
 

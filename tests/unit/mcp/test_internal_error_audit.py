@@ -1,7 +1,7 @@
 """No bare INTERNAL_ERROR (tb4n3 RC-2, #1025): every producer carries a typed reason.
 
 An `INTERNAL_ERROR` that says only "internal error" tells the agent nothing about whether its
-write was recorded or what to read next. This scans every place under `src/yoetz` that builds a
+write was recorded or what to read next. This scans every place under `src/finishup` that builds a
 public error with `PublicErrorCode.INTERNAL_ERROR` and requires a typed `reason_code` (through
 `safe_details`, `reason` or `details_reason_code`). The start-catalog adapters build theirs through
 one helper that adds `start_state_inconsistent` by default, and `exit_code_for` only maps a code to
@@ -16,16 +16,16 @@ from typing import Any, cast
 
 import pytest
 
-from yoetz.adapters.memory import start_catalog as memory_catalog
-from yoetz.adapters.sqlite import start_catalog as sqlite_catalog
-from yoetz.application.maintenance import (
+from finishup.adapters.memory import start_catalog as memory_catalog
+from finishup.adapters.sqlite import start_catalog as sqlite_catalog
+from finishup.application.maintenance import (
     _internal_error as maintenance_internal_error,  # pyright: ignore[reportPrivateUsage]
 )
-from yoetz.mcp import server
-from yoetz.protocol.errors import PROTOCOL_REASON_CODES, PublicErrorCode
-from yoetz.protocol.recovery import REASON_REMEDIES
+from finishup.mcp import server
+from finishup.protocol.errors import PROTOCOL_REASON_CODES, PublicErrorCode
+from finishup.protocol.recovery import REASON_REMEDIES
 
-_SRC = Path(__file__).resolve().parents[3] / "src" / "yoetz"
+_SRC = Path(__file__).resolve().parents[3] / "src" / "finishup"
 _HELPER_TYPED = {
     "adapters/memory/start_catalog.py": "_error",
     "adapters/sqlite/start_catalog.py": "_error",
@@ -89,8 +89,8 @@ def test_no_dictionary_literal_builds_an_untyped_internal_error() -> None:
 
 
 def test_the_last_resort_error_is_typed_and_its_remedy_renders() -> None:
-    from yoetz.mcp.errors import build_last_resort_internal_error_result
-    from yoetz.mcp.summaries import render_safe_compact_summary
+    from finishup.mcp.errors import build_last_resort_internal_error_result
+    from finishup.mcp.summaries import render_safe_compact_summary
 
     result = build_last_resort_internal_error_result()
     assert result["error"]["safe_details"] == {"reason_code": "internal_error"}  # type: ignore[index]

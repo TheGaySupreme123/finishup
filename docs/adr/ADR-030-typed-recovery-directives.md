@@ -15,7 +15,7 @@ compact receipt fixtures stay frozen). Remaining exemptions stay recorded on the
 
 ## Context
 
-An agent that hits a Yoetz error is told *that* something failed, not *what to do next*. The public
+An agent that hits a FinishUP error is told *that* something failed, not *what to do next*. The public
 error identity — code, retryable flag, correlation ID — survives every surface. The recovery
 instruction does not.
 
@@ -139,7 +139,7 @@ ignore every pointer.
 ### Two disjoint reason vocabularies
 
 Protocol reason codes (`PROTOCOL_REASON_CODES`) and local lifecycle, instance, and ceremony reasons
-(`yoetz.cli.exits`) are separate namespaces and resolve through separate lookups. An overlap is an
+(`finishup.cli.exits`) are separate namespaces and resolve through separate lookups. An overlap is an
 import-time failure. Conflating them is a real hazard: three CLI lifecycle reasons were nearly
 registered as protocol reasons while the registry was first written, and the gate is what caught it.
 
@@ -150,10 +150,10 @@ already recorded, and is therefore absent from the local map rather than duplica
 ### Both reason vocabularies ratchet (issue #741)
 
 The first ratchet covered protocol reason codes only, so the CLI's own vocabulary could still grow
-a reason with nothing for an agent to do — and had: forty of the fifty-four reasons `yoetz.cli.exits`
+a reason with nothing for an agent to do — and had: forty of the fifty-four reasons `finishup.cli.exits`
 could put in front of an operator carried a remediation sentence and no typed directive, so a
 condition explained over MCP was unexplained in a shell. The local vocabulary now carries the same
-obligation. A second import-time gate, in `yoetz.cli.exits` rather than `yoetz.protocol.recovery`
+obligation. A second import-time gate, in `finishup.cli.exits` rather than `finishup.protocol.recovery`
 because that is where the vocabulary lives and layering forbids the protocol package importing the
 CLI, requires every reason in the module's tables to resolve to a directive — through the local map,
 or through the protocol vocabulary for the one reason that belongs to both.
@@ -169,7 +169,7 @@ pretending it is a closed set would be a lie about a closed set.
 the per-reason remedy half beneath the directive, for three reasons recorded here so the question
 is not reopened without them:
 
-- The registry is keyed by continuation token, and `yoetz.protocol.recovery` requires its token set
+- The registry is keyed by continuation token, and `finishup.protocol.recovery` requires its token set
   to equal the set the protocol normalizer admits onto the wire. Moving fifty-two per-reason
   remedies into it would admit fifty-two local-only tokens to the wire vocabulary for reasons that
   never cross it — the opposite of the narrow-wire decision above.
@@ -228,7 +228,7 @@ admits. Adding a reason code without deciding what an agent should do fails the 
 ### Budget priority
 
 The MCP text channel is bounded at 4,096 ASCII bytes (it was 512 until tb4n3; see ADR-043) and a
-text builder never raises: it composes its parts with `yoetz.domain.bounded_text`, reserving the
+text builder never raises: it composes its parts with `finishup.domain.bounded_text`, reserving the
 required core first and granting the optional clauses room by priority. Projection order is: error
 identity, then reason and location, then continuation directive, then the typed remedy and carried
 commands, then guidance pointer, then nudge. Parts shrink to a shorter variant and then drop from
@@ -259,7 +259,7 @@ remedy sentence (`REASON_REMEDIES`) that renders on the text channel beside the 
 - JSON renderings carry the continuation token where they already carry `safe_details`. CLI-owned
   JSON error bodies also carry the renderer-resolved `recovery` object. A frozen wire result keeps
   its exact shape on stdout and gets the directive lines on stderr (see the 2026-09-22 amendment
-  above). The human and JSON renderings share one resolver in `yoetz.cli.render`, so they cannot
+  above). The human and JSON renderings share one resolver in `finishup.cli.render`, so they cannot
   disagree about what an error says to do.
 - Recovery rules now exist in two places — `guidance/*.md` and this registry — and must move
   together. The guidance-anchor test couples them; a directive that contradicts its own guidance
