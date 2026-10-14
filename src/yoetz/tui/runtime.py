@@ -436,6 +436,8 @@ class YoetzRuntime:
         # The request id of the latest check per task, kept so its structural progress can be
         # read while it runs and recovered after a client wait ends (issue #571 A2).
         self._check_request_ids: dict[str, str] = {}
+        # The evaluator runtime setup last offered as its default (see setup_codex_subscription).
+        self._offered_codex_executable: Path | None = None
 
     # -- discovery ------------------------------------------------------
 
@@ -1232,6 +1234,8 @@ class YoetzRuntime:
         )
 
         selected = default_codex_evaluator_executable()
+        # Remembered so accepting this default keeps newest-first discovery with fallback.
+        self._offered_codex_executable = selected
         executable = "" if selected is None else str(selected)
         return (
             executable,
@@ -1284,12 +1288,17 @@ class YoetzRuntime:
     ) -> Mapping[str, object]:
         """Run Codex-owned login, then recompose the service around the exact binding."""
 
-        from yoetz.cli.codex_subscription import codex_subscription_setup
+        from yoetz.cli.codex_subscription import (
+            codex_subscription_setup,
+            setup_executable_selection,
+        )
         from yoetz.cli.setup import restart_service_for_semantic_composition
 
         try:
             result = await codex_subscription_setup(
-                executable=Path(executable),
+                # The offered default keeps newest-first discovery with fallback (ADR-006);
+                # only a path the owner typed instead pins setup to that one runtime.
+                executable=setup_executable_selection(executable, self._offered_codex_executable),
                 codex_home=Path(codex_home),
                 model=model,
                 reasoning_effort=reasoning_effort,

@@ -998,7 +998,7 @@ def test_guided_setup_offers_account_switch(
             "runtime_version": "0.159.0",
             "runtime_floor": "0.157.1",
             "runtime_source_identity": "openai-codex-npm-darwin-arm64-0.159.0",
-            "capability_profile": "codex-evaluator/capability/v1",
+            "capability_profile": "codex-evaluator/capability/v2",
             "capability_evidence_expires_at": "2026-11-30T00:00:00Z",
             "codex_home": "/home",
             "disconnect_command": "yoetz provider codex-subscription disconnect",
@@ -1059,7 +1059,7 @@ def test_guided_setup_preserves_existing_model_when_switching_accounts(
             "runtime_version": "0.159.0",
             "runtime_floor": "0.157.1",
             "runtime_source_identity": "openai-codex-npm-darwin-arm64-0.159.0",
-            "capability_profile": "codex-evaluator/capability/v1",
+            "capability_profile": "codex-evaluator/capability/v2",
             "capability_evidence_expires_at": "2026-11-30T00:00:00Z",
             "codex_home": "/home",
             "disconnect_command": "yoetz provider codex-subscription disconnect",
@@ -1120,7 +1120,7 @@ def test_guided_setup_discloses_login_reuse_before_the_confirmation(
             "runtime_version": "0.159.0",
             "runtime_floor": "0.157.1",
             "runtime_source_identity": "openai-codex-npm-darwin-arm64-0.159.0",
-            "capability_profile": "codex-evaluator/capability/v1",
+            "capability_profile": "codex-evaluator/capability/v2",
             "capability_evidence_expires_at": "2026-11-30T00:00:00Z",
             "codex_home": "/home",
             "disconnect_command": "yoetz provider codex-subscription disconnect",
@@ -1382,6 +1382,40 @@ async def test_a_release_whose_catalog_lacks_the_model_falls_back_to_one_that_li
 
 
 @pytest.mark.anyio
+async def test_a_release_that_warns_during_authenticated_readiness_falls_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A release that passed the scratch probe but warns under the signed-in home is not bound."""
+
+    _three_releases(monkeypatch, {})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    probed: list[str] = []
+
+    async def probe(profile: object) -> CodexRuntimeStatus:
+        version = cast(ExternalRuntimeProfileConfig, profile).runtime_version
+        probed.append(version)
+        if version == "0.162.1":
+            raise ValueError("codex_app_server_predisclosure_event_forbidden")
+        return CodexRuntimeStatus(True, "chatgpt", "pro", True, "terminated")
+
+    def profile_is_binding(binding: ExternalRuntimeProfileConfig) -> object:
+        return binding
+
+    monkeypatch.setattr(module, "_profile", profile_is_binding)
+    monkeypatch.setattr(module, "codex_account_status", probe)
+
+    result = await _run_setup_without_executable(tmp_path)
+
+    assert probed == ["0.162.1", "0.159.0"]
+    (binding,) = written
+    assert cast(ExternalRuntimeProfileConfig, binding).runtime_version == "0.159.0"
+    assert result["runtimes_passed_over"] == ["codex_app_server_predisclosure_event_forbidden"]
+
+
+@pytest.mark.anyio
 async def test_no_release_passing_the_check_refuses_with_the_first_cause(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1579,8 +1613,9 @@ async def test_setup_against_fake_app_server_reads_account_and_never_starts_logi
 
     result = await _run_setup(tmp_path, config_path=target)
 
+    # The trailing account/read is the barrier that closes the pre-disclosure window.
     assert [runtime.methods for runtime in runtimes] == [
-        ["initialize", "account/read", "model/list"]
+        ["initialize", "account/read", "model/list", "account/read"]
     ]
     assert "account/login/start" not in runtimes[0].methods
     assert result["login_reused"] is True

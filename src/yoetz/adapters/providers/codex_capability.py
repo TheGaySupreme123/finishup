@@ -67,7 +67,7 @@ CODEX_EVALUATOR_RUNTIME_FLOOR: Final = "0.157.1"
 # Names the Yoetz-side contract: this floor, the reviewed subset, and the probe procedure. A
 # change to any of them is a new profile, which existing bindings meet as
 # ``codex_runtime_profile_outdated`` until ``repair`` re-runs the check.
-CODEX_EVALUATOR_CAPABILITY_PROFILE: Final = "codex-evaluator/capability/v1"
+CODEX_EVALUATOR_CAPABILITY_PROFILE: Final = "codex-evaluator/capability/v2"
 CODEX_CAPABILITY_RECORD_NAME: Final = "capability.json"
 CODEX_CAPABILITY_RECORD_SCHEMA: Final = "yoetz.codex-evaluator-capability/1"
 CODEX_CODE_MODE_HOST_NAME: Final = "codex-code-mode-host"
@@ -579,6 +579,72 @@ _REVIEWED_SUBSET: Final[tuple[_Requirement, ...]] = (
 )
 
 
+# Every field the evaluator always sends in each request object it builds (``cursor`` is sent
+# only on later ``model/list`` pages, so it is not here). A definition whose ``required`` set
+# names anything else would reject the request -- for ``turn/start`` only after the packet
+# arrived -- so the candidate is incompatible. The checked required sets enter the digest.
+_SENT_FIELDS: Final[Mapping[str, frozenset[str]]] = {
+    "InitializeParams": frozenset({"capabilities", "clientInfo"}),
+    "InitializeCapabilities": frozenset(
+        {"experimentalApi", "mcpServerOpenaiFormElicitation", "requestAttestation"}
+    ),
+    "ClientInfo": frozenset({"name", "title", "version"}),
+    "GetAccountParams": frozenset({"refreshToken"}),
+    "ModelListParams": frozenset({"includeHidden", "limit"}),
+    "CancelLoginAccountParams": frozenset({"loginId"}),
+    "ThreadStartParams": frozenset(
+        {
+            "approvalPolicy",
+            "approvalsReviewer",
+            "baseInstructions",
+            "cwd",
+            "ephemeral",
+            "model",
+            "modelProvider",
+            "personality",
+            "sandbox",
+            "serviceName",
+        }
+    ),
+    "TurnStartParams": frozenset(
+        {
+            "approvalPolicy",
+            "approvalsReviewer",
+            "effort",
+            "input",
+            "model",
+            "outputSchema",
+            "personality",
+            "sandboxPolicy",
+            "summary",
+            "threadId",
+        }
+    ),
+    "TurnInterruptParams": frozenset({"threadId", "turnId"}),
+}
+# The same rule for the tagged request variants the evaluator sends (``type`` included).
+_SENT_VARIANT_FIELDS: Final[Mapping[tuple[str, str], frozenset[str]]] = {
+    ("LoginAccountParams", "chatgpt"): frozenset({"type"}),
+    ("LoginAccountParams", "chatgptDeviceCode"): frozenset({"type"}),
+    ("UserInput", "text"): frozenset({"text", "type"}),
+    ("SandboxPolicy", "readOnly"): frozenset({"networkAccess", "type"}),
+}
+# The exact closed values the evaluator sends. Each request field must still admit its value
+# (through whatever definition it now references); the configured reasoning effort is proven
+# per model by ``model/list`` instead.
+_SENT_VALUES: Final[tuple[tuple[str, str, str], ...]] = (
+    ("ThreadStartParams", "approvalPolicy", "never"),
+    ("ThreadStartParams", "approvalsReviewer", "user"),
+    ("ThreadStartParams", "modelProvider", "openai"),
+    ("ThreadStartParams", "personality", "none"),
+    ("ThreadStartParams", "sandbox", "read-only"),
+    ("TurnStartParams", "approvalPolicy", "never"),
+    ("TurnStartParams", "approvalsReviewer", "user"),
+    ("TurnStartParams", "personality", "none"),
+    ("TurnStartParams", "summary", "none"),
+)
+
+
 def _definitions(document: object) -> Mapping[str, object]:
     if not isinstance(document, Mapping):
         raise ValueError("codex_runtime_protocol_incompatible")
@@ -657,7 +723,7 @@ def _methods(definition: Mapping[str, object], definitions: Mapping[str, object]
     return methods
 
 
-def _variant(
+def _variant_schema(
     definition: Mapping[str, object], definitions: Mapping[str, object], tag: str
 ) -> Mapping[str, object] | None:
     for key in ("oneOf", "anyOf"):
@@ -665,13 +731,69 @@ def _variant(
         if not isinstance(raw, list):
             continue
         for variant in cast(list[object], raw):
-            properties = _resolve(variant, definitions).get("properties")
+            resolved = _resolve(variant, definitions)
+            properties = resolved.get("properties")
             if not isinstance(properties, Mapping):
                 continue
             discriminator = cast(Mapping[str, object], properties).get("type")
             if tag in _accepted(discriminator, definitions)[1]:
-                return cast(Mapping[str, object], properties)
+                return resolved
     return None
+
+
+def _variant(
+    definition: Mapping[str, object], definitions: Mapping[str, object], tag: str
+) -> Mapping[str, object] | None:
+    schema = _variant_schema(definition, definitions, tag)
+    return None if schema is None else cast(Mapping[str, object], schema["properties"])
+
+
+def _required(schema: Mapping[str, object]) -> frozenset[str]:
+    """The ``required`` set of one object schema; anything but a list of names is incompatible."""
+
+    raw = schema.get("required", [])
+    if not isinstance(raw, list) or any(type(item) is not str for item in cast(list[object], raw)):
+        raise ValueError("codex_runtime_protocol_incompatible")
+    return frozenset(cast(list[str], raw))
+
+
+def _admits_string(
+    schema: object, definitions: Mapping[str, object], value: str, depth: int = 0
+) -> bool:
+    """Whether ``schema`` admits the exact string ``value`` the evaluator sends."""
+
+    if depth > 16:
+        return False
+    source = _resolve(schema, definitions)
+    if "const" in source:
+        return source["const"] == value
+    raw_enum = source.get("enum")
+    if isinstance(raw_enum, list):
+        return value in cast(list[object], raw_enum)
+    branches = [
+        cast(list[object], source[key])
+        for key in ("anyOf", "oneOf")
+        if isinstance(source.get(key), list)
+    ]
+    if branches and not any(
+        _admits_string(item, definitions, value, depth + 1)
+        for branch in branches
+        for item in branch
+    ):
+        return False
+    raw_all = source.get("allOf")
+    if isinstance(raw_all, list) and not all(
+        _admits_string(item, definitions, value, depth + 1) for item in cast(list[object], raw_all)
+    ):
+        return False
+    if branches or isinstance(raw_all, list):
+        return True
+    raw_type = source.get("type")
+    if raw_type is None:
+        return True
+    if type(raw_type) is str:
+        return raw_type == "string"
+    return isinstance(raw_type, list) and "string" in cast(list[object], raw_type)
 
 
 def _strings(values: set[str] | tuple[str, ...]) -> JsonValue:
@@ -732,6 +854,35 @@ def check_app_server_schema(document: object) -> str:
             facts[f"{key}:{tag}"] = _strings(props)
         else:  # pragma: no cover - the table above is closed
             raise ValueError("codex_runtime_protocol_incompatible")
+    for name, sent in _SENT_FIELDS.items():
+        if not isinstance(definitions.get(name), Mapping):
+            raise ValueError("codex_runtime_protocol_incompatible")
+        required = _required(_resolve(definitions[name], definitions))
+        if not required <= sent:
+            raise ValueError("codex_runtime_protocol_incompatible")
+        facts[f"required:{name}"] = _strings(set(required))
+    for (name, tag), sent in _SENT_VARIANT_FIELDS.items():
+        definition = definitions.get(name)
+        variant = (
+            None
+            if not isinstance(definition, Mapping)
+            else _variant_schema(cast(Mapping[str, object], definition), definitions, tag)
+        )
+        if variant is None:
+            raise ValueError("codex_runtime_protocol_incompatible")
+        required = _required(variant)
+        if not required <= sent:
+            raise ValueError("codex_runtime_protocol_incompatible")
+        facts[f"required:{name}:{tag}"] = _strings(set(required))
+    for name, prop, value in _SENT_VALUES:
+        definition = _resolve(definitions.get(name), definitions)
+        properties = definition.get("properties")
+        if not isinstance(properties, Mapping) or prop not in properties:
+            raise ValueError("codex_runtime_protocol_incompatible")
+        field_schema = cast(Mapping[str, object], properties)[prop]
+        if not _admits_string(field_schema, definitions, value):
+            raise ValueError("codex_runtime_protocol_incompatible")
+        facts[f"sent:{name}.{prop}"] = _strings(_accepted(field_schema, definitions)[1])
     return canonical_digest(facts)
 
 

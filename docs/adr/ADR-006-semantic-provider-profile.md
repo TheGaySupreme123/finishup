@@ -491,7 +491,7 @@ operations and the privacy gateway are unchanged.
    behaviour was reviewed end to end (code-mode host, remote-control notice, `normalModelSlug`).
    Native Windows still has no evaluator platform. ADR-005's exact-cell rule for the *host*
    integration is not changed by this amendment.
-2. **The check** (profile `codex-evaluator/capability/v1`) runs against Yoetz's retained copy, so
+2. **The check** (profile `codex-evaluator/capability/v2`) runs against Yoetz's retained copy, so
    the bytes checked are the bytes launched. In order, the first failure being one closed token:
    - the release is at or above the floor (`codex_runtime_version_unsupported`); it comes from
      the npm manifests, or from `codex --version` under a scratch home for a native path;
@@ -501,7 +501,11 @@ operations and the privacy gateway are unchanged.
      evaluator sends or reads must be present with a compatible shape, checked structurally, never
      by a whole-schema digest. Additive methods, notifications and fields pass, because the
      runtime allowlists still fail closed on anything unreviewed. Closed values the evaluator
-     interprets, such as `MessagePhase`, must not gain an unreviewed member
+     interprets, such as `MessagePhase`, must not gain an unreviewed member. Every request the
+     evaluator sends must not require a field it does not send (a new required `turn/start`
+     field would otherwise fail only after the packet arrived), and every closed value it sends
+     (`approvalPolicy` `never`, `sandbox` `read-only`, `summary` `none`, ...) must still be
+     admitted by its field. The required sets and admitted sent values enter the subset digest
      (`codex_runtime_protocol_incompatible`);
    - **zero-inference probe** under a scratch home holding only the isolated config, with no
      sign-in, and the same argv, `--strict-config`, overrides and environment allowlist as a
@@ -509,10 +513,15 @@ operations and the privacy gateway are unchanged.
      `account/read` must answer. `thread/start` must prove an ephemeral, read-only,
      network-off thread in a new empty cwd with no instruction sources. Every notification seen
      must be inside the reviewed pre-disclosure allowlist: remote control `disabled`; native
-     warnings, `configWarning`, unknown methods and server requests fail closed. No `turn/start`
+     warnings, `configWarning`, unknown methods and server requests fail closed. A reply is
+     returned as soon as it is read, so the window is closed by a barrier `account/read`: Codex
+     writes stdout in order, so every line it wrote before the barrier reply (including events
+     still buffered behind the `thread/start` reply) is read and checked first. No `turn/start`
      is sent, so nothing is sampled and no task content exists.
-   - **model**: the dedicated home's readiness probe (`account/read`, `model/list`) must list the
-     configured model with every configured effort before the binding is written
+   - **model**: the dedicated home's readiness probe (`account/read`, `model/list`, then the
+     same barrier and allowlist check, so a release that warns only under the signed-in home is
+     passed over) must list the configured model with every configured effort before the binding
+     is written
      (`codex_model_unavailable` for a signed-in home whose model no admitted release lists; setup
      no longer opens a sign-in in that case).
 3. **Provenance, not an admission list.** A passed check commits `capability.json`
@@ -527,19 +536,24 @@ operations and the privacy gateway are unchanged.
 4. **Launch fence.** Before every child, the executable and code-mode host must still match the
    committed record, and the record must match the binding; a runtime replaced after its check
    never starts. Every attempt still re-proves the `initialize` release, login, model and efforts,
-   thread isolation and pre-disclosure events before the case crosses stdin. The full check is not
+   thread isolation and pre-disclosure events (through the same barrier) before the case crosses
+   stdin. The full check is not
    repeated per attempt; `repair` and `setup` run it.
 5. **Newest first, with fallback.** Setup and repair gather candidates: Yoetz's retained releases,
    the binding's host installation, discovered everyday Codex installs, or one `--executable`.
    They keep one candidate per release (the retained copy first) and try them newest first. A
    candidate that fails the check, or whose catalog lacks the configured model for a signed-in
    home, is passed over; the result names those as `runtimes_passed_over`. If none passes, the
-   first candidate's token is the refusal (or `codex_model_unavailable`). A newer everyday Codex
+   first candidate's token is the refusal (or `codex_model_unavailable`). Interactive setup
+   (prompt and terminal interface) keeps this fallback when the owner accepts the offered
+   default; only a different, explicitly typed path pins setup to one runtime. A newer everyday Codex
    is adopted by the next `setup` or `repair` without a Yoetz release. Earlier retained releases
    stay as fallbacks until `runtime remove`, which now deletes every retained release the binding
    does not use. `runtime install --download` installs `@openai/codex@latest`.
 6. **Existing bindings.** A pinned-cell binding (`codex-evaluator/0.150.1/*` or
-   `codex-evaluator/0.157.1/*`) reports `codex_runtime_profile_outdated`, and its bytes are still
+   `codex-evaluator/0.157.1/*`), or one checked under the unreleased first draft of this
+   amendment (`codex-evaluator/capability/v1`, which did not yet check required request fields,
+   sent values or the buffered pre-disclosure window), reports `codex_runtime_profile_outdated`, and its bytes are still
    compared with the digest it names, so replaced bytes stay visible. `repair` re-checks and
    rebinds it, keeping the sign-in and every owner choice. No privacy authority migrates.
 7. **Packaged cells removed.** `support/codex-evaluator/0.157.1/cell.json` and

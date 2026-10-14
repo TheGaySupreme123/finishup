@@ -14,7 +14,7 @@ Codex is enough: the next `setup` or `repair` adopts the newer release without a
 |---|---|
 | Eligible releases | stable OpenAI Codex npm `X.Y.Z` at or above the floor `0.157.1`; prereleases are never eligible |
 | Platforms | macOS arm64 (`@openai/codex-darwin-arm64`), Linux x86_64 (`@openai/codex-linux-x64`); x86_64 WSL2 Linux userspace follows Linux (WSL smoke pending); no native Windows |
-| Capability profile | `codex-evaluator/capability/v1` |
+| Capability profile | `codex-evaluator/capability/v2` |
 | Isolated config SHA-256 | `c11ecc6c60e5618ca1b988760ef643250527757a34ef2cbb9d393306236593da` (`support/codex-evaluator/config.toml`) |
 | Evidence expires | `2026-11-30T00:00:00Z` (this Yoetz release's reviewed subset and probe) |
 | Transport | app-server v2, stdio JSONL |
@@ -38,7 +38,10 @@ request is involved:
    `account/logout`, `thread/start`, `turn/start`, `turn/interrupt`) and every response,
    notification field, JSON type and value it reads is still there. Additive methods,
    notifications and fields pass. A closed value the evaluator interprets (agent-message phases)
-   must not gain an unreviewed member. Failure: `codex_runtime_protocol_incompatible`; a binary
+   must not gain an unreviewed member. A request must not require a field Yoetz does not send,
+   and each closed value Yoetz sends (`approvalPolicy` `never`, `sandbox` `read-only`,
+   `personality` `none`, `summary` `none`) must still be admitted by its field; both enter the
+   subset digest. Failure: `codex_runtime_protocol_incompatible`; a binary
    that cannot write the schema is `codex_runtime_protocol_unavailable`.
 4. **Zero-inference probe.** One app-server session runs under a scratch home holding only the
    isolated config, with Yoetz's exact argv, `--strict-config`, overrides and environment
@@ -48,6 +51,8 @@ request is involved:
    - `account/read` must answer;
    - `thread/start` must return an ephemeral, read-only, network-off thread in the new empty cwd
      with no instruction sources (`codex_thread_isolation_unproven`);
+   - a barrier `account/read` then reads past everything Codex already wrote (stdout is in
+     order), so an event buffered right behind the `thread/start` reply is still inspected;
    - every notification seen must be in the reviewed pre-disclosure allowlist
      (`codex_app_server_predisclosure_event_forbidden`,
      `codex_app_server_remote_control_not_disabled`, `codex_app_server_tool_request_forbidden`).
@@ -56,8 +61,9 @@ request is involved:
    pre-disclosure `configWarning` when no system `bwrap` is on the fixed `PATH`
    (`/usr/bin:/bin`), so the check fails closed there until bubblewrap is installed and
    unprivileged user namespaces work.
-5. **Model.** The dedicated home's readiness probe (`account/read`, then `model/list`) must list
-   the configured model with every configured effort. A home Codex reports signed in whose model
+5. **Model.** The dedicated home's readiness probe (`account/read`, then `model/list`, then the
+   same barrier and allowlist check) must list the configured model with every configured
+   effort; a release that warns only under the signed-in home is passed over. A home Codex reports signed in whose model
    no admitted release lists fails with `codex_model_unavailable`, without opening a sign-in.
    Update Codex, choose another `--model`, or pass `--switch-account`.
 
@@ -503,7 +509,9 @@ yoetz provider codex-subscription runtime remove             # drop releases the
   (see *Newest first* above): Yoetz's retained copies, the existing binding's host installation,
   and discovered everyday installs, one per release with the retained copy first. A release below
   the floor or a prerelease is never offered. Guided setup (first run, the prompt menu,
-  `/provider`) offers the newest as the default. When nothing eligible exists, first-run setup and
+  `/provider`) offers the newest as the default; accepting it keeps the newest-first fallback,
+  and only a different, explicitly typed path pins setup to that one runtime. When nothing
+  eligible exists, first-run setup and
   the prompt menu offer a consented download; `/provider` shows
   `yoetz provider codex-subscription runtime install --download` and lets the operator enter a
   local Codex path or return after installing.

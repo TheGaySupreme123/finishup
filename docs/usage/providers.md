@@ -151,7 +151,9 @@ list your model, Yoetz keeps using the previous release that passes, and tells y
 it skipped and why. No Yoetz update is needed for a new Codex release.
 
 `--executable` is optional: setup and repair consider Yoetz's own copies, the installation your
-binding came from, and the Codex installations on your PATH, newest first. When none is 0.157.1 or
+binding came from, and the Codex installations on your PATH, newest first. Guided setup offers the
+newest as its default; accepting it keeps that fallback, while typing a different path uses only
+that Codex. When none is 0.157.1 or
 later, first-run setup and the prompt menu offer to download the newest Codex. The terminal
 interface's `/provider` shows the download command. You can also run it yourself:
 

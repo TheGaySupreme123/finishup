@@ -321,6 +321,9 @@ _ALLOWED_NOTIFICATION_METHODS: Final = frozenset(
         "warning",
     }
 )
+# The request id of the barrier that closes the pre-disclosure window (after ``thread/start``
+# 30 and before ``turn/start`` 31 in an attempt; after ``model/list`` in a readiness probe).
+_PREDISCLOSURE_BARRIER_REQUEST_ID: Final = 32
 _PREDISCLOSURE_NOTIFICATION_METHODS: Final = frozenset(
     {
         "account/updated",
@@ -1091,6 +1094,13 @@ async def codex_account_status(profile: CodexAppServerProfile) -> CodexRuntimeSt
                 pass
             else:
                 model_available = True
+        # The same fail-closed window an attempt applies before disclosure: a runtime that
+        # warns or emits an unreviewed event under the authenticated home is not ready, so
+        # runtime selection falls back to an older release instead of binding it.
+        try:
+            await _close_predisclosure_window(runtime, 10.0)
+        except _CodexRuntimeWarning as warning:
+            raise ValueError("codex_app_server_predisclosure_event_forbidden") from warning
     finally:
         cleanup = await _cleanup_guaranteed(runtime)
     return CodexRuntimeStatus(
@@ -1145,7 +1155,7 @@ async def codex_capability_probe(profile: CodexAppServerProfile) -> None:
                 30, "thread/start", _thread_start_params(runtime, profile), 10.0
             )
             _validate_thread(runtime, profile, thread_result)
-            _validate_predisclosure_notifications(runtime)
+            await _close_predisclosure_window(runtime, 10.0)
         except _CodexRuntimeWarning as warning:
             raise ValueError("codex_app_server_predisclosure_event_forbidden") from warning
         except TimeoutError as error:
@@ -1783,6 +1793,24 @@ def _validate_predisclosure_notifications(runtime: _CodexProcess) -> None:
     runtime.pending_notifications.clear()
 
 
+async def _close_predisclosure_window(runtime: _CodexProcess, timeout: float) -> None:
+    """Inspect everything Codex has written so far, then every queued notification.
+
+    A request's reply returns as soon as it is read, so an event, warning or server request
+    Codex wrote right after that reply can still sit unread in the reader buffer. Codex writes
+    stdout in order, so one zero-inference barrier request (``account/read`` without a token
+    refresh) is answered only after every line already written: reading up to its reply queues
+    each such notification and fails a server request at once. Every queued notification must
+    then be inside the reviewed pre-disclosure allowlist. Nothing is disclosed before this
+    returns; a native warning is raised as the bounded ``_CodexRuntimeWarning``.
+    """
+
+    await runtime.request(
+        _PREDISCLOSURE_BARRIER_REQUEST_ID, "account/read", {"refreshToken": False}, timeout
+    )
+    _validate_predisclosure_notifications(runtime)
+
+
 async def _interrupt(runtime: _CodexProcess, thread_id: str, turn_id: str) -> None:
     try:
         await runtime.request(
@@ -1998,7 +2026,7 @@ class CodexAppServerEvaluator:
                 _remaining(deadline, self.clock),
             )
             thread_id = _validate_thread(runtime, self.profile, thread_result)
-            _validate_predisclosure_notifications(runtime)
+            await _close_predisclosure_window(runtime, _remaining(deadline, self.clock))
             case_text = case.payload.decode("utf-8", errors="strict")
             strict_json_parse(case.payload)
             case_disclosed = True

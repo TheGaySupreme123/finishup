@@ -166,6 +166,23 @@ def test_the_minimal_subset_passes_and_additive_changes_still_pass() -> None:
     assert check_app_server_schema(document) == baseline
 
 
+def test_required_fields_the_evaluator_sends_pass_and_enter_the_subset_digest() -> None:
+    document = minimal_app_server_schema()
+    baseline = check_app_server_schema(document)
+    definitions = _definitions(document)
+    # The real generated shape: required fields the evaluator always sends are compatible, but
+    # they are checked facts, so the provenance digest names them.
+    definitions["TurnStartParams"]["required"] = ["input", "threadId"]
+    definitions["ClientInfo"]["required"] = ["name", "version"]
+    with_required = check_app_server_schema(document)
+    assert with_required != baseline
+    # Sent values are checked facts too: an enum that still admits the sent value passes.
+    _properties(definitions, "ThreadStartParams")["sandbox"] = {
+        "anyOf": [{"enum": ["read-only", "workspace-write"]}, {"type": "null"}]
+    }
+    assert check_app_server_schema(document) != with_required
+
+
 def _properties(definitions: dict[str, dict[str, object]], name: str) -> dict[str, object]:
     return cast(dict[str, object], definitions[name]["properties"])
 
@@ -189,6 +206,20 @@ def _regress(definitions: dict[str, dict[str, object]], regression: str) -> None
         definitions["SandboxPolicy"]["oneOf"] = [{"properties": {"type": {"enum": ["readOnly"]}}}]
     elif regression == "unreviewed_phase":
         definitions["MessagePhase"]["enum"] = ["commentary", "final_answer", "draft_answer"]
+    elif regression == "turn_start_new_required_field":
+        # Codex would reject turn/start only after it received the packet.
+        definitions["TurnStartParams"]["required"] = ["input", "parentTurnId", "threadId"]
+    elif regression == "thread_start_new_required_field":
+        definitions["ThreadStartParams"]["required"] = ["sessionSource"]
+    elif regression == "text_input_new_required_field":
+        variants = cast(list[dict[str, object]], definitions["UserInput"]["oneOf"])
+        variants[0]["required"] = ["attachments", "text", "type"]
+    elif regression == "sent_sandbox_value_rejected":
+        _properties(definitions, "ThreadStartParams")["sandbox"] = {
+            "anyOf": [{"enum": ["workspace-write"], "type": "string"}, {"type": "null"}]
+        }
+    elif regression == "sent_summary_value_rejected":
+        _properties(definitions, "TurnStartParams")["summary"] = {"enum": ["auto", "detailed"]}
     else:
         definitions.pop("Turn")
 
@@ -210,6 +241,13 @@ def _regress(definitions: dict[str, dict[str, object]], regression: str) -> None
         "network_flag_gone",
         # A closed value the evaluator interprets gained a member it has not reviewed.
         "unreviewed_phase",
+        # A request the evaluator sends gained a required field it does not send.
+        "turn_start_new_required_field",
+        "thread_start_new_required_field",
+        "text_input_new_required_field",
+        # A field the evaluator sends no longer admits the exact value it sends.
+        "sent_sandbox_value_rejected",
+        "sent_summary_value_rejected",
         "turn_definition_gone",
     ],
 )

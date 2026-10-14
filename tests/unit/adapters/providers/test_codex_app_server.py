@@ -96,7 +96,7 @@ def test_any_stable_release_at_or_above_the_floor_forms_a_binding(version: str) 
 
     assert profile.runtime_version == version
     assert profile.capability_profile == CODEX_EVALUATOR_CAPABILITY_PROFILE
-    assert CODEX_EVALUATOR_CAPABILITY_PROFILE == "codex-evaluator/capability/v1"
+    assert CODEX_EVALUATOR_CAPABILITY_PROFILE == "codex-evaluator/capability/v2"
     assert module.CODEX_EVALUATOR_RUNTIME_FLOOR == "0.157.1"
 
 
@@ -2615,8 +2615,9 @@ async def test_capability_probe_proves_isolation_without_any_turn_or_case(
 
     await _probe(monkeypatch, runtime)
 
-    # No turn is ever started, so nothing is sampled and no task content exists.
-    assert runtime.methods == ["initialize", "account/read", "thread/start"]
+    # No turn is ever started, so nothing is sampled and no task content exists. The second
+    # account/read is the barrier that closes the pre-disclosure window.
+    assert runtime.methods == ["initialize", "account/read", "thread/start", "account/read"]
     thread = cast(dict[str, object], runtime.params["thread/start"])
     assert (thread["sandbox"], thread["ephemeral"], thread["approvalPolicy"]) == (
         "read-only",
@@ -2762,3 +2763,185 @@ def test_flex_tier_unavailability_is_a_provider_outage() -> None:
         {"codexErrorInfo": "flexUnavailable", "message": "private"}
     )
     assert failure.failure_class is SemanticFailureClass.PROVIDER_OUTAGE
+
+
+# -- buffered pre-disclosure events (round-2 finding 1 and 2) ------------------------------------
+
+
+class _StdinRecorder:
+    def __init__(self) -> None:
+        self.messages: list[dict[str, object]] = []
+
+    def write(self, data: bytes) -> None:
+        self.messages.append(cast(dict[str, object], json.loads(data)))
+
+    async def drain(self) -> None:
+        return None
+
+
+class _StreamProcess:
+    def __init__(self, stdout: asyncio.StreamReader) -> None:
+        self.stdin = _StdinRecorder()
+        self.stdout = stdout
+
+
+_BUFFERED_FORBIDDEN_EVENTS: list[dict[str, object]] = [
+    {"method": "thread/prediction/updated", "params": {}},
+    {"method": "warning", "params": {"message": "private-canary", "threadId": "t"}},
+    {"id": 7, "method": "item/tool/call", "params": {}},
+]
+
+
+async def _responses(
+    profile: CodexAppServerProfile, *steps: tuple[int, str] | dict[str, object]
+) -> list[dict[str, object]]:
+    """Real JSONL replies (and raw events) in the order Codex writes them to stdout."""
+
+    fake = _Runtime(profile)
+    lines: list[dict[str, object]] = []
+    for step in steps:
+        if isinstance(step, dict):
+            lines.append(step)
+        else:
+            request_id, method = step
+            lines.append(
+                {"id": request_id, "result": await fake.request(request_id, method, None, 1.0)}
+            )
+    return lines
+
+
+def _stream_runtime(
+    profile: CodexAppServerProfile, lines: list[dict[str, object]]
+) -> tuple[module._CodexProcess, _StdinRecorder]:  # pyright: ignore[reportPrivateUsage]
+    """A real ``_CodexProcess`` whose stdout already holds every line Codex wrote."""
+
+    reader = asyncio.StreamReader()
+    for line in lines:
+        reader.feed_data(json.dumps(line).encode("utf-8") + b"\n")
+    reader.feed_eof()
+    process = _StreamProcess(reader)
+    stderr_done: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+    stderr_done.set_result(False)
+    runtime = module._CodexProcess(  # pyright: ignore[reportPrivateUsage]
+        profile=profile,
+        process=cast(asyncio.subprocess.Process, process),
+        workdir=Path("/private/empty-attempt"),
+        stderr_task=cast("asyncio.Task[bool]", stderr_done),
+        pending_notifications=deque(),
+    )
+    return runtime, process.stdin
+
+
+def _launch_stream(
+    monkeypatch: pytest.MonkeyPatch,
+    runtime: module._CodexProcess,  # pyright: ignore[reportPrivateUsage]
+) -> None:
+    async def launch(profile: CodexAppServerProfile) -> object:
+        del profile
+        return runtime
+
+    async def cleanup(value: object) -> str:
+        assert value is runtime
+        return "terminated"
+
+    monkeypatch.setattr(module, "_launch", launch)
+    monkeypatch.setattr(module, "_cleanup", cleanup)
+
+
+@pytest.mark.parametrize("event", _BUFFERED_FORBIDDEN_EVENTS)
+async def test_event_buffered_right_after_thread_start_blocks_case_disclosure(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object]
+) -> None:
+    profile = _profile()
+    # Codex wrote the event immediately after the thread/start reply: it sits unread in the
+    # reader buffer when the reply returns, and must still be inspected before turn/start.
+    lines = await _responses(
+        profile,
+        (0, "initialize"),
+        (1, "account/read"),
+        (10, "model/list"),
+        (30, "thread/start"),
+        event,
+        (32, "account/read"),
+        (31, "turn/start"),
+    )
+    runtime, stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+    case = _case()
+    binding, authority = _attempt(case)
+    evaluator = CodexAppServerEvaluator(profile, binding, authority, _Clock())
+
+    result = await evaluator.evaluate(case, Deadline(_NOW + timedelta(seconds=30), 30.0))
+
+    assert type(result) is SemanticResultUnavailable
+    assert result.provenance.runtime_evidence is not None
+    assert result.provenance.runtime_evidence.case_disclosed is False
+    assert all(message.get("method") != "turn/start" for message in stdin.messages)
+    assert "private-canary" not in repr(result)
+
+
+@pytest.mark.parametrize("event", _BUFFERED_FORBIDDEN_EVENTS)
+async def test_capability_probe_inspects_events_buffered_after_thread_start(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object]
+) -> None:
+    profile = _profile()
+    lines = await _responses(
+        profile,
+        (0, "initialize"),
+        (1, "account/read"),
+        (30, "thread/start"),
+        event,
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_app_server_"):
+        await module.codex_capability_probe(profile)
+
+
+@pytest.mark.parametrize("event", _BUFFERED_FORBIDDEN_EVENTS)
+async def test_readiness_probe_is_not_ready_when_codex_queues_a_forbidden_event(
+    monkeypatch: pytest.MonkeyPatch, event: dict[str, object]
+) -> None:
+    profile = _profile()
+    # A runtime that passed the signed-out scratch probe but warns during the authenticated
+    # model/list must not be reported ready (selection then falls back to an older runtime).
+    lines = await _responses(
+        profile,
+        (0, "initialize"),
+        (1, "account/read"),
+        (10, "model/list"),
+        event,
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    with pytest.raises(ValueError, match="codex_app_server_"):
+        await module.codex_account_status(profile)
+
+
+async def test_readiness_probe_stays_ready_with_only_reviewed_notices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = _profile()
+    lines = await _responses(
+        profile,
+        (0, "initialize"),
+        _REMOTE_CONTROL_NOTICE,
+        (1, "account/read"),
+        (10, "model/list"),
+        {"method": "account/updated", "params": {}},
+        (32, "account/read"),
+    )
+    runtime, _stdin = _stream_runtime(profile, lines)
+    _launch_stream(monkeypatch, runtime)
+
+    status = await module.codex_account_status(profile)
+
+    assert (status.runtime_ready, status.auth_mode, status.model_available) == (
+        True,
+        "chatgpt",
+        True,
+    )

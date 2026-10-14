@@ -6471,7 +6471,7 @@ still reports the credential connected. A `ready` binding on a host installation
 
 The evaluator is admitted by capability, not by one pinned build (ADR-006 capability amendment,
 2026-10-13): any stable Codex release at or above `0.157.1` whose retained bytes pass the check
-(profile `codex-evaluator/capability/v1`). A passed check commits
+(profile `codex-evaluator/capability/v2`). A passed check commits
 `yoetz.codex-evaluator-capability/1` (`capability.json`) beside the retained runtime:
 `capability_profile`, `runtime_floor`, `runtime_version`, `source_identity`,
 `platform` (`os`, `architecture`), `executable_sha256`, `code_mode_host_sha256`,

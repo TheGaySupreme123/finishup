@@ -101,6 +101,7 @@ __all__ = [
     "codex_subscription_setup",
     "codex_subscription_status",
     "default_codex_evaluator_executable",
+    "setup_executable_selection",
     "default_codex_home",
     "default_codex_subscription_model",
     "default_codex_subscription_routine_effort",
@@ -700,6 +701,25 @@ def default_codex_evaluator_executable(path: Path | None = None) -> Path | None:
     return None if selected is None else selected[1]
 
 
+def setup_executable_selection(entered: str | Path | None, offered: Path | None) -> Path | None:
+    """The ``executable`` an interactive setup passes on: ``None`` unless the owner pinned one.
+
+    Accepting the offered default (or leaving the field blank) keeps newest-first discovery with
+    fallback, so a newest release that fails the capability check or readiness falls back to the
+    previous good one. Only an explicitly typed, different path pins setup to that one runtime.
+    """
+
+    if entered is None:
+        return None
+    text = str(entered).strip()
+    if not text:
+        return None
+    chosen = Path(text).expanduser()
+    if offered is not None and chosen == offered.expanduser():
+        return None
+    return chosen
+
+
 def diagnose_bound_runtime(binding: ExternalRuntimeProfileConfig) -> CodexBindingDiagnosis:
     """Structural diagnosis of one binding at the current time; never starts Codex."""
 
@@ -1287,11 +1307,11 @@ async def codex_subscription_setup(
         return result
 
 
-async def _prompt_evaluator_executable() -> Path:
+async def _prompt_evaluator_executable() -> tuple[Path, Path | None]:
     """Offer only an eligible evaluator runtime; offer the managed download when none exists.
 
     Discovery order is host inventory, not evaluator eligibility (#855): an unusable discovered
-    binary is never presented as the ready default.
+    binary is never presented as the ready default. Returns (entered, offered default).
     """
 
     selected = default_codex_evaluator_executable()
@@ -1306,19 +1326,20 @@ async def _prompt_evaluator_executable() -> Path:
         if typer.confirm("Download the evaluator runtime now?", default=False):
             installed = await codex_evaluator_runtime_install(source=None, npm=None, download=True)
             selected = Path(cast(str, installed["managed_runtime_path"]))
-    return Path(
+    entered = Path(
         typer.prompt(
             "Codex evaluator executable",
             default=None if selected is None else str(selected),
             show_default=selected is not None,
         )
     ).expanduser()
+    return entered, selected
 
 
 async def prompt_codex_subscription_setup() -> dict[str, JsonValue]:
     """Run the shared terminal setup screen used by first-run and prompt-loop menus."""
 
-    executable = await _prompt_evaluator_executable()
+    executable, offered = await _prompt_evaluator_executable()
     codex_home = Path(
         typer.prompt("Dedicated evaluator CODEX_HOME", default=str(default_codex_home()))
     ).expanduser()
@@ -1372,7 +1393,8 @@ async def prompt_codex_subscription_setup() -> dict[str, JsonValue]:
         default=False,
     )
     return await codex_subscription_setup(
-        executable=executable,
+        # The accepted default keeps newest-first discovery with fallback; a typed path pins.
+        executable=setup_executable_selection(executable, offered),
         codex_home=codex_home,
         model=model,
         reasoning_effort=reasoning_effort,

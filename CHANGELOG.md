@@ -228,7 +228,8 @@ reverse-chronological released versions.
   - your ChatGPT sign-in lists the chosen model.
 
   `setup` and `repair` try installed releases newest first and fall back to the previous release
-  that passes. They report the releases they skipped and why. This lets reviews use models only
+  that passes (guided setup keeps this when you accept the Codex it offers; typing another path
+  uses only that one). They report the releases they skipped and why. This lets reviews use models only
   newer Codex releases list, such as `gpt-6.1-sol`. A signed-in home whose model no installed
   Codex lists now reports `codex_model_unavailable` instead of opening a new sign-in. Bindings
   made with the pinned `0.157.1` (or `0.150.1`) build report `codex_runtime_profile_outdated`;
