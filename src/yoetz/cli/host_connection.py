@@ -34,7 +34,7 @@ from yoetz.cli.setup_readiness import continuation
 from yoetz.config.paths import isolated_root
 from yoetz.domain.values import request_id
 from yoetz.ports.harness_mcp import MCP_SERVER_NAME
-from yoetz.ports.integrations import IntegrationError
+from yoetz.ports.integrations import IntegrationError, IntegrationReason
 from yoetz.ports.plugin_artifacts import ArtifactAuthority, PluginArtifactError
 from yoetz.protocol.canonical import JsonValue
 from yoetz.protocol.ids import IdKind, new_id
@@ -363,6 +363,53 @@ def _codex_unverified_step(config_root: Path | None, project: Path) -> str:
     )
 
 
+def _selected_root(host: str, config_root: Path | None) -> Path | None:
+    try:
+        return (
+            config_root.expanduser().absolute()
+            if config_root is not None
+            else host_config_root(cast(SetupHost, host))
+        )
+    except OSError, ValueError, RuntimeError:
+        return None
+
+
+def _lock_unavailable_step(host: str, config_root: Path | None) -> str:
+    """The setup lock could not be taken; nothing was changed (#1058)."""
+
+    from yoetz.adapters.integrations.host_projects import lock_path_for
+
+    root = _selected_root(host, config_root)
+    try:
+        folder = None if root is None else str(lock_path_for(root).parent)
+    except OSError, ValueError, RuntimeError:
+        folder = None
+    where = f" ({folder})" if folder is not None else ""
+    return (
+        "Nothing was changed. Yoetz could not take its private setup lock for this agent "
+        f"configuration. The lock lives in Yoetz's own state folder{where}, which must be a "
+        "local folder you own (mode 0700) with no symlinked parts, on a filesystem that supports "
+        "file locks. Fix that, then rerun this command."
+    )
+
+
+def _record_invalid_step(host: str, config_root: Path | None) -> str:
+    """The connected-projects record cannot be trusted; nothing was changed (#1058)."""
+
+    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+
+    root = _selected_root(host, config_root)
+    record = str(root / CONNECTED_PROJECTS_FILE) if root is not None else CONNECTED_PROJECTS_FILE
+    return (
+        "Nothing was changed. Yoetz's record of the projects connected to this agent "
+        f"configuration ({record}) is not a valid record that only you can read and write, so "
+        "Yoetz cannot tell which other projects use the shared pieces. If you or another tool "
+        "changed it, restore it (owner-only, mode 0600). Otherwise remove the file and rerun "
+        "this command: Yoetz then treats the other projects as unknown and keeps whatever they "
+        "might use."
+    )
+
+
 def _codex_duplicate_step(config_root: Path | None, project: Path) -> str:
     """Name the path that already connects this directory, and the two ways forward (#1058)."""
 
@@ -683,6 +730,14 @@ def run_host_connection(
         ):
             report["reason"] = "membership_unverified"
             report["next_step"] = _codex_unverified_step(config_root, project)
+        if reason == "connection_lock_unavailable":
+            report["next_step"] = _lock_unavailable_step(str(report["host"]), config_root)
+        if reason == "connection_projects_record_invalid" or (
+            isinstance(error, IntegrationError)
+            and error.reason is IntegrationReason.SOURCE_INVALID
+            and error.safe_details.get("conflict") == "connected_projects"
+        ):
+            report["next_step"] = _record_invalid_step(str(report["host"]), config_root)
         if reason == "project_connected_via_other_path":
             report["next_step"] = (
                 _codex_duplicate_step(config_root, project)

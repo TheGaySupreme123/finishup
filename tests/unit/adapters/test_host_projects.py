@@ -140,3 +140,74 @@ def test_a_filesystem_that_cannot_lock_is_a_specific_error(
         with host_config_lock(tmp_path / "config"):
             raise AssertionError("must not run unlocked")
     assert caught.value.reason == "lock_unavailable"
+
+
+def test_record_file_name_is_a_frozen_legacy_literal(tmp_path: Path) -> None:
+    """An upgraded install keeps the records earlier builds wrote (#1058, ADR-048 rename).
+
+    The name must not follow the MCP server key: a renamed key would otherwise make every
+    existing record invisible, and a missing record turns known members into unknown ones.
+    """
+
+    import ast
+
+    assert CONNECTED_PROJECTS_FILE == ".yoetz-connected-projects.json"
+    source = Path(host_projects.__file__).read_text(encoding="utf-8")
+    values = [
+        node.value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "CONNECTED_PROJECTS_FILE"
+    ]
+    assert len(values) == 1 and isinstance(values[0], ast.Constant)
+    # A record an earlier build wrote under that exact name is read as is.
+    root = _root(tmp_path)
+    record = root / ".yoetz-connected-projects.json"
+    record.write_bytes(b'{"projects":["/work/a"]}\n')
+    record.chmod(0o600)
+    assert load_connected_projects(root).projects == ("/work/a",)
+
+
+def test_case_and_unicode_spellings_of_one_root_share_a_lock(tmp_path: Path) -> None:
+    """A case-insensitive or normalising filesystem (macOS) names one root several ways.
+
+    Every spelling must reach the same lock; distinct roots that differ only in case merely
+    serialise against each other, which is harmless.
+    """
+
+    import unicodedata
+
+    assert host_projects.lock_path_for(tmp_path / ".Cursor") == host_projects.lock_path_for(
+        tmp_path / ".cursor"
+    )
+    composed = unicodedata.normalize("NFC", "café")
+    decomposed = unicodedata.normalize("NFD", composed)
+    assert composed != decomposed
+    assert host_projects.lock_path_for(tmp_path / composed) == host_projects.lock_path_for(
+        tmp_path / decomposed
+    )
+
+
+def test_losing_the_race_to_create_the_lock_directory_still_locks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Two first setups may both find the lock directory missing; the loser must not fail."""
+
+    from yoetz.config import paths
+
+    real = paths.ensure_owner_only_dir
+    calls: list[Path] = []
+
+    def racing(path: Path) -> None:
+        calls.append(path)
+        if len(calls) == 1:
+            # Another setup created the directory between the existence check and mkdir.
+            path.mkdir(mode=0o700, parents=True)
+            raise paths.PathSafetyError("permissions_too_broad")
+        real(path)
+
+    monkeypatch.setattr(paths, "ensure_owner_only_dir", racing)
+    with host_config_lock(tmp_path / "config"):
+        pass
+    assert len(calls) == 2

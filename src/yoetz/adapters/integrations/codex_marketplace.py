@@ -683,7 +683,7 @@ def _anchor_manifest_state(anchor: Path) -> Literal["serves", "missing", "foreig
         # Any managed render that byte-matches its own install marker (which inventories the
         # descriptor) serves; an edited or invalid descriptor does not.
         managed = plugin_tree_matches_marker(_read_managed_tree(source))
-    except (IntegrationError, OSError):
+    except IntegrationError, OSError:
         return "foreign"
     return "serves" if managed else "foreign"
 
@@ -739,7 +739,10 @@ def _possible_users(
     return tuple(
         key
         for key in live_projects(keys, excluding=project)
-        if _anchor_manifest_state(Path(key)) == "serves"
+        # A trust row naming a verified member's directory another way (a letter-case variant
+        # on a case-insensitive filesystem) is that member, not a possible user (#1058).
+        if not any(same_directory(Path(key), Path(member)) for member in verified)
+        and _anchor_manifest_state(Path(key)) == "serves"
     )
 
 

@@ -257,3 +257,81 @@ def test_connect_preflight_refuses_but_disconnect_and_status_proceed(
         == 0
     )
     assert json.loads(capsys.readouterr().out)["outcome"] == "preview"
+
+
+def test_lock_unavailable_says_nothing_changed_and_names_the_lock_folder(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """#1058: a setup lock that cannot be taken is not a partial connection."""
+
+    from yoetz.adapters.integrations import host_projects
+    from yoetz.application.host_connection import ConnectionError as SetupConnectionError
+
+    def unavailable(*_args: object, **_kwargs: object):
+        raise SetupConnectionError("connection_lock_unavailable")
+
+    monkeypatch.setattr(cli, "apply_selected", unavailable)
+    code = cli.run_host_connection(
+        host="claude",
+        executable=None,
+        config_root=tmp_path / "claude",
+        project=Path("/workspace/example/project"),
+        accept=True,
+        request_value=REQUEST,
+        preview_digest=prepared.digest,
+        json_output=True,
+    )
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    HostConnectionReport.model_validate(report)
+    assert report["reason"] == "connection_lock_unavailable"
+    step = report["next_step"]
+    assert step.startswith("Nothing was changed.")
+    assert str(host_projects.lock_path_for(tmp_path / "claude").parent) in step
+    assert "partial connection" not in step
+
+
+@pytest.mark.parametrize("host", ["cursor-ide", "codex"])
+def test_invalid_projects_record_names_the_file_and_the_way_out(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    host: str,
+) -> None:
+    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+    from yoetz.application.host_connection import ConnectionError as SetupConnectionError
+    from yoetz.ports.integrations import IntegrationError, IntegrationReason
+
+    def invalid(*_args: object, **_kwargs: object):
+        if host == "codex":
+            raise IntegrationError(
+                IntegrationReason.SOURCE_INVALID, {"conflict": "connected_projects"}
+            )
+        raise SetupConnectionError("connection_projects_record_invalid")
+
+    monkeypatch.setattr(cli, "prepare_selected", invalid)
+
+    def no_leftover(*_args: object) -> dict[str, object]:
+        return {}
+
+    monkeypatch.setattr(cli, "_codex_leftover", no_leftover)
+    root = tmp_path / "config"
+    code = cli.run_host_connection(
+        host=host,
+        executable=None,
+        config_root=root,
+        project=Path("/workspace/example/project"),
+        action="disconnect",
+        json_output=True,
+    )
+    assert code == 1
+    report = json.loads(capsys.readouterr().out)
+    HostConnectionReport.model_validate(report)
+    step = report["next_step"]
+    assert step.startswith("Nothing was changed.")
+    assert str(root / CONNECTED_PROJECTS_FILE) in step
+    assert "remove" in step and "unknown" in step

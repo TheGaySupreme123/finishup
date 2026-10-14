@@ -436,3 +436,43 @@ def test_untrusted_rows_and_invalid_descriptors_are_not_possible_users(tmp_path:
     assert possible_projects(home) == ()
     # With no verified or possible user left, the last disconnect removes the shared pieces.
     assert _disconnect(target_a, home) is RemovalOutcome.REMOVE
+
+
+def test_trust_row_naming_a_verified_member_another_way_is_not_a_possible_user(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """On a case-insensitive filesystem Codex's trust row may spell a member's path differently.
+
+    That row is the verified member itself, so it must neither be listed as a possible user nor
+    keep membership unknown after every project was reconnected (#1058).
+    """
+
+    from yoetz.adapters.integrations import codex_marketplace
+    from yoetz.adapters.integrations.host_projects import encode_projects, load_connected_projects
+
+    home = _home(tmp_path)
+    target_a, root_a = _project(tmp_path, "a")
+    target_b, root_b = _project(tmp_path, "b")
+    _connect(target_a, home)
+    _connect(target_b, home)
+    record = home / CONNECTED_PROJECTS_FILE
+    record.write_bytes(encode_projects((str(root_a), str(root_b)), unknown_members=True))
+    record.chmod(0o600)
+    # Stand-in for a letter-case spelling of B: Linux test filesystems are case-sensitive.
+    _alias_target, alias = _clone(tmp_path, "B-spelled")
+    _trust(home, (root_a, "trusted"), (root_b, "trusted"), (alias, "trusted"))
+    real = codex_marketplace.same_directory
+
+    def same(left: Path, right: Path) -> bool:
+        if {str(left), str(right)} == {str(alias), str(root_b)}:
+            return True
+        return real(left, right)
+
+    monkeypatch.setattr(codex_marketplace, "same_directory", same)
+
+    assert possible_projects(home) == ()
+    preview = preview_removal(target_a, codex_home=home)
+    assert preview.outcome is RemovalOutcome.DETACH and preview.possible_users == ()
+    assert _disconnect(target_a, home) is RemovalOutcome.DETACH
+    after = load_connected_projects(home)
+    assert after.projects == (str(root_b),) and after.unknown_members is False

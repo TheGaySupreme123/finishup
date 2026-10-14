@@ -7,7 +7,8 @@ same root one after another; the shared pieces then serve all of them, and only 
 project's disconnect may remove them.
 
 This module keeps the one structural record of which projects connected through Yoetz setup:
-``<config root>/.<server name>-connected-projects.json``, canonical JSON
+``<config root>/.yoetz-connected-projects.json`` (a frozen name, see ``CONNECTED_PROJECTS_FILE``),
+canonical JSON
 ``{"projects": [<absolute project roots>]}`` plus ``"unknown_members": true`` when the shared
 pieces were found without a record (an earlier release, or a lost record), so other projects may
 use them that no record names. The file is owner-only (a group- or world-readable or writable
@@ -20,10 +21,12 @@ directory through different paths are never admitted: the caller refuses with
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
 import tempfile
+import unicodedata
 from collections.abc import Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -31,7 +34,6 @@ from pathlib import Path
 from typing import Final, Literal, cast
 
 from yoetz.config.paths import state_dir
-from yoetz.ports.harness_mcp import MCP_SERVER_NAME
 
 __all__ = [
     "CONNECTED_PROJECTS_FILE",
@@ -47,7 +49,10 @@ __all__ = [
     "write_connected_projects",
 ]
 
-CONNECTED_PROJECTS_FILE: Final = f".{MCP_SERVER_NAME}-connected-projects.json"
+# Frozen legacy identifier (ADR-048): the record keeps this exact name whatever the MCP server
+# key becomes, so an upgraded install still finds the members earlier builds recorded; a missing
+# record would turn every known member into an unknown one (#1058).
+CONNECTED_PROJECTS_FILE: Final = ".yoetz-connected-projects.json"
 _MAX_BYTES: Final = 262_144
 _MAX_PROJECTS: Final = 256
 _MAX_PATH_CHARS: Final = 4_096
@@ -228,14 +233,29 @@ def lock_path_for(config_root: Path) -> Path:
 
     It lives under this Yoetz installation's own state directory, which exists before any host
     hierarchy does, keyed by the resolved target path, so a first setup into a configuration
-    root that does not exist yet can lock, and unrelated roots never share a lock.
+    root that does not exist yet can lock, and unrelated roots never share a lock. The key is
+    the resolved path in Unicode NFC and case-folded: a case-insensitive or normalising
+    filesystem (macOS) reaches one root through several spellings, and each must find the same
+    lock. Two distinct roots that differ only in case then serialise against each other, which
+    costs a wait, never a lost update.
     """
 
-    import hashlib
-
     target = os.path.realpath(os.path.abspath(os.path.expanduser(config_root)))
-    digest = hashlib.sha256(target.encode("utf-8", "surrogateescape")).hexdigest()
+    key = unicodedata.normalize("NFC", target).casefold()
+    digest = hashlib.sha256(key.encode("utf-8", "surrogateescape")).hexdigest()
     return state_dir() / _LOCK_DIRECTORY / f"{digest}.lock"
+
+
+def _private_lock_directory(directory: Path) -> None:
+    from yoetz.config import paths
+
+    try:
+        paths.ensure_owner_only_dir(directory)
+    except paths.PathSafetyError:
+        # A concurrent first setup may have created the directory between the existence check
+        # and ``mkdir``; check what is there now rather than failing the loser of that race. A
+        # directory that really is unsafe fails the same check again.
+        paths.ensure_owner_only_dir(directory)
 
 
 @contextmanager
@@ -245,16 +265,19 @@ def host_config_lock(config_root: Path) -> Generator[None]:
     An exclusive ``flock`` on a 0600 lock file opened for writing (``lock_path_for``), held
     across plan revalidation, the shared host changes, and the record update. A filesystem that
     cannot lock reports ``lock_unavailable`` before anything changes; there is no unlocked
-    fallback.
+    fallback. The lock serialises setups run by this installation only (another installation
+    has its own state directory); the record's compare-and-swap is what stops a setup from
+    another installation, or any other writer, from overwriting a newer record. Lock files are
+    never removed: unlinking one while another setup waits on it would split the lock.
     """
 
     import fcntl
 
-    from yoetz.config.paths import PathSafetyError, ensure_owner_only_dir
+    from yoetz.config.paths import PathSafetyError
 
     path = lock_path_for(config_root)
     try:
-        ensure_owner_only_dir(path.parent)
+        _private_lock_directory(path.parent)
         flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
         descriptor = os.open(path, flags, 0o600)
     except (OSError, PathSafetyError) as exc:
