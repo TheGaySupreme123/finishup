@@ -393,18 +393,22 @@ that marks the pending version as unreleased above reverse-chronological release
 
 ### Fixed
 
-- **`finishup setup` is smoother.** Run from your home folder (or anywhere that is not a
-  project), it ended in `internal_error` after every question had been answered. It now checks the
-  folder first, lets you type the project folder, and otherwise stops with a plain next step; the
-  privacy policy chosen next applies to that folder, not the one setup started in. A
-  successful Codex-subscription sign-in in the guided connection no longer reports
-  `Credential: unknown` and exits with an error. It no longer asks to "verify this API key" for
-  Codex, which has no key, and it no longer ends by telling Claude Code and Cursor users to preview
-  a Codex registration. The agent list now offers the Codex that a plain `codex` command runs,
-  shows each path, and says that one agent is connected per run. Claude Code and Cursor
-  connection plans describe their changes in plain words, as Codex plans already did. When more
-  than one installation of an agent is found, connect and disconnect list the paths to pass with
-  `--host-path`.
+- **`finishup setup` is smoother.** Run from your home folder, the filesystem root or a
+  symlinked path, it ended in `internal_error` after every question had been answered. It now
+  checks the folder before the review and privacy questions (on a machine with only Codex, before
+  its first question), lets you type the project folder, and otherwise stops with a plain next
+  step; registration, the privacy policy and an API key's repository binding then apply to that
+  folder, not the one setup started in. A successful Codex-subscription sign-in in the guided
+  connection no longer reports `Credential: unknown` and exits with an error, and a privacy step
+  you decline or that fails after the sign-in is no longer reported as complete: setup exits 20,
+  names the reason and points to `finishup --privacy`. Setup no longer asks to "verify this API
+  key" for Codex, which has no key, no longer prints the API-key vault report after a Codex
+  sign-in, and no longer ends by telling Claude Code and Cursor users to preview a Codex
+  registration. The agent list (shown when more than one kind of agent is installed) and the Codex
+  list both offer the Codex that a plain `codex` command runs and show each path; the agent list
+  says that one agent is connected per run. Claude Code and Cursor connection plans describe their
+  changes in plain words, as Codex plans already did. When more than one installation of an agent
+  is found, connect and disconnect list the paths to pass with `--host-path`.
 - In a repository holding another Git repository inside it (an `api` directory with its own
   `.git`), FinishUP's local, names-only read of what changed no longer fails: it reads the nested
   repository the same way the change shown to the reviewer does. So the check again tells whether

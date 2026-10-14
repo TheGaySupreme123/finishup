@@ -60,7 +60,7 @@ _LOGO = "docs/assets/finishup-logo.png"
 _LOGO_URL = f"https://raw.githubusercontent.com/TheGaySupreme123/finishup/main/{_LOGO}"
 
 
-def test_readme_logo_renders_on_github_and_pypi() -> None:
+def test_readme_logo_names_the_tracked_asset_by_absolute_url() -> None:
     readme = (_ROOT / "README.md").read_text(encoding="utf-8")
 
     assert f'<img src="{_LOGO_URL}"' in readme

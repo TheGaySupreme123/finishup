@@ -2190,16 +2190,21 @@ item below applies on macOS, Linux and Windows through WSL 2.
   reason when the Codex FinishUP runs does not list it (ADR-006 amendment of 2026-10-14). The
   evaluator is a separate Codex runtime, never the connected agent, so this is the same path on
   every host. An explicit `--model` and an existing binding are never substituted.
-- **Before any question.** `finishup setup run` checks the project folder first. Run from the home
-  folder, the filesystem root or a symlinked path, a terminal user may type a project folder,
-  and the privacy step that follows (local-only, or the provider's disclosure policy) governs
+- **Project folder first.** `finishup setup run` checks the project folder before the review and
+  privacy questions; on a machine where only Codex is installed (or with `--codex-path`) it does so
+  before the Codex wizard's first question. Run from the home folder, the filesystem root or a
+  symlinked path, a terminal user may type a project folder, and registration, the privacy step
+  (local-only, or the provider's disclosure policy) and an API key's repository binding then use
   that folder; otherwise setup stops with `workspace_locator_invalid` and a next step (it used to
   fail as `internal_error` after every answer).
 - **After a Codex-subscription sign-in.** The guided provider step reports the Codex-held
   credential (`external_runtime_oauth`) as ready instead of `Credential: unknown` with exit 20,
-  shows the bound model and any fallback, and asks no API-key verification question. It ends
-  with "start a fresh agent session" instead of the former Codex-only "Preview Codex MCP
-  registration again".
+  shows the bound model and any fallback, asks no API-key verification question, and prints its
+  own layer report (the sign-in stays in the dedicated evaluator home; no live review is
+  demonstrated) instead of the API-key vault report. A declined or failed privacy step is
+  incomplete on every provider path: exit 20, its reason, and a `finishup --privacy` next step,
+  with no setup marker written. A completed step ends with "start a fresh agent session" instead
+  of the former Codex-only "Preview Codex MCP registration again".
 - **Ambiguous or missing installation.** Connect and disconnect name the installations to pass
   with `--host-path` (or say none was found) instead of the misleading "trusted local terminal"
   step.
