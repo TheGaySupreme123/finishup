@@ -2191,9 +2191,10 @@ item below applies on macOS, Linux and Windows through WSL 2.
   evaluator is a separate Codex runtime, never the connected agent, so this is the same path on
   every host. An explicit `--model` and an existing binding are never substituted.
 - **Before any question.** `finishup setup run` checks the project folder first. Run from the home
-  folder, the filesystem root or a symlinked path, a terminal user may type a project folder;
-  otherwise setup stops with `workspace_locator_invalid` and a next step (it used to fail as
-  `internal_error` after every answer).
+  folder, the filesystem root or a symlinked path, a terminal user may type a project folder,
+  and the privacy step that follows (local-only, or the provider's disclosure policy) governs
+  that folder; otherwise setup stops with `workspace_locator_invalid` and a next step (it used to
+  fail as `internal_error` after every answer).
 - **After a Codex-subscription sign-in.** The guided provider step reports the Codex-held
   credential (`external_runtime_oauth`) as ready instead of `Credential: unknown` with exit 20,
   shows the bound model and any fallback, and asks no API-key verification question. It ends

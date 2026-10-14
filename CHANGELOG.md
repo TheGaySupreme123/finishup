@@ -395,7 +395,8 @@ that marks the pending version as unreleased above reverse-chronological release
 
 - **`finishup setup` is smoother.** Run from your home folder (or anywhere that is not a
   project), it ended in `internal_error` after every question had been answered. It now checks the
-  folder first, lets you type the project folder, and otherwise stops with a plain next step. A
+  folder first, lets you type the project folder, and otherwise stops with a plain next step; the
+  privacy policy chosen next applies to that folder, not the one setup started in. A
   successful Codex-subscription sign-in in the guided connection no longer reports
   `Credential: unknown` and exits with an error. It no longer asks to "verify this API key" for
   Codex, which has no key, and it no longer ends by telling Claude Code and Cursor users to preview
