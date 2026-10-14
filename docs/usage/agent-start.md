@@ -24,9 +24,12 @@ preserves Yoetz data. It also removes the project's Yoetz tool-approval entry, s
 starts normally in that project afterwards; if it cannot do that safely (an approval file it cannot
 read, or approval settings you added yourself), it stops before changing anything and says which
 file to fix. Other projects connected to the same agent installation keep working: a disconnect
-keeps whatever they still use, and only `--remove-shared` removes it for all of them. When Yoetz
-cannot verify which projects use those shared pieces, it keeps them; a Codex disconnect may then
-stop and ask you to connect the project you use again first. For Codex,
+keeps what the projects Yoetz knows of still use, and only `--remove-shared` removes it for all
+of them (the preview names who stops using Yoetz). When Yoetz cannot verify which projects use
+those shared pieces, it keeps them; a Codex disconnect may then stop and ask you to connect the
+project you use again first. Connecting a project with another review mode changes it for the
+other projects of that Codex installation or Claude Code configuration, and the preview says so.
+For Codex,
 the preview also names other projects whose configuration uses the Yoetz server and says when it
 could not check them all. Claude/Cursor connection can require an OS-authenticated local prompt;
 hand the exact continuation to a trusted local terminal when your host cannot provide it.

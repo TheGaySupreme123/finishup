@@ -27,26 +27,35 @@ reverse-chronological released versions.
   connected one after another (#1058). `yoetz setup run --host codex` for a second project no
   longer stops with `destination_conflict` and advice to create a new Codex home: it adds only that
   project's pieces and reuses the home's shared plugin and MCP registration. Disconnecting one
-  project keeps the shared pieces the other connected projects use (Codex moves its marketplace
-  binding to one of them; Claude Code no longer runs the marketplace removal that uninstalled every
-  project's copy; Cursor keeps the user plugin). The last project's disconnect removes them.
-  `setup status` lists the connected projects. Connecting the same directory again through a
-  symlink, a different letter case or its old path after a move is refused as
+  project keeps the shared pieces the other connected projects Yoetz knows of use (Codex moves its
+  marketplace binding to one of them; Claude Code no longer runs the marketplace removal that
+  uninstalled every project's copy; Cursor keeps the user plugin). The last project's disconnect
+  removes them, also when another project's folder was deleted in the meantime or a Codex
+  project that held the marketplace binding was deleted or lost its plugin files. `setup status`
+  lists the connected projects. Connecting the same directory again through a symlink, a
+  different letter case or its old path after a move is refused as
   `project_connected_via_other_path`, with the path already connected and the disconnect that
-  clears it. When the shared pieces predate this release (or their record was lost), Yoetz
-  treats the other projects as unknown and keeps those pieces on an ordinary disconnect, and says
-  so in status and the preview. For Codex, a trusted checkout that carries Yoetz's plugin files
-  but never connected through Yoetz only counts as a project that *may* use the shared pieces:
-  status and previews list it, it keeps those pieces, and it never takes over the home's
-  marketplace binding; a disconnect that would leave only such projects stops with
-  `membership_unverified` and offers reconnecting the project you use or `--remove-shared`.
-  Two setups for the same agent configuration at once can no longer lose a project: setup holds
-  a private lock per configuration in Yoetz's own state folder, so a first setup into a
-  configuration folder that does not exist yet needs no manual `mkdir`, and a lock that cannot be
-  taken stops with `connection_lock_unavailable` before anything changes. A damaged
-  connected-projects record now names the file and the way out. After disconnecting projects in
-  any order, each can be connected again (Claude Code previously refused the first one with
-  `destination_conflict`).
+  clears it. When the shared pieces predate this release, or Yoetz's record of the connected
+  projects was lost, Yoetz keeps those pieces on an ordinary disconnect and says so in status and
+  the preview. For Codex, the projects this installation of Yoetz connected stay known even if the
+  record is deleted, and a trusted checkout that carries Yoetz's plugin files but never connected
+  through Yoetz only counts as a project that *may* use the shared pieces: they keep those pieces
+  and never take over the home's marketplace binding, and a disconnect that would leave only such
+  projects stops with `membership_unverified` and offers reconnecting the project you use or
+  `--remove-shared`. A project connected only through another Yoetz installation is not detected
+  once the record is lost. Connecting a project on another review mode (local only or AI-powered
+  review) changes it for every project sharing that Codex home or Claude Code configuration; the
+  preview now names those projects and both modes (Cursor keeps the review mode per project).
+  `setup disconnect --remove-shared` previews and asks for consent naming the projects that stop
+  using Yoetz. Two setups for the same agent configuration at once can no longer lose a project:
+  setup holds a private lock per configuration in Yoetz's own state folder, so a first Claude Code
+  or Cursor setup into a configuration folder that does not exist yet needs no manual `mkdir`
+  (Codex still needs its home to exist and now says so), and a lock that cannot be taken stops
+  with `connection_lock_unavailable` before anything changes. A damaged connected-projects record
+  is reported as `connection_projects_record_invalid` by `setup run`, `setup status` and `setup
+  disconnect`, with the file and the way out (make it owner-only again, or restore it). After
+  disconnecting projects in any order, each can be connected again (Claude Code previously
+  refused the first one with `destination_conflict`).
 
 - `yoetz setup disconnect` now removes the selected project's Yoetz tool-approval entry (the one
   `integrate <host> admission grant` writes) as part of the same previewed plan, before the

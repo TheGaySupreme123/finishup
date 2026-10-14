@@ -3140,8 +3140,9 @@ def setup_disconnect(
             "--remove-shared",
             help=(
                 "Also remove the Yoetz pieces this agent configuration shares with other "
-                "connected projects (they stop using Yoetz). Without it, a disconnect keeps "
-                "whatever another project still uses."
+                "connected projects (they stop using Yoetz; the preview names them). Without "
+                "it, a disconnect keeps the shared pieces while another project Yoetz knows "
+                "of may still use them."
             ),
         ),
     ] = False,

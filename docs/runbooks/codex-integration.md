@@ -84,21 +84,26 @@ binding whose project lost its manifest makes every `codex plugin …` command i
   `status.shared_with` names who keeps them, and no `admission_other_projects` warning applies
   because the transport stays). The last connected project's disconnect removes the shared pieces
   and the record.
-- `setup status --host codex` reports `codex_home_projects`: the *verified* members, which are
-  the record's projects plus the project the binding names. A home connected before this release
-  has no record; its bound project counts as connected and is recorded when a second project
-  connects. Only a verified member is recorded, becomes the binding's anchor, or keeps a
-  disconnect a `detach`.
-- When the record is missing while the shared pieces exist (an earlier release, or a lost record)
-  or is marked `unknown_members`, trusted checkouts that might use the shared pieces are
-  *possible users*: `[projects."<path>"]` rows with `trust_level = "trusted"` whose checkout still
-  serves the exact Yoetz manifest and a plugin source matching its own install marker (a
-  checkout under another spelling of a verified member's path is that member). Every Yoetz
-  checkout carries those files, so they are never recorded or chosen as the anchor; they only
-  keep the shared pieces. Status adds `codex_home_possible_projects` and `membership_unknown`,
-  with the exact `--remove-shared` preview command; connect and disconnect previews carry
+- `setup status --host codex` reports `codex_home_projects`: the *verified* members (the
+  record's projects plus the project the binding names) whose checkout still exists and serves
+  the manifest. A home connected before this release has no record; its bound project counts as
+  connected and is recorded when a second project connects. Only a verified member is recorded,
+  becomes the binding's anchor, or keeps a disconnect a `detach`.
+- *Possible users* are live checkouts that serve the exact Yoetz manifest and a plugin source
+  matching its own install marker, never a verified member under any spelling of its path:
+  - the projects this installation of Yoetz recorded for the home and has not seen disconnect
+    (its membership witness under Yoetz's state directory, `host-config-locks/<key>.members`),
+    always, so deleting or losing the record never makes them disappear;
+  - while the record is missing with shared pieces present, or marked `unknown_members`,
+    `[projects."<path>"]` rows with `trust_level = "trusted"` (every Yoetz checkout carries those
+    files, so this is not evidence of a connection).
+
+  They are never recorded or chosen as the anchor; they only keep the shared pieces. Status adds
+  `codex_home_possible_projects` and `membership_unknown`, with the exact `--remove-shared`
+  preview command; connect and disconnect previews and `integrate codex plugin preview` carry
   `membership_unknown` and `possible_users` (a connect does not list the project it connects).
-  Reconnecting a possible user records it.
+  Reconnecting a possible user records it. Not detected: a project connected only through
+  another Yoetz installation, after the record is lost.
 - A disconnect that would leave possible users but no verified member to carry the binding stops
   before any change as `membership_unverified` (adapter: `remove_refused`, `conflict:
   membership_unverified`). The continuation names the possible users and offers two ways on:
@@ -106,42 +111,63 @@ binding whose project lost its manifest makes every `codex plugin …` command i
   none does, preview `setup disconnect --remove-shared`. Verified natively below.
 - A connected project whose checkout no longer serves its manifest and marker-valid plugin
   source already reads `installed_not_activated` and does not keep the shared pieces; reconnect
-  it to restore both.
+  it to restore both. When that project is the binding's anchor (deleted, or `git clean` removed
+  its `.agents/plugins/marketplace.json`; Codex then fails every `codex plugin` command in the
+  home), a disconnect moves the binding to a remaining verified member, or, with none left,
+  removes the binding with the shared pieces directly (no `codex plugin` command); the same
+  holds for `--remove-shared`.
 - Refused: one directory under a second path (a symlink, a letter-case variant, the path it had
   before it moved) fails as `project_connected_via_other_path`, naming the path already
   connected. Disconnecting the project under its current path also clears the entry under the
   other path; then connect again. Yoetz-named configuration that Yoetz did not write or that was
   edited stays `destination_conflict`; another connected project never is.
-- The route profile is part of the shared registration: connecting a project with a different
-  `--route-profile` re-registers it for every project in the home, and the preview shows the
-  transition.
+- The review mode is part of the shared registration: connecting a project with a different
+  `--route-profile` re-registers `[mcp_servers.yoetz]` for every project in the home, which
+  changes their review mode too (local only or AI-powered review). The preview names them:
+  `status.route_profile_before` and `status.route_changes_for`, a summary sentence in interactive
+  and text-mode previews, and the TUI first-run preview ("registered again ... This also changes
+  the review mode ..."). No extra flag is required (ADR-012 amendment item 5).
 - Every guided setup apply for the home (`setup run|disconnect --host codex`) holds Yoetz's
   per-configuration lock from plan revalidation through the record update: an exclusive `flock`
   on a 0600 file under Yoetz's own state directory (`host-config-locks/`), keyed by the home's
-  resolved path, NFC, case-folded. The Codex activation and removal steps, including the
-  historical `--codex-path`/`--codex-home` wizard, `recommend accept codex-plugin-activation` and
-  `integrate codex plugin remove`, also hold the home's own `.yoetz-marketplace-activation.lock`
-  across their plan, apply and record update. A lock that cannot be taken stops as
-  `connection_lock_unavailable` before any change, naming the lock folder. The state-directory
-  lock does not serialise a setup run by another Yoetz installation; the record's
-  compare-and-swap and the in-home activation lock do. Untested: a state directory on NFS,
-  SMB/CIFS, WSL DrvFS (`/mnt/c`) or another network or FUSE filesystem, where `flock` may be
-  refused (safe: `connection_lock_unavailable`) or hold only on the local machine (ADR-012
-  amendment item 7).
+  resolved path, NFC, case-folded. The Codex activation and removal steps also hold the home's
+  own `.yoetz-marketplace-activation.lock` across their plan, apply and record update; the TUI
+  first-run connect, the historical `--codex-path`/`--codex-home` wizard, `recommend accept
+  codex-plugin-activation` and `integrate codex plugin remove` hold only that in-home lock. A
+  lock that cannot be taken stops as `connection_lock_unavailable` before any change, naming the
+  lock folder. The state-directory lock does not serialise a setup run by another Yoetz
+  installation; the record's compare-then-rename (which narrows but does not close that race)
+  and the in-home activation lock do. Untested: a state directory on NFS, SMB/CIFS, WSL DrvFS
+  (`/mnt/c`) or another network or FUSE filesystem, where `flock` may be refused (safe:
+  `connection_lock_unavailable`) or hold only on the local machine (ADR-012 amendment item 7).
+- Codex setup needs an existing Codex home: an absent one is refused as `target_untrusted`, and
+  the continuation names the `mkdir -p -m 700` (Claude Code and Cursor create theirs).
 - The record keeps the name `.yoetz-connected-projects.json` whatever the MCP server key is
   called, so an upgrade keeps the members it lists. A record that is not an owner-only regular
-  file with valid content stops setup before any change (`source_invalid`, `conflict:
-  connected_projects`) with a continuation naming the file: restore it, or remove it, after which
-  membership is unknown and the possible-user rules above apply.
+  file with valid content stops `setup run`, `setup status` and `setup disconnect` before any
+  change as `connection_projects_record_invalid` (adapter: `source_invalid`, `conflict:
+  connected_projects`). The continuation names the file: make it owner-only again (`chmod 600`)
+  or restore it; if it must be removed, connect every project that uses Yoetz with this home
+  again before disconnecting any of them.
+- Terminal interface: `/connect` and `/disconnect` use the same plans, but `--remove-shared` is
+  CLI-only, and the TUI shows a generic continuation for `membership_unverified`,
+  `connection_projects_record_invalid` and `connection_lock_unavailable`; run `yoetz setup status
+  --host codex --project <project>` or `setup disconnect` from a terminal for the exact one.
 
 Native evidence, Linux x86_64 (ext4), Codex CLI 0.144.6, scratch `CODEX_HOME`, `HOME`, XDG and
-isolation root, through `yoetz setup run|disconnect --host codex` preview and `--accept` from this
-branch (2026-10-14, #1058):
+isolation root, through `yoetz setup run|disconnect|status --host codex` preview and `--accept`
+from this branch (2026-10-14 and, for the review fixes, 2026-10-15, #1058):
 
 | Scenario | Result |
 | --- | --- |
 | Foreign clone: connect A; delete the record; add a never-connected trusted checkout `a-clone` with Yoetz's committed plugin files (sorts first); connect B; disconnect A; delete `a-clone` | B's connect records A and B with `unknown_members`, not `a-clone`; A's disconnect preview: `detach_project`, `shared_with` B, `possible_users` `a-clone`; the binding moves to B; after deleting `a-clone`, B reads `active` and `codex plugin list --marketplace yoetz --json` and `codex mcp list --json` from B succeed |
 | Lost record, no verified member left: connect A and B; delete the record; trust both; disconnect A | refused `membership_unverified`, nothing changed, continuation names B; reconnecting B records it, then A's disconnect detaches and the binding moves to B |
+| Deleted record, no trust rows at all: connect A and B; delete the record; disconnect A | refused `membership_unverified` naming B (from the witness), `config.toml` byte-identical; reconnecting B, then A's disconnect detaches to B and B reads `active` |
+| Anchor deleted: connect A and B; `rm -rf A`; disconnect B | status lists only B; disconnect plans `deactivate_plugin`, `remove_mcp_registration`, `remove_project_skill` and completes; `config.toml` holds no Yoetz table; `codex plugin list` works again |
+| Anchor manifest removed: connect A, B and C; delete A's `marketplace.json`; disconnect B | `detach_project` with `shared_with` C; the binding moves to C and `codex plugin list` works from C |
+| Review mode: connect A on `strict`; connect B on `policy`; preview C on `strict` | B's preview carries `route_profile_before: strict`, `route_changes_for: [A]`; the text-mode preview for C prints the change from AI-powered review to local only for A and B |
+| Damaged record (mode 0644) | `setup run`, `setup status` and `setup disconnect` all report `connection_projects_record_invalid` with the `chmod 600` continuation |
+| `--remove-shared` text preview | prints the home-wide sentence naming the connected project that stops using Yoetz |
 
 ## Linux and WSL
 
@@ -1599,7 +1625,8 @@ inode-matches through a private quarantine rename, then
 deletes the bound current-version cache. Whole-table TOML edits are verified by re-parse. A second
 removal is a no-op (`already_absent`). Foreign, modified, dual, or otherwise conflicting entries
 refuse with `remove_refused` and name the conflicting surface (`personal_marketplace`,
-`repository_marketplace`, `config_marketplace`, `config_plugin`, `inventory`, or `cache`). Before
+`repository_marketplace`, `config_marketplace`, `config_plugin`, `inventory`, `cache`, or
+`membership_unverified`). Before
 mutation, changed preview-bound bytes report `preview_stale`.
 After a mutating host command starts (including a zero-exit command with malformed JSON), config
 write, marketplace quarantine/unlink, cache quarantine rename, or member unlink has
@@ -1617,8 +1644,8 @@ observation store are intentionally left in place.
 While another verified connected project that still serves the exact Yoetz manifest remains in
 the home (see [Several projects in one Codex home](#several-projects-in-one-codex-home-issue-1058)),
 the preview's outcome is `detach` instead: it lists those projects in `shared_with`, names the
-project the binding moves to in `rebind_to` when it named this one, lists unverified
-`possible_users` while membership is unknown, and plans neither host command nor any cache
+project the binding moves to in `rebind_to` when it named this one or a project that no longer
+serves its manifest, lists unverified `possible_users` (with `membership_unknown`), and plans neither host command nor any cache
 deletion (`--purge-cache` has no effect). Apply rewrites only the exact `[marketplaces.yoetz]`
 table in place, then removes this project's canonical `marketplace.json`, then updates the
 connected-projects record; the disconnected project then reads `installed_not_activated` while
@@ -1703,9 +1730,10 @@ egress.
 | Setup reports `installed_not_activated` | Run `yoetz recommend list --codex-path <exact-executable> --codex-home <exact-home>`, then accept only the freshly shown target/preview digest. Historical acceptance cannot suppress an observed inactive target; a decline suppresses only its unchanged exact target. Review canonical inventory and the versioned cache; marketplace/config presence alone is insufficient. A marker-consistent stale cache is refreshed by an ordinary approved re-run. |
 | Activation reports `destination_conflict` | The versioned cache (or a config/marketplace surface) holds foreign, marker-inconsistent, or modified content. Review it by hand; setup only replaces trees that match their own Yoetz install marker. Another Yoetz-connected project in the same home is not a conflict. |
 | Setup reports `project_connected_via_other_path` | This directory is already connected under another path (symlink, letter case, or a move). Run the `setup disconnect` the message names for this project (it clears the other entry), then connect again. |
-| Disconnect reports `membership_unverified` | Yoetz's record of this home's projects is missing or marked incomplete, and only unverified trusted checkouts (`possible_users`) might still use the shared pieces. Reconnect the project that uses Yoetz (that records it) and rerun the disconnect, or preview `setup disconnect --remove-shared` if none does. |
+| Disconnect reports `membership_unverified` | No verified project is left to carry the shared pieces, but projects Yoetz connected earlier or trusted checkouts with Yoetz's plugin files (`possible_users`) might still use them. Reconnect the project that uses Yoetz (that records it) and rerun the disconnect, or preview `setup disconnect --remove-shared` if none does. |
 | Setup reports `connection_lock_unavailable` | Nothing changed. Yoetz could not take its setup lock under its own state directory (the folder is named in the message). It must be a local, owner-only (0700) folder without symlinked parts on a filesystem that supports `flock`. |
-| Setup reports `source_invalid` with `conflict: connected_projects` | `.yoetz-connected-projects.json` in the Codex home is not an owner-only regular file with valid content. Restore it, or remove it (membership then becomes unknown), and rerun. |
+| Setup reports `connection_projects_record_invalid` (adapter: `source_invalid` with `conflict: connected_projects`) | `.yoetz-connected-projects.json` in the Codex home is not an owner-only regular file with valid content. Make it owner-only again (`chmod 600`) or restore it. Remove it only if it is damaged, then connect every project that uses Yoetz with this home again before disconnecting any: until then a disconnect keeps the shared pieces for projects this installation connected and for trusted checkouts, and stops as `membership_unverified`. |
+| Setup reports `target_untrusted` for a Codex home that does not exist | Codex setup needs the home first: `mkdir -p -m 700 <home>`, then rerun. |
 | Activation failed with an explicit `--codex-home` | Read the actual `reason` in `registration.plugin_activation`/`readiness.plugin_activation`; the bound home and config path are echoed there. `codex_home_required` appears only when no home was passed. |
 | Setup reports plugin source files but no Yoetz skill appears | Check `.agents/skills/yoetz`; source installation and plugin activation do not prove project-skill discovery. |
 | `list_mcp_resources` fails with `resources/list failed: Unexpected response type` | Codex's rmcp client is built with serde_json `arbitrary_precision`; before modelcontextprotocol/rust-sdk#1300 it cannot decode a fractional number in a buffered result, and the whole listing is dropped. Yoetz therefore lists guidance resources without the fractional `annotations.priority` on every host; an older Yoetz shows this symptom. Guidance never needs the listing: call `read_guidance` with a registered URI. |

@@ -468,3 +468,33 @@ def test_text_preview_prints_what_the_plan_does_to_other_projects(
     assert "claude: preview" in out
     assert "keep working: /work/a" in out
     assert "from local only to AI-powered review" in out
+
+
+def test_codex_home_that_does_not_exist_names_the_mkdir(
+    prepared: ConnectionPlan,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    """#1058 review P3: Codex needs an existing home; say so instead of generic advice."""
+
+    from yoetz.tui.runtime import RuntimeError_
+
+    home = tmp_path / "nested" / "codex"
+    _select(monkeypatch, "codex", home)
+
+    def untrusted(*_args: object, **_kwargs: object):
+        raise RuntimeError_("target_untrusted", "the Codex activation could not be previewed")
+
+    monkeypatch.setattr(cli, "prepare_selected", untrusted)
+    cli.run_host_connection(
+        host="codex",
+        executable=None,
+        config_root=home,
+        project=Path("/workspace/example/project"),
+        json_output=True,
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["reason"] == "target_untrusted"
+    assert report["next_step"].startswith("Nothing was changed.")
+    assert f"mkdir -p -m 700 {home}" in report["next_step"]

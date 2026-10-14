@@ -12,9 +12,11 @@ canonical JSON
 ``{"projects": [<absolute project roots>]}`` plus ``"unknown_members": true`` when the shared
 pieces were found without a record (an earlier release, or a lost record), so other projects may
 use them that no record names. The file is owner-only (a group- or world-readable or writable
-record is refused), replaced atomically with the parent directory synced, and written only while
-the caller holds ``host_config_lock`` and its bytes still equal the snapshot the approved plan
-was built from. A project root is the canonical path setup resolved. Two entries naming one
+record is refused), replaced by an atomic rename with the parent directory synced, and written
+only while the caller holds ``host_config_lock`` (Codex: or the home's activation lock) and its
+bytes, re-read just before the rename, still equal the snapshot the approved plan was built from
+(a compare-then-rename: it narrows, but does not close, the window for a writer holding neither
+lock). A project root is the canonical path setup resolved. Two entries naming one
 directory through different paths are never admitted: the caller refuses with
 ``project_connected_via_other_path``.
 
@@ -343,9 +345,10 @@ def host_config_lock(config_root: Path) -> Generator[None]:
     across plan revalidation, the shared host changes, and the record update. A filesystem that
     cannot lock reports ``lock_unavailable`` before anything changes; there is no unlocked
     fallback. The lock serialises setups run by this installation only (another installation
-    has its own state directory); the record's compare-and-swap is what stops a setup from
-    another installation, or any other writer, from overwriting a newer record. Lock files are
-    never removed: unlinking one while another setup waits on it would split the lock.
+    has its own state directory); against a setup from another installation, or any other
+    writer, only the record's compare-then-rename remains, which narrows the window for
+    overwriting a newer record but does not close it. Lock files are never removed: unlinking
+    one while another setup waits on it would split the lock.
     """
 
     import fcntl

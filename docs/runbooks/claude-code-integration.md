@@ -55,7 +55,18 @@ it runs the marketplace removal even while other projects keep their rows, so th
 Yoetz too. A disconnect whose approval file (`.claude/settings.local.json`) cannot be read safely,
 such as a symlink, stops before any change as `connection_admission_cleanup_failed`.
 Because Claude Code's rows are the membership, this host has no unknown membership (a Codex and
-Cursor state) and no possible users or `membership_unverified` refusal (Codex only). Like every
+Cursor state), no possible users or `membership_unverified` refusal (Codex only), and no
+connected-projects record (so no `connection_projects_record_invalid`). Claude Code keeps the row
+of a project whose directory was deleted; Yoetz counts only live projects, in the preview and in
+apply alike, so such a row holds nothing open and the last live project's disconnect (an unscoped
+`marketplace remove`) clears it too. A disconnect whose own project-scope install is already gone
+(Claude Code refuses to uninstall it again) plans only `remove_marketplace` and
+`remove_plugin_mcp`. The shared source carries the plugin MCP server's review mode for every
+project's install: connecting a project on another review mode re-renders it for all of them, and
+the preview names them (`status.route_profile_before`, `status.route_changes_for`, and a summary
+sentence with both modes). `--remove-shared` previews and the interactive consent say the
+disconnect is home-wide and name the projects that stop using Yoetz. The TUI has no
+`--remove-shared`; use `yoetz setup disconnect --host claude --remove-shared`. Like every
 host, each setup apply holds Yoetz's per-configuration lock from revalidation through the last
 change: an exclusive `flock` on a 0600 file under Yoetz's own state directory
 (`host-config-locks/`), keyed by the config root's resolved path, NFC, case-folded, never inside
@@ -65,7 +76,8 @@ installation. Untested: a state directory on NFS, SMB/CIFS, WSL DrvFS (`/mnt/c`)
 network or FUSE filesystem (ADR-012 amendment item 7).
 
 Native evidence, Linux x86_64 (ext4), Claude Code 2.1.300, scratch `HOME`, `CLAUDE_CONFIG_DIR`,
-XDG and isolation root (2026-10-14, #1058). Plans were prepared and applied through the same
+XDG and isolation root (2026-10-14 and, for the review fixes, 2026-10-15, #1058). Plans were
+prepared and applied through the same
 `prepare_selected`/`apply_connection` composition `setup run|disconnect --host claude` uses; the
 one substitution is the OS-presence review (the trusted PAM console prompt), which the container
 cannot provide, so a test stub consumed the exact plan digest. `setup status` and the disconnect
@@ -76,6 +88,9 @@ preview were also read through the real CLI and agreed.
 | Connect A and B; disconnect A, then B; reconnect A | A's disconnect plans `uninstall_plugin` alone with `shared_with` B; B keeps its enabled row and `yoetz-local` stays in `claude plugin marketplace list`; B's disconnect removes the marketplace; reconnecting A succeeds (no `destination_conflict`) and its row is enabled |
 | Connect A and B; disconnect B, then A; reconnect B, then A | Same in reverse: each step leaves the remaining project's row enabled; both reconnect, and the second reconnect lists the first in `shared_with` |
 | First setup with `CLAUDE_CONFIG_DIR` under parents that do not exist yet | Connects; the plugin row is listed |
+| Connect A and B; `rm -rf A`; disconnect B (2026-10-15) | the plan is `uninstall_plugin`, `remove_marketplace`, `remove_plugin_mcp`; apply removes the marketplace, and `claude plugin list` no longer shows A's dead row |
+| Connect A and B; `rm -rf A`; `claude plugin uninstall --scope project` in B; disconnect B | a second uninstall fails in Claude Code 2.1.300 (`not installed in project scope`); the plan is `remove_marketplace`, `remove_plugin_mcp` and completes with no marketplace left |
+| Connect A on `strict`; connect B on `policy` | B's plan discloses `route_profile_before: strict`, `route_changes_for: [A]`; the shared source's `.mcp.json` then runs the policy route |
 
 On macOS the presence step uses LocalAuthentication; Linux and WSL 2 use the trusted PAM console
 path. A missing mechanism is a reported local continuation, not permission to bypass it. The

@@ -813,6 +813,15 @@ def run_host_connection(
             report["next_step"] = _codex_unverified_step(config_root, project)
         if reason == "connection_lock_unavailable":
             report["next_step"] = _lock_unavailable_step(str(report["host"]), config_root)
+        if host == "codex" and reason == "target_untrusted":
+            home = _selected_root("codex", config_root)
+            if home is not None and not os.path.lexists(home):
+                # Unlike Claude Code and Cursor, Codex setup needs its home to exist first.
+                report["next_step"] = (
+                    f"Nothing was changed. The selected Codex home {home} does not exist. Create "
+                    f"it as a folder only you can use (mkdir -p -m 700 {home}) and rerun this "
+                    "command."
+                )
         if (
             reason == "connection_projects_record_invalid"
             or (

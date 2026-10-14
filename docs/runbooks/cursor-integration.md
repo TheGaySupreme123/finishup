@@ -63,12 +63,20 @@ manual `mkdir`. That case is covered by unit
 tests for both Cursor IDE and Cursor Agent CLI, not by a native Cursor run (no Cursor binary was
 available for the 2026-10-14 re-check). A lock that cannot be taken stops as
 `connection_lock_unavailable` before any change, naming the lock folder; it does not serialise
-a setup run by another Yoetz installation, where the record's compare-and-swap is the guard.
+a setup run by another Yoetz installation, where the record's compare-then-rename is the only
+guard (it narrows that race; it does not close it).
 Untested: a state directory on NFS, SMB/CIFS, WSL DrvFS (`/mnt/c`) or another network or FUSE
 filesystem (ADR-012 amendment item 7). The record keeps the name
 `.yoetz-connected-projects.json` whatever the MCP server key is called; one that is not an
-owner-only regular file with valid content stops setup as `connection_projects_record_invalid`
-with a continuation naming the file (restore it, or remove it, which makes membership unknown).
+owner-only regular file with valid content stops `setup run`, `setup status` and `setup
+disconnect` as `connection_projects_record_invalid` with a continuation naming the file (make it
+owner-only again with `chmod 600` or restore it; removing it makes membership unknown, so the
+plugin stays on an ordinary disconnect). Cursor keeps the review mode in each project's own MCP
+entry, not in the shared plugin, so connecting a project on another review mode changes no other
+project (no `route_changes_for` here). `--remove-shared` previews and the interactive consent say
+the disconnect is home-wide and name the projects that stop using Yoetz. The TUI has no
+`--remove-shared` and shows a generic continuation for these refusals; use `yoetz setup
+disconnect|status --host cursor-ide|cursor-cli` from a terminal.
 A second path to an already connected directory is
 refused as `project_connected_via_other_path`; disconnecting under the current path clears it. A
 moved project's `.cursor/mcp.json` entry still names its old path and reads as foreign under the
