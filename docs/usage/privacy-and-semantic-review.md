@@ -577,7 +577,18 @@ Every receipt is the agent's view unless you ask for yours, because a program ca
 look like yours. To see your full receipt, run `yoetz receipt --owner-view` yourself, or choose
 *Your full receipt* in the terminal interface. Yoetz then asks you to confirm it is you, for that
 one receipt only, and shows it once; your privacy policy and your agents' access do not change.
-Today Yoetz can confirm it is you only with a vault passphrase. If your installation keeps its key
-in the system keychain instead, or runs where no one can answer that prompt, Yoetz says the full
-receipt is unavailable and shows nothing; `git status --short` in your repository lists what your
-change created.
+
+On a Mac, Yoetz confirms it is you with a system dialog: Touch ID, or your login password. The
+dialog shows a confirmation code, and your terminal prints the same code; approve only a dialog
+whose code matches a request you just made yourself. An agent that runs the command can make the
+dialog appear, but it cannot answer it for you. Cancelling it, or leaving it unanswered for a
+minute, shows nothing. This works with either secure storage choice, including the system
+keychain, whose vault passphrase you were never shown. If your vault has a passphrase you chose,
+you can still use it: when no dialog can be shown (for example over SSH), Yoetz asks for that
+passphrase instead.
+
+On Linux and on Windows through WSL 2 there is no system dialog yet, so Yoetz confirms it is you
+only with a vault passphrase you type. A system-keychain installation there keeps a generated
+passphrase you were never shown, so its full receipt stays closed for now. Where no one can answer
+the prompt, or the vault has no passphrase at all, Yoetz says the full receipt is unavailable and
+shows nothing. Either way `git status --short` in your repository lists what your change created.

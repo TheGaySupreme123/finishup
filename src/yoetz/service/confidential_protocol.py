@@ -1147,6 +1147,10 @@ _SERVER_ERROR_CODES: Final = frozenset(
         "phase_invalid",
         "replay",
         "presence_unavailable",
+        # The OS presence prompt was cancelled or did not authenticate the person, or nobody
+        # answered it before its deadline (ADR-016 decision 4). Bounded; no OS text.
+        "presence_refused",
+        "presence_timeout",
         "reauthentication_unavailable",
         "reauthentication_required",
         "action_denied",

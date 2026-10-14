@@ -1506,11 +1506,24 @@ def observe_checks_run_cmd(
 _OWNER_VIEW_REFUSALS: Final = MappingProxyType(
     {
         "presence_unavailable": (
-            "owner_view_unavailable: Yoetz cannot confirm it is you on this installation. It has "
-            "no operating-system presence check here and the vault has no passphrase, so the "
-            "full receipt stays closed. Nothing changed. Without --owner-view you get the "
-            "receipt your agents get, with repository names withheld; to see what your change "
-            "created, run 'git status --short' in your repository."
+            "owner_view_unavailable: Yoetz cannot confirm it is you on this installation. The "
+            "vault has no passphrase, and no operating-system confirmation could be shown: "
+            "Touch ID or your login password needs macOS and a Yoetz service running in your "
+            "desktop session (one started over SSH may not be able to show it), and Linux and "
+            "WSL have none yet. "
+            "The full receipt stays closed and nothing changed. Without --owner-view you get "
+            "the receipt your agents get, with repository names withheld; to see what your "
+            "change created, run 'git status --short' in your repository."
+        ),
+        "presence_refused": (
+            "owner_view_refused: the operating-system confirmation was cancelled or did not "
+            "confirm it is you. Nothing was shown and nothing changed; run the command again "
+            "to retry."
+        ),
+        "presence_timeout": (
+            "owner_view_refused: the operating-system confirmation was not answered within "
+            "a minute, so it closed. Nothing was shown and nothing changed; run the command "
+            "again when you can answer it."
         ),
         "state_forbidden": (
             "owner_view_unavailable: the vault is locked or not set up. Run 'yoetz service "
@@ -1662,9 +1675,9 @@ def receipt_command(
             "--owner-view",
             help=(
                 "Show the full receipt, including repository names your agents do not see. "
-                "You confirm it is you (OS presence or your vault passphrase) in a foreground "
-                "terminal, for this one request on this command's own connection; nothing else "
-                "changes."
+                "You confirm it is you (on macOS Touch ID or your login password, otherwise "
+                "your vault passphrase) from a foreground terminal, for this one request on "
+                "this command's own connection; nothing else changes."
             ),
         ),
     ] = False,

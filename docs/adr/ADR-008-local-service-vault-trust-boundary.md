@@ -418,6 +418,15 @@ crash recovery.
 Automatic pristine keyring initialization is therefore an artifact-gated convenience, not a
 keyring-only default. Any future admin secret, additional platform presence adapter, or migration
 that changes the resolved F-010 authority model requires an explicit ADR amendment.
+**Amendment (2026-10-14, issue #1073):** the packaged service on macOS now composes one
+`UserPresencePort` adapter, Apple LocalAuthentication through the fixed `/usr/bin/osascript`
+helper, and passes the same instance to `HumanControlService` and `VaultService`. It is scoped to
+the `owner_receipt_view` reauthentication (ADR-009 round 5, ADR-016 decision 4 amendment). It does
+not change the resolved F-010 authority: the vault remains the sole minter of
+`HumanAuthorizationProof` and accepts only an attestation that adapter issued for the exact
+challenge, keyring retry receives no capability, and pristine keyring initialization still needs
+a qualified `user_presence_cells` row, which the adapter's `unqualified` release cell never
+matches.
 
 ## External evaluator process amendment (2026-08-30, issue #404)
 

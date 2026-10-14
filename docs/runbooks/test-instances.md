@@ -208,3 +208,55 @@ attestation or treat the preflight as authority.
 existing protected terminal ceremony. It diagnoses credential-store availability, retains the
 explicit passphrase fallback where needed, and stops before provider selection or privacy grants.
 It requires a local interactive terminal; agents show that continuation without supplying secrets.
+
+## Owner view with Touch ID: manual check on a real Mac (#1073)
+
+Automation cannot answer an Apple LocalAuthentication dialog, so this is the release check for the
+service-side macOS presence provider behind `yoetz receipt --owner-view` (ADR-009 round 5,
+ADR-016 decision 4 amendment). Run it on a Mac logged in at the desktop, from Terminal or iTerm,
+against a disposable instance and never the everyday installation. Run it once with Touch ID and
+once using the dialog's password option (or on a Mac without Touch ID). Record the macOS version,
+the chip, and each observed result on the owning issue. This environment's independent reviewer
+stands in for the Codex check the owner asked for; that check, and this one, are still owed by a
+person with a Mac.
+
+1. From a clean checkout at the revision under test, provision and verify an instance:
+
+   ```text
+   uv run python scripts/provision_test_instance.py create --base ~/.yz-instances --tag touchid \
+       --lifecycle disposable --expires-in 4
+   L=~/.yz-instances/touchid/runtime/bin/yoetz
+   $L instance status --json        # mode isolated, the exact source_ref
+   ```
+
+2. `$L setup vault` and keep the platform credential store. Expect
+   `Secure vault setup (platform credential store auto-unlock)` and `Vault ready.`. This is the
+   system-keychain shape: a passphrase vault whose generated passphrase you were never shown.
+3. In a scratch Git repository, open a task and record a check from the `start` and `check`
+   templates in `guidance/request-templates.md`, replacing every identifier with the values the
+   `start` result returns. Build one receipt request with `format: markdown`, `include: full` and
+   `redaction_profile: full_local`. `$L receipt --request '<receipt JSON>' --json` is the agents'
+   view: any undeclared repository name the check found reads
+   `(receipt prose withheld: repository_excerpt)`.
+4. Run `$L receipt --owner-view --request '<receipt JSON with a new request_id>'`. Expect the
+   preview (task, format, profile, scope), `Authorization: os_user_presence`, and a line naming
+   Touch ID or your login password with `confirmation code xxxx-xxxx`. A system dialog appears that
+   names your full Yoetz receipt and shows the same code. Approve it: the full receipt prints with
+   the names spelled out, and the command exits 0.
+5. Repeat step 4 and choose Cancel in the dialog. Expect `owner_view_refused: the
+   operating-system confirmation was cancelled or did not confirm it is you`, nothing on stdout,
+   and a nonzero exit.
+6. Repeat step 4 and leave the dialog unanswered. After about a minute it closes by itself;
+   expect `owner_view_refused: ... was not answered within a minute`.
+7. Repeat step 4 and press Ctrl-C in the terminal while the dialog is up. The dialog should close
+   at once and nothing is shown; a new `$L receipt --owner-view` must raise a fresh dialog.
+8. From a Claude Code, Codex or Cursor agent session pointed at this instance's launcher, ask the
+   agent to run the step-4 command. The dialog appears on your screen; cancel it. The agent gets
+   `owner_view_refused` and no withheld name.
+9. Optional, to record what happens: `$L service stop`, then run step 4 from an SSH session to
+   the same Mac. A service started outside the desktop session is expected to report
+   `owner_view_unavailable` because it cannot show a dialog.
+10. `$L service stop` and dispose of the instance
+    (`uv run python scripts/provision_test_instance.py dispose --base ~/.yz-instances --tag
+    touchid`). If Keychain Access still lists that instance's `bundle-…` auto-unlock entry, delete
+    it; it is scoped to the disposed instance's path.

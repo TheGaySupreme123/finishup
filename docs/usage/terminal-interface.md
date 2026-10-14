@@ -269,9 +269,10 @@ agent sees, verified items included.
 coverage, open findings, limitations, whether deeper review contributed, freshness, and — always
 — what was *not* verified. It then asks which receipt you want. *The receipt your agents see*
 withholds the repository file names your privacy policy keeps from agents. *Your full receipt*
-hands this terminal to a secure prompt where you confirm it is you (your vault passphrase), and
-shows the full receipt once; nothing else changes. If Yoetz cannot confirm it is you on this
-installation, it says so and shows nothing.
+hands this terminal to a secure prompt where you confirm it is you, and shows the full receipt
+once; nothing else changes. On a Mac a system dialog asks for Touch ID or your login password and
+shows the confirmation code the prompt prints; elsewhere you enter your vault passphrase. If Yoetz
+cannot confirm it is you on this installation, it says so and shows nothing.
 
 ### `/service` and `/doctor`
 

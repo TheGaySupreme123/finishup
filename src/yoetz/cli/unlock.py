@@ -10,6 +10,7 @@ from typing import Final, Literal, Protocol, cast
 
 from yoetz.cli.trusted_console import TrustedConsoleError, TrustedForegroundConsole
 from yoetz.domain.privacy import PrivacyPolicyChange, PrivacyPolicyChangeValue
+from yoetz.ports.secret_memory import presence_confirmation_code
 from yoetz.protocol.canonical import canonical_digest
 from yoetz.service.confidential_client import (
     ConfidentialClientError,
@@ -244,6 +245,19 @@ class _CeremonyTerminal(Protocol):
     def read_choice(self, prompt: str, allowed: tuple[bytes, ...]) -> bytes: ...
 
     def read_secret(self, prompt: str, maximum: int) -> bytearray: ...
+
+
+@dataclass(slots=True)
+class _AuthorizationChoice:
+    """Which reauthentication source the ceremony asks for, and what the service offered.
+
+    The CLI only names a source; the service decides. ``offered`` records the service's
+    ``AuthorizationRequiredPhase`` so a caller can tell whether a passphrase was an option.
+    """
+
+    prefer: Literal["os_user_presence", "secret_reauthentication"] = "os_user_presence"
+    offered: tuple[str, ...] = ()
+    after_unavailable_dialog: bool = False
 
 
 class _RotationStore(Protocol):
@@ -964,6 +978,7 @@ async def _drive_session(
     provider_reauthentication: bytearray | None = None,
     installation_recovery_secret: bytearray | None = None,
     vault_rewrap_secret: bytearray | None = None,
+    authorization: _AuthorizationChoice | None = None,
 ) -> tuple[HumanResult, Literal["approve", "deny"] | None]:
     decision: Literal["approve", "deny"] | None = None
     rotation_store: _RotationStore | None = None
@@ -1049,10 +1064,14 @@ async def _drive_session(
             await _send_secret(session, current, secret_buffer)
         elif type(current) is AuthorizationRequiredPhase:
             authorization_source: Literal["os_user_presence", "secret_reauthentication"]
+            if authorization is not None:
+                authorization.offered = tuple(current.available_sources)
             if (
                 provider_reauthentication is not None or passphrase is not None
             ) and "secret_reauthentication" in current.available_sources:
                 authorization_source = "secret_reauthentication"
+            elif authorization is not None and authorization.prefer in current.available_sources:
+                authorization_source = authorization.prefer
             elif "os_user_presence" in current.available_sources:
                 authorization_source = "os_user_presence"
             elif "secret_reauthentication" in current.available_sources:
@@ -1060,6 +1079,22 @@ async def _drive_session(
             else:
                 raise HumanCeremonyCliError("preview_invalid")
             terminal.write(f"Authorization: {authorization_source}\n")
+            if (
+                authorization is not None
+                and authorization.after_unavailable_dialog
+                and authorization_source == "secret_reauthentication"
+            ):
+                terminal.write(
+                    "No system confirmation dialog can be shown from here, so confirm with your "
+                    "vault passphrase instead.\n"
+                )
+            if authorization_source == "os_user_presence":
+                # The service, not this process, runs the check; the dialog shows the same code.
+                code = presence_confirmation_code(session.opened.binding.target_digest)
+                terminal.write(
+                    "Confirm it is you in the system dialog (Touch ID or your login password). "
+                    f"It shows confirmation code {code}; cancel it if the code differs.\n"
+                )
             await session.send_action(SelectAuthorizationSourceAction(authorization_source))
         elif type(current) is KeyringRetryPhase:
             await session.send_action(RetryAction())
@@ -1086,6 +1121,7 @@ async def _complete_human_ceremony(
     provider_reauthentication: bytearray | None,
     installation_recovery_secret: bytearray | None,
     vault_rewrap_secret: bytearray | None,
+    authorization: _AuthorizationChoice | None = None,
 ) -> HumanResult:
     session = await client.open(kind, target)
     async with session:
@@ -1103,6 +1139,7 @@ async def _complete_human_ceremony(
                 provider_reauthentication,
                 installation_recovery_secret,
                 vault_rewrap_secret,
+                authorization,
             )
             return result
         except BaseException:
@@ -1158,6 +1195,8 @@ async def run_human_ceremony(
     provider_reauthentication: bytearray | None = None,
     installation_recovery_secret: bytearray | None = None,
     vault_rewrap_secret: bytearray | None = None,
+    *,
+    authorization: _AuthorizationChoice | None = None,
 ) -> HumanResult:
     """Run one exact foreground YZH1/YZS1 ceremony and return structural state only."""
 
@@ -1219,6 +1258,7 @@ async def run_human_ceremony(
                 provider_reauthentication,
                 installation_recovery_secret,
                 vault_rewrap_secret,
+                authorization,
             )
     finally:
         await client.close()
@@ -1657,15 +1697,37 @@ async def change_idle_relock_policy(
 async def authorize_owner_receipt_view(target: OwnerReceiptViewTarget) -> OwnerReceiptViewResult:
     """Reauthenticate the owner for one exact receipt view on the foreground terminal.
 
-    The ceremony asks for OS user presence or the vault passphrase and never accepts a secret
-    on the command line. Whoever holds the terminal can type into the prompt (a pseudo-terminal
-    too), so the boundary is the service verifying a passphrase or presence an agent does not
-    have, not who is typing.
+    The ceremony asks for OS user presence (on macOS, Touch ID or the login password in a
+    system dialog the service raises) or the vault passphrase, and never accepts a secret on the
+    command line. Whoever holds the terminal can type into the prompt (a pseudo-terminal too),
+    so the boundary is the service verifying a passphrase or presence an agent does not have,
+    not who is typing.
     """
 
     if type(target) is not OwnerReceiptViewTarget:
         raise TypeError("owner_receipt_view_target_invalid")
-    result = await run_human_ceremony(HumanCeremonyKind.OWNER_RECEIPT_VIEW, target)
+    choice = _AuthorizationChoice()
+    try:
+        result = await run_human_ceremony(
+            HumanCeremonyKind.OWNER_RECEIPT_VIEW, target, authorization=choice
+        )
+    except (ConfidentialClientError, HumanCeremonyCliError) as error:
+        # The service could not show an operating-system dialog here (for example a service
+        # started over SSH). When the vault also offered its passphrase, ask for that instead,
+        # once, in a fresh ceremony; a cancelled, failed or unanswered dialog is not retried.
+        if (
+            error.reason != "presence_unavailable"
+            or choice.prefer != "os_user_presence"
+            or "secret_reauthentication" not in choice.offered
+        ):
+            raise
+        result = await run_human_ceremony(
+            HumanCeremonyKind.OWNER_RECEIPT_VIEW,
+            target,
+            authorization=_AuthorizationChoice(
+                prefer="secret_reauthentication", after_unavailable_dialog=True
+            ),
+        )
     if type(result) is not OwnerReceiptViewResult:
         raise HumanCeremonyCliError("result_invalid")
     return result

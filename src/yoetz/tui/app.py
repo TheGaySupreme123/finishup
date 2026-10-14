@@ -1048,6 +1048,7 @@ class YoetzTui(App[int]):
         operation: Callable[[], Awaitable[Any]],
         *,
         fallback_command: str | None = "yoetz service unlock",
+        body: tuple[str, ...] | None = None,
     ) -> Any:
         """Ask for explicit consent, then hand the terminal to the ceremony."""
 
@@ -1055,7 +1056,8 @@ class YoetzTui(App[int]):
             ApprovalView(
                 name="confidential",
                 title=title,
-                body=(
+                body=body
+                or (
                     "Yoetz will hand this terminal to its secure entry prompt.",
                     "",
                     "What you type there is hidden, goes straight into the local",
@@ -2610,8 +2612,8 @@ class YoetzTui(App[int]):
                     Option(
                         "owner",
                         "Your full receipt",
-                        "Confirm it is you in this terminal first; shown once, nothing else "
-                        "changes.",
+                        "Confirm it is you first (Touch ID or your login password on a Mac, "
+                        "otherwise your vault passphrase); shown once, nothing else changes.",
                     ),
                 ],
                 hint="enter to choose · esc to cancel",
@@ -2625,6 +2627,13 @@ class YoetzTui(App[int]):
                 "Confirm it is you to see the full receipt",
                 lambda: self.runtime.build_receipt(title, chosen, owner_view=True),
                 fallback_command="yoetz receipt --owner-view --request '<receipt request JSON>'",
+                body=(
+                    "Yoetz will hand this terminal to its secure confirmation prompt.",
+                    "",
+                    "On a Mac a system dialog asks for Touch ID or your login password;",
+                    "otherwise you type your vault passphrase there, hidden, and it never",
+                    "appears in this window, the history above, any log, or any file.",
+                ),
             )
             if summary is None:
                 return

@@ -424,9 +424,13 @@ reverse-chronological released versions.
   the agent's privacy view, as it already did over MCP: a terminal is not proof that you are the
   one reading, since an agent can run Yoetz in a pseudo-terminal of its own. To see your full receipt, run `yoetz receipt --owner-view` or
   choose *Your full receipt* in the terminal interface, and confirm it is you; the view is for that
-  one receipt, once, on that command's own connection. Yoetz can confirm it is you only with a vault passphrase for now. On a
-  system-keychain installation, or where no one can answer the prompt, it reports that the full
-  receipt is unavailable and shows nothing.
+  one receipt, once, on that command's own connection. On a Mac, Yoetz confirms it is you with a
+  system dialog (Touch ID or your login password) that shows the same confirmation code as your
+  terminal, so a system-keychain installation, whose vault passphrase you were never shown, can
+  open its full receipt too; a passphrase you chose still works, and is asked for when no dialog
+  can be shown. Cancelling the dialog or leaving it unanswered for a minute shows nothing. On
+  Linux and WSL 2 only a vault passphrase works for now; where none can be given, Yoetz reports
+  that the full receipt is unavailable and shows nothing.
 
 - On Cursor, the Stop-time acceptance re-read no longer asks the agent to end its final answer with
   a `yoetz-acceptance:<obligation id>:met` line: Cursor's Stop hook receives no final answer, so

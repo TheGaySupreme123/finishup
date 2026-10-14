@@ -3382,7 +3382,10 @@ human-chosen-passphrase fallback.
 `privacy_authorizer`, or `security_authorizer`. Shared types are
 `SecretMemoryCapability`, `ProviderAttemptAuthBinding`, `ProviderAuthTransportCallback`,
 `ProviderCredentialHandle`, `HumanAuthorizationProof`, `UserPresenceChallenge`,
-`UserPresenceAttestation`, `UserPresenceCapability`, and `UserPresencePort`. Strong OS presence is
+`UserPresenceAttestation`, `UserPresenceCapability`, `UserPresencePort`, and
+`UserPresenceError` (closed reasons `unavailable`, `cancelled`, `failed`, `timeout`; no OS text),
+plus the pure `presence_confirmation_code(target_digest)` (the first eight hex digits of a SHA-256
+target digest as `xxxx-xxxx`). Strong OS presence is
 exact action/generation-bound and capability-tested; TTY/same-UID/unlocked-session booleans are not
 implementations. Buffers are
 bounded mutable allocations with measured page-lock/no-core capability and best-effort overwrite;
@@ -3399,7 +3402,27 @@ latch. The proof is internal and never serialized. `UserPresencePort.consume` va
 invalidates an exact attestation/challenge and returns `None`; it cannot construct or return
 authority. `VaultService.mint_human_authorization` is the sole proof constructor for both a
 consumed exact OS-presence source and an admitted purpose-specific passphrase reauthentication
-source. `UnlockCoordinator` exclusively owns the durable passphrase throttle and calls the vault
+source; any failure of `UserPresencePort.consume` (foreign, replayed, mismatched or stale
+attestation) becomes `VaultError("human_authority_unavailable")` and mints nothing.
+
+The one production `UserPresencePort` is `MacOSLocalAuthenticationPresence`
+(`adapters/keys/macos_user_presence.py`, issue #1073). `select_service_user_presence(platform)`
+returns it for `darwin` and `None` for every other platform; the packaged daemon passes the same
+instance to `VaultService(user_presence_port=...)` and to
+`HumanControlService(user_presence=..., user_presence_scope=PresenceScope(purposes, vault_modes))`
+with `OWNER_VIEW_PRESENCE_PURPOSES = {"owner_receipt_view"}` and
+`OWNER_VIEW_PRESENCE_VAULT_MODES = {"os_keyring", "passphrase"}`. Outside its scope human control
+neither offers nor accepts `os_user_presence`, and keyring retry receives no capability. Its
+`assert_presence` runs `run_presence_helper(("/usr/bin/osascript", "-l", "JavaScript", "-",
+reason), program, {"LANG": "C", "LC_ALL": "C", "PATH": "/usr/bin:/bin"}, 75.0)` (no shell, `cwd="/"`,
+killed and reaped on deadline or cancellation); `reason` is fixed per purpose apart
+from the confirmation code. The helper's single stdout token (`approved`, `cancelled`, `failed`,
+`unavailable`, `timeout`, optionally newline-terminated, exit status 0) is parsed exactly; anything
+else is `unavailable`. `approved` yields an opaque, unpicklable attestation bound to the exact
+`UserPresenceChallenge`, consumed once within 30 seconds. Its `UserPresenceCapability` names
+`adapter_id="yoetz.presence.macos-local-authentication"`,
+`profile_id="device-owner-authentication/1"`, `release_cell="unqualified"`, and the helper digest
+as both evidence digests, so it never satisfies a runtime-support `user_presence_cells` row. `UnlockCoordinator` exclusively owns the durable passphrase throttle and calls the vault
 only after admission/reservation; `unlock_rate_limited` is therefore a coordinator outcome and not
 a `VaultError`.
 Every vault-opening completion additionally calls one injected async daemon activation callback
@@ -3481,6 +3504,14 @@ monotonic sample with the same floor rule.
 `owner_receipt_view`. `owner_receipt_view` opens directly at `AuthorizationRequiredPhase`
 (`privacy_reauthentication` purpose); on success its effect consumes the proof for the target
 digest and returns `OwnerReceiptViewResult(status="authorized", target_digest, grant_seconds=60)`.
+Its `available_sources` are `os_user_presence` when the composed presence provider is in scope and
+available (macOS), then `secret_reauthentication` in passphrase mode. Selecting
+`os_user_presence` starts the provider in the service; the human-control mutex is released while
+the dialog waits, a second action on that ceremony is `phase_invalid`, and `cancel`, `close` or a
+human-control peer that closes or cancels during the wait ends the dialog. The bounded YZH1 server
+error codes add `presence_refused` (cancelled, or the OS did not authenticate the person) and
+`presence_timeout` (no answer before the dialog deadline) beside `presence_unavailable`; the
+confidential client passes all three through to its caller.
 `CEREMONY_EXPIRY_SECONDS = 300` is the one YZH1/YZS1 challenge/binding expiry. It bounds a whole
 human ceremony, including the trip to a provider console to mint an API key, so it is a five-minute
 span rather than a keystroke timeout. While a `SecretRequiredPhase` is live, the human-control
@@ -10062,14 +10093,24 @@ for the one live connection the ceremony target names, consumes it only on a rec
 connection, and revokes it when the connection closes. The grant is one-use and expires after 60
 seconds. There is no standing grant, and the agent-attested consent lane cannot stand in for it.
 Anyone holding the terminal can type into the prompt, a pseudo-terminal included; the boundary is a
-passphrase or presence check the agent cannot pass. The packaged service has no operating-system
-presence adapter yet, so today only a passphrase vault can complete the ceremony. On an OS-keyring
-vault the request fails closed with `owner_view_unavailable`; a command with no foreground terminal
-to prompt on (for example a headless session) fails with `owner_view_requires_terminal`. Either way
-it shows nothing and points to the next step. Linux and WSL 2 use the same code but were not
-exercised for this change. A process running as the owner's account that can already read the vault
-passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for every
-passphrase reauthentication (ADR-008).
+passphrase or presence check the agent cannot pass. On macOS the packaged service composes one
+operating-system presence provider, Apple LocalAuthentication: the service itself raises a system
+dialog (Touch ID or the device password) whose text is fixed apart from a confirmation code the
+owner's own command also prints, and only its exact approval for that exact challenge becomes a
+one-use attestation the vault consumes. A client can name that source but can assert nothing. The
+provider serves only this ceremony, on either vault mode; a passphrase stays offered beside it, and
+the command asks for the passphrase once instead when no dialog can be shown here. A cancelled or
+failed dialog is `presence_refused` and an unanswered one is `presence_timeout` after 60 seconds;
+neither grants anything. Linux and WSL 2 compose no provider: there only a vault passphrase
+completes the ceremony, and a vault without one fails closed with `owner_view_unavailable`. A
+command with no foreground terminal to prompt on (for example a headless session) fails with
+`owner_view_requires_terminal`. Either way it shows nothing and points to the next step. Linux and
+WSL 2 use the same code but were not exercised for this change, and no real Touch ID prompt was
+exercised by automation (ADR-009 round 5). An agent that runs the command can make the dialog
+appear but cannot answer it, so approve it only when you asked for the full receipt yourself. A
+process running as the owner's account that can already read the vault passphrase (for example
+from an auto-unlock keyring entry) is outside this boundary, as for every passphrase
+reauthentication (ADR-008).
 
 The shared `Application.project_result_for_client` builds the name spans in
 `application/receipt_projection.py`: names come from every check recorded through the receipt's

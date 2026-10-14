@@ -37,6 +37,11 @@ from yoetz.adapters.keys.installation_recovery import (
     InstallationRecoveryMode,
     InstallationRecoverySecretKind,
 )
+from yoetz.adapters.keys.macos_user_presence import (
+    OWNER_VIEW_PRESENCE_PURPOSES,
+    OWNER_VIEW_PRESENCE_VAULT_MODES,
+    select_service_user_presence,
+)
 from yoetz.adapters.keys.os_keyring import AutoUnlockPassphraseStore
 from yoetz.adapters.keys.secret_memory import LocalSecretMemory
 from yoetz.adapters.keys.vault_passphrase import VaultRootEnvelope
@@ -187,6 +192,7 @@ from yoetz.service.confidential_protocol import (
     ProviderCredentialSetPreview,
     ProviderCredentialTarget,
     SecretRequiredPhase,
+    SelectAuthorizationSourceAction,
     ServerCloseEnvelope,
     ServerErrorEnvelope,
     ServerResultEnvelope,
@@ -213,7 +219,7 @@ from yoetz.service.control_protocol import (
     validate_result,
     write_control_frame,
 )
-from yoetz.service.human_control import HumanControlError, HumanControlService
+from yoetz.service.human_control import HumanControlError, HumanControlService, PresenceScope
 from yoetz.service.installation_recovery import (
     InstallationRecoverySetStore,
     PreparedInstallationSnapshot,
@@ -4416,7 +4422,13 @@ class _HumanConnectionServer:
                     if type(incoming) is ClientActionEnvelope:
                         ceremony_id = incoming.ceremony_id
                         error_step = incoming.step + 1
-                        response = await self._service.submit_action(incoming)
+                        if (
+                            type(incoming.action) is SelectAuthorizationSourceAction
+                            and incoming.action.source == "os_user_presence"
+                        ):
+                            response = await self._advance_presence_action(stream, incoming)
+                        else:
+                            response = await self._service.submit_action(incoming)
                     elif type(incoming) is ClientCancelEnvelope:
                         ceremony_id = incoming.ceremony_id
                         error_step = incoming.step + 1
@@ -4470,6 +4482,56 @@ class _HumanConnectionServer:
                 except Exception:
                     pass
             await stream.aclose()
+
+    async def _advance_presence_action(
+        self, stream: ControlStream, incoming: ClientActionEnvelope
+    ) -> object:
+        """Wait for the OS presence prompt or a human-control peer close/cancel.
+
+        The presence check runs in the service and can wait for a person for up to a minute.
+        A foreground ceremony client that closes or cancels meanwhile cancels the ceremony,
+        which stops the prompt, instead of leaving it up until it times out.
+        """
+
+        action = asyncio.create_task(self._service.submit_action(incoming))
+        peer_wait = asyncio.create_task(_read_human_envelope(stream))
+        try:
+            done, _pending = await asyncio.wait(
+                {action, peer_wait}, return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.CancelledError:
+            # The connection itself is being torn down: end the ceremony's wait (which stops
+            # the prompt) and the peer read rather than leaving either task behind.
+            for task in (action, peer_wait):
+                task.cancel()
+            raise
+        if action in done:
+            peer_wait.cancel()
+            try:
+                await peer_wait
+            except asyncio.CancelledError, Exception:
+                pass
+            return action.result()
+        peer: object | None = None
+        if not peer_wait.cancelled() and peer_wait.exception() is None:
+            peer = peer_wait.result()
+        try:
+            closed: object | None = await self._service.cancel(incoming.ceremony_id)
+        except HumanControlError:
+            closed = None  # the action finished (or failed) first; its outcome stands
+        try:
+            outcome = await action
+        except HumanControlError:
+            outcome = None
+        if type(peer) is ClientCancelEnvelope:
+            if closed is not None:
+                return closed
+            if outcome is not None:
+                return outcome
+            raise HumanControlError("cancelled")
+        if peer is None:
+            raise HumanControlError("cancelled")
+        raise HumanControlError("kind_forbidden")
 
     async def _advance_secret_phase(self, stream: ControlStream, ceremony_id: str) -> object:
         """Wait for YZS1 or a human-control peer close/cancel, never only the secret socket."""
@@ -4575,6 +4637,9 @@ async def _production_composition(
         _discard_orphan_vault_rotation_stages(paths.bundle)
         secret_memory = LocalSecretMemory()
         mode = VaultMode.UNINITIALIZED if marker is None else marker.vault_mode
+        # One service-side OS presence provider (macOS LocalAuthentication) or none. The vault
+        # consumes exactly the attestations the human-control ceremony obtained from it.
+        user_presence = select_service_user_presence()
         vault = VaultService(
             installation_id=installation_id,
             service_generation=instance.generation,
@@ -4583,7 +4648,7 @@ async def _production_composition(
             clock=clock,
             vault_store_factory=lambda: EncryptedVaultStore(paths.bundle / "vault"),
             root_envelope=None if marker is None else marker.root_envelope,
-            user_presence_port=None,
+            user_presence_port=user_presence,
             runtime_support={},
             pristine_state_digest=(
                 canonical_digest({"installation_id": installation_id, "state": "pristine"})
@@ -4714,7 +4779,13 @@ async def _production_composition(
                 observation_gate,
                 owner_view_grants,
             ),
-            user_presence=None,
+            user_presence=user_presence,
+            # Scoped to the owner's receipt view (ADR-009, ADR-016 decision 4): presence never
+            # stands in for another reauthentication, for keyring retry, or for keyring
+            # first-install, which still needs a qualified runtime-support presence cell.
+            user_presence_scope=PresenceScope(
+                OWNER_VIEW_PRESENCE_PURPOSES, OWNER_VIEW_PRESENCE_VAULT_MODES
+            ),
         )
         return ServiceComposition(
             lifecycle=lifecycle,
@@ -4921,6 +4992,8 @@ def _human_error_code(exc: Exception) -> str:
             "pending_unavailable",
             "kind_forbidden",
             "phase_invalid",
+            "presence_refused",
+            "presence_timeout",
             "presence_unavailable",
             "reauthentication_unavailable",
             "replay",

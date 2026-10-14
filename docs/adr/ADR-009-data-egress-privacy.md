@@ -240,15 +240,78 @@ case → single-use authorization → bounded gateway → bound sink/provider �
    call on that connection, and revokes it when the connection closes. The grant is one-use and
    expires after 60 seconds. There is no standing grant, and the agent-attested consent lane cannot
    stand in for it. Anyone holding the terminal can type into the prompt, a pseudo-terminal
-   included; the boundary is a passphrase or presence check the agent cannot pass. The packaged
-   service has no operating-system presence adapter yet, so today only a passphrase vault can
-   complete the ceremony. On an OS-keyring vault the request fails closed with
-   `owner_view_unavailable`; a command with no foreground terminal to prompt on (for example a
-   headless session) fails with `owner_view_requires_terminal`. Either way it shows nothing and
-   points to the next step. Linux and WSL 2 use the same code but were not exercised for this
-   change. A process running as the owner's account that can already read the vault passphrase (for
-   example from an auto-unlock keyring entry) is outside this boundary, as for every passphrase
-   reauthentication (ADR-008).
+   included; the boundary is a passphrase or presence check the agent cannot pass. On macOS the
+   packaged service composes one operating-system presence provider, Apple LocalAuthentication
+   (Touch ID or the device password), scoped to this ceremony (round 5 below). Linux and WSL 2
+   compose none: there only a vault passphrase completes the ceremony, and a vault without one
+   fails closed with `owner_view_unavailable`. A command with no foreground terminal to prompt on
+   (for example a headless session) fails with `owner_view_requires_terminal`. Either way it shows
+   nothing and points to the next step. Linux and WSL 2 use the same code but were not exercised
+   for this change. A process running as the owner's account that can already read the vault
+   passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for
+   every passphrase reauthentication (ADR-008).
+
+   **Amended 2026-10-14 (round 5, owner decision on issue #1073: Touch ID before release).** The
+   owner asked for an operating-system presence path on the existing reauthentication so a
+   system-keychain installation can open its full receipt. Setup's system-keychain choice creates
+   a passphrase vault whose passphrase is generated and kept in the Keychain for auto-unlock, so
+   its owner never learned it and could not answer the passphrase prompt.
+
+   - *Where the check runs.* The service process runs it, never a client. A client's
+     `SelectAuthorizationSourceAction` names `os_user_presence` and carries nothing else; the
+     human-control service then binds a fresh reauthentication challenge and asks its composed
+     `UserPresencePort`. Only the provider's own one-use attestation for that exact challenge
+     reaches the vault, which mints the proof the owner-view effect consumes. A TTY, a
+     pseudo-terminal, a client kind or a hello field still grants nothing.
+   - *The macOS provider* (`MacOSLocalAuthenticationPresence`) starts the SIP-protected
+     `/usr/bin/osascript -l JavaScript` with a fixed program on stdin, no shell, a three-variable
+     environment and working directory `/`. The program creates a fresh
+     `LAContext` with authentication reuse disabled and evaluates
+     `LAPolicyDeviceOwnerAuthentication`. The dialog text is fixed per purpose; its only variable
+     part is a confirmation code (the first eight hex digits of the service-computed target
+     digest), which the owner's own command prints too, so nothing user-controlled reaches the
+     dialog. The program's own deadline is 60 seconds; the service kills and reaps it at 75
+     seconds, or at once when the ceremony is cancelled, its client disappears, or the service
+     stops. Only the exact token `approved` yields an attestation, held in service memory, bound
+     to the exact challenge and consumed once within 30 seconds. Every other result is typed:
+     `unavailable` (no dialog can be shown: not macOS, no LocalAuthentication, no desktop session,
+     or a nonzero, garbled or unknown helper result) becomes `presence_unavailable`;
+     `cancelled` or `failed` becomes `presence_refused`; `timeout` becomes `presence_timeout`.
+     None of them carries operating-system text, and none grants anything.
+   - *Scope.* The provider prompts only for `owner_receipt_view`, and the service offers it
+     (`PresenceScope`) only for that purpose on a ready vault of either mode. It does not stand
+     in for provider credentials, privacy widening, idle relock, installation recovery,
+     passphrase rotation or keyring retry. Keyring first-install still needs a qualified
+     `user_presence_cells` row; this provider's capability names the release cell
+     `unqualified` and never matches one.
+   - *Passphrase vaults.* A passphrase stays offered beside the dialog. The command asks for the
+     dialog first; when the service reports that no dialog can be shown here
+     (`presence_unavailable`) and the vault offered its passphrase, it asks once for the
+     passphrase in a fresh ceremony. A cancelled, failed or unanswered dialog is not retried.
+     Offering presence beside an owner-chosen passphrase adds no secret an agent can learn; its
+     cost is the residual risk below.
+   - *No held lock.* The ceremony releases the human-control mutex while the dialog waits, as it
+     already does while a secret is entered, so `cancel`, `service stop` and a disappearing
+     ceremony client end the dialog at once instead of waiting out its deadline. One prompt runs
+     at a time, and a second action on the same ceremony is refused while it is up.
+   - *Why a helper process, not ctypes.* The same Apple executable and program shape already
+     serve the `plugin_artifact_apply` cell (ADR-016, issue #409), so this adds no dependency and
+     no new native surface. ctypes against `libobjc` and LocalAuthentication would need a
+     hand-built Objective-C reply block running native code inside the long-lived service, and a
+     wedged prompt could not be killed without killing the service; a child process can.
+   - *Residual risks, stated.* An agent that can run the command can make the dialog appear but
+     cannot answer it: that takes the owner's fingerprint or device password. An owner who
+     approves a dialog they did not ask for gives that command the view, so the dialog says what
+     it shows, shows the code the owner's own terminal prints, and says to cancel unless they just
+     asked. The dialog appears in the desktop session the service runs in; a service started
+     outside one (for example over SSH) is expected to report that no dialog can be shown.
+     Same-account code tampering with the installed runtime is outside this boundary, as for
+     every presence and passphrase check (ADR-008).
+   - *Evidence.* Unit and integration tests drive the real adapter, scope, ceremony, vault proof
+     and daemon handler with a stub helper. No real Touch ID prompt was exercised by automation;
+     the manual check on a real Mac is in the test-instance runbook (*Owner view with Touch ID:
+     manual check on a real Mac*) and has not been run yet. An independent reviewer checks this
+     round in place of the Codex check the owner asked for, which this environment cannot run.
 
 4. **Data classes:** structural public data, ordinary task/user content, sensitive/confidential
    content, and secrets/cryptographic material are distinct. Classification combines source-owned

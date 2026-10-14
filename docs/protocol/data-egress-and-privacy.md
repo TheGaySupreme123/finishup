@@ -361,11 +361,21 @@ for the one live connection the ceremony target names, consumes it only on a rec
 connection, and revokes it when the connection closes. The grant is one-use and expires after 60
 seconds. There is no standing grant, and the agent-attested consent lane cannot stand in for it.
 Anyone holding the terminal can type into the prompt, a pseudo-terminal included; the boundary is a
-passphrase or presence check the agent cannot pass. The packaged service has no operating-system
-presence adapter yet, so today only a passphrase vault can complete the ceremony. On an OS-keyring
-vault the request fails closed with `owner_view_unavailable`; a command with no foreground terminal
-to prompt on (for example a headless session) fails with `owner_view_requires_terminal`. Either way
-it shows nothing and points to the next step. Linux and WSL 2 use the same code but were not
-exercised for this change. A process running as the owner's account that can already read the vault
-passphrase (for example from an auto-unlock keyring entry) is outside this boundary, as for every
-passphrase reauthentication (ADR-008).
+passphrase or presence check the agent cannot pass. On macOS the packaged service composes one
+operating-system presence provider, Apple LocalAuthentication: the service itself raises a system
+dialog (Touch ID or the device password) whose text is fixed apart from a confirmation code the
+owner's own command also prints, and only its exact approval for that exact challenge becomes a
+one-use attestation the vault consumes. A client can name that source but can assert nothing. The
+provider serves only this ceremony, on either vault mode; a passphrase stays offered beside it, and
+the command asks for the passphrase once instead when no dialog can be shown here. A cancelled or
+failed dialog is `presence_refused` and an unanswered one is `presence_timeout` after 60 seconds;
+neither grants anything. Linux and WSL 2 compose no provider: there only a vault passphrase
+completes the ceremony, and a vault without one fails closed with `owner_view_unavailable`. A
+command with no foreground terminal to prompt on (for example a headless session) fails with
+`owner_view_requires_terminal`. Either way it shows nothing and points to the next step. Linux and
+WSL 2 use the same code but were not exercised for this change, and no real Touch ID prompt was
+exercised by automation (ADR-009 round 5). An agent that runs the command can make the dialog
+appear but cannot answer it, so approve it only when you asked for the full receipt yourself. A
+process running as the owner's account that can already read the vault passphrase (for example
+from an auto-unlock keyring entry) is outside this boundary, as for every passphrase
+reauthentication (ADR-008).

@@ -123,6 +123,8 @@ _ERROR_REASONS: Final = frozenset(
         "peer_untrusted",
         "pending_not_actionable",
         "pending_unavailable",
+        "presence_refused",
+        "presence_timeout",
         "presence_unavailable",
         "protocol_error",
         "reauthentication_unavailable",
@@ -149,6 +151,10 @@ _PASS_THROUGH_SERVER_CODES: Final = frozenset(
         # No way to confirm the owner on this installation (no OS presence, no passphrase
         # vault): the caller needs the typed reason to say so, not a transport failure.
         "presence_unavailable",
+        # The OS presence prompt was cancelled, failed, or timed out: a refusal the owner can
+        # retry, not a transport failure.
+        "presence_refused",
+        "presence_timeout",
         "reauthentication_unavailable",
         "state_forbidden",
         "target_invalid",

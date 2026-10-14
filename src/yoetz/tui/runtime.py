@@ -2133,9 +2133,15 @@ class YoetzRuntime:
             if reason in {"presence_unavailable", "reauthentication_unavailable"}:
                 raise RuntimeError_(
                     "owner_view_unavailable",
-                    "Yoetz cannot confirm it is you on this installation (no OS presence "
-                    "check, no vault passphrase), so the full receipt stays closed; the "
-                    "ordinary receipt is unchanged",
+                    "Yoetz cannot confirm it is you on this installation (no vault passphrase, "
+                    "and no Touch ID or login-password dialog could be shown), so the full "
+                    "receipt stays closed; the ordinary receipt is unchanged",
+                ) from error
+            if reason in {"presence_refused", "presence_timeout"}:
+                raise RuntimeError_(
+                    "owner_view_refused",
+                    "the system confirmation was cancelled, did not confirm it is you, or was "
+                    "not answered in time; nothing was shown",
                 ) from error
             raise RuntimeError_(reason, "the full receipt was not authorized") from error
 

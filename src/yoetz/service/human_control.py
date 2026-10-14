@@ -14,6 +14,8 @@ from yoetz.ports.secret_memory import (
     SecretConsumer,
     SecretHandle,
     SecretPurpose,
+    UserPresenceAttestation,
+    UserPresenceError,
     UserPresencePort,
 )
 from yoetz.service.confidential_protocol import (
@@ -58,7 +60,7 @@ from yoetz.service.confidential_protocol import (
 )
 from yoetz.service.unlock import UnlockChallenge, UnlockCoordinator, UnlockError
 
-__all__ = ["HumanControlError", "HumanControlService"]
+__all__ = ["HumanControlError", "HumanControlService", "PresenceScope"]
 
 _HUMAN_CONTROL_REASONS: Final = frozenset(
     {
@@ -71,6 +73,10 @@ _HUMAN_CONTROL_REASONS: Final = frozenset(
         "pending_not_actionable",
         "pending_unavailable",
         "phase_invalid",
+        # OS presence outcomes (ADR-016 decision 4): no prompt could be shown here; the person
+        # or the system cancelled it or the OS did not authenticate them; nobody answered it.
+        "presence_refused",
+        "presence_timeout",
         "presence_unavailable",
         "reauthentication_unavailable",
         "replay",
@@ -80,6 +86,34 @@ _HUMAN_CONTROL_REASONS: Final = frozenset(
         "target_invalid",
     }
 )
+
+
+_PRESENCE_ERROR_CODES: Final = {
+    "unavailable": "presence_unavailable",
+    "cancelled": "presence_refused",
+    "failed": "presence_refused",
+    "timeout": "presence_timeout",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class PresenceScope:
+    """Where a composed OS presence provider may stand in for reauthentication.
+
+    ``purposes`` are reauthentication purposes (``owner_receipt_view``...), and ``vault_modes``
+    the vault modes on which the service offers presence for them. Outside the scope the service
+    neither offers nor accepts ``os_user_presence``, whatever a client selects.
+    """
+
+    purposes: frozenset[str]
+    vault_modes: frozenset[str]
+
+    def __post_init__(self) -> None:
+        for values in (self.purposes, self.vault_modes):
+            if type(values) is not frozenset or not values:
+                raise ValueError("presence_scope_invalid")
+            if any(type(value) is not str or not value for value in values):
+                raise ValueError("presence_scope_invalid")
 
 
 class HumanControlError(Exception):
@@ -219,6 +253,7 @@ class _Ceremony:
     secret_binding: SecretIngressBinding | None = None
     secret_task: Task[SecretHandle] | None = None
     proof: HumanAuthorizationProof | None = None
+    presence_task: Task[UserPresenceAttestation] | None = None
     approved: bool = False
     installation_recovery_secret: SecretHandle | None = None
     installation_recovery_continuation: str | None = None
@@ -237,6 +272,7 @@ class HumanControlService:
         secret_ingress: _SecretIngress,
         effects: _HumanEffects,
         user_presence: UserPresencePort | None,
+        user_presence_scope: PresenceScope | None = None,
     ) -> None:
         self._clock = clock
         self._lifecycle = lifecycle
@@ -245,6 +281,9 @@ class HumanControlService:
         self._secret_ingress = secret_ingress
         self._effects = effects
         self._user_presence = user_presence
+        # None keeps an injected provider unrestricted (test doubles); the packaged daemon always
+        # composes its provider with an explicit scope.
+        self._user_presence_scope = user_presence_scope
         self._active: _Ceremony | None = None
         self._closed = False
         self._mutex = Lock()
@@ -318,7 +357,7 @@ class HumanControlService:
                     presence = self._user_presence
                     capability = (
                         presence.capability()
-                        if presence is not None and self._presence_available()
+                        if presence is not None and self._presence_available(None)
                         else None
                     )
                     result = await self._unlock.retry_keyring(capability)
@@ -333,17 +372,24 @@ class HumanControlService:
                     if type(envelope.action) is not DecisionAction:
                         raise HumanControlError("phase_invalid")
                     return await self._handle_decision(session, envelope.action)
-                if type(session.phase) is AuthorizationRequiredPhase:
-                    if type(envelope.action) is not SelectAuthorizationSourceAction:
-                        raise HumanControlError("phase_invalid")
-                    return await self._select_authorization(session, envelope.action)
-                raise HumanControlError("phase_invalid")
+                if type(session.phase) is not AuthorizationRequiredPhase:
+                    raise HumanControlError("phase_invalid")
+                if type(envelope.action) is not SelectAuthorizationSourceAction:
+                    raise HumanControlError("phase_invalid")
+                if envelope.action.source == "secret_reauthentication":
+                    return await self._select_secret_authorization(session)
+                # The client only names the source it asks for; the presence check itself runs
+                # here, in the service, through the composed provider (ADR-016 decision 4).
+                presence_task = await self._begin_presence(session)
             except HumanControlError:
                 await self._consume_failed(session)
                 raise
             except (UnlockError, TypeError, ValueError) as exc:
                 await self._consume_failed(session)
                 raise HumanControlError(self._map_error(exc)) from exc
+        # Do not hold the ceremony mutex while the OS prompt waits for the person: cancel(),
+        # close() and a peer that disappears must be able to end it at once.
+        return await self._complete_presence(session, presence_task)
 
     async def secret_completed(
         self, ceremony_id: str
@@ -597,7 +643,7 @@ class HumanControlService:
             )
             return self._secret_phase(session, ConfidentialSecretPurpose.VAULT_UNLOCK)
         if kind is HumanCeremonyKind.VAULT_PASSPHRASE_ROTATE:
-            return self._authorization_phase()
+            return self._authorization_phase(kind)
         if kind is HumanCeremonyKind.KEYRING_RETRY:
             return KeyringRetryPhase()
         if kind is HumanCeremonyKind.PORTABLE_RECOVERY:
@@ -617,7 +663,7 @@ class HumanControlService:
             # reauthentication itself (ADR-009 round 3, ADR-016 decision 4).
             HumanCeremonyKind.OWNER_RECEIPT_VIEW,
         }:
-            return self._authorization_phase()
+            return self._authorization_phase(kind)
         if kind in {
             HumanCeremonyKind.PRIVACY_POLICY_DECISION,
             HumanCeremonyKind.PRIVACY_DISCLOSURE_DECISION,
@@ -654,7 +700,7 @@ class HumanControlService:
                     ),
                 )
             session.approved = True
-            session.phase = self._authorization_phase()
+            session.phase = self._authorization_phase(kind)
             return self._phase(session)
         if kind is HumanCeremonyKind.PRIVACY_POLICY_DECISION:
             target = cast(PrivacyPendingTarget, session.request.target)
@@ -677,11 +723,11 @@ class HumanControlService:
         else:
             raise HumanControlError("phase_invalid")
         session.approved = True
-        session.phase = self._authorization_phase()
+        session.phase = self._authorization_phase(kind)
         return self._phase(session)
 
-    async def _select_authorization(
-        self, session: _Ceremony, action: SelectAuthorizationSourceAction
+    async def _select_secret_authorization(
+        self, session: _Ceremony
     ) -> ServerPhaseEnvelope | ServerResultEnvelope:
         purpose, secret_purpose = self._authorization_purpose(session.request.ceremony_kind)
         session.unlock_challenge = await self._unlock.begin_reauthentication(
@@ -690,20 +736,65 @@ class HumanControlService:
             secret_purpose=secret_purpose,
             policy_generation=session.binding.policy_generation,
         )
-        if action.source == "secret_reauthentication":
-            if self._vault_mode() != "passphrase":
-                raise HumanControlError("reauthentication_unavailable")
-            return self._advance_to_secret(
-                session, self._wire_reauthentication_purpose(secret_purpose)
-            )
+        if self._vault_mode() != "passphrase":
+            raise HumanControlError("reauthentication_unavailable")
+        return self._advance_to_secret(session, self._wire_reauthentication_purpose(secret_purpose))
+
+    async def _begin_presence(self, session: _Ceremony) -> Task[UserPresenceAttestation]:
+        """Bind one exact presence challenge and start the provider's prompt (mutex held)."""
+
+        purpose, secret_purpose = self._authorization_purpose(session.request.ceremony_kind)
         presence = self._user_presence
-        if presence is None or not self._presence_available():
+        if presence is None or not self._presence_available(purpose):
             raise HumanControlError("presence_unavailable")
-        challenge = self._require_unlock_challenge(session)
-        attestation = await presence.assert_presence(
-            self._unlock.user_presence_challenge(challenge)
+        session.unlock_challenge = await self._unlock.begin_reauthentication(
+            purpose=purpose,
+            target_digest=session.binding.target_digest,
+            secret_purpose=secret_purpose,
+            policy_generation=session.binding.policy_generation,
         )
-        session.proof = await self._unlock.complete_reauthentication(challenge, attestation)
+        challenge = self._unlock.user_presence_challenge(self._require_unlock_challenge(session))
+        task = create_task(presence.assert_presence(challenge))
+        session.presence_task = task
+        return task
+
+    async def _complete_presence(
+        self, session: _Ceremony, task: Task[UserPresenceAttestation]
+    ) -> ServerPhaseEnvelope | ServerResultEnvelope:
+        try:
+            await wait({task})
+        except CancelledError:
+            async with self._mutex:
+                if self._active is session:
+                    await self._consume_failed(session)
+            raise
+        async with self._mutex:
+            if self._active is not session or session.presence_task is not task:
+                if not task.cancelled():
+                    task.exception()  # retrieved: the ceremony already ended elsewhere
+                raise HumanControlError("cancelled")
+            session.presence_task = None
+            try:
+                if task.cancelled():
+                    raise HumanControlError("cancelled")
+                failure = task.exception()
+                if failure is not None:
+                    raise HumanControlError(self._map_presence_error(failure)) from failure
+                attestation = task.result()
+                self._check_live(session)
+                challenge = self._require_unlock_challenge(session)
+                session.proof = await self._unlock.complete_reauthentication(challenge, attestation)
+                return await self._after_authorization(session)
+            except HumanControlError:
+                await self._consume_failed(session)
+                raise
+            except (UnlockError, TypeError, ValueError) as exc:
+                await self._consume_failed(session)
+                raise HumanControlError(self._map_error(exc)) from exc
+
+    async def _after_authorization(
+        self, session: _Ceremony
+    ) -> ServerPhaseEnvelope | ServerResultEnvelope:
         if session.request.ceremony_kind in {
             HumanCeremonyKind.PROVIDER_CREDENTIAL_SET,
             HumanCeremonyKind.PROVIDER_CREDENTIAL_ROTATE,
@@ -752,9 +843,10 @@ class HumanControlService:
             else self._finish(session, result)
         )
 
-    def _authorization_phase(self) -> AuthorizationRequiredPhase:
+    def _authorization_phase(self, kind: HumanCeremonyKind) -> AuthorizationRequiredPhase:
+        purpose, _ = self._authorization_purpose(kind)
         sources: list[Literal["os_user_presence", "secret_reauthentication"]] = []
-        if self._presence_available():
+        if self._presence_available(purpose):
             sources.append("os_user_presence")
         if self._vault_mode() == "passphrase":
             sources.append("secret_reauthentication")
@@ -832,6 +924,10 @@ class HumanControlService:
 
     def _require_action(self, envelope: ClientActionEnvelope) -> _Ceremony:
         session = self._require_session(envelope.ceremony_id)
+        if session.presence_task is not None:
+            # One OS prompt is in flight for this ceremony; nothing else may act on it until
+            # the prompt ends or the ceremony is cancelled.
+            raise HumanControlError("phase_invalid")
         if envelope.step != session.next_step:
             raise HumanControlError("replay")
         self._check_live(session)
@@ -866,6 +962,11 @@ class HumanControlService:
         session.secret_task = None
         if secret_task is not None and not secret_task.done():
             secret_task.cancel()
+        presence_task = session.presence_task
+        session.presence_task = None
+        if presence_task is not None and not presence_task.done():
+            # Cancelling the provider's task stops its OS prompt (the helper is killed).
+            presence_task.cancel()
         await self._secret_ingress.cancel_pending()
         await self._unlock.cancel()
         if type(session.request.target) is InstallationRecoveryTarget:
@@ -898,9 +999,18 @@ class HumanControlService:
         session.proof = None
         self._active = None
 
-    def _presence_available(self) -> bool:
+    def _presence_available(self, purpose: str | None) -> bool:
+        """Whether OS presence may stand in for ``purpose`` (None: an unscoped use)."""
+
         port = self._user_presence
         if port is None:
+            return False
+        scope = self._user_presence_scope
+        if scope is not None and (
+            purpose is None
+            or purpose not in scope.purposes
+            or self._vault_mode() not in scope.vault_modes
+        ):
             return False
         try:
             capability = port.capability()
@@ -984,6 +1094,12 @@ class HumanControlService:
             return mapping[purpose]
         except KeyError as exc:
             raise HumanControlError("phase_invalid") from exc
+
+    @staticmethod
+    def _map_presence_error(exc: BaseException) -> str:
+        if type(exc) is UserPresenceError:
+            return _PRESENCE_ERROR_CODES.get(exc.reason, "internal_error")
+        return "internal_error"
 
     @staticmethod
     def _map_error(exc: Exception) -> str:

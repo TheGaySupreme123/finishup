@@ -2121,6 +2121,18 @@ withholds become `(receipt prose withheld: repository_excerpt)`, including `./` 
 spellings (quoted when a directory has spaces), and an exact name the requesting writer published itself returns. Large receipts stay
 valid: omission lists coalesce and an over-long field is cut visibly. The owner's full receipt is
 `yoetz receipt --owner-view` (or *Your full receipt* in the terminal interface), which needs the
-`owner_receipt_view` reauthentication; the packaged service supports it only on a passphrase vault
-and fails closed elsewhere. Verified by in-process tests on macOS, including a real pseudo-terminal;
-Linux and Windows through WSL 2 run the same service code but were not exercised for this change.
+`owner_receipt_view` reauthentication. Verified by in-process tests on macOS, including a real
+pseudo-terminal; Linux and Windows through WSL 2 run the same service code but were not exercised
+for this change.
+
+Owner-view presence decision for Cursor (#1073): same path as every host, because the owner view is
+a CLI and terminal-interface flow, never an MCP tool or hook. On macOS the service itself raises a
+LocalAuthentication dialog (Touch ID or the login password) showing the confirmation code the
+command prints, on either vault mode, including setup's system-keychain choice; a vault passphrase
+you chose stays offered and is asked for once when no dialog can be shown. On Linux and WSL 2 there
+is no presence provider: only a vault passphrase completes it, and a vault without one fails closed
+with `owner_view_unavailable`. When Cursor runs the command through its agent terminal, the dialog still
+appears on the owner's screen and the agent cannot answer it; a cancelled dialog is
+`owner_view_refused` and shows nothing. The dialog itself is covered only by stub-helper tests until
+the manual check in [test-instances.md](test-instances.md#owner-view-with-touch-id-manual-check-on-a-real-mac-1073)
+runs on a real Mac.

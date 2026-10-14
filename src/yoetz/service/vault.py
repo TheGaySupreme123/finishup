@@ -1271,7 +1271,12 @@ class VaultService:
                 presence = self._user_presence_port
                 if presence is None:
                     raise VaultError("human_authority_unavailable")
-                presence.consume(cast(UserPresenceAttestation, source), challenge)
+                try:
+                    presence.consume(cast(UserPresenceAttestation, source), challenge)
+                except Exception as exc:
+                    # A foreign, replayed, mismatched or stale attestation mints nothing; the
+                    # adapter's own reason stays internal.
+                    raise VaultError("human_authority_unavailable") from exc
             return HumanAuthorizationProof(
                 proof_id=f"proof_{os.urandom(16).hex()}",
                 purpose=challenge.purpose,
