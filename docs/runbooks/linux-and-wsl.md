@@ -185,7 +185,8 @@ Serving processes (`service run`, `mcp serve`, every hook, `upgrade`) run from a
 read-only copy of the installation (ADR-007). That copy ships unchecked-hash bytecode for every
 module, so a start costs what an ordinary run costs. Building the copy reuses the installation's
 own bytecode only when it is hash-based and matches the source. `npx yoetz` and
-`yoetz upgrade --accept` install that way (they set `SOURCE_DATE_EPOCH` for uv); after a plain
+`yoetz upgrade --accept` install that way (they set `SOURCE_DATE_EPOCH` for the uv install and
+the build backends it runs for any sdist dependency, nothing else); after a plain
 `uv tool install --compile-bytecode`, which writes timestamp bytecode, the first serving start
 compiles the package once (roughly 2-3 times as long on an M-series Mac, longer on WSL under
 nested virtualization). To get the faster first start from a manual install, run it as

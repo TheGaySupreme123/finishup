@@ -318,6 +318,9 @@ def test_start_timeout_and_a_starting_holder_name_the_slow_start(
     assert code == 20
     assert printed[0].startswith("service_unavailable: service_handshake_timeout: ")
     assert "under your selected user supervisor" not in printed[0]
+    # The one-time compile covers timestamp bytecode too, not only an install without bytecode.
+    assert "expected, not a failure" in printed[0]
+    assert "no reusable hash-verified bytecode" in printed[0]
     assert json.loads(json.dumps(payloads[0]))["reason"] == "service_handshake_timeout"
 
     # Nothing accepted yet, but a live process stamped the singleton: still starting.

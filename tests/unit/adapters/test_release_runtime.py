@@ -604,6 +604,28 @@ def test_untrustworthy_installed_bytecode_is_compiled_instead(
         assert _sealed_value(target) == "changed dependency"
 
 
+@pytest.mark.parametrize("payload", ["header_only", "invalid_marshal", "not_code"])
+def test_matching_header_without_valid_code_is_compiled_instead(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, payload: str
+) -> None:
+    """A matching source hash is freshness evidence for the header, not for the payload."""
+
+    import marshal
+
+    installed = _installed_pyc(prefix, "checked-hash")
+    header = installed.read_bytes()[:16]
+    body = {
+        "header_only": b"",
+        "invalid_marshal": b"\xff\x00garbage",
+        "not_code": marshal.dumps(42),
+    }
+    installed.write_bytes(header + body[payload])
+    compiled = _spy_compiles(monkeypatch)
+    target = runtimes.prepare_release_runtime(prefix)
+    assert "lazy.py" in compiled
+    assert _sealed_value(target) == "old dependency"
+
+
 def test_generation_from_an_earlier_layout_is_never_reused(
     prefix: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -689,3 +711,73 @@ def test_hash_bytecode_environment_keeps_an_explicit_epoch() -> None:
     }
     kept = runtimes.hash_bytecode_environment({"SOURCE_DATE_EPOCH": "1700000000"})
     assert kept == {"SOURCE_DATE_EPOCH": "1700000000"}
+
+
+_PROBE_BACKEND = """
+import base64, hashlib, os, zipfile
+
+def _write(directory, epoch):
+    name = "epochprobe-1.0-py3-none-any.whl"
+    files = {
+        "epochprobe_mod.py": ("EPOCH = %r\\n" % epoch).encode(),
+        "epochprobe-1.0.dist-info/METADATA": b"Metadata-Version: 2.1\\nName: epochprobe\\nVersion: 1.0\\n",
+        "epochprobe-1.0.dist-info/WHEEL": b"Wheel-Version: 1.0\\nGenerator: t\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n",
+    }
+    record = []
+    for path, data in files.items():
+        digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+        record.append("%s,sha256=%s,%d" % (path, digest, len(data)))
+    record.append("epochprobe-1.0.dist-info/RECORD,,")
+    with zipfile.ZipFile(os.path.join(directory, name), "w") as archive:
+        for path, data in files.items():
+            archive.writestr(path, data)
+        archive.writestr("epochprobe-1.0.dist-info/RECORD", "\\n".join(record) + "\\n")
+    return name
+
+def get_requires_for_build_wheel(config_settings=None):
+    return []
+
+def build_wheel(wheel_directory, config_settings=None, metadata_directory=None):
+    return _write(wheel_directory, os.environ.get("SOURCE_DATE_EPOCH"))
+"""
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is the supported installer")
+@pytest.mark.parametrize("owned", [True, False])
+def test_install_epoch_reaches_only_the_install_and_its_build_backends(
+    prefix: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, owned: bool
+) -> None:
+    """The owned epoch is scoped to the install child, which includes an sdist's backend.
+
+    ADR-007 documents this: a dependency built from source sees the epoch, unlike a plain
+    install; nothing outside the install child does.
+    """
+
+    import subprocess
+
+    monkeypatch.delenv("SOURCE_DATE_EPOCH", raising=False)
+    project = tmp_path / "epochprobe"
+    project.mkdir()
+    (project / "backend.py").write_text(_PROBE_BACKEND)
+    (project / "pyproject.toml").write_text(
+        '[build-system]\nrequires = []\nbuild-backend = "backend"\nbackend-path = ["."]\n'
+        '[project]\nname = "epochprobe"\nversion = "1.0"\n'
+    )
+    site = tmp_path / "site"
+    environment = runtimes.hash_bytecode_environment(os.environ) if owned else dict(os.environ)
+    subprocess.run(
+        [
+            "uv", "pip", "install", "--offline", "--no-deps", "--no-cache", "--compile-bytecode",
+            "--python", sys.executable, "--target", str(site), str(project),
+        ],
+        env=environment,
+        umask=0o022,
+        check=True,
+        capture_output=True,
+        timeout=120,
+    )  # fmt: skip
+    expected = runtimes.HASH_BYTECODE_EPOCH if owned else None
+    assert (site / "epochprobe_mod.py").read_text() == f"EPOCH = {expected!r}\n"
+    pyc = site / "__pycache__" / f"epochprobe_mod.{_TAG}.pyc"
+    assert int.from_bytes(pyc.read_bytes()[4:8], "little") == (0b11 if owned else 0)
+    assert "SOURCE_DATE_EPOCH" not in os.environ

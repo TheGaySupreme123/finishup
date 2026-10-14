@@ -1900,8 +1900,9 @@ def _control_error_result(
                     "The local Yoetz service is still starting and did not answer in time "
                     "(service_handshake_timeout). This is expected, not a failure: the first "
                     "start after an install or update prepares Yoetz's retained copy and "
-                    "compiles it once when the install did not, and slow machines such as WSL "
-                    "under nested virtualization take longer. "
+                    "compiles it once when the installation has no reusable hash-verified "
+                    "bytecode (as after a plain 'uv tool install'), and slow machines such as "
+                    "WSL under nested virtualization take longer. "
                     "Wait a few seconds, then retry this operation with the same request_id. "
                     "Do not run service lifecycle commands for this."
                 ),

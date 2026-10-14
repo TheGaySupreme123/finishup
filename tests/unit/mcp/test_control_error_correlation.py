@@ -519,6 +519,7 @@ def test_start_timeout_names_a_slow_start_not_a_supervisor_or_lifecycle_command(
     assert "service_handshake_timeout" in message
     assert "under your selected user supervisor" not in message
     assert "same request_id" in message
+    assert "no reusable hash-verified bytecode" in message
     details = cast(dict[str, object], error["safe_details"])
     assert details == {"reason_code": "service_unavailable", "phase": "handshake_timeout"}
     found = lookup_diagnostic_records(cast(str, error["correlation_id"]), root=diagnostic_root)

@@ -252,8 +252,9 @@ the five-second handshake and services the restart budget.
    `sys.pycache_prefix`). Unchecked hashes never consult the source mtimes the copy does not
    keep, and an immutable generation cannot make them stale. Hash-based bytecode the
    installation already holds (checked or unchecked) is reused when its embedded source hash
-   matches the copied source and no other account can write it or its directory; only the flags
-   are rewritten. Timestamp bytecode is never reused: its header proves only a whole-second mtime
+   matches the copied source, its payload unmarshals to a code object (a truncated or corrupt
+   cache is compiled instead; the hash vouches for freshness, not for the payload) and no other
+   account can write it or its directory; only the flags are rewritten. Timestamp bytecode is never reused: its header proves only a whole-second mtime
    and a size, which an edit within the same second at equal length keeps, so reusing it could
    seal stale code. Anything else is compiled with the generation's own file names. A module
    this interpreter cannot compile still compiles at import. Pycs are sealed `0400` in `0500` directories like every other member.
@@ -265,7 +266,11 @@ the five-second handshake and services the restart budget.
    writes timestamp bytecode unless `SOURCE_DATE_EPOCH` is set, so the paths Yoetz runs itself
    (`npx yoetz`, `yoetz upgrade --accept`, the provisioner) set it in the install child's
    environment only (an exported value is kept), and uv writes checked-hash bytecode that item 1
-   reuses. A plain user-run `uv tool install --compile-bytecode` still yields timestamp bytecode;
+   reuses. The epoch never reaches the parent or later processes, but it does reach every
+   descendant of that install child: when uv builds a dependency from an sdist, its PEP 517
+   backend sees `SOURCE_DATE_EPOCH=315532800` and may stamp wheel timestamps or dynamic metadata
+   with it, unlike a plain source install. No supported dependency is known to change because of
+   it; the 2026-10-14 review probed a local sdist backend to confirm the scope. A plain user-run `uv tool install --compile-bytecode` still yields timestamp bytecode;
    the first serving start then compiles the package once, and a client that gives up meanwhile
    sees the retryable `service_handshake_timeout`, which names that one-time compile. Measured on
    macOS (M-series, 2026-10-14, a full 0.3.0 runtime of about 3,500 modules, cold generation

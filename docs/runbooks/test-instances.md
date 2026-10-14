@@ -46,7 +46,8 @@ What happens, in order:
    instance's `package_digest`.
 3. `uv venv` plus `uv pip install <wheel>` creates `<base>/<tag>/runtime/`, a runtime holding
    only that wheel, installed with `--compile-bytecode` and `SOURCE_DATE_EPOCH` in the install
-   child's environment, so uv writes checked-hash bytecode the retained runtime reuses. Every uv
+   child's environment, so uv writes checked-hash bytecode the retained runtime reuses (the epoch
+   also reaches any build backend uv runs for an sdist dependency in that install, nothing else). Every uv
    command runs under umask 022 and the script then clears group and other write on the runtime
    it created (uv may hard-link files from a cache written under a looser umask), so an operator with Ubuntu's umask 0002 gets a runtime Yoetz accepts. Because
    such files are hard links, clearing their group write also changes the matching files in

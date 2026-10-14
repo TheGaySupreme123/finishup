@@ -13,6 +13,7 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import marshal
 import os
 import py_compile
 import re
@@ -21,6 +22,7 @@ import stat
 import sys
 import tempfile
 import time
+import types
 import warnings
 from collections.abc import Generator, Mapping
 from pathlib import Path
@@ -418,6 +420,13 @@ def _reusable_bytecode(installed: Path, source: bytes) -> bytes | None:
         return None
     source_hash = importlib.util.source_hash(source)
     if data[8:16] != source_hash:
+        return None
+    # The hash vouches for the header only; a truncated or corrupt payload is compiled instead.
+    try:
+        code: object = marshal.loads(data[16:])
+    except EOFError, ValueError, TypeError:
+        return None
+    if type(code) is not types.CodeType:
         return None
     return data[:4] + (0b1).to_bytes(4, "little") + source_hash + data[16:]
 
