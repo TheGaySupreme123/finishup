@@ -918,6 +918,43 @@ receipts on one `bounded_structural_metadata` item with no way to name the opera
   attempt. Suppressing those attempts, or admitting the advice packet, is a separate decision (a
   disclosure-shape change), recorded on issue #1019 and not made here.
 
+## Automatic advice review and category-denial honesty amendment (2026-10-14, issue #1019)
+
+Maintainer acknowledgement for this privacy/egress design gate: the owner explicitly requested
+this scoped repair. The earlier #1019 observation-advice delivery defect is resolved by the
+following shared service behavior; the original receipt-origin amendment above records the
+historical failure, not the current delivery contract.
+
+- The frozen minimized advice packet is offered as separately classified content inside the same
+  `review-packet` envelope/catalog contract used by explicit `check`. The existing approved-item
+  filter assembles `yoetz.review-packet-case/2`; no live repository, transcript or log is added.
+  Producer-owned rule metadata and scoped gaps remain `bounded_structural_metadata`;
+  `finding_summaries` are separate `finding_summary` content and never appear in the structural
+  envelope. Only approved content is retained. A malformed packet, missing or denied envelope,
+  or an assembly that loses the advice content fails closed. Packet digest and gaps must match
+  the frozen attempt. Old pending rows with an unknown packet format remain fail closed.
+- Advice uses a custom observation-only context with no cooperative ledger frontier or ledger
+  citations. Its question and coverage name
+  only the recorded observation facts and gaps; delivery is not a closing task check. The
+  `observation-advice-packet` content marker takes precedence over the shared envelope marker
+  when deriving `origin_operation`, including successful and blocked receipts.
+- Predispatch receipts carry only categories actually denied by the classifier/category policy.
+  Failure to assemble approved context does not deny its category: it reports
+  `insufficient_approved_context`, zero included items and no category denial unless another item
+  was actually denied. Scope, destination, channel and size refusals likewise preserve the actual
+  request failure reason instead of declaring every candidate category denied. Approval counts
+  describe classification, never provider delivery. Before classification, neither approval nor
+  denial is asserted. `secret_scan.stage` still distinguishes an unrun scan from prepared scanning.
+- The existing egress-receipt 1.1.0 fields carry these facts; no new reason or
+  required field is introduced. Stored 1.0.0/1.1.0 receipts keep their exact bytes and remain readable;
+  older overbroad category sets are historical assertions, not retroactively corrected facts.
+- Codex, Claude Code and Cursor share this service path, on all supported platforms. Hooks only
+  enqueue; background dispatch applies the same authority and category checks as CLI/MCP checks.
+  CLI and terminal-interface privacy receipt inspection receive the same corrected network receipt.
+  No host adapter, receipt agent-sink projection, or JSON/markdown/text task-receipt projection
+  changes here; those overlap the privacy lane but are outside this repair. Verification uses an
+  isolated service composition and fake provider, not live host sessions or model calls.
+
 ## Declared outputs outside the workspace amendment (2026-10-08, issue #1016, tb4n2 R7)
 
 Owner decision (maintainer acknowledgement on #1016): a deliverable the task places outside the
@@ -947,3 +984,42 @@ here.
 - Disclosure: carried rows are listed in the review input manifest and the egress receipt like any
   other excerpt; nothing new is hidden from the owner, and the behaviour is service-side and the
   same on Codex, Claude Code and Cursor.
+
+### Background advice under preview-required policies (2026-10-14, issue #1019 round 2)
+
+Maintainer acknowledgement: the owner requested this scoped follow-up to the amendment above.
+
+- Background advice now actually sends the approved, minimized advice packet when external review
+  is configured and the effective repository policy permits unattended disclosure. The background
+  switch was already on by default; before #1019 an invalid envelope meant nothing was sent. This
+  is a behaviour change, recorded in the changelog and release notes.
+- Background advice has nobody to preview a packet and no continuation to resume. When the
+  effective repository policy needs a human preview (profile `confirm_every_request`, which the
+  metadata-only recipe selects, or an LLM channel with `preview_required`), admission skips advice
+  with the typed reason `preview_required` (gap `advice_semantic_preview_required`). Nothing is
+  queued, no disclosure proposal waits for the owner, no provider identity is recorded and no
+  backoff accrues. A row queued before the policy changed closes as `authorization_missing` with no
+  provider identity. As defence in depth, the egress pipeline refuses an `observation_advice`
+  candidate under such a policy before classification, so its receipt asserts no category
+  approval. Explicit checks keep their preview and resume ceremony unchanged.
+- Per recipe: `private` sends nothing; `metadata_only` skips background advice; `assisted_review`,
+  `expanded_review` and a custom policy without preview send only within the repository grant,
+  allowed categories and review-context selection. The advice envelope names the effective
+  review-context profile, and finding-summary prose is offered only when that profile's selection
+  includes finding prose (never under `structural`).
+- A refused request can still carry classification approvals in `approved_categories` and
+  `counts.approved_items`. The released receipt shape is closed, so the CLI's human rendering of
+  privacy receipts adds a `not sent:` line for network receipts that never reached a provider;
+  `--json` and the wire are unchanged.
+- Shared service behaviour for Codex, Claude Code and Cursor on macOS, Linux and Windows through
+  WSL 2. No migration: the skip writes no row, and a race closes with an existing reason.
+
+Round 3 (same day, same issue): a preview switch that lands after the service's own read (while
+the coordinator prepares the packet, or at its final repository-authority check) is refused by the
+egress pipeline as `scope_mismatch` or `policy_denied`. The advice row is now mapped from that typed
+pre-dispatch refusal, not from the configured binding: `unavailable` / `authorization_missing`, no
+provider identity, the privacy record linked, no session provider-rate charge and only the base
+retry. Only `outcome_unknown` keeps the provider identity. The coordinator also refuses an advice
+candidate built for a review-context profile that is no longer in force (`scope_mismatch`); the
+next admission rebuilds it from the current profile. The gateway's own consume fence for a switch
+after authorization is unchanged and not re-tested here (the provider gateway is faked).

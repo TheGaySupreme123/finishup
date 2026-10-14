@@ -22,6 +22,8 @@ from finishup.adapters.sqlite.observation_advice_semantic import (
 from finishup.application.observation_advice import (
     ADVICE_SEMANTIC_DEFERRED_GAP,
     ADVICE_SEMANTIC_PENDING_GAP,
+    ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP,
+    ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON,
     ADVICE_SEMANTIC_UNAVAILABLE_GAP,
     ObservationAdviceContextBuilder,
 )
@@ -1715,3 +1717,81 @@ def test_cancelled_call_row_records_usage_unknown_when_the_lookup_is_blocked() -
     assert row.provider_identity == "codex"
     assert row.attempt_receipt is None
     assert row.finding_ids == ()
+
+
+def _preview_builder(
+    preview: bool | Exception, revisits: list[tuple[str, str, float]]
+) -> ObservationAdviceContextBuilder:
+    async def ready(*_args: str) -> bool:
+        return True
+
+    async def preview_required(_session: str) -> bool:
+        if isinstance(preview, Exception):
+            raise preview
+        return preview
+
+    return ObservationAdviceContextBuilder(
+        semantic_scheduler=ObservationAdviceSemanticScheduler(
+            now=_clock,
+            provider_ready=ready,
+            route_ready=ready,
+            preview_required=preview_required,
+            revisit=lambda w, s, d: revisits.append((w, s, d)),
+        )
+    )
+
+
+def test_preview_required_policy_skips_background_advice_with_a_typed_reason() -> None:
+    """A policy that needs the owner to preview each packet cannot run unattended (#1019)."""
+
+    db, repository = _repository()
+    revisits: list[tuple[str, str, float]] = []
+    snapshot = asyncio.run(
+        _preview_builder(True, revisits).build(
+            _COMMITMENT,
+            _Store(repository),  # type: ignore[arg-type]
+            yoetz_session_id=_SESSION,
+        )
+    )
+    assert snapshot is not None
+    gaps = snapshot.confidence_coverage.known_gaps
+    assert ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP in gaps
+    assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in gaps
+    assert ADVICE_SEMANTIC_PENDING_GAP not in gaps
+    assert snapshot.semantic_attempt_state == "disabled"
+    # Skipped, not attempted: no row (so no provider identity or backoff) and no revisit.
+    assert _rows(db, repository) == ()
+    assert revisits == []
+    # The preview reason is an admission-time condition, never a stored attempt outcome.
+    assert ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON not in ADVICE_SEMANTIC_FAILURE_REASONS
+
+
+def test_preview_probe_failure_fails_closed_as_unreachable() -> None:
+    db, repository = _repository()
+    snapshot = asyncio.run(
+        _preview_builder(RuntimeError("policy store unreadable"), []).build(
+            _COMMITMENT,
+            _Store(repository),  # type: ignore[arg-type]
+            yoetz_session_id=_SESSION,
+        )
+    )
+    assert snapshot is not None
+    gaps = snapshot.confidence_coverage.known_gaps
+    assert ADVICE_SEMANTIC_UNAVAILABLE_GAP in gaps
+    assert ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP not in gaps
+    assert _rows(db, repository) == ()
+
+
+def test_unattended_policy_still_admits_background_advice() -> None:
+    db, repository = _repository()
+    snapshot = asyncio.run(
+        _preview_builder(False, []).build(
+            _COMMITMENT,
+            _Store(repository),  # type: ignore[arg-type]
+            yoetz_session_id=_SESSION,
+        )
+    )
+    assert snapshot is not None
+    assert ADVICE_SEMANTIC_PENDING_GAP in snapshot.confidence_coverage.known_gaps
+    assert ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP not in snapshot.confidence_coverage.known_gaps
+    assert len(_rows(db, repository)) == 1

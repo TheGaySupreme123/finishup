@@ -178,7 +178,8 @@ conformance test freezes that against the table's own predecessor. The changes, 
   succeeded and the same check carries no reviewer-reported insufficiency* (owner decision Q2). The
   same code beside a reviewer-reported insufficiency, or without a successful review, stays
   bounding.
-* **G5b, G5c, G5d, G6 (twenty codes, disclosed).** The background advice pipeline's bounds, routine
+* **G5b, G5c, G5d, G6 (twenty-one codes, disclosed).** The background advice pipeline's bounds
+  (since #1019 r2 including `advice_semantic_preview_required`), routine
   read summarisation bounds, the prior-findings section's own bound and an owner privacy choice or
   placeholder redaction are not agent tasks and never hold a conclusion below clean.
 * **G7 (four codes).** `optional_semantic_review_blocked_by_policy`,

@@ -29,7 +29,8 @@ def test_development_manifest_is_truthful_and_complete() -> None:
         "development_unverified",
         "mcp_capability_unverified",
     )
-    assert len(manifest.request_result_schema_versions) == 53
+    # 54 since the review-packet-row 2.0.0 provider contract (outbound-case role).
+    assert len(manifest.request_result_schema_versions) == 54
     assert dict(manifest.request_result_schema_versions)["setup-readiness"] == "1.0.0"
     assert dict(manifest.request_result_schema_versions)["setup-status"] == "2.0.0"
     assert dict(manifest.request_result_schema_versions)["isolation-report"] == "1.0.0"

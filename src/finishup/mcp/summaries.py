@@ -1848,6 +1848,30 @@ def _status_list_parts(
     return parts
 
 
+_ADVICE_PREVIEW_REQUIRED_GAP: Final = "advice_semantic_preview_required"
+
+
+def _advice_preview_skip_part(source: Mapping[str, JsonValue]) -> Part | None:
+    """One fixed sentence when background advice was skipped for a preview policy (#1019 r3)."""
+
+    gaps: list[object] = []
+    top = source.get("gaps")
+    if isinstance(top, list | tuple):
+        gaps.extend(cast(Sequence[object], top))
+    coverage = source.get("coverage")
+    if isinstance(coverage, Mapping):
+        known = cast(Mapping[str, object], coverage).get("known_gaps")
+        if isinstance(known, list | tuple):
+            gaps.extend(cast(Sequence[object], known))
+    if _ADVICE_PREVIEW_REQUIRED_GAP not in gaps:
+        return None
+    return _req(
+        "Background AI-powered advice skipped (advice_semantic_preview_required): the privacy "
+        "policy requires previewing each request, so nothing was queued or sent; explicit "
+        "checks still offer the preview."
+    )
+
+
 def summary_for_status(envelope: object) -> str:
     """Compose the status text: view, frontier, freshness, counts and the closure state first.
 
@@ -1874,6 +1898,7 @@ def summary_for_status(envelope: object) -> str:
                     "details.",
                     priority=_P_ACTION,
                 ),
+                _advice_preview_skip_part(source),
                 *_closure_section(render, source),
                 render.failure_part(),
             ]

@@ -26,30 +26,60 @@ bound provider (which recomposes the service) admits the next eligible condition
 restarting the host session. A row that still ends ``authorization_missing`` (authority lost
 between admission and dispatch) waits out the base backoff like any pre-provider failure, so a
 disagreement between probe and dispatch can never re-admit on every build.
+
+Preview-required privacy (#1019): when the effective repository policy asks the owner to preview
+every LLM disclosure, a reachable provider is still not usable unattended. Admission reports the
+typed ``preview_required`` reason (the ``advice_semantic_preview_required`` gap) with no row,
+revisit, provider identity or disclosure proposal. A row queued before the policy changed is
+closed at dispatch as ``authorization_missing`` without any provider identity.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 from finishup.application.observation_advice import (
     ADVICE_SEMANTIC_DEFERRED_REASON,
+    ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON,
     ADVICE_SEMANTIC_UNREACHABLE_REASON,
     ObservationAdviceCandidate,
     ObservationAdviceSemanticAddon,
     minimized_semantic_evidence_packet,
+    validate_semantic_evidence_packet,
+)
+from finishup.application.semantic_case import (
+    review_envelope_to_candidate_context,
+    review_item_catalog,
 )
 from finishup.domain.findings import FindingId
+from finishup.domain.privacy import (
+    OBSERVATION_ADVICE_PACKET_ITEM_ID,
+    AuthorizationScope,
+    CandidateContext,
+    CandidateContextItem,
+    EgressChannel,
+    ProviderBinding,
+    ReviewContextProfile,
+)
 from finishup.observability.logging import record_unexpected_exception_without_raising
+from finishup.ports.semantic import SemanticCaseItem
 from finishup.ports.semantic_budget import (
     semantic_background_scope,
     semantic_budget_profile_scope,
 )
-from finishup.protocol.canonical import JsonValue, canonical_digest, canonical_encode
+from finishup.protocol.canonical import (
+    JsonValue,
+    canonical_digest,
+    canonical_encode,
+    strict_json_parse,
+)
+from finishup.protocol.coverage import PublicationChannel, coverage_for_channel, coverage_to_json
+from finishup.protocol.models import DataCategory
 
 if TYPE_CHECKING:
     from finishup.application.egress import SemanticEgressAttemptUnknown
@@ -66,8 +96,10 @@ __all__ = [
     "AdviceSemanticCancellationReconciler",
     "AdviceSemanticDispatch",
     "AdviceSemanticDrainHandle",
+    "AdviceSemanticPreviewRequired",
     "AdviceSemanticProviderReady",
     "ObservationAdviceSemanticAttempt",
+    "observation_advice_to_candidate_context",
     "ObservationAdviceSemanticDeferral",
     "ObservationAdviceSemanticOutcome",
     "ObservationAdviceSemanticRepository",
@@ -215,6 +247,127 @@ class ObservationAdviceSemanticAttempt:
     details: tuple[str, ...] = ()
 
 
+def observation_advice_to_candidate_context(
+    attempt: ObservationAdviceSemanticAttempt,
+    *,
+    request_id: str,
+    scope: AuthorizationScope,
+    provider_binding: ProviderBinding,
+    review_context_profile: ReviewContextProfile,
+    include_finding_prose: bool,
+) -> CandidateContext:
+    """Wrap the frozen advice packet in the shared semantic-review envelope (#1019).
+
+    The owner's review-context profile shapes the packet as it does an explicit check: the
+    envelope names the effective profile, and finding-summary prose is offered only when that
+    profile's selection includes finding prose (never under ``structural``).
+
+    Advice is observation-scoped, with no cooperative ledger frontier or source excerpts.
+    Finding prose is separately classified, never embedded in structural envelope metadata.
+    Invalid/legacy unknown packets keep the old fail-closed shape for an honest privacy receipt.
+    """
+    try:
+        packet = strict_json_parse(attempt.packet_json)
+        if not isinstance(packet, dict):
+            raise ValueError("observation_advice_packet_invalid")
+        validate_semantic_evidence_packet(packet)
+        if (
+            canonical_digest(packet) != attempt.subject_digest
+            or tuple(cast(list[str], packet["coverage_gaps"])) != attempt.coverage_gaps
+        ):
+            raise ValueError("observation_advice_packet_invalid")
+    except TypeError, ValueError, UnicodeDecodeError:
+        return CandidateContext(
+            request_id,
+            EgressChannel.LLM_INFERENCE,
+            None,
+            "semantic-review",
+            scope,
+            attempt.subject_digest,
+            provider_binding,
+            (
+                CandidateContextItem(
+                    OBSERVATION_ADVICE_PACKET_ITEM_ID,
+                    DataCategory.BOUNDED_STRUCTURAL_METADATA,
+                    scope,
+                    "/observation-advice",
+                    attempt.packet_json,
+                ),
+            ),
+        )
+    summaries = packet.pop("finding_summaries")
+    if not include_finding_prose:
+        summaries = []
+    structural = canonical_encode(packet)
+    items = [
+        SemanticCaseItem(
+            OBSERVATION_ADVICE_PACKET_ITEM_ID,
+            "timeline",
+            DataCategory.BOUNDED_STRUCTURAL_METADATA,
+            "task",
+            OBSERVATION_ADVICE_PACKET_ITEM_ID,
+            (),
+            0,
+            structural,
+            len(structural),
+            "sha256:" + hashlib.sha256(structural).hexdigest(),
+        )
+    ]
+    if summaries:
+        content = canonical_encode({"finding_summaries": summaries})
+        items.append(
+            SemanticCaseItem(
+                "observation-advice-summaries",
+                "timeline",
+                DataCategory.FINDING_SUMMARY,
+                "task",
+                OBSERVATION_ADVICE_PACKET_ITEM_ID,
+                (),
+                1,
+                content,
+                len(content),
+                "sha256:" + hashlib.sha256(content).hexdigest(),
+            )
+        )
+    envelope = canonical_encode(
+        cast(
+            JsonValue,
+            {
+                "schema": "yoetz.review-packet-case/2",
+                "case_digest": attempt.subject_digest,
+                "dependency_digest": attempt.subject_digest,
+                "policy_id": str(packet["policy"]).split("/", 1)[0],
+                "policy_version": str(packet["policy"]).split("/", 1)[1],
+                "frontier_refs": [],
+                "local_check_refs": [],
+                "question_set": [
+                    "Review only the recorded observation advice and its coverage gaps; "
+                    "do not infer task completion or repository correctness."
+                ],
+                "review_context_profile": review_context_profile.value,
+                "item_catalog": review_item_catalog(items),
+                "review_packet": {
+                    "timeline_item_ids": [item.item_id for item in items],
+                    "coverage": coverage_to_json(
+                        replace(
+                            coverage_for_channel(PublicationChannel.HOOK_OBSERVED),
+                            known_gaps=attempt.coverage_gaps,
+                        )
+                    ),
+                },
+            },
+        )
+    )
+    return review_envelope_to_candidate_context(
+        envelope,
+        items,
+        request_id=request_id,
+        scope=scope,
+        provider_binding=provider_binding,
+        subject_digest=attempt.subject_digest,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ObservationAdviceSemanticOutcome:
     """Terminal result of one dispatch, as recorded on the durable row."""
@@ -316,6 +469,10 @@ type AdviceSemanticRouteReady = Callable[[str], Awaitable[bool]]
 # admits LLM-inference egress, and the configured credential is present. Read from current facts
 # on every build, never from the READY snapshot; a probe failure counts as not ready.
 type AdviceSemanticProviderReady = Callable[[], Awaitable[bool]]
+# ``(yoetz_session_id) -> the effective repository policy needs a human preview`` (#1019):
+# ``confirm_every_request`` (metadata-only) or an LLM channel with ``preview_required``. Read
+# from the policy store like the route probe; a probe failure admits nothing.
+type AdviceSemanticPreviewRequired = Callable[[str], Awaitable[bool]]
 # ``(workspace, yoetz_session_id, delay_seconds)``: ask for an advice rebuild once a deferred or
 # backed-off admission becomes eligible. Must not block; the supervisor owns the timer.
 type AdviceSemanticRevisit = Callable[[str, str, float], None]
@@ -428,6 +585,7 @@ class ObservationAdviceSemanticScheduler:
     route_ready: AdviceSemanticRouteReady | None = field(default=None, compare=False)
     revisit: AdviceSemanticRevisit | None = field(default=None, compare=False)
     provider_ready: AdviceSemanticProviderReady | None = field(default=None, compare=False)
+    preview_required: AdviceSemanticPreviewRequired | None = field(default=None, compare=False)
 
     async def review(
         self,
@@ -471,6 +629,16 @@ class ObservationAdviceSemanticScheduler:
                 evidence_digest=None,
                 failure_reason=ADVICE_SEMANTIC_UNREACHABLE_REASON,
             )
+        skip = await self._preview_skip(yoetz_session_id)
+        if skip is not None:
+            # Preview-required privacy (#1019): nobody can preview a background packet, so the
+            # review is skipped like an unreachable provider -- no row, no pending proposal, no
+            # provider identity, no backoff and no revisit; only the typed reason is reported.
+            if latest is not None and latest.status == "succeeded":
+                return addon_from_attempt(latest)
+            return ObservationAdviceSemanticAddon(
+                finding_ids=(), evidence_digest=None, failure_reason=skip
+            )
         payload = canonical_encode(cast(JsonValue, dict(packet)))
         subject = canonical_digest(cast(JsonValue, dict(packet)))
         scheduled = repository.schedule(
@@ -496,6 +664,21 @@ class ObservationAdviceSemanticScheduler:
                 failure_reason=ADVICE_SEMANTIC_DEFERRED_REASON,
             )
         return addon_from_attempt(scheduled)
+
+    async def _preview_skip(self, yoetz_session_id: str) -> str | None:
+        probe = self.preview_required
+        if probe is None:
+            return None
+        try:
+            required = bool(await probe(yoetz_session_id))
+        except Exception as exc:  # noqa: BLE001 - an unreadable policy admits nothing this build
+            record_unexpected_exception_without_raising(
+                exc,
+                component="application.observation_advice_semantic",
+                operation="preview_required_probe_failed",
+            )
+            return ADVICE_SEMANTIC_UNREACHABLE_REASON
+        return ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON if required else None
 
     async def _probe(
         self,

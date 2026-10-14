@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -51,6 +52,8 @@ __all__ = [
     "ADVICE_SEMANTIC_DEFERRED_GAP",
     "ADVICE_SEMANTIC_DEFERRED_REASON",
     "ADVICE_SEMANTIC_PENDING_GAP",
+    "ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP",
+    "ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON",
     "ADVICE_SEMANTIC_UNREACHABLE_REASON",
     "ADVICE_SEMANTIC_UNAVAILABLE_GAP",
     "semantic_state_from_addon",
@@ -65,6 +68,7 @@ __all__ = [
     "build_observation_advice_snapshot",
     "hook_advice_context",
     "minimized_semantic_evidence_packet",
+    "validate_semantic_evidence_packet",
     "scoped_session_envelopes",
     "scoped_session_status",
     "select_advice_item",
@@ -98,6 +102,12 @@ ADVICE_SEMANTIC_DEFERRED_REASON: Final = "deferred"
 # enqueued and no provider is contacted; the condition surfaces once as
 # ``advice_semantic_unavailable`` and never as pending work.
 ADVICE_SEMANTIC_UNREACHABLE_REASON: Final = "provider_unreachable"
+# Preview-required privacy (#1019): the effective repository policy asks the owner to preview
+# every LLM disclosure (``confirm_every_request``/metadata-only, or ``preview_required``).
+# Background advice has nobody to preview it, so it is skipped before any row, proposal or
+# provider attempt and surfaces as this gap beside ``advice_semantic_unavailable``.
+ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON: Final = "preview_required"
+ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP: Final = "advice_semantic_preview_required"
 _SEMANTIC_SUMMARY_FALLBACK: Final = "Model-derived observation note"
 _SEMANTIC_DETAIL_FALLBACK: Final = "Additive AI-powered advice over minimized evidence"
 _VALID_ADVICE_NEXT_ACTIONS: Final[frozenset[str]] = frozenset(
@@ -237,9 +247,13 @@ def semantic_state_from_addon(
     validation and left no usable finding; ADR-006 records that as ``failed`` (a terminal attempt
     without validated output), not ``ready``. With no reachable provider no attempt was
     requested, so the state is ``disabled`` (#923); the addon still carries the unavailable gap.
+    A preview-required policy is the same not-requested condition (#1019).
     """
 
-    if addon is None or addon.failure_reason == ADVICE_SEMANTIC_UNREACHABLE_REASON:
+    if addon is None or addon.failure_reason in {
+        ADVICE_SEMANTIC_UNREACHABLE_REASON,
+        ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON,
+    }:
         return "disabled"
     if addon.failure_reason is None:
         return "ready" if output_usable else "failed"
@@ -966,6 +980,11 @@ def build_observation_advice_snapshot(
                 semantic_unavailable,
             ),
             (
+                ADVICE_SEMANTIC_PREVIEW_REQUIRED_GAP,
+                semantic is not None
+                and semantic.failure_reason == ADVICE_SEMANTIC_PREVIEW_REQUIRED_REASON,
+            ),
+            (
                 ADVICE_SEMANTIC_DEFERRED_GAP,
                 semantic_deferred,
             ),
@@ -1200,6 +1219,62 @@ def advice_items_for_ledger(snapshot: AdviceSnapshot) -> tuple[AdviceItem, ...]:
     """Local items for task-ledger materialization (Agent A coordinator hook)."""
 
     return tuple(item for item in snapshot.ranked_items if item.origin == "deterministic")
+
+
+def validate_semantic_evidence_packet(packet: Mapping[str, JsonValue]) -> None:
+    """Only producer-owned structural fields may enter an advice review envelope (#1019)."""
+    if set(packet) != {
+        "format",
+        "policy",
+        "evidence_basis_digest",
+        "coverage_gaps",
+        "finding_summaries",
+        "deterministic_rules",
+    }:
+        raise ValueError("observation_advice_packet_invalid")
+    if (
+        packet["format"] != "yoetz.observation-advice-semantic/1"
+        or packet["policy"] != f"{OBSERVATION_ADVICE_POLICY_ID}/{OBSERVATION_ADVICE_POLICY_VERSION}"
+    ):
+        raise ValueError("observation_advice_packet_invalid")
+    validate_sha256_digest(cast(str, packet["evidence_basis_digest"]))
+    gaps, summaries, rules = (
+        packet[key] for key in ("coverage_gaps", "finding_summaries", "deterministic_rules")
+    )
+    if (
+        not isinstance(gaps, list)
+        or len(gaps) > MAX_KNOWN_GAPS
+        or any(
+            type(gap) is not str or re.fullmatch(r"[a-z][a-z0-9_./:-]{0,127}", gap) is None
+            for gap in gaps
+        )
+        or not isinstance(summaries, list)
+        or len(summaries) > 16
+        or any(type(summary) is not str for summary in summaries)
+        or not isinstance(rules, list)
+    ):
+        raise ValueError("observation_advice_packet_invalid")
+    for rule in rules:
+        if not isinstance(rule, dict) or set(rule) != {
+            "kind",
+            "rule_code",
+            "next_action",
+            "evidence_ref_count",
+            "summary",
+        }:
+            raise ValueError("observation_advice_packet_invalid")
+        code, action, count = rule["rule_code"], rule["next_action"], rule["evidence_ref_count"]
+        if (
+            type(code) is not str
+            or code not in _RULE_SUMMARIES
+            or type(action) is not str
+            or action not in _VALID_ADVICE_NEXT_ACTIONS
+            or type(count) is not int
+            or count < 0
+            or rule["summary"] != _RULE_SUMMARIES[code]
+        ):
+            raise ValueError("observation_advice_packet_invalid")
+        FindingKind(cast(str, rule["kind"]))
 
 
 def minimized_semantic_evidence_packet(

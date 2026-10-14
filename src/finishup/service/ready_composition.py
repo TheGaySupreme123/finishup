@@ -101,6 +101,7 @@ from finishup.application.egress import (
     SemanticEgressProviderOutcome,
     SemanticEgressSuccess,
     semantic_policy_refusal,
+    semantic_preview_required,
 )
 from finishup.application.lineage import (
     LineageConfig,
@@ -132,6 +133,7 @@ from finishup.application.observation_advice_semantic import (
     ObservationAdviceSemanticOutcome,
     ObservationAdviceSemanticScheduler,
     ObservationAdviceSemanticSupervisor,
+    observation_advice_to_candidate_context,
     reconcile_cancelled_advice_request,
 )
 from finishup.application.observation_control import build_observation_support_handlers
@@ -231,11 +233,9 @@ from finishup.domain.observation import (
     observation_capture_ticket_id,
 )
 from finishup.domain.privacy import (
-    OBSERVATION_ADVICE_PACKET_ITEM_ID,
     AuthorizationScope,
     AuthorizationScopeKind,
     CandidateContext,
-    CandidateContextItem,
     ChannelPolicy,
     DataCategory,
     DataClass,
@@ -244,6 +244,7 @@ from finishup.domain.privacy import (
     PrivacyOutcome,
     PrivacyPolicy,
     PrivacyProfile,
+    PrivacyReason,
     ProviderBinding,
     ReviewContextProfile,
     ReviewSelectionPolicy,
@@ -434,6 +435,52 @@ _ZERO_DIGEST = "sha256:" + "0" * 64
 _LEGACY_HOOK_SPOOL_BATCH_LIMIT: Final = DEFAULT_HOOK_SPOOL_CLAIM_LIMIT
 # The egress purpose every background advice dispatch carries; admission judges the same one.
 _ADVICE_SEMANTIC_PURPOSE: Final = "semantic-review"
+# Privacy refusals that mean the owner's authority or policy no longer admits this unattended
+# request (#1019 r3): a preview-required switch, a repository authority that changed while the
+# packet was prepared, a narrowed purpose, destination or channel. They close an advice row as
+# ``authorization_missing`` like any other lost authority.
+_ADVICE_AUTHORITY_REFUSALS: Final = frozenset(
+    {
+        PrivacyReason.POLICY_DENIED,
+        PrivacyReason.SCOPE_MISMATCH,
+        PrivacyReason.PURPOSE_NOT_ALLOWED,
+        PrivacyReason.DESTINATION_NOT_ALLOWED,
+        PrivacyReason.CHANNEL_UNAVAILABLE,
+        PrivacyReason.AUTHORIZATION_STALE,
+    }
+)
+
+
+def advice_outcome_for_blocked(
+    result: SemanticEgressBlocked, provider_id: str
+) -> ObservationAdviceSemanticOutcome:
+    """Map a privacy-blocked advice request from its typed provenance, never from the binding.
+
+    ``SemanticEgressBlocked`` is the egress pipeline's pre-dispatch (or human) refusal; the only
+    blocked result that may follow a gateway call is ``outcome_unknown``, which keeps the provider
+    identity because the request may have left the machine. Every other refusal proves no
+    dispatch: it records no provider identity and links the terminal privacy record. Authority and
+    policy-change refusals close ``unavailable`` / ``authorization_missing``, so they neither
+    charge the session's provider interval nor grow the provider-failure backoff (the base retry
+    still applies); other pre-dispatch refusals (category, never-send, audit, deadline) stay
+    ``failed`` / ``provider_failed`` without claiming a provider was reached.
+    """
+
+    link = result.receipt_id or result.privacy_proposal_id
+    if result.reason is PrivacyReason.OUTCOME_UNKNOWN:
+        return ObservationAdviceSemanticOutcome(
+            status="failed",
+            failure_reason="provider_failed",
+            attempt_receipt=link,
+            provider_identity=provider_id,
+        )
+    if result.reason in _ADVICE_AUTHORITY_REFUSALS:
+        return ObservationAdviceSemanticOutcome(
+            status="unavailable", failure_reason="authorization_missing", attempt_receipt=link
+        )
+    return ObservationAdviceSemanticOutcome(
+        status="failed", failure_reason="provider_failed", attempt_receipt=link
+    )
 
 
 def _admits_llm_inference(policy: PrivacyPolicy) -> bool:
@@ -6680,6 +6727,33 @@ async def provide_service_ready_context(
             privacy.recover_started_request if type(privacy) is PrivacyCoordinator else None,
         )
 
+    async def _advice_preview_required(session_id: str) -> bool:
+        """Whether the session's effective repository policy needs a human preview (#1019).
+
+        Background advice has nobody to preview its packet. ``confirm_every_request``
+        (metadata-only) or an LLM channel with ``preview_required`` therefore skips it with a
+        typed reason instead of leaving an awaiting-human proposal. Read from the policy store
+        without the privacy admission lock, like the route probe; a route that cannot reach a
+        repository authority is the route probe's ``provider_unreachable``, not this.
+        """
+
+        route = await catalog.resolve_route(session_id)
+        if (
+            route is None
+            or route.repository_privacy_commitment is None
+            or privacy_application is None
+        ):
+            return False
+        authority = await privacy_application.policy_store.repository_authority(
+            AuthorizationScope(
+                AuthorizationScopeKind.TASK,
+                installation_id,
+                route.repository_privacy_commitment,
+                route.task_id,
+            )
+        )
+        return semantic_preview_required(authority.effective.policy)
+
     async def _dispatch_observation_advice_semantic(
         attempt: ObservationAdviceSemanticAttempt,
     ) -> ObservationAdviceSemanticOutcome:
@@ -6717,29 +6791,46 @@ async def provide_service_ready_context(
             return ObservationAdviceSemanticOutcome(
                 status="unavailable", failure_reason="authorization_missing"
             )
+        # No readable effective policy is no authority for an unattended disclosure.
+        advice_policy: PrivacyPolicy | None = None
+        if privacy_application is not None:
+            with contextlib.suppress(Exception):
+                advice_policy = (
+                    await privacy_application.policy_store.effective_policy(repository_scope)
+                ).policy
+        if advice_policy is None:
+            return ObservationAdviceSemanticOutcome(
+                status="unavailable", failure_reason="authorization_missing"
+            )
+        if semantic_preview_required(advice_policy):
+            # Queued before the owner switched to a preview-required policy (#1019): close it
+            # with no provider identity or proposal; admission now reports ``preview_required``.
+            # ``authorization_missing`` charges no session provider interval and keeps only the
+            # base retry interval, never the exponential provider-failure backoff.
+            return ObservationAdviceSemanticOutcome(
+                status="unavailable", failure_reason="authorization_missing"
+            )
         binding = await resolve_provider_binding()
         if binding is None:
             return ObservationAdviceSemanticOutcome(
                 status="unavailable", failure_reason="provider_unavailable"
             )
-        candidate = CandidateContext(
-            request_id=ids.new(IdKind.REQUEST),
-            channel=EgressChannel.LLM_INFERENCE,
-            local_sink=None,
-            purpose=_ADVICE_SEMANTIC_PURPOSE,
-            scope=repository_scope,
-            subject_digest=attempt.subject_digest,
-            provider_binding=binding,
-            items=(
-                CandidateContextItem(
-                    OBSERVATION_ADVICE_PACKET_ITEM_ID,
-                    DataCategory.BOUNDED_STRUCTURAL_METADATA,
-                    repository_scope,
-                    "/observation-advice",
-                    attempt.packet_json,
-                ),
-            ),
-        )
+        try:
+            candidate = observation_advice_to_candidate_context(
+                attempt,
+                request_id=ids.new(IdKind.REQUEST),
+                scope=repository_scope,
+                provider_binding=binding,
+                # The owner's review-context profile shapes advice like an explicit check.
+                review_context_profile=advice_policy.review_context_profile,
+                include_finding_prose=review_selection_for_delivery(
+                    advice_policy
+                ).include_finding_prose,
+            )
+        except TypeError, ValueError, UnicodeDecodeError:
+            return ObservationAdviceSemanticOutcome(
+                status="failed", failure_reason="provider_failed"
+            )
         deadline = Deadline(clock.now_utc(), clock.monotonic_seconds() + 60.0)
         # The supervisor runs one advisory provider attempt at a time. Remember the exact request
         # identity this dispatch minted so a foreground rebind that cancels it can reconcile the
@@ -6748,6 +6839,13 @@ async def provide_service_ready_context(
         advice_semantic_inflight[attempt.attempt_id] = (candidate.request_id, binding.provider_id)
         result = await cast(PrivacyCoordinator, privacy).evaluate_semantic(candidate, deadline)
         advice_semantic_inflight.pop(attempt.attempt_id, None)
+        if type(result) is SemanticEgressBlocked:
+            # A policy or authority switch after the read above (preview turned on, the
+            # repository authority changed while the packet was prepared) is refused by the
+            # egress pipeline itself. Its typed provenance, not the configured binding, says
+            # whether anything was sent: no provider identity, no session provider-rate charge
+            # and no exponential provider-failure growth; the base retry interval still applies.
+            return advice_outcome_for_blocked(result, binding.provider_id)
         if type(result) is not SemanticEgressSuccess:
             return ObservationAdviceSemanticOutcome(
                 status="failed",
@@ -6861,6 +6959,7 @@ async def provide_service_ready_context(
         route_ready=_advice_semantic_route_ready,
         revisit=advice_semantic_supervisor.schedule_revisit,
         provider_ready=advice_semantic_provider_ready,
+        preview_required=_advice_preview_required,
     )
 
     verification_supervisor = ObservationVerificationSupervisor(

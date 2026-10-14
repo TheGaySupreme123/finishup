@@ -353,6 +353,7 @@ _FAMILIES: Final[tuple[_Family, ...]] = (
             "advice_semantic_deferred",
             "advice_semantic_output_invalid",
             "advice_semantic_pending",
+            "advice_semantic_preview_required",
             "advice_semantic_text_truncated",
             "advice_semantic_unavailable",
             "observation_qualified_partial",
