@@ -8,7 +8,9 @@ import os
 import shutil
 import sys
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -1350,6 +1352,88 @@ async def test_a_newer_release_that_fails_the_check_falls_back_to_the_previous_g
     assert checked == ["0.162.1", "0.159.0"]
     assert result["runtime_version"] == "0.159.0"
     assert result["runtimes_passed_over"] == ["codex_runtime_protocol_incompatible"]
+
+
+@pytest.mark.anyio
+async def test_an_unconfirmed_check_cleanup_stops_selection_instead_of_falling_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checked = _three_releases(
+        monkeypatch, {"0.162.1": "codex_capability_probe_cleanup_unconfirmed"}
+    )
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    monkeypatch.setattr(module, "codex_account_status", _ready_probe)
+
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed"):
+        await _run_setup_without_executable(tmp_path)
+
+    # No older candidate is launched while a process group may still be running.
+    assert checked == ["0.162.1"]
+    assert written == []
+
+
+@pytest.mark.anyio
+async def test_an_unconfirmed_readiness_cleanup_stops_selection_instead_of_falling_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checked = _three_releases(monkeypatch, {})
+    written: list[object] = []
+    _stub_setup_persistence(monkeypatch, tmp_path, _binding(tmp_path / "c", tmp_path / "h"), [])
+    monkeypatch.setattr(module, "_binding", _record_binding(tmp_path))
+    monkeypatch.setattr(module, "write_config_toml_if_unchanged", _record_write(tmp_path, written))
+    probed: list[str] = []
+
+    async def probe(profile: object) -> CodexRuntimeStatus:
+        probed.append(cast(ExternalRuntimeProfileConfig, profile).runtime_version)
+        raise ValueError("codex_capability_probe_cleanup_unconfirmed")
+
+    def profile_is_binding(binding: ExternalRuntimeProfileConfig) -> object:
+        return binding
+
+    monkeypatch.setattr(module, "_profile", profile_is_binding)
+    monkeypatch.setattr(module, "codex_account_status", probe)
+
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed"):
+        await _run_setup_without_executable(tmp_path)
+
+    assert (checked, probed, written) == (["0.162.1"], ["0.162.1"], [])
+
+
+# The autouse fixture stubs discovery; this keeps the real function for the discovery test.
+_REAL_EVALUATOR_CANDIDATES = module.evaluator_candidates
+
+
+def test_discovery_stops_when_a_version_probe_cleanup_is_unconfirmed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    @dataclass(frozen=True)
+    class Binary:
+        executable_path: str
+
+    found = (Binary(str(tmp_path / "a" / "codex")), Binary(str(tmp_path / "b" / "codex")))
+    resolved: list[Path] = []
+
+    def resolve(path: Path) -> module.ResolvedCodex:
+        resolved.append(path)
+        raise ValueError("codex_capability_probe_cleanup_unconfirmed")
+
+    def no_bundle() -> Path:
+        raise ValueError("codex_evaluator_runtime_store_unavailable")
+
+    monkeypatch.setattr(module, "runtime_bundle", no_bundle)
+    monkeypatch.setattr(module, "resolve_codex_executable", resolve)
+    monkeypatch.setattr(
+        "yoetz.adapters.integrations.codex_discovery.discover_codex_binaries", lambda: found
+    )
+    config = cast(YoetzConfig, SimpleNamespace(external_runtime=None))
+
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed"):
+        _REAL_EVALUATOR_CANDIDATES(config)
+    # The next discovered installation is not probed after an unconfirmed cleanup.
+    assert resolved == [tmp_path / "a" / "codex"]
 
 
 @pytest.mark.anyio

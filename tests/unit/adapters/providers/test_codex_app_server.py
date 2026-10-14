@@ -2709,6 +2709,54 @@ async def test_capability_probe_with_unconfirmed_cleanup_fails_closed(
         await _probe(monkeypatch, _Runtime(_profile()), cleanup_outcome="failed")
 
 
+async def test_a_probe_failure_never_masks_an_unconfirmed_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refusal raised while probing must not hide a process group that may still run."""
+
+    class NetworkedThread(_Runtime):
+        async def request(
+            self, request_id: int, method: str, params: object, timeout: float
+        ) -> dict[str, object]:
+            result = await super().request(request_id, method, params, timeout)
+            if method == "thread/start":
+                result["sandbox"] = {"type": "readOnly", "networkAccess": True}
+            return result
+
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed") as raised:
+        await _probe(monkeypatch, NetworkedThread(_profile()), cleanup_outcome="failed")
+    # The original refusal is preserved as the cause rather than lost.
+    assert str(raised.value.__cause__) == "codex_thread_isolation_unproven"
+
+
+async def test_a_readiness_failure_never_masks_an_unconfirmed_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Warning_(_Runtime):
+        async def request(
+            self, request_id: int, method: str, params: object, timeout: float
+        ) -> dict[str, object]:
+            if method == "account/read":
+                raise ValueError("codex_app_server_predisclosure_event_forbidden")
+            return await super().request(request_id, method, params, timeout)
+
+    runtime = Warning_(_profile())
+
+    async def launch(profile: CodexAppServerProfile) -> _Runtime:
+        return runtime
+
+    async def cleanup(value: object) -> str:
+        assert value is runtime
+        return "failed"
+
+    monkeypatch.setattr(module, "_launch", launch)
+    monkeypatch.setattr(module, "_cleanup", cleanup)
+
+    with pytest.raises(ValueError, match="codex_capability_probe_cleanup_unconfirmed") as raised:
+        await module.codex_account_status(runtime.profile)
+    assert str(raised.value.__cause__) == "codex_app_server_predisclosure_event_forbidden"
+
+
 @pytest.mark.parametrize(
     "agent",
     [

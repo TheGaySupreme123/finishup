@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
+import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
@@ -338,3 +342,157 @@ def test_the_generated_schema_may_carry_floats_the_strict_profile_rejects(tmp_pa
 
     assert check_app_server_schema(parsed) == check_app_server_schema(minimal_app_server_schema())
     assert module.CODEX_CAPABILITY_RECORD_NAME == "capability.json"
+
+
+# -- process-group cleanup of the zero-inference subprocesses (real children) ------------------
+
+_POSIX_ONLY = pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups")
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - a reused pid owned by someone else
+        return False
+    return not _zombie(pid)
+
+
+def _zombie(pid: int) -> bool:
+    stat_file = Path(f"/proc/{pid}/stat")
+    try:
+        text = stat_file.read_text()
+    except OSError:
+        return False
+    return text.rpartition(")")[2].split()[0] in {"Z", "X"}
+
+
+def _gone_within(pid: int, seconds: float) -> bool:
+    """Bounded observation of real state: the descendant is reaped by init after the kill."""
+
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.02)
+    return not _alive(pid)
+
+
+class _Candidate:
+    """A synthetic candidate executable that starts one descendant and records its pid."""
+
+    def __init__(self, root: Path, *, stdout_line: str = "", hang: bool) -> None:
+        root.mkdir(mode=0o700)
+        self.pid_file = root / "descendant.pid"
+        self.executable = root / "codex"
+        # The descendant detaches its output so it does not hold the pipe; it is still in the
+        # candidate's process group, which is what the cleanup must kill.
+        body = [
+            "#!/bin/sh",
+            "sleep 120 </dev/null >/dev/null 2>&1 &",
+            f"echo $! > '{self.pid_file}'",
+        ]
+        if stdout_line:
+            body.append(f"echo '{stdout_line}'")
+        if hang:
+            body.append("exec sleep 120 </dev/null >/dev/null 2>&1")
+        self.executable.write_text("\n".join(body) + "\n")
+        self.executable.chmod(0o700)
+
+    def descendant(self) -> int | None:
+        try:
+            return int(self.pid_file.read_text().strip())
+        except OSError, ValueError:
+            return None
+
+    def reap_own_descendant(self) -> None:
+        """Teardown: kill only the pid this test's own candidate spawned."""
+
+        pid = self.descendant()
+        if pid is not None and _alive(pid):
+            os.kill(pid, signal.SIGKILL)
+
+
+@pytest.fixture
+def short_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "_SUBPROCESS_TIMEOUT_SECONDS", 1.0)
+
+
+@_POSIX_ONLY
+@pytest.mark.usefixtures("short_timeout")
+@pytest.mark.parametrize("probe", ["version", "schema"])
+def test_a_timed_out_probe_kills_the_candidates_whole_process_group(
+    tmp_path: Path, probe: str
+) -> None:
+    candidate = _Candidate(tmp_path / "candidate", hang=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    try:
+        if probe == "version":
+            with pytest.raises(ValueError, match="codex_runtime_version_unknown"):
+                codex_cli_version(candidate.executable, scratch_parent=scratch)
+        else:
+            with pytest.raises(ValueError, match="codex_runtime_protocol_unavailable"):
+                generate_app_server_schema(candidate.executable, scratch_parent=scratch)
+        pid = candidate.descendant()
+        assert pid is not None
+        assert _gone_within(pid, 5.0), "a descendant of the timed-out candidate is still running"
+        assert list(scratch.iterdir()) == []
+    finally:
+        candidate.reap_own_descendant()
+
+
+@_POSIX_ONLY
+def test_a_candidate_that_exits_leaving_a_descendant_has_the_descendant_killed(
+    tmp_path: Path,
+) -> None:
+    candidate = _Candidate(tmp_path / "candidate", stdout_line="codex-cli 0.162.1", hang=False)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    try:
+        assert codex_cli_version(candidate.executable, scratch_parent=scratch) == "0.162.1"
+        pid = candidate.descendant()
+        assert pid is not None
+        assert _gone_within(pid, 5.0), "the candidate's background descendant outlived the probe"
+    finally:
+        candidate.reap_own_descendant()
+
+
+@_POSIX_ONLY
+@pytest.mark.usefixtures("short_timeout")
+@pytest.mark.parametrize("probe", ["version", "schema"])
+def test_an_unconfirmed_group_cleanup_is_a_typed_failure_not_a_probe_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, probe: str
+) -> None:
+    candidate = _Candidate(tmp_path / "candidate", hang=True)
+    scratch = tmp_path / "scratch"
+    scratch.mkdir(mode=0o700)
+    real_killpg = os.killpg
+    spawned: list[int] = []
+
+    def refusing_killpg(group: int, sig: int) -> None:
+        spawned.append(group)
+        raise PermissionError(1, "denied")
+
+    monkeypatch.setattr(module.os, "killpg", refusing_killpg)
+    monkeypatch.setattr(module, "_GROUP_CLEANUP_GRACE_SECONDS", 0.2)
+    try:
+        with pytest.raises(
+            ValueError, match="codex_capability_probe_cleanup_unconfirmed"
+        ) as raised:
+            if probe == "version":
+                codex_cli_version(candidate.executable, scratch_parent=scratch)
+            else:
+                generate_app_server_schema(candidate.executable, scratch_parent=scratch)
+        # The original timeout is preserved as the cause, not masked or lost.
+        assert isinstance(raised.value.__cause__, subprocess.TimeoutExpired)
+    finally:
+        monkeypatch.undo()
+        for group in sorted(set(spawned)):
+            # Teardown kills only the process group this test's own candidate started.
+            try:
+                real_killpg(group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        candidate.reap_own_descendant()

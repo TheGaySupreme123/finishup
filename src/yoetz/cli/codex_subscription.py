@@ -41,6 +41,7 @@ from yoetz.adapters.providers.codex_app_server import (
     prepare_codex_home,
 )
 from yoetz.adapters.providers.codex_capability import (
+    CODEX_PROBE_CLEANUP_UNCONFIRMED,
     CodexCapabilityRecord,
     CodexPlatform,
     codex_cli_version,
@@ -238,9 +239,10 @@ _SUBSCRIPTION_REMEDIATIONS: Final[Mapping[str, str]] = {
         "the selected Codex did not answer the capability check in time; retry, or select "
         "another Codex installation"
     ),
-    "codex_capability_probe_cleanup_unconfirmed": (
-        "the capability check could not confirm its Codex process exited; inspect running "
-        "processes, then retry"
+    CODEX_PROBE_CLEANUP_UNCONFIRMED: (
+        "Yoetz could not confirm that every Codex process it started to check a Codex "
+        "installation has exited, so it stopped without trying another installation and changed "
+        "nothing; inspect running processes, stop any leftover Codex check you own, then retry"
     ),
     "codex_model_unavailable": (
         "Codex reports the dedicated home signed in, but no admitted Codex lists the model with "
@@ -625,6 +627,13 @@ def _sorted_candidates(found: list[EvaluatorCandidate]) -> tuple[EvaluatorCandid
     )
 
 
+def _stop_on_unconfirmed_cleanup(error: BaseException) -> None:
+    """Re-raise a version probe whose process group was not confirmed gone; skip anything else."""
+
+    if isinstance(error, ValueError) and str(error) == CODEX_PROBE_CLEANUP_UNCONFIRMED:
+        raise error
+
+
 def evaluator_candidates(
     config: YoetzConfig, *, executable: Path | None = None
 ) -> tuple[EvaluatorCandidate, ...]:
@@ -661,8 +670,8 @@ def evaluator_candidates(
     ):
         try:
             resolved = resolve_codex_executable(Path(binding.executable_path))
-        except (OSError, ValueError):  # fmt: skip
-            pass
+        except (OSError, ValueError) as error:  # fmt: skip
+            _stop_on_unconfirmed_cleanup(error)
         else:
             found.append(EvaluatorCandidate("binding", resolved.native, resolved.version))
     from yoetz.adapters.integrations.codex_discovery import discover_codex_binaries
@@ -670,7 +679,8 @@ def evaluator_candidates(
     for binary in discover_codex_binaries():
         try:
             resolved = resolve_codex_executable(Path(binary.executable_path))
-        except (OSError, ValueError):  # fmt: skip
+        except (OSError, ValueError) as error:  # fmt: skip
+            _stop_on_unconfirmed_cleanup(error)
             continue
         found.append(EvaluatorCandidate("discovered", resolved.native, resolved.version))
     return _sorted_candidates(found)
@@ -936,6 +946,9 @@ _STORE_FAULTS: Final = frozenset(
         "codex_evaluator_runtime_store_unsafe",
         "codex_evaluator_runtime_store_unavailable",
         "codex_runtime_platform_unsupported",
+        # A candidate process group that may still be running stops selection outright: no
+        # further candidate is launched beside it, and nothing is bound.
+        CODEX_PROBE_CLEANUP_UNCONFIRMED,
     }
 )
 
@@ -981,7 +994,9 @@ async def _adopt_runtime(
     readiness probe reports the dedicated home signed in without the configured model and
     efforts, is passed over for the next one: a newer Codex that regresses falls back to the
     previous good release. A home Codex reports as not signed in stops the search there (sign-in
-    belongs to the home, not the runtime). An unconfirmed probe cleanup fails closed at once.
+    belongs to the home, not the runtime). An unconfirmed cleanup of any check or readiness
+    process (``codex_capability_probe_cleanup_unconfirmed``), like a store fault, stops the
+    search at once instead of falling back to an older candidate.
     Nothing is written to the configuration here.
     """
 
@@ -1004,7 +1019,10 @@ async def _adopt_runtime(
         try:
             status = await readiness(binding)
         except (OSError, TimeoutError, ValueError) as error:  # fmt: skip
-            passed_over.append(subscription_failure_reason(error))
+            token = subscription_failure_reason(error)
+            if token == CODEX_PROBE_CLEANUP_UNCONFIRMED:
+                raise
+            passed_over.append(token)
             continue
         if status.cleanup == "failed":
             raise ValueError("codex_subscription_readiness_unproven")

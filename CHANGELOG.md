@@ -263,7 +263,10 @@ reverse-chronological released versions.
   `runtime install --download` fetches the newest Codex, and `runtime remove` deletes the copies
   no binding uses. Receipts keep recording the Codex release, executable digest and capability
   record that ran. Newer Codex output (`partial_answer` messages, new plan names, the
-  `flexUnavailable` error) is handled, and unreviewed events still fail closed.
+  `flexUnavailable` error) is handled, and unreviewed events still fail closed. Each check kills
+  every process the checked Codex started, including ones it left running; if Yoetz cannot confirm
+  they are gone, it stops with `codex_capability_probe_cleanup_unconfirmed` instead of trying
+  another release.
   Authenticated live evidence through a capability-admitted release is pending.
 
 - A delivered file that loads a file the agent created but did not declare (a model, a word list,

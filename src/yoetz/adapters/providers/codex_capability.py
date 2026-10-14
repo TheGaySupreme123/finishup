@@ -23,9 +23,11 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -39,6 +41,7 @@ __all__ = [
     "CODEX_CAPABILITY_CHECKS",
     "CODEX_CAPABILITY_RECORD_NAME",
     "CODEX_CAPABILITY_RECORD_SCHEMA",
+    "CODEX_PROBE_CLEANUP_UNCONFIRMED",
     "CODEX_CODE_MODE_HOST_NAME",
     "CODEX_EVALUATOR_CAPABILITY_PROFILE",
     "CODEX_EVALUATOR_RUNTIME_FLOOR",
@@ -89,6 +92,11 @@ _RECORD_MAX_BYTES: Final = 64 * 1024
 _SCHEMA_MAX_BYTES: Final = 16 * 1024 * 1024
 _SCHEMA_FILE: Final = "codex_app_server_protocol.v2.schemas.json"
 _SUBPROCESS_TIMEOUT_SECONDS: Final = 60.0
+# How long a killed candidate process group has to disappear before cleanup is unconfirmed.
+_GROUP_CLEANUP_GRACE_SECONDS: Final = 5.0
+# The one closed token for a candidate subprocess whose process group could not be confirmed
+# gone. It stops runtime selection outright: no other candidate is tried after it.
+CODEX_PROBE_CLEANUP_UNCONFIRMED: Final = "codex_capability_probe_cleanup_unconfirmed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -892,20 +900,108 @@ type SubprocessRunner = Callable[[Sequence[str], Path, Mapping[str, str]], tuple
 
 
 def _run(argv: Sequence[str], cwd: Path, env: Mapping[str, str]) -> tuple[int, bytes]:
-    """Run one bounded candidate subprocess; stdout is returned, stderr is discarded unread."""
+    """Run one bounded candidate subprocess; stdout is returned, stderr is discarded unread.
 
-    completed = subprocess.run(  # noqa: S603 - fixed argv on a selected local executable
+    The candidate leads its own new session, so it and every descendant it starts share one
+    process group. Whatever happens (normal exit, timeout, or any other failure), that whole
+    group is killed and the leader reaped before this returns, and the group must then be
+    confirmed empty. A group that cannot be confirmed gone raises
+    ``codex_capability_probe_cleanup_unconfirmed`` chained to the original failure, if any, so a
+    probe failure never masks a lingering process.
+    """
+
+    process = subprocess.Popen(  # noqa: S603 - fixed argv on a selected local executable
         tuple(argv),
-        check=False,
         cwd=cwd,
         env=dict(env),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
-        timeout=_SUBPROCESS_TIMEOUT_SECONDS,
         start_new_session=True,
     )
-    return completed.returncode, completed.stdout[:4096]
+    failure: BaseException | None = None
+    stdout = b""
+    try:
+        stdout, _stderr = process.communicate(timeout=_SUBPROCESS_TIMEOUT_SECONDS)
+    except BaseException as error:  # noqa: BLE001 - re-raised below after group cleanup
+        failure = error
+    confirmed = _kill_process_group(process)
+    if not confirmed and (failure is None or isinstance(failure, Exception)):
+        raise ValueError(CODEX_PROBE_CLEANUP_UNCONFIRMED) from failure
+    if failure is not None:
+        raise failure
+    return cast(int, process.returncode), stdout[:4096]
+
+
+def _kill_process_group(process: subprocess.Popen[bytes]) -> bool:
+    """Kill the candidate's whole process group, reap its leader, and confirm the group is gone."""
+
+    group = process.pid
+    confirmed = True
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        confirmed = False
+    try:
+        process.wait(timeout=_GROUP_CLEANUP_GRACE_SECONDS)
+    except subprocess.TimeoutExpired:
+        confirmed = False
+    if process.stdout is not None:
+        process.stdout.close()
+    return confirmed and _group_gone(group)
+
+
+def _group_gone(group: int) -> bool:
+    """Whether no live member of process group ``group`` remains, within a bounded grace."""
+
+    deadline = time.monotonic() + _GROUP_CLEANUP_GRACE_SECONDS
+    while True:
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            # A member exists that this process may not signal: not confirmed.
+            return False
+        if _only_zombies(group):
+            # Killed members already exited; only their reaping (by init) is outstanding.
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.01)
+
+
+def _only_zombies(group: int) -> bool:
+    """On Linux, whether every remaining member of ``group`` has already exited (zombie).
+
+    An init that does not reap promptly (a minimal container PID 1) leaves exited members as
+    zombies that still answer ``killpg(group, 0)``. Elsewhere this reports ``False`` and the
+    bounded wait above decides.
+    """
+
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return False
+    members = 0
+    try:
+        entries = tuple(proc.iterdir())
+    except OSError:
+        return False
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text().rpartition(")")[2].split()
+        except OSError:
+            continue
+        if len(fields) < 3 or fields[2] != str(group):
+            continue
+        if fields[0] not in {"Z", "X"}:
+            return False
+        members += 1
+    return members > 0
 
 
 def _scratch_environment(home: Path) -> dict[str, str]:
