@@ -64,6 +64,7 @@ from yoetz.protocol.errors import ProtocolValueError
 from yoetz.protocol.guidance_uris import FOCUSED_GUIDANCE_URIS, GUIDANCE_DOCUMENT_URIS
 
 __all__ = [
+    "claude_code_other_projects",
     "CLAUDE_CODE_HARNESS_PROFILE",
     "CLAUDE_CODE_HOOK_EVENTS",
     "CLAUDE_CODE_MINIMUM_VERSION",
@@ -1479,13 +1480,49 @@ def _list_plugins(
 def _exact_plugin_entry(
     target: ClaudeCodePluginTarget, rows: Sequence[Mapping[str, JsonValue]]
 ) -> Mapping[str, JsonValue] | None:
+    # Claude Code lists one project-scope row per project that installed the plugin, whatever
+    # the working directory (2.1.299). Other projects' rows are theirs, not a conflict (#1058);
+    # a user-scope or other non-project install still makes this project's row unprovable.
     matches = [row for row in rows if row.get("id") == _PLUGIN_ID]
-    if len(matches) != 1:
+    if any(row.get("scope") != "project" for row in matches):
         return None
-    row = matches[0]
-    if row.get("scope") != "project" or row.get("projectPath") != target.project_root:
+    own = [row for row in matches if row.get("projectPath") == target.project_root]
+    if len(own) != 1:
         return None
-    return row
+    return own[0]
+
+
+def _other_project_paths(
+    target: ClaudeCodePluginTarget, rows: Sequence[Mapping[str, JsonValue]]
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                path
+                for row in rows
+                if row.get("id") == _PLUGIN_ID
+                and row.get("scope") == "project"
+                and type(path := row.get("projectPath")) is str
+                and path != target.project_root
+            }
+        )
+    )
+
+
+def claude_code_other_projects(
+    target: ClaudeCodePluginTarget, *, commands: ClaudeCodeCommandPort | None = None
+) -> tuple[str, ...] | None:
+    """Projects other than ``target``'s with a project-scope Yoetz install (#1058).
+
+    They share this config root's marketplace source and ``known_marketplaces`` entry, so a
+    disconnect must keep both while any remain. ``None`` means the inventory was unreadable.
+    """
+
+    _validate_target(target)
+    rows, observed = _list_plugins(
+        target, SubprocessClaudeCodeCommands() if commands is None else commands
+    )
+    return _other_project_paths(target, rows) if observed else None
 
 
 def _marketplace_registered(target: ClaudeCodePluginTarget) -> bool | None:
@@ -2193,6 +2230,8 @@ def apply_claude_code_plugin(
     _consume_authority(review, authority, accepted_preview_digest)
     changed: tuple[str, ...] = ()
     command_ok = True
+    shared_kept = False
+    others: tuple[str, ...] | None = ()
     if action is ClaudeCodePluginAction.CONNECT:
         # One reviewed operation covers source, marketplace, installation and enablement.
         # Read-back determines the remaining stages after an interrupted connection.
@@ -2260,12 +2299,19 @@ def apply_claude_code_plugin(
             ("plugin", "uninstall", _PLUGIN_ID, "--scope", "project", "--keep-data"),
         )
         if command_ok:
+            # `marketplace remove` is not project-scoped: it uninstalls every project's copy.
+            # While another project still has its install, keep the shared marketplace and
+            # source; an unreadable inventory keeps them too (#1058).
+            rows, observed = _list_plugins(target, command_port)
+            others = _other_project_paths(target, rows) if observed else None
+            shared_kept = others is None or bool(others)
+        if command_ok and not shared_kept:
             command_ok = _run_mutation(
                 target,
                 command_port,
                 ("plugin", "marketplace", "remove", _MARKETPLACE_NAME),
             )
-        if command_ok:
+        if command_ok and not shared_kept:
             changed = _remove_source(target)
     after = status_claude_code_plugin(target, artifact, commands=command_port)
     reached = (
@@ -2285,6 +2331,7 @@ def apply_claude_code_plugin(
         else after.enabled is False
         if action is ClaudeCodePluginAction.DISABLE
         else after.state is PluginArtifactState.ABSENT
+        or (shared_kept and others is not None and not after.discovered)
     )
     # Every branch above has already crossed a mutation boundary (source write,
     # host command, or removal). REFUSED describes a safe pre-mutation

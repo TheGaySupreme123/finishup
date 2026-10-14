@@ -9,8 +9,10 @@ from typing import Literal, cast
 import anyio
 
 from yoetz.adapters.integrations.codex_marketplace import (
+    ActivationState,
     RemovalOutcome,
     apply_removal,
+    connected_projects,
     inspect_activation,
     preview_removal,
 )
@@ -42,6 +44,7 @@ from yoetz.ports.harness_mcp import HarnessBinary, McpRegistrationError, McpRegi
 from yoetz.ports.integrations import (
     HarnessId,
     IntegrationAction,
+    IntegrationError,
     IntegrationScope,
     IntegrationState,
     IntegrationTarget,
@@ -98,6 +101,14 @@ def prepare_codex_connection(
             return await service.observe(binary)
 
         observed = anyio.run(observe)
+        listed = home_projects_status(installation.config_root).get("codex_home_projects")
+        others: list[JsonValue] = [
+            item
+            for item in (cast(list[JsonValue], listed) if isinstance(listed, list) else [])
+            if item != str(project)
+        ]
+        if others:
+            admission.disclosure["shared_with"] = others
         activation = inspect_activation(
             IntegrationTarget(IntegrationScope.TRUSTED_PROJECT, str(project)),
             executable_path=str(installation.executable),
@@ -106,6 +117,9 @@ def prepare_codex_connection(
         if (
             activation.inventory_verified
             and activation.plugin_cached
+            # The home's shared plugin is cached for every project; only a project that is
+            # itself connected (anchor or recorded) is unchanged (#1058).
+            and activation.state is ActivationState.ACTIVE
             and legacy.already_registered
             and observed.route_profile == route
         ):
@@ -141,9 +155,13 @@ def prepare_codex_connection(
             return {
                 "installed": current.plugin_cached,
                 "enabled": current.plugin_enabled,
+                # `active` only for a project connected to this home; the shared plugin alone
+                # is cached and enabled for every project in it (#1058).
+                "activation_state": current.state.value,
                 "configured": registration.route_profile == route,
                 "connection_observed": False,
                 "reload_required": True,
+                **home_projects_status(installation.config_root),
                 **project_mcp_leftover_status(installation.config_root, project),
             }
     else:
@@ -160,6 +178,9 @@ def prepare_codex_connection(
             return await service.preview_unregistration(binary)
 
         registration = anyio.run(preview_mcp)
+        # Other connected projects keep the home's shared plugin and user-level MCP
+        # registration; this disconnect removes only this project's pieces (#1058).
+        detach = removal.outcome is RemovalOutcome.DETACH
         skill = CodexSkillIntegration()
         skill_command = SkillPreviewCommand(
             request_id(request_value), target, IntegrationAction.REMOVE, False
@@ -176,14 +197,23 @@ def prepare_codex_connection(
             raise ConnectionError("connection_modified_skill")
         body["skill_preview_digest"] = skill_preview.preview_digest
         body["plugin_preview_digest"] = removal.preview_digest
-        body["mcp_preview_digest"] = registration.preview_digest
-        warnings: list[JsonValue] = list(registration.warnings)
+        body["mcp_preview_digest"] = None if detach else registration.preview_digest
+        warnings: list[JsonValue] = [] if detach else list(registration.warnings)
         body["warnings"] = warnings
         body["retained"] = ["Yoetz data", "inactive project plugin sources"]
+        if detach:
+            cast(list[JsonValue], body["retained"]).append(
+                "shared Codex plugin and MCP registration used by other connected projects"
+            )
+            admission.disclosure["shared_with"] = cast(list[JsonValue], list(removal.shared_with))
         body["changes"] = (
-            [] if removal.outcome is RemovalOutcome.ALREADY_ABSENT else ["deactivate_plugin"]
+            []
+            if removal.outcome is RemovalOutcome.ALREADY_ABSENT
+            else ["detach_project"]
+            if detach
+            else ["deactivate_plugin"]
         )
-        if registration.action.value != "noop":
+        if not detach and registration.action.value != "noop":
             cast(list[JsonValue], body["changes"]).append("remove_mcp_registration")
         if skill_preview.state_before is IntegrationState.INSTALLED_EXACT:
             cast(list[JsonValue], body["changes"]).append("remove_project_skill")
@@ -191,7 +221,10 @@ def prepare_codex_connection(
         # trusted project's `[mcp_servers.yoetz.tools.check]` without a transport makes
         # Codex refuse to load configuration there (exec, mcp list, plugin list).
         sweep_admission = admission.plan(body, "codex", action)
-        other_projects = _other_project_admissions(installation.config_root, project)
+        # Only removing the user-level transport strands other projects' admission tables.
+        other_projects = (
+            [] if detach else _other_project_admissions(installation.config_root, project)
+        )
         if other_projects:
             admission.disclosure["admission_other_projects"] = other_projects
             warnings.append("admission_present_in_other_projects")
@@ -215,7 +248,8 @@ def prepare_codex_connection(
                 )
 
             try:
-                removal_report = mcp_removal_report(anyio.run(unregister))
+                if not detach:
+                    removal_report = mcp_removal_report(anyio.run(unregister))
             except McpRegistrationError as error:
                 if error.reason is McpRegistrationReason.REGISTRATION_FAILED:
                     from yoetz.cli.setup_readiness import continuation
@@ -284,13 +318,15 @@ def prepare_codex_connection(
             observed = anyio.run(preview_mcp)
             return {
                 "installed": None,
-                "enabled": current.outcome is not RemovalOutcome.ALREADY_ABSENT,
+                # A detached project still sees the home's shared plugin; it is not connected.
+                "enabled": current.outcome is RemovalOutcome.REMOVE,
                 "configured": observed.action.value != "noop",
                 "connection_observed": False,
                 "reload_required": True,
                 "retained": body["retained"],
                 "mcp_removal": removal_report,
                 "project_config_load": config_load,
+                **home_projects_status(installation.config_root),
                 **admission.status(),
             }
 
@@ -337,6 +373,16 @@ def _other_project_admissions(codex_home: Path, project: Path) -> list[JsonValue
                 }
             )
     return found
+
+
+def home_projects_status(codex_home: Path) -> dict[str, JsonValue]:
+    """Every project this Codex home's shared Yoetz pieces serve (#1058); empty if unreadable."""
+
+    try:
+        projects = connected_projects(codex_home)
+    except IntegrationError:
+        return {}
+    return {"codex_home_projects": cast(list[JsonValue], list(projects))}
 
 
 def project_mcp_leftover_status(codex_home: Path, project: Path) -> dict[str, JsonValue]:

@@ -18,6 +18,15 @@ from yoetz.adapters.integrations.host_admission import (
     sweep_host_admission,
 )
 from yoetz.adapters.integrations.host_discovery import HostInstallation
+from yoetz.adapters.integrations.host_projects import (
+    ConnectedProjects,
+    HostProjectsError,
+    duplicate_of,
+    live_projects,
+    load_connected_projects,
+    same_directory,
+    write_connected_projects,
+)
 from yoetz.domain.values import RequestId
 from yoetz.ports.plugin_artifacts import (
     ArtifactAuthority,
@@ -183,6 +192,108 @@ class AdmissionCleanupStep:
         }
 
 
+class SharedProjectsStep:
+    """The other projects that share one host config root's Yoetz pieces (#1058).
+
+    ``observed`` names projects the host itself reports (Claude Code lists every project-scope
+    install); otherwise the config root's connected-projects record is the source. Connect
+    refuses a second path to an already connected directory and records the project; a
+    disconnect keeps the shared pieces while another live project remains.
+    """
+
+    def __init__(
+        self,
+        config_root: Path,
+        project: Path,
+        action: ConnectionAction,
+        *,
+        observed: tuple[str, ...] | None = None,
+        recorded: bool = True,
+    ) -> None:
+        self._project = project
+        self._recorded = recorded
+        self._snapshot: ConnectedProjects | None = None
+        if recorded and config_root.is_dir():
+            try:
+                self._snapshot = load_connected_projects(config_root)
+            except HostProjectsError as error:
+                raise ConnectionError("connection_projects_record_invalid") from error
+        known = set(observed or ())
+        if self._snapshot is not None:
+            known.update(self._snapshot.projects)
+        # Disconnecting under either path removes the alias entry too; only a second connect
+        # through another path to the same directory is refused.
+        if action == "connect" and duplicate_of(project, known) is not None:
+            raise ConnectionError("project_connected_via_other_path")
+        self.others: tuple[str, ...] = live_projects(known, excluding=project)
+        self._config_root = config_root
+
+    def record_change(self, action: ConnectionAction) -> str | None:
+        """The plan change naming a record-only update (an earlier release left no entry)."""
+
+        if not self._recorded:
+            return None
+        listed = self._snapshot is not None and any(
+            same_directory(Path(item), self._project) or item == str(self._project)
+            for item in self._snapshot.projects
+        )
+        if action == "connect" and not listed:
+            return "record_connected_project"
+        if action == "disconnect" and listed:
+            return "forget_connected_project"
+        return None
+
+    def disclose(self, disclosure: dict[str, JsonValue]) -> None:
+        if self.others:
+            disclosure["shared_with"] = cast(list[JsonValue], list(self.others))
+        if self._snapshot is not None and self._snapshot.raw is not None:
+            disclosure["connected_projects_record"] = canonical_digest(
+                {"projects": list(self._snapshot.projects)}
+            )
+
+    def record(self, action: ConnectionAction) -> None:
+        """Update the record after the host-side steps succeeded."""
+
+        if not self._recorded:
+            return
+        snapshot = self._snapshot
+        if snapshot is None:
+            # The reviewed plugin step created the missing config root.
+            try:
+                snapshot = load_connected_projects(self._config_root)
+            except HostProjectsError as error:
+                raise ConnectionError("connection_outcome_unknown") from error
+        if action == "connect":
+            projects = snapshot.with_project(self._project)
+        else:
+            projects = tuple(
+                item
+                for item in snapshot.without_project(self._project)
+                if not same_directory(Path(item), self._project)
+            )
+        try:
+            write_connected_projects(snapshot, projects)
+        except HostProjectsError as error:
+            raise ConnectionError(
+                "connection_preview_stale"
+                if error.reason == "registry_stale"
+                else "connection_outcome_unknown"
+            ) from error
+
+    def status(self) -> dict[str, JsonValue]:
+        try:
+            current = (
+                load_connected_projects(self._config_root).projects
+                if self._recorded and self._config_root.is_dir()
+                else ()
+            )
+        except HostProjectsError:
+            return {}
+        if not self._recorded:
+            return {}
+        return {"connected_projects": cast(list[JsonValue], list(current))}
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectionPlan:
     body: dict[str, JsonValue]
@@ -251,14 +362,24 @@ def prepare_connection(
             startup_mode=claude.installed_claude_startup_mode(target) or "optional",
         )
         before = claude.status_claude_code_plugin(target, artifact)
+        # Claude Code lists every project's install, so the host itself names who shares the
+        # config root's marketplace source; no Yoetz record is needed (#1058).
+        shared = SharedProjectsStep(
+            installation.config_root,
+            project,
+            action,
+            observed=claude.claude_code_other_projects(target) or (),
+            recorded=False,
+        )
         operation = (
             claude.ClaudeCodePluginAction.CONNECT
             if action == "connect"
             else claude.ClaudeCodePluginAction.REMOVE
         )
+        detached = action == "disconnect" and bool(shared.others) and not before.discovered
         preview = (
             None
-            if (action == "disconnect" and before.state is PluginArtifactState.ABSENT)
+            if (action == "disconnect" and before.state is PluginArtifactState.ABSENT) or detached
             else claude.preview_claude_code_plugin(request, target, operation, artifact)
         )
         noop = preview is None or preview.action is claude.ClaudeCodePluginAction.NOOP
@@ -273,9 +394,13 @@ def prepare_connection(
             else (
                 ["install_plugin", "enable_plugin", "plugin_mcp"]
                 if action == "connect"
+                # Other projects keep the shared marketplace source and its plugin MCP.
+                else ["uninstall_plugin"]
+                if shared.others
                 else ["uninstall_plugin", "remove_marketplace", "remove_plugin_mcp"]
             )
         )
+        shared.disclose(admission.disclosure)
         sweep_admission = admission.plan(body, "claude", action)
 
         def status() -> dict[str, JsonValue]:
@@ -287,6 +412,15 @@ def prepare_connection(
                 "state": observed.state.value,
                 "connection_observed": False,
                 "reload_required": action == "connect",
+                "connected_projects": cast(
+                    list[JsonValue],
+                    sorted(
+                        {
+                            *(claude.claude_code_other_projects(target) or ()),
+                            *((str(project),) if observed.discovered else ()),
+                        }
+                    ),
+                ),
                 **admission.status(),
             }
 
@@ -324,6 +458,9 @@ def prepare_connection(
         observed = cursor.status_cursor_plugin(cursor_target, cursor_artifact, project_root=project)
         if observed.state is PluginArtifactState.MODIFIED:
             raise ConnectionError("connection_modified_plugin")
+        # The user plugin (hooks, skill) serves every project under this config root; only the
+        # project MCP entry is per project. The record names who still needs the plugin (#1058).
+        shared = SharedProjectsStep(installation.config_root, project, action)
         cursor_action = (
             PluginArtifactAction.REMOVE
             if action == "disconnect"
@@ -333,7 +470,8 @@ def prepare_connection(
         )
         cursor_preview = (
             None
-            if (action == "disconnect" and observed.state is PluginArtifactState.ABSENT)
+            if action == "disconnect"
+            and (observed.state is PluginArtifactState.ABSENT or bool(shared.others))
             else cursor.preview_cursor_plugin(
                 request, cursor_target, cursor_action, cursor_artifact, project_root=project
             )
@@ -352,6 +490,9 @@ def prepare_connection(
             changes.append("install_plugin" if action == "connect" else "remove_plugin")
         if mcp_preview["action"] != "noop":
             changes.append("register_project_mcp" if action == "connect" else "remove_project_mcp")
+        record_change = shared.record_change(action)
+        if record_change is not None:
+            changes.append(record_change)
         body.update(
             {
                 "create_config_root": not config_existed and action == "connect",
@@ -365,6 +506,7 @@ def prepare_connection(
                 "scope": "user_plugin_and_selected_project_mcp",
             }
         )
+        shared.disclose(admission.disclosure)
         sweep_admission = admission.plan(body, "cursor", action)
 
         def status() -> dict[str, JsonValue]:
@@ -382,6 +524,7 @@ def prepare_connection(
                 "connection_observed": False,
                 "reload_required": action == "connect",
                 "project_mcp": registration,
+                **shared.status(),
                 **admission.status(),
             }
 
@@ -448,6 +591,7 @@ def prepare_connection(
                 preview_digest=accepted_mcp,
                 accept=True,
             )
+            shared.record(action)
     else:
         raise ConnectionError("connection_host_unsupported")
     body["preview_digest"] = plan_digest(body, admission.disclosure)

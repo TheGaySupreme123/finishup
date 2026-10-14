@@ -413,3 +413,43 @@ def test_preview_disclosure_renders_pinned_continuations() -> None:
     )
     step = host_connection._leftover_next_step(status)  # pyright: ignore[reportPrivateUsage]
     assert step is not None and "Codex cannot load its configuration here" in step
+
+
+def test_detaching_disconnect_keeps_the_shared_mcp_registration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """#1058: other connected projects keep using the home's user-level MCP server."""
+
+    home, project, installation = _layout(tmp_path)
+    _grant(project)
+    fake, cleanup = FakeCodex(home, project), list[str]()
+    _wire(monkeypatch, fake, cleanup)
+    other = str(tmp_path / "other")
+
+    def detach_preview(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            preview_digest=DIGEST, outcome=RemovalOutcome.DETACH, shared_with=(other,)
+        )
+
+    monkeypatch.setattr(codex_connection, "preview_removal", detach_preview)
+    monkeypatch.setattr(codex_connection, "apply_removal", detach_preview)
+
+    plan = _plan(installation, project)
+    assert plan.body["changes"] == [
+        "detach_project",
+        "remove_project_skill",
+        "remove_project_admission",
+    ]
+    assert plan.body["mcp_preview_digest"] is None
+    assert plan.disclosure["shared_with"] == [other]
+    assert "admission_other_projects" not in plan.disclosure
+    validate_schema_instance("host-connection", "1.0.0", plan.body)
+
+    plan.apply_reviewed_steps()
+
+    assert fake.registered
+    assert not any(call[1:3] == ("mcp", "remove") for call in fake.calls)
+    status = plan.status()
+    assert status["mcp_removal"] is None
+    assert status["enabled"] is False
+    assert cleanup == ["skill"]

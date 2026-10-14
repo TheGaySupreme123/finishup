@@ -204,3 +204,102 @@ def test_partial_cursor_connection_resumes_only_remaining_mcp_stage(
         review=Review(),
     )
     assert result["configured"] is True
+
+
+def _cursor_step(
+    installation: HostInstallation, project: Path, action: str, launcher: Path, review: Review
+) -> dict[str, object]:
+    from typing import cast
+
+    from yoetz.application.host_connection import ConnectionAction
+
+    def prepare():
+        return prepare_connection(
+            REQUEST,
+            installation,
+            project,
+            action=cast(ConnectionAction, action),
+            route="strict",
+            launcher=(str(launcher),),
+        )
+
+    plan = prepare()
+    return dict(
+        apply_connection(
+            plan,
+            accepted_digest=plan.digest,
+            refresh=prepare,
+            authority=ArtifactAuthority("review_only", plan.digest, "test"),
+            review=review,
+        )
+    )
+
+
+def test_cursor_projects_share_the_user_plugin_until_the_last_disconnect(tmp_path: Path) -> None:
+    """#1058: disconnecting one project keeps the user plugin another connected project uses."""
+
+    from typing import cast
+
+    from yoetz.adapters.integrations.host_discovery import SetupHost
+    from yoetz.adapters.integrations.host_projects import CONNECTED_PROJECTS_FILE
+
+    project_a, project_b = tmp_path / "a", tmp_path / "b"
+    project_a.mkdir(mode=0o700)
+    project_b.mkdir(mode=0o700)
+    config = tmp_path / "cursor"
+    launcher = tmp_path / "yoetz"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o700)
+    installation = HostInstallation(
+        cast(SetupHost, "cursor-cli"), launcher, "2026.09.19", config, "Cursor"
+    )
+    review = Review()
+
+    _cursor_step(installation, project_a, "connect", launcher, review)
+    connected_b = _cursor_step(installation, project_b, "connect", launcher, review)
+    assert connected_b["installed"] is True and connected_b["configured"] is True
+    assert connected_b["connected_projects"] == sorted([str(project_a), str(project_b)])
+
+    left_a = _cursor_step(installation, project_a, "disconnect", launcher, review)
+    assert left_a["configured"] is False
+    # The shared plugin stays installed for B; only A's project MCP entry went.
+    assert left_a["installed"] is True
+    assert left_a["connected_projects"] == [str(project_b)]
+
+    left_b = _cursor_step(installation, project_b, "disconnect", launcher, review)
+    assert left_b["installed"] is False and left_b["configured"] is False
+    assert not (config / CONNECTED_PROJECTS_FILE).exists()
+
+
+def test_cursor_second_path_to_a_connected_project_is_refused(tmp_path: Path) -> None:
+    from typing import cast
+
+    from yoetz.adapters.integrations.host_discovery import SetupHost
+
+    project = tmp_path / "project"
+    project.mkdir(mode=0o700)
+    config = tmp_path / "cursor"
+    launcher = tmp_path / "yoetz"
+    launcher.write_text("#!/bin/sh\nexit 0\n")
+    launcher.chmod(0o700)
+    installation = HostInstallation(
+        cast(SetupHost, "cursor-ide"), launcher, "2026.09.19", config, "Cursor"
+    )
+    review = Review()
+    _cursor_step(installation, project, "connect", launcher, review)
+    moved = tmp_path / "moved"
+    project.rename(moved)
+    project.symlink_to(moved, target_is_directory=True)
+
+    with pytest.raises(ConnectionError, match="project_connected_via_other_path"):
+        prepare_connection(
+            REQUEST,
+            installation,
+            moved,
+            action="connect",
+            route="strict",
+            launcher=(str(launcher),),
+        )
+    # Disconnecting under the current path clears the old-path entry, after which it connects.
+    _cursor_step(installation, moved, "disconnect", launcher, review)
+    assert _cursor_step(installation, moved, "connect", launcher, review)["configured"] is True

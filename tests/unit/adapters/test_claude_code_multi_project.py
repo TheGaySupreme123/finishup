@@ -1,0 +1,205 @@
+"""One Claude Code config root serves several Yoetz-connected projects (issue #1058).
+
+Observed on Claude Code 2.1.299 with a scratch ``CLAUDE_CONFIG_DIR``: ``claude plugin list
+--json`` lists one ``yoetz@yoetz-local`` project-scope row per project that installed it, from
+any working directory, and ``claude plugin marketplace remove`` (not project-scoped) uninstalls
+every project's copy. Before #1058 a second project's install made both rows unprovable and
+disconnecting the first project removed the shared marketplace source the second still used.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from collections.abc import Sequence
+from dataclasses import replace
+from pathlib import Path
+from typing import cast
+
+from tests.unit.adapters.test_claude_code_integration import (
+    _REQUEST,  # pyright: ignore[reportPrivateUsage]
+    _authority,  # pyright: ignore[reportPrivateUsage]
+    _Review,  # pyright: ignore[reportPrivateUsage]
+    _target,  # pyright: ignore[reportPrivateUsage]
+)
+
+from yoetz.adapters.integrations.claude_code_integration import (
+    ClaudeCodeCommandResult,
+    ClaudeCodePluginAction,
+    ClaudeCodePluginArtifact,
+    ClaudeCodePluginTarget,
+    apply_claude_code_plugin,
+    claude_code_other_projects,
+    preview_claude_code_plugin,
+    render_claude_code_plugin,
+    status_claude_code_plugin,
+)
+from yoetz.ports.plugin_artifacts import (
+    McpOwnership,
+    PluginArtifactState,
+    PluginOperationState,
+)
+from yoetz.protocol.canonical import JsonValue, canonical_encode
+
+
+class _SharedClaude:
+    """Per-project install rows over one config root, as Claude Code 2.1.299 reports them."""
+
+    def __init__(self, artifact: ClaudeCodePluginArtifact) -> None:
+        self.artifact = artifact
+        self.rows: dict[str, bool] = {}
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    def _cache(self, target: ClaudeCodePluginTarget) -> Path:
+        return Path(target.cache_root) / "yoetz-local" / "yoetz" / self.artifact.plan.version
+
+    def _settings(self, target: ClaudeCodePluginTarget, *, registered: bool) -> None:
+        path = Path(target.project_root) / ".claude" / "settings.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        value: dict[str, object] = {
+            "enabledPlugins": {"yoetz@yoetz-local": self.rows.get(target.project_root, False)}
+        }
+        if registered:
+            value["extraKnownMarketplaces"] = {
+                "yoetz-local": {"source": {"source": "directory", "path": target.marketplace_root}}
+            }
+        path.write_text(json.dumps(value), encoding="utf-8")
+        known = Path(target.claude_config_root) / "plugins" / "known_marketplaces.json"
+        known.parent.mkdir(parents=True, exist_ok=True)
+        known.write_text(
+            json.dumps(
+                {
+                    "yoetz-local": {
+                        "installLocation": target.marketplace_root,
+                        "source": {"source": "directory", "path": target.marketplace_root},
+                    }
+                }
+                if registered
+                else {}
+            ),
+            encoding="utf-8",
+        )
+
+    def run(
+        self, target: ClaudeCodePluginTarget, arguments: Sequence[str]
+    ) -> ClaudeCodeCommandResult:
+        args = tuple(arguments)
+        self.calls.append((target.project_root, args))
+        if args == ("plugin", "list", "--json"):
+            rows = [
+                {
+                    "enabled": enabled,
+                    "id": "yoetz@yoetz-local",
+                    "installPath": str(self._cache(target)),
+                    "projectPath": project,
+                    "scope": "project",
+                    "version": self.artifact.plan.version,
+                }
+                for project, enabled in sorted(self.rows.items())
+            ]
+            return ClaudeCodeCommandResult(0, canonical_encode(cast(JsonValue, rows)), b"")
+        if args[:4] == ("plugin", "marketplace", "add", "--scope"):
+            self._settings(target, registered=True)
+            return ClaudeCodeCommandResult(0, b"ok", b"")
+        if args[:2] == ("plugin", "install"):
+            cache = self._cache(target)
+            if not cache.exists():
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copytree(Path(target.marketplace_root) / "plugins" / "yoetz", cache)
+            self.rows[target.project_root] = False
+            self._settings(target, registered=True)
+            return ClaudeCodeCommandResult(0, b"ok", b"")
+        if args[:2] == ("plugin", "enable"):
+            self.rows[target.project_root] = True
+            self._settings(target, registered=True)
+            return ClaudeCodeCommandResult(0, b"ok", b"")
+        if args[:2] == ("plugin", "uninstall"):
+            self.rows.pop(target.project_root, None)
+            if not self.rows and self._cache(target).exists():
+                shutil.rmtree(self._cache(target))
+            self._settings(target, registered=True)
+            return ClaudeCodeCommandResult(0, b"ok", b"")
+        if args[:3] == ("plugin", "marketplace", "remove"):
+            # Not project-scoped: every project's install goes with the marketplace.
+            self.rows.clear()
+            self._settings(target, registered=False)
+            return ClaudeCodeCommandResult(0, b"ok", b"")
+        return ClaudeCodeCommandResult(1, b"", b"unexpected")
+
+
+def _pair(tmp_path: Path) -> tuple[ClaudeCodePluginTarget, ClaudeCodePluginTarget]:
+    first = _target(tmp_path)
+    second_root = tmp_path / "project-b"
+    second_root.mkdir()
+    return first, replace(first, project_root=str(second_root))
+
+
+def _apply(
+    target: ClaudeCodePluginTarget,
+    action: ClaudeCodePluginAction,
+    commands: _SharedClaude,
+) -> PluginOperationState:
+    preview = preview_claude_code_plugin(
+        _REQUEST, target, action, commands.artifact, commands=commands
+    )
+    result = apply_claude_code_plugin(
+        _REQUEST,
+        target,
+        action,
+        commands.artifact,
+        accepted_preview_digest=preview.preview_digest,
+        authority=_authority(preview.preview_digest),
+        review=_Review(),
+        commands=commands,
+    )
+    return result.operation_state
+
+
+def _state(target: ClaudeCodePluginTarget, commands: _SharedClaude) -> PluginArtifactState:
+    return status_claude_code_plugin(target, commands.artifact, commands=commands).state
+
+
+def test_second_project_connects_and_both_read_connected(tmp_path: Path) -> None:
+    project_a, project_b = _pair(tmp_path)
+    commands = _SharedClaude(
+        render_claude_code_plugin(mcp_ownership=McpOwnership.PLUGIN_MANAGED, route_profile="strict")
+    )
+    assert _apply(project_a, ClaudeCodePluginAction.CONNECT, commands) is (
+        PluginOperationState.COMPLETED
+    )
+
+    assert _apply(project_b, ClaudeCodePluginAction.CONNECT, commands) is (
+        PluginOperationState.COMPLETED
+    )
+
+    assert _state(project_a, commands) is PluginArtifactState.NATIVE_MANAGED
+    assert _state(project_b, commands) is PluginArtifactState.NATIVE_MANAGED
+    assert claude_code_other_projects(project_a, commands=commands) == (project_b.project_root,)
+
+
+def test_disconnecting_one_project_keeps_the_shared_marketplace_for_the_other(
+    tmp_path: Path,
+) -> None:
+    project_a, project_b = _pair(tmp_path)
+    commands = _SharedClaude(
+        render_claude_code_plugin(mcp_ownership=McpOwnership.PLUGIN_MANAGED, route_profile="strict")
+    )
+    _apply(project_a, ClaudeCodePluginAction.CONNECT, commands)
+    _apply(project_b, ClaudeCodePluginAction.CONNECT, commands)
+
+    assert _apply(project_a, ClaudeCodePluginAction.REMOVE, commands) is (
+        PluginOperationState.COMPLETED
+    )
+
+    assert not any(args[:3] == ("plugin", "marketplace", "remove") for _, args in commands.calls)
+    assert Path(project_b.marketplace_root).is_dir()
+    assert _state(project_b, commands) is PluginArtifactState.NATIVE_MANAGED
+    assert claude_code_other_projects(project_b, commands=commands) == ()
+
+    # The last project's disconnect removes the shared marketplace and its source.
+    assert _apply(project_b, ClaudeCodePluginAction.REMOVE, commands) is (
+        PluginOperationState.COMPLETED
+    )
+    assert any(args[:3] == ("plugin", "marketplace", "remove") for _, args in commands.calls)
+    assert not Path(project_b.marketplace_root).exists()
+    assert _state(project_b, commands) is PluginArtifactState.ABSENT

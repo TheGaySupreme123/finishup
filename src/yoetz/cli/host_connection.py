@@ -33,6 +33,7 @@ from yoetz.application.host_connection import (
 from yoetz.cli.setup_readiness import continuation
 from yoetz.config.paths import isolated_root
 from yoetz.domain.values import request_id
+from yoetz.ports.harness_mcp import MCP_SERVER_NAME
 from yoetz.ports.integrations import IntegrationError
 from yoetz.ports.plugin_artifacts import ArtifactAuthority, PluginArtifactError
 from yoetz.protocol.canonical import JsonValue
@@ -174,7 +175,25 @@ def connection_summary(plan: ConnectionPlan) -> tuple[str, ...]:
         "Your host must open a fresh session to observe the connection.",
         "Observation and provider permissions are separate.",
         *removal_warning,
+        *_shared_summary(body),
         *_admission_summary(body),
+    )
+
+
+def _shared_summary(body: dict[str, JsonValue]) -> tuple[str, ...]:
+    """Name the other projects that share this configuration's Yoetz pieces (#1058)."""
+
+    others = body.get("shared_with")
+    if not isinstance(others, list) or not others:
+        return ()
+    names = ", ".join(str(item) for item in others)
+    if body.get("action") == "disconnect":
+        return (
+            "Other connected projects keep using the shared Yoetz pieces, so only this "
+            f"project's pieces are removed: {names}",
+        )
+    return (
+        f"This configuration already serves other connected projects, which keep working: {names}",
     )
 
 
@@ -234,6 +253,62 @@ def _codex_leftover(config_root: Path | None, project: Path) -> dict[str, JsonVa
         )
     except OSError, ValueError:
         return {}
+
+
+def _duplicate_step(host: str, config_root: Path | None, project: Path) -> str:
+    arguments = ["setup", "disconnect", "--host", host]
+    if config_root is not None:
+        arguments += ["--host-config-root", str(config_root.expanduser().absolute())]
+    return (
+        "This host configuration already connects this project directory under a different "
+        "path (a symlink, a different letter case, or the path it had before it moved). One "
+        "directory is connected once per configuration, so a second entry was refused. To "
+        "connect it under this path, disconnect it first (that also removes the entry under "
+        "the other path), then rerun this command: "
+        + continuation([*arguments, "--project", str(project)])
+    )
+
+
+def _codex_duplicate_step(config_root: Path | None, project: Path) -> str:
+    """Name the path that already connects this directory, and the two ways forward (#1058)."""
+
+    from yoetz.adapters.integrations.codex_marketplace import project_registered_elsewhere
+
+    try:
+        home = (
+            config_root.expanduser().absolute()
+            if config_root is not None
+            else host_config_root("codex")
+        )
+        existing = project_registered_elsewhere(home, project)
+    except OSError, ValueError:
+        home, existing = None, None
+    if existing is None or home is None:
+        return (
+            "This Codex home already connects this project directory under a different path "
+            "(a symlink, a different letter case, or the path it had before it moved). One "
+            "directory is connected once per Codex home: disconnect this project first (that "
+            "also removes the other entry), then rerun this command."
+        )
+    disconnect = continuation(
+        [
+            "setup",
+            "disconnect",
+            "--host",
+            "codex",
+            "--host-config-root",
+            str(home),
+            "--project",
+            str(project),
+        ]
+    )
+    return (
+        f"This Codex home already connects this project directory as {existing}, a different "
+        "path to the same directory (a symlink, a different letter case, or the path it had "
+        "before it moved). One directory is connected once per Codex home, so a second entry "
+        "was refused. To connect it under this path, disconnect it first (that also removes "
+        f"the entry under the other path), then rerun this command: {disconnect}"
+    )
 
 
 def _leftover_next_step(status: dict[str, JsonValue]) -> str | None:
@@ -401,12 +476,24 @@ def run_host_connection(
             }
         )
         if host == "codex" and reason in {"destination_conflict", "foreign_entry_present"}:
+            # Another Yoetz-connected project in the same home is not a conflict (#1058): this
+            # is Yoetz-named configuration that Yoetz did not write or that was edited since.
+            name = MCP_SERVER_NAME
             report["next_step"] = (
-                "The selected Codex home and foreign configuration were preserved. "
-                "Create a fresh directory owned only by you (mode 0700), then rerun this "
-                "setup command with --host-config-root pointing to that directory. "
-                "For legacy Codex setup use --codex-home. If the conflict is in the "
-                "project's marketplace, inspect that file first; a new home cannot repair it."
+                "The selected Codex home holds Yoetz-named configuration that Yoetz did not "
+                f"write or that was edited since (its [marketplaces.{name}] or "
+                f'[plugins."{name}@{name}"] table, its plugin cache, or its {name} MCP server), '
+                "or this project's .agents/plugins/marketplace.json does; setup left it "
+                "untouched. Review and remove that entry, then rerun this command. Other "
+                "projects connected to the same home are not a conflict. To keep the entry, "
+                "connect through a separate Codex home instead: create a directory owned only "
+                "by you (mode 0700) and rerun with --host-config-root pointing to it."
+            )
+        if reason == "project_connected_via_other_path":
+            report["next_step"] = (
+                _codex_duplicate_step(config_root, project)
+                if host == "codex"
+                else _duplicate_step(host, config_root, project)
             )
         if isinstance(error, ConnectionError) and error.status is not None:
             rendered_status = _rendered_status(error.status)
