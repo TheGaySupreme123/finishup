@@ -2926,22 +2926,30 @@ def test_complete_codex_plan_accepts_only_its_generated_activation_transition(
 class _CodexMcpHost:
     """A Codex MCP CLI answering from one registration flag, whatever the call order."""
 
-    def __init__(self) -> None:
+    def __init__(self, command: str = "finishup") -> None:
         self.registered = False
         self.calls: list[tuple[str, ...]] = []
+        self.command = command
 
     def __call__(self, argv: tuple[str, ...]) -> CommandOutput:
         self.calls.append(argv)
         verb = argv[1:3]
         if verb == ("mcp", "get"):
-            return _finishup_entry("strict") if self.registered else CommandOutput(1, b"")
+            return (
+                _finishup_entry("strict", launcher=self.command)
+                if self.registered
+                else CommandOutput(1, b"")
+            )
         if verb == ("mcp", "list"):
             # Every observation also lists entries for the legacy ``yoetz`` key (ADR-048).
             if not self.registered:
                 return CommandOutput(0, b"[]")
             entry = {
                 "name": "finishup",
-                "transport": {"command": "finishup", "args": list(MCP_STRICT_SERVE_COMMAND[1:])},
+                "transport": {
+                    "command": self.command,
+                    "args": list(MCP_STRICT_SERVE_COMMAND[1:]),
+                },
             }
             return CommandOutput(0, json.dumps([entry]).encode())
         if verb == ("mcp", "add"):
@@ -3226,11 +3234,19 @@ def test_revocation_after_connection_fences_and_reconnection_infers_no_arm(
 
 
 def test_host_connection_codex_after_claude_keeps_claude_capture(
-    consent_arm_env: dict[str, object],
+    consent_arm_env: dict[str, object], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Issue #835 through ``finishup connect codex``: preview, accept, apply, and reconnect."""
 
     env = consent_arm_env
+    # The shared wizard cell scripts a bare launcher. This plan now names the activation-cache
+    # command, which is refused until the launcher is an absolute proven script (#1076).
+    pinned = "/opt/pinned/bin/finishup"
+    monkeypatch.setattr(
+        "finishup.adapters.integrations.codex_mcp.installed_launcher",
+        lambda name="finishup": (pinned, "sha256:" + "cd" * 32),
+    )
+    cast(_CodexMcpHost, env["host"]).command = pinned
     _approve_claude_capture(env)
     selection = _select_detailed_largest(env)
     claude = _authority(env)
